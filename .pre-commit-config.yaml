@@ -23,7 +23,7 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
-          - acme==5.5.0
+          - acme==5.7.0
           - cryptography==50.0.0
           - josepy==2.2.0
           - PyOpenSSL==26.4.0
