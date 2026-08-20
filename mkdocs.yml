@@ -1,0 +1,56 @@
+site_name: xferry
+site_description: Controlled HTTP toolkit for Secure Web Gateway testing
+site_url: https://xferry.kgmnotes.ru/
+repo_url: https://github.com/kgmnotes/xferry
+repo_name: kgmnotes/xferry
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Quick start: quick-start.md
+  - Scenarios:
+      - Choose a workflow: scenarios.md
+      - Disposable SSH tunnel: disposable-ssh-tunnel.md
+  - Operations:
+      - Data and lifecycle: operations.md
+      - Public deployment: public-direct.md
+  - Security:
+      - Security policy: security.md
+      - Threat model: threat-model.md
+  - Reference:
+      - HTTP and WebSocket API: api.md
+      - Changelog: changelog.md
+  - Development:
+      - Contributing: contributing.md
+      - Architecture: architecture.md
+      - Frontend contract: frontend-contract.md
+      - Architecture decisions:
+          - Index: ADR/README.md
+          - Handler registry: ADR/ADR-001-handler-registry.md
+          - Payload protection: ADR/ADR-002-payload-protection.md
+          - Runtime crypto and ACME: ADR/ADR-003-runtime-crypto-acme.md
+          - Upload containment: ADR/ADR-004-upload-containment.md
+          - Thread pool: ADR/ADR-005-thread-pool.md
+          - Release artifacts: ADR/ADR-006-release-artifacts.md
+          - Trusted proxy identity: ADR/ADR-007-trusted-proxy-identity.md
+          - Notepad recovery: ADR/ADR-008-notepad-recovery.md
+          - API and client compatibility: ADR/ADR-009-api-client-compatibility.md
+          - Methods and launch presets: ADR/ADR-010-methods-and-presets.md

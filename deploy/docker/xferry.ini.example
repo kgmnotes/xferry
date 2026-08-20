@@ -1,0 +1,43 @@
+# xferry public-direct Docker Compose example.
+# Copy to ./xferry.ini before Compose mounts it at /etc/xferry/xferry.ini.
+
+[server]
+preset = public-direct
+host = 0.0.0.0
+port = 8443
+root_dir = /data
+public_direct = true
+json_log = true
+workers = 10
+
+[security]
+auth_file = /run/secrets/xferry_auth
+
+[tls]
+# Runtime TLS becomes active through sslip/letsencrypt/cert+key even if
+# the explicit self-signed `tls` flag remains false in normalized output.
+sslip = true
+# public_ip = 203.0.113.10
+# acme_staging = true
+acme_http_port = 8080
+
+[limits]
+max_size_mb = 100
+body_memory_budget_mb = 512
+body_idle_timeout = 5
+body_timeout = 300
+body_min_rate = 0
+stream_send_idle_timeout = 5
+stream_send_timeout = 300
+upload_storage_limit_mb = 4096
+upload_file_limit = 4096
+upload_reserve_free_mb = 1024
+upload_quota_externally_managed = false
+
+[cors]
+cors_origin =
+
+[plugins]
+plugin_allowlist =
+plugins_allow_public_direct = false
+plugins_override_core = false

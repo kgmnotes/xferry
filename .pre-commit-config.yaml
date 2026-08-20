@@ -1,0 +1,70 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.20.1
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - acme==5.5.0
+          - cryptography==50.0.0
+          - josepy==2.2.0
+          - PyOpenSSL==26.4.0
+        files: ^xferry/
+        args: [--strict]
+
+  - repo: local
+    hooks:
+      - id: toolchain-pin-check
+        name: toolchain pin check
+        entry: python tools/check_toolchain_pins.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: public-surface-check
+        name: public surface check
+        entry: python tools/check_public_surface.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: docs-mirror-check
+        name: docs mirror check
+        entry: python tools/sync_docs.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: stale-docs-check
+        name: stale docs contract check
+        entry: python tools/check_stale_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: static-ui-release-gates
+        name: static UI release gates
+        entry: python tools/check_static_ui_assets.py
+        language: system
+        pass_filenames: false
+        files: ^(xferry/data/index\.html|xferry/data/static/.*|pyproject\.toml|tools/check_static_ui_assets\.py)$
+      - id: browser-smoke-js-syntax
+        name: browser smoke JS syntax
+        entry: node --check tools/browser_smoke.playwright.js
+        language: system
+        pass_filenames: false
+        files: ^tools/browser_smoke\.playwright\.js$

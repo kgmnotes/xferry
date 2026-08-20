@@ -1,0 +1,119 @@
+name: xferry-public-direct
+
+services:
+  xferry:
+    image: "${XFERRY_IMAGE:?Set XFERRY_IMAGE to a full immutable image reference such as ghcr.io/kgmnotes/xferry@sha256:<digest>}"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    ports:
+      - "80:8080"
+      - "443:8443"
+    environment:
+      XFERRY_HEALTH_HOST: "${XFERRY_HEALTH_HOST:?Set XFERRY_HEALTH_HOST to the certificate hostname}"
+      XFERRY_HEALTH_PORT: "8443"
+    volumes:
+      - xferry-data:/data
+      - xferry-acme-state:/home/xferry/.xferry
+      - ./xferry.ini:/etc/xferry/xferry.ini:ro
+    secrets:
+      - xferry_auth
+    command:
+      - run
+      - --config
+      - /etc/xferry/xferry.ini
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import base64
+          import json
+          import os
+          import socket
+          import ssl
+          from pathlib import Path
+
+          host = os.environ["XFERRY_HEALTH_HOST"].encode("idna").decode("ascii")
+          port = int(os.environ["XFERRY_HEALTH_PORT"])
+          credentials = Path("/run/secrets/xferry_auth").read_text(
+              encoding="utf-8"
+          ).rstrip("\r\n")
+          token = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+          request = (
+              f"PING / HTTP/1.1\r\n"
+              f"Host: {host}\r\n"
+              f"Authorization: Basic {token}\r\n"
+              "Connection: close\r\n\r\n"
+          ).encode("ascii")
+          context = ssl.create_default_context()
+          response = b""
+          with socket.create_connection(("127.0.0.1", port), timeout=3) as raw_socket:
+              with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
+                  tls_socket.settimeout(3)
+                  tls_socket.sendall(request)
+                  while len(response) < 131072:
+                      chunk = tls_socket.recv(4096)
+                      if not chunk:
+                          break
+                      response += chunk
+                      header, separator, body = response.partition(b"\r\n\r\n")
+                      if not separator:
+                          continue
+                      length = None
+                      for line in header.split(b"\r\n")[1:]:
+                          name, delimiter, value = line.partition(b":")
+                          if delimiter and name.strip().lower() == b"content-length":
+                              try:
+                                  length = int(value.strip())
+                              except ValueError:
+                                  length = -1
+                              break
+                      if length is None:
+                          if len(body) > 65536:
+                              break
+                      elif not 0 <= length <= 65536 or len(body) >= length:
+                          break
+          header, separator, body = response.partition(b"\r\n\r\n")
+          lines = header.split(b"\r\n")
+          status = lines[0].split(b" ", 2) if lines else []
+          status_ok = len(status) >= 2 and status[1] == b"200"
+          length = None
+          for line in header.split(b"\r\n")[1:]:
+              name, delimiter, value = line.partition(b":")
+              if delimiter and name.strip().lower() == b"content-length":
+                  try:
+                      length = int(value.strip())
+                  except ValueError:
+                      length = -1
+                  break
+          try:
+              payload = json.loads(body)
+          except (UnicodeDecodeError, json.JSONDecodeError):
+              payload = None
+          ready = isinstance(payload, dict) and payload.get("health") == "ready"
+          framing_ok = length is None or (0 <= length <= 65536 and len(body) == length)
+          raise SystemExit(0 if separator and len(body) <= 65536 and framing_ok and status_ok and ready else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  xferry-data:
+  xferry-acme-state:
+
+secrets:
+  xferry_auth:
+    file: ./secrets/xferry_auth

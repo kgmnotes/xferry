@@ -1,0 +1,788 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PIP_CONSTRAINT: constraints/ci.txt
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and attest Python artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      python-dists-artifact-id: ${{ steps.upload-python-dists.outputs.artifact-id }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/ci.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install release toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install build pip-audit
+
+      - name: Check release source version
+        env:
+          XFERRY_RELEASE_REF: ${{ github.ref }}
+          XFERRY_RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+
+          from xferry.config import __version__
+          from xferry.management.versions import is_supported_release_version
+
+          if not is_supported_release_version(__version__):
+              raise SystemExit(f"unsupported XFerry source release line: {__version__}")
+
+          ref = os.environ["XFERRY_RELEASE_REF"]
+          ref_name = os.environ["XFERRY_RELEASE_REF_NAME"]
+          if ref.startswith("refs/tags/v"):
+              tag_version = ref_name.removeprefix("v")
+              if not is_supported_release_version(tag_version):
+                  raise SystemExit(f"unsupported or invalid release tag: {ref_name}")
+              if tag_version != __version__:
+                  raise SystemExit(
+                      f"xferry.config.__version__ ({__version__}) does not match tag {ref_name}"
+                  )
+          PY
+
+      - name: Build wheel and sdist
+        run: |
+          set -euo pipefail
+          rm -rf build dist
+          python -m build --sdist --wheel --outdir dist
+          python - <<'PY'
+          from pathlib import Path
+
+          artifacts = sorted(Path("dist").glob("*"))
+          if not any(path.suffix == ".whl" for path in artifacts):
+              raise SystemExit("wheel artifact was not produced")
+          if not any(path.name.endswith(".tar.gz") for path in artifacts):
+              raise SystemExit("sdist artifact was not produced")
+          for artifact in artifacts:
+              print(f"{artifact} ({artifact.stat().st_size} bytes)")
+          PY
+
+      - name: Validate wheel and sdist contents
+        run: |
+          set -euo pipefail
+          python tools/verify_python_artifacts.py validate \
+            --workspace "$GITHUB_WORKSPACE" \
+            --wheel 'dist/xferry-*.whl' \
+            --sdist 'dist/xferry-*.tar.gz'
+
+      - name: Prepare Python artifact wheelhouse
+        run: |
+          set -euo pipefail
+          python tools/verify_python_artifacts.py prepare-wheelhouse \
+            --workspace "$GITHUB_WORKSPACE" \
+            --wheel 'dist/xferry-*.whl' \
+            --wheelhouse "$RUNNER_TEMP/xferry-artifact-wheelhouse" \
+            --constraints "$GITHUB_WORKSPACE/constraints/ci.txt"
+
+      - name: Offline wheel and sdist smoke
+        run: |
+          set -euo pipefail
+          python tools/verify_python_artifacts.py offline-smoke \
+            --workspace "$GITHUB_WORKSPACE" \
+            --wheel 'dist/xferry-*.whl' \
+            --sdist 'dist/xferry-*.tar.gz' \
+            --wheelhouse "$RUNNER_TEMP/xferry-artifact-wheelhouse" \
+            --fresh-root "$RUNNER_TEMP/xferry-fresh-artifacts" \
+            --constraints "$GITHUB_WORKSPACE/constraints/ci.txt"
+          ln -s \
+            "$RUNNER_TEMP/xferry-fresh-artifacts/wheel-venv" \
+            "$RUNNER_TEMP/xferry-wheel-smoke"
+
+      - name: Static UI wheel asset check
+        run: python tools/check_static_ui_assets.py --wheel-only --wheel 'dist/xferry-*.whl'
+
+      - name: Install Chromium for browser smoke
+        run: |
+          npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
+
+      - name: Installed wheel external first-run
+        run: |
+          set -euo pipefail
+          artifacts="${RUNNER_TEMP}/browser-smoke-artifacts"
+          wheel_pid=""
+          mkdir -p "${artifacts}" "${RUNNER_TEMP}/xferry-wheel-browser-root"
+          cleanup_wheel_target() {
+            if [ -n "${wheel_pid}" ]; then
+              kill "${wheel_pid}" >/dev/null 2>&1 || true
+              wait "${wheel_pid}" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_wheel_target EXIT
+          wheel_port="$(
+            python - <<'PY'
+          import socket
+
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              print(sock.getsockname()[1])
+          PY
+          )"
+          (
+            cd "${RUNNER_TEMP}"
+            exec "${RUNNER_TEMP}/xferry-wheel-smoke/bin/xferry" \
+              run \
+              --host 127.0.0.1 \
+              --port "${wheel_port}" \
+              --dir "${RUNNER_TEMP}/xferry-wheel-browser-root" \
+              --quiet
+          ) >"${artifacts}/wheel-server.log" 2>&1 &
+          wheel_pid="$!"
+          for _ in {1..100}; do
+            if curl --noproxy '*' -fsS -X PING \
+              "http://127.0.0.1:${wheel_port}/" >/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+          if ! curl --noproxy '*' -fsS -X PING \
+            "http://127.0.0.1:${wheel_port}/" >/dev/null; then
+            cat "${artifacts}/wheel-server.log" >&2 || true
+            exit 1
+          fi
+          python tools/browser_smoke.py \
+            --mode first-run \
+            --target-url "http://127.0.0.1:${wheel_port}/" \
+            --artifacts-dir "${artifacts}/wheel-first-run"
+
+      - name: Installed wheel full browser aggregate
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/xferry-wheel-smoke/bin/python" \
+            "${GITHUB_WORKSPACE}/tools/browser_smoke.py" \
+            --installed-package \
+            --mode full \
+            --artifacts-dir "${RUNNER_TEMP}/browser-smoke-artifacts/wheel-full"
+
+      - name: Upload wheel browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: wheel-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-smoke-artifacts
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Scan pinned dependencies and generate SBOM
+        run: |
+          set -euo pipefail
+          python -m pip_audit --strict --no-deps -r constraints/ci.txt
+          python -m pip_audit \
+            --strict \
+            --no-deps \
+            -r constraints/ci.txt \
+            -f cyclonedx-json \
+            -o dist/xferry-dependency-sbom.cdx.json
+
+      - name: Capture artifact paths
+        id: artifacts
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/xferry-*.whl)"
+          sdist="$(ls dist/xferry-*.tar.gz)"
+          sbom="$(ls dist/xferry-dependency-sbom.cdx.json)"
+          {
+            echo "wheel=${wheel}"
+            echo "sdist=${sdist}"
+            echo "sbom=${sbom}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate wheel provenance attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.artifacts.outputs.wheel }}
+
+      - name: Generate sdist provenance attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.artifacts.outputs.sdist }}
+
+      - name: Generate wheel SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.artifacts.outputs.wheel }}
+          sbom-path: ${{ steps.artifacts.outputs.sbom }}
+
+      - name: Generate sdist SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.artifacts.outputs.sdist }}
+          sbom-path: ${{ steps.artifacts.outputs.sbom }}
+
+      - name: Upload verified Python distributions
+        id: upload-python-dists
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: xferry-python-dists-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload release artifacts of record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: xferry-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+  image-verify:
+    name: Build and verify local Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      docker-image-artifact-id: ${{ steps.upload-image-archive.outputs.artifact-id }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Check release source version
+        env:
+          XFERRY_RELEASE_REF: ${{ github.ref }}
+          XFERRY_RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+
+          from xferry.config import __version__
+          from xferry.management.versions import is_supported_release_version
+
+          if not is_supported_release_version(__version__):
+              raise SystemExit(f"unsupported XFerry source release line: {__version__}")
+
+          ref = os.environ["XFERRY_RELEASE_REF"]
+          ref_name = os.environ["XFERRY_RELEASE_REF_NAME"]
+          if ref.startswith("refs/tags/v"):
+              tag_version = ref_name.removeprefix("v")
+              if not is_supported_release_version(tag_version):
+                  raise SystemExit(f"unsupported or invalid release tag: {ref_name}")
+              if tag_version != __version__:
+                  raise SystemExit(
+                      f"xferry.config.__version__ ({__version__}) does not match tag {ref_name}"
+                  )
+          PY
+
+      - name: Install Chromium for image first-run
+        run: |
+          npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
+
+      - name: Build local image for lifecycle smoke
+        run: docker build --tag xferry:release-smoke .
+
+      - name: Hardened local image lifecycle smoke
+        run: |
+          python tools/docker_image_smoke.py \
+            --image xferry:release-smoke \
+            --browser-first-run \
+            --browser-artifacts-dir "${RUNNER_TEMP}/browser-smoke-artifacts/image-first-run"
+
+      - name: Archive verified Docker image
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/xferry-image-artifact"
+          mkdir -p "${artifact_dir}"
+          docker save xferry:release-smoke --output "${artifact_dir}/xferry-image.tar"
+          (
+            cd "${artifact_dir}"
+            sha256sum xferry-image.tar > xferry-image.tar.sha256
+          )
+          docker image inspect --format '{{.Id}}' xferry:release-smoke > "${artifact_dir}/xferry-image.id"
+          test -s "${artifact_dir}/xferry-image.tar"
+          test -s "${artifact_dir}/xferry-image.tar.sha256"
+          test -s "${artifact_dir}/xferry-image.id"
+
+      - name: Upload verified Docker image archive
+        id: upload-image-archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: xferry-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/xferry-image-artifact
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload image browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: image-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-smoke-artifacts
+          if-no-files-found: ignore
+          retention-days: 30
+
+  scie-verify:
+    name: Build and verify self-contained SCIE release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      scie-artifact-id: ${{ steps.upload-scie.outputs.artifact-id }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/ci.txt
+
+      - name: Check release source version
+        env:
+          XFERRY_RELEASE_REF: ${{ github.ref }}
+          XFERRY_RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+
+          from xferry.config import __version__
+          from xferry.management.versions import is_supported_release_version
+
+          if not is_supported_release_version(__version__):
+              raise SystemExit(f"unsupported XFerry source release line: {__version__}")
+
+          ref = os.environ["XFERRY_RELEASE_REF"]
+          ref_name = os.environ["XFERRY_RELEASE_REF_NAME"]
+          if ref.startswith("refs/tags/v"):
+              tag_version = ref_name.removeprefix("v")
+              if not is_supported_release_version(tag_version):
+                  raise SystemExit(f"unsupported or invalid release tag: {ref_name}")
+              if tag_version != __version__:
+                  raise SystemExit(
+                      f"xferry.config.__version__ ({__version__}) does not match tag {ref_name}"
+                  )
+          PY
+
+      - name: Install SCIE release toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install build pex==2.99.0
+
+      - name: Build deterministic SCIE release bundle
+        id: scie-bundle
+        run: python tools/build_scie_release.py --output-dir dist/scie
+
+      - name: Capture SCIE executable path
+        id: scie-artifact
+        run: |
+          set -euo pipefail
+          echo "executable=$(find dist/scie -maxdepth 1 -type f -name 'xferry-*-linux-x86_64')" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Verify SCIE release manifest and checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          bundle = Path("dist/scie")
+          manifest = json.loads((bundle / "xferry-release.json").read_text(encoding="utf-8"))
+          executable = bundle / manifest["executable"]["name"]
+          assert manifest["schema_version"] == 1
+          assert manifest["tag"] == f"v{manifest['version']}"
+          assert manifest["platform"] == "linux-x86_64"
+          assert executable.stat().st_size == manifest["executable"]["size"]
+          digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+          assert digest == manifest["executable"]["sha256"]
+          assert (bundle / "SHA256SUMS").read_text(encoding="utf-8") == (
+              f"{digest}  {executable.name}\n"
+          )
+          PY
+
+      - name: Smoke SCIE without host Python
+        run: |
+          set -euo pipefail
+          executable="$(find dist/scie -maxdepth 1 -type f -name 'xferry-*-linux-x86_64')"
+          "${executable}" run --version
+          "${executable}" --help > /dev/null
+          "${executable}" run --check-config
+
+      - name: Smoke SCIE on supported Linux bases
+        run: |
+          set -euo pipefail
+          executable="$(basename "$(find dist/scie -maxdepth 1 -type f -name 'xferry-*-linux-x86_64')")"
+          for image in ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12; do
+            docker run --rm \
+              --volume "${GITHUB_WORKSPACE}/dist/scie:/release:ro" \
+              "${image}" \
+              "/release/${executable}" run --version
+          done
+
+      - name: Create binary CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          bundle = Path("dist/scie")
+          manifest = json.loads((bundle / "xferry-release.json").read_text(encoding="utf-8"))
+          executable = manifest["executable"]
+          sbom = {
+              "bomFormat": "CycloneDX",
+              "specVersion": "1.5",
+              "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000000",
+              "version": 1,
+              "components": [{
+                  "type": "application",
+                  "name": executable["name"],
+                  "version": manifest["version"],
+                  "hashes": [{"alg": "SHA-256", "content": executable["sha256"]}],
+              }],
+          }
+          (bundle / "xferry-scie-sbom.cdx.json").write_text(
+              json.dumps(sbom, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Generate SCIE provenance attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.scie-artifact.outputs.executable }}
+
+      - name: Generate SCIE SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # actions/attest@v4
+        with:
+          subject-path: ${{ steps.scie-artifact.outputs.executable }}
+          sbom-path: dist/scie/xferry-scie-sbom.cdx.json
+
+      - name: Upload verified SCIE release assets
+        id: upload-scie
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: xferry-scie-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/scie
+          if-no-files-found: error
+          retention-days: 90
+
+  release-gate:
+    name: Shared release verification gate
+    runs-on: ubuntu-latest
+    needs: [build, image-verify, scie-verify]
+    permissions:
+      contents: read
+    outputs:
+      python-dists-artifact-id: ${{ needs.build.outputs.python-dists-artifact-id }}
+      docker-image-artifact-id: ${{ needs.image-verify.outputs.docker-image-artifact-id }}
+      scie-artifact-id: ${{ needs.scie-verify.outputs.scie-artifact-id }}
+
+    steps:
+      - name: Confirm verified release inputs
+        env:
+          PYTHON_DISTS_ARTIFACT_ID: ${{ needs.build.outputs.python-dists-artifact-id }}
+          DOCKER_IMAGE_ARTIFACT_ID: ${{ needs.image-verify.outputs.docker-image-artifact-id }}
+          SCIE_ARTIFACT_ID: ${{ needs.scie-verify.outputs.scie-artifact-id }}
+        run: |
+          set -euo pipefail
+          test -n "${PYTHON_DISTS_ARTIFACT_ID}"
+          test -n "${DOCKER_IMAGE_ARTIFACT_ID}"
+          test -n "${SCIE_ARTIFACT_ID}"
+          echo "Verified Python, Docker, and SCIE artifact identities are available."
+
+  publish-pypi:
+    name: Publish verified Python distributions to PyPI
+    runs-on: ubuntu-latest
+    needs: release-gate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download verified Python distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.release-gate.outputs.python-dists-artifact-id }}
+          path: dist
+          merge-multiple: true
+
+      - name: Validate publication payload
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          if [ "${#wheels[@]}" -ne 1 ] || [ "${#sdists[@]}" -ne 1 ]; then
+            echo "expected exactly one wheel and one sdist" >&2
+            exit 1
+          fi
+          if find dist -type f ! -name '*.whl' ! -name '*.tar.gz' -print -quit |
+            grep -q .; then
+            echo "unexpected file in PyPI publication payload" >&2
+            exit 1
+          fi
+
+      - name: Publish Python package to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # pypa/gh-action-pypi-publish@release/v1
+
+  publish-ghcr:
+    name: Publish verified release image to GHCR
+    runs-on: ubuntu-latest
+    needs: release-gate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.resolve-digest.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download verified Docker image archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.release-gate.outputs.docker-image-artifact-id }}
+          path: verified-image
+
+      - name: Verify and load the locally smoke-tested Docker image
+        run: |
+          set -euo pipefail
+          archive="verified-image/xferry-image.tar"
+          checksum="verified-image/xferry-image.tar.sha256"
+          image_id_file="verified-image/xferry-image.id"
+          test -s "${archive}"
+          test -s "${checksum}"
+          test -s "${image_id_file}"
+          (
+            cd verified-image
+            sha256sum --check "$(basename "${checksum}")"
+          )
+          expected_image_id="$(<"${image_id_file}")"
+          docker load --input "${archive}"
+          actual_image_id="$(docker image inspect --format '{{.Id}}' xferry:release-smoke)"
+          if [ "${actual_image_id}" != "${expected_image_id}" ]; then
+            echo "loaded Docker image ID does not match the verified archive" >&2
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # docker/metadata-action@v5
+        with:
+          images: ghcr.io/kgmnotes/xferry
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Push run-unique candidate image
+        id: push-candidate
+        env:
+          IMAGE: ghcr.io/kgmnotes/xferry
+        run: |
+          set -euo pipefail
+          candidate="${IMAGE}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker tag xferry:release-smoke "${candidate}"
+          docker push "${candidate}"
+          echo "candidate=${candidate}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve candidate registry digest
+        id: resolve-digest
+        env:
+          CANDIDATE: ${{ steps.push-candidate.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${CANDIDATE}" --format '{{.Digest}}')"
+          case "${digest}" in
+            sha256:*) ;;
+            *)
+              echo "candidate did not resolve to a sha256 registry digest: ${digest}" >&2
+              exit 1
+              ;;
+          esac
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke immutable registry image
+        env:
+          IMAGE: ghcr.io/kgmnotes/xferry
+          DIGEST: ${{ steps.resolve-digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "${IMAGE}@${DIGEST}"
+          python tools/docker_image_smoke.py --image "${IMAGE}@${DIGEST}"
+
+      - name: Promote verified digest to release tags
+        env:
+          IMAGE: ghcr.io/kgmnotes/xferry
+          DIGEST: ${{ steps.resolve-digest.outputs.digest }}
+          FINAL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            test -n "${tag}"
+            docker buildx imagetools create --prefer-index=false --tag "${tag}" "${IMAGE}@${DIGEST}"
+            resolved="$(docker buildx imagetools inspect "${tag}" --format '{{.Digest}}')"
+            if [ "${resolved}" != "${DIGEST}" ]; then
+              echo "${tag} does not resolve to verified digest ${DIGEST}" >&2
+              exit 1
+            fi
+          done <<< "${FINAL_TAGS}"
+
+      - name: Generate image provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/kgmnotes/xferry
+          subject-digest: ${{ steps.resolve-digest.outputs.digest }}
+          push-to-registry: true
+
+  publish-github-release:
+    name: Publish verified SCIE release assets to GitHub Releases
+    runs-on: ubuntu-latest
+    needs: release-gate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified SCIE release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.release-gate.outputs.scie-artifact-id }}
+          path: release-assets
+
+      - name: Validate verified release asset set
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          executables=(release-assets/xferry-*-linux-x86_64)
+          if [ "${#executables[@]}" -ne 1 ]; then
+            echo "expected exactly one verified Linux SCIE executable" >&2
+            exit 1
+          fi
+          assets=(
+            "${executables[@]}"
+            release-assets/install.sh
+            release-assets/SHA256SUMS
+            release-assets/xferry-release.json
+            release-assets/xferry-scie-sbom.cdx.json
+          )
+          for asset in "${assets[@]}"; do
+            test -s "${asset}"
+          done
+          allowed='xferry-[^-][^/]*-linux-x86_64|install.sh|SHA256SUMS|xferry-release.json|xferry-scie-sbom.cdx.json'
+          if find release-assets -maxdepth 1 -type f -printf '%f\n' | grep -Ev "^(${allowed})$" | grep -q .; then
+            echo "unexpected file in GitHub Release publication payload" >&2
+            exit 1
+          fi
+
+      - name: Create or update GitHub Release from verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" \
+            release-assets/xferry-*-linux-x86_64 \
+            release-assets/install.sh \
+            release-assets/SHA256SUMS \
+            release-assets/xferry-release.json \
+            release-assets/xferry-scie-sbom.cdx.json \
+            --clobber
+
+  registry-smoke:
+    name: Smoke published PyPI and GHCR artifacts
+    runs-on: ubuntu-latest
+    needs: [publish-pypi, publish-ghcr, publish-github-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the public PyPI release in a clean virtualenv
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/xferry-registry-smoke"
+          "${RUNNER_TEMP}/xferry-registry-smoke/bin/python" -m pip install \
+            --index-url https://pypi.org/simple \
+            "xferry==${GITHUB_REF_NAME#v}"
+
+      - name: Pull and smoke the immutable GHCR release image
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/kgmnotes/xferry@${{ needs.publish-ghcr.outputs.digest }}
+          python tools/docker_image_smoke.py \
+            --image ghcr.io/kgmnotes/xferry@${{ needs.publish-ghcr.outputs.digest }}

@@ -1,0 +1,265 @@
+#!/bin/sh
+set -eu
+umask 022
+
+version='@VERSION@'
+artifact_name='@EXECUTABLE_NAME@'
+artifact_size='@EXECUTABLE_SIZE@'
+artifact_sha256='@EXECUTABLE_SHA256@'
+supported_release_major='@SUPPORTED_RELEASE_MAJOR@'
+unsupported_managed_state_instructions='@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@'
+release_base_url="${XFERRY_RELEASE_BASE_URL:-https://github.com/kgmnotes/xferry/releases/download/v@VERSION@}"
+destdir="${DESTDIR:-}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'xferry installer must run as root' >&2
+  exit 3
+fi
+
+if [ "$(uname -s)" != 'Linux' ] || [ "$(uname -m)" != 'x86_64' ]; then
+  echo 'xferry supports Linux x86_64 only' >&2
+  exit 4
+fi
+
+probe_root="$destdir"
+os_release="$probe_root/etc/os-release"
+systemd_runtime="$probe_root/run/systemd/system"
+meminfo="$probe_root/proc/meminfo"
+
+if [ ! -r "$os_release" ]; then
+  echo 'xferry requires Ubuntu 22.04/24.04/26.04 or Debian 12' >&2
+  exit 4
+fi
+
+os_id="$(awk -F= '$1 == "ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "$os_release")"
+os_version="$(awk -F= '$1 == "VERSION_ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "$os_release")"
+case "$os_id:$os_version" in
+  ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12) ;;
+  *)
+    echo 'xferry requires Ubuntu 22.04/24.04/26.04 or Debian 12' >&2
+    exit 4
+    ;;
+esac
+
+if [ ! -d "$systemd_runtime" ]; then
+  echo 'xferry requires a running systemd host' >&2
+  exit 4
+fi
+
+if [ ! -r "$meminfo" ]; then
+  echo 'xferry requires at least 512 MiB RAM' >&2
+  exit 4
+fi
+mem_kib="$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo")"
+case "$mem_kib" in
+  ''|*[!0-9]*)
+    echo 'xferry could not determine host memory' >&2
+    exit 4
+    ;;
+esac
+if [ "$mem_kib" -lt 524288 ]; then
+  echo 'xferry requires at least 512 MiB RAM' >&2
+  exit 4
+fi
+
+block_unsupported_managed_state() {
+  echo "$unsupported_managed_state_instructions" >&2
+  exit 1
+}
+
+path_present() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+real_directory() {
+  [ -d "$1" ] && [ ! -L "$1" ]
+}
+
+regular_file() {
+  [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+valid_supported_version() {
+  candidate_version="$1"
+  printf '%s\n' "$candidate_version" \
+    | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    || return 1
+  [ "${candidate_version%%.*}" = "$supported_release_major" ]
+}
+
+valid_supported_release() {
+  candidate_release="$1"
+  candidate_version="$2"
+  candidate_manifest="$candidate_release/xferry-release.json"
+  candidate_executable="$candidate_release/xferry"
+  real_directory "$candidate_release" || return 1
+  regular_file "$candidate_manifest" || return 1
+  regular_file "$candidate_executable" || return 1
+  [ -x "$candidate_executable" ] || return 1
+  candidate_manifest_size="$(wc -c < "$candidate_manifest" | tr -d '[:space:]')"
+  case "$candidate_manifest_size" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$candidate_manifest_size" -gt 0 ] && [ "$candidate_manifest_size" -le 65536 ] || return 1
+  candidate_manifest_fields="$(
+    awk -v expected_version="$candidate_version" '
+      { lines[NR] = $0 }
+      END {
+        if (NR != 11) exit 1
+        if (lines[1] != "{") exit 1
+        if (lines[2] != "  \"schema_version\": 1,") exit 1
+        if (lines[3] != "  \"version\": \"" expected_version "\",") exit 1
+        if (lines[4] != "  \"tag\": \"v" expected_version "\",") exit 1
+        if (lines[5] != "  \"platform\": \"linux-x86_64\",") exit 1
+        if (lines[6] != "  \"executable\": {") exit 1
+        if (lines[7] != "    \"name\": \"xferry-" expected_version "-linux-x86_64\",") exit 1
+
+        size_prefix = "    \"size\": "
+        size_line = lines[8]
+        if (index(size_line, size_prefix) != 1) exit 1
+        if (substr(size_line, length(size_line), 1) != ",") exit 1
+        declared_size = substr(size_line, length(size_prefix) + 1, length(size_line) - length(size_prefix) - 1)
+        if (declared_size !~ /^[1-9][0-9]*$/) exit 1
+
+        sha256_prefix = "    \"sha256\": \""
+        sha256_line = lines[9]
+        if (index(sha256_line, sha256_prefix) != 1) exit 1
+        if (substr(sha256_line, length(sha256_line), 1) != "\"") exit 1
+        declared_sha256 = substr(sha256_line, length(sha256_prefix) + 1, length(sha256_line) - length(sha256_prefix) - 1)
+        if (length(declared_sha256) != 64) exit 1
+        if (declared_sha256 ~ /[^0-9a-f]/) exit 1
+
+        if (lines[10] != "  }") exit 1
+        if (lines[11] != "}") exit 1
+        print declared_size ":" declared_sha256
+      }
+    ' "$candidate_manifest"
+  )" || return 1
+  candidate_declared_size="${candidate_manifest_fields%%:*}"
+  candidate_executable_size="$(wc -c < "$candidate_executable" | tr -d '[:space:]')"
+  case "$candidate_executable_size" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$candidate_executable_size" = "$candidate_declared_size" ] || return 1
+  return 0
+}
+
+release_root="$destdir/opt/xferry"
+releases_root="$release_root/releases"
+current_link="$release_root/current"
+valid_supported_marker=false
+
+if path_present "$release_root"; then
+  real_directory "$release_root" || block_unsupported_managed_state
+  real_directory "$releases_root" || block_unsupported_managed_state
+  [ -L "$current_link" ] || block_unsupported_managed_state
+
+  release_count="$(
+    find "$releases_root" -mindepth 1 -maxdepth 1 -printf '.\n' \
+      | head -n 129 \
+      | wc -l \
+      | tr -d '[:space:]'
+  )"
+  case "$release_count" in
+    ''|*[!0-9]*) block_unsupported_managed_state ;;
+  esac
+  [ "$release_count" -gt 0 ] && [ "$release_count" -le 128 ] || block_unsupported_managed_state
+
+  current_target="$(readlink "$current_link")" || block_unsupported_managed_state
+  case "$current_target" in
+    releases/*) current_version="${current_target#releases/}" ;;
+    *) block_unsupported_managed_state ;;
+  esac
+  valid_supported_version "$current_version" || block_unsupported_managed_state
+  current_seen=false
+  for candidate_release in \
+    "$releases_root"/* \
+    "$releases_root"/.[!.]* \
+    "$releases_root"/..?*
+  do
+    path_present "$candidate_release" || continue
+    candidate_version="${candidate_release##*/}"
+    valid_supported_version "$candidate_version" || block_unsupported_managed_state
+    valid_supported_release "$candidate_release" "$candidate_version" \
+      || block_unsupported_managed_state
+    if [ "$candidate_version" = "$current_version" ]; then
+      current_seen=true
+    fi
+  done
+  [ "$current_seen" = true ] || block_unsupported_managed_state
+  valid_supported_marker=true
+fi
+
+config_file="$destdir/etc/xferry/xferry.ini"
+auth_file="$destdir/etc/xferry/auth"
+data_root="$destdir/var/lib/xferry"
+unit_file="$destdir/etc/systemd/system/xferry.service"
+cli_link="$destdir/usr/local/bin/xferry"
+
+if [ "$valid_supported_marker" = true ]; then
+  for owned_file in "$config_file" "$auth_file" "$unit_file"; do
+    if path_present "$owned_file"; then
+      regular_file "$owned_file" || block_unsupported_managed_state
+    fi
+  done
+  if path_present "$data_root"; then
+    real_directory "$data_root" || block_unsupported_managed_state
+  fi
+  if path_present "$cli_link"; then
+    [ -L "$cli_link" ] || block_unsupported_managed_state
+    [ "$(readlink "$cli_link")" = '/opt/xferry/current/xferry' ] \
+      || block_unsupported_managed_state
+  fi
+else
+  for owned_path in "$config_file" "$auth_file" "$data_root" "$unit_file" "$cli_link"; do
+    if path_present "$owned_path"; then
+      block_unsupported_managed_state
+    fi
+  done
+fi
+
+stage_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$stage_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+downloaded="$stage_dir/$artifact_name"
+curl -fsSL --retry 3 -o "$downloaded" "$release_base_url/$artifact_name"
+
+actual_size="$(wc -c < "$downloaded" | tr -d '[:space:]')"
+if [ "$actual_size" != "$artifact_size" ]; then
+  echo "xferry download has unexpected size: $actual_size" >&2
+  exit 1
+fi
+
+actual_sha256="$(sha256sum "$downloaded" | awk '{print $1}')"
+if [ "$actual_sha256" != "$artifact_sha256" ]; then
+  echo 'xferry download checksum verification failed' >&2
+  exit 1
+fi
+
+release_path="$release_root/releases/$version"
+bin_root="$destdir/usr/local/bin"
+if [ -e "$release_path" ]; then
+  echo "xferry $version is already installed" >&2
+  exit 1
+fi
+
+mkdir -p "$release_root/releases" "$bin_root"
+install_stage="$release_root/.install-$version-$$"
+mkdir "$install_stage"
+chmod 0755 "$install_stage"
+install -m 0755 "$downloaded" "$install_stage/xferry"
+cat > "$install_stage/xferry-release.json" <<'XFERRY_MANIFEST'
+@MANIFEST_JSON@
+XFERRY_MANIFEST
+chmod 0644 "$install_stage/xferry-release.json"
+mv "$install_stage" "$release_path"
+
+ln -s "releases/$version" "$release_root/.current-$version"
+mv -Tf "$release_root/.current-$version" "$release_root/current"
+ln -s '/opt/xferry/current/xferry' "$bin_root/.xferry-$version"
+mv -Tf "$bin_root/.xferry-$version" "$bin_root/xferry"
+
+echo 'XFerry installed. Next: sudo xferry setup'

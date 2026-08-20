@@ -1,0 +1,183 @@
+# Contributor/pre-release example: builds xferry:local from the current
+# checkout. It is not the verified GHCR first-user path; see README.md.
+# Cleanup with `docker compose -f examples/docker/docker-compose.yml down`
+# removes containers/network but preserves uploads, notes, and ACME state in
+# named volumes. Adding `--volumes` is destructive and deletes that data.
+#
+# Compose service profiles (`auth-tls`, `acme`) choose container topology.
+services:
+  xferry:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: xferry:local
+    container_name: xferry
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      # Self-signed TLS certificates and other temporary files need writable /tmp.
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    # Resource envelope examples for container operators. Size memory from
+    # --workers, --max-size, and --body-memory-budget; size persistent storage
+    # with Docker volume/filesystem quotas plus the app's storage quota flags.
+    # mem_limit: 768m
+    # cpus: "1.0"
+    # pids_limit: 256
+    # ulimits:
+    #   nofile:
+    #     soft: 1024
+    #     hard: 4096
+    ports:
+      # Plain HTTP is local-host only by default. The container still binds
+      # 0.0.0.0 internally so Compose networking and reverse proxies work.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - xferry-data:/data
+    # The named volume preserves the image-owned /data permissions for UID/GID
+    # 10001. If you need a host bind mount instead, create it first and make it
+    # writable by 10001:10001, then replace the volume line with:
+    #   - ./data:/data
+    # The default Compose command serves /data over plain HTTP on :8080. The
+    # Dockerfile healthcheck probes PING over plain HTTP at 127.0.0.1:8080. Use
+    # the auth-tls profile below when TLS/auth is required.
+    command:
+      - run
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --dir
+      - /data
+
+  xferry-auth-tls:
+    profiles:
+      - auth-tls
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: xferry:local
+    container_name: xferry-auth-tls
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - xferry-data:/data
+    secrets:
+      - xferry_auth
+    command:
+      - run
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8443"
+      - --dir
+      - /data
+      - --tls
+      - --auth-file
+      - /run/secrets/xferry_auth
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          python -c "import base64, ssl, sys, urllib.request as u;
+          creds = open('/run/secrets/xferry_auth', encoding='utf-8').read().strip();
+          token = base64.b64encode(creds.encode('utf-8')).decode('ascii');
+          req = u.Request('https://127.0.0.1:8443/', method='PING',
+          headers={'Authorization': 'Basic ' + token});
+          ctx = ssl._create_unverified_context();
+          sys.exit(0 if u.urlopen(req, context=ctx, timeout=2).status == 200 else 1)"
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  xferry-acme:
+    profiles:
+      - acme
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: xferry:local
+    container_name: xferry-acme
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    ports:
+      # Public port 80 must reach the HTTP-01 challenge listener.
+      # The container uses high internal ports so the non-root process does not
+      # need privileged bind capabilities.
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - xferry-data:/data
+      # Contains ACME account keys, domain private keys, and cached certs.
+      # Protect and back up this volume like certificate secret material.
+      - xferry-acme-state:/home/xferry/.xferry
+    secrets:
+      - xferry_auth
+    # Run with:
+    #   docker compose --profile acme up --build xferry-acme
+    # Requirements: a globally routable IPv4, outbound access to
+    # https://api.ipify.org unless --public-ip is set, and public port 80
+    # forwarded to this host. The xferry_auth secret is required for Basic
+    # Auth on the HTTPS service.
+    command:
+      - run
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8443"
+      - --dir
+      - /data
+      - --auth-file
+      - /run/secrets/xferry_auth
+      - --sslip
+      - --acme-http-port
+      - "8080"
+      # For dry runs before production issuance, uncomment:
+      # - --acme-staging
+      # If auto-detection sees the wrong NAT address, uncomment and set:
+      # - --public-ip
+      # - <global-ipv4>
+      # For a real domain instead of sslip.io, replace --sslip with:
+      # - --letsencrypt
+      # - --domain
+      # - files.example.com
+    # The image healthcheck probes plain HTTP on :8080. ACME/TLS/auth modes
+    # need a protocol-aware external probe or an overridden healthcheck.
+    healthcheck:
+      disable: true
+
+volumes:
+  xferry-data:
+  xferry-acme-state:
+
+secrets:
+  # Create this local file with exactly one user:password line before using the
+  # auth-tls profile. Docker Compose mounts local file-backed secrets with the
+  # source file's permissions, so it must be readable by container UID 10001.
+  # It is ignored by git; do not commit real credentials.
+  xferry_auth:
+    file: ./secrets/xferry_auth

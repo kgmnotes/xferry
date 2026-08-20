@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Testing / Coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.hypothesis/
+
+# Linting / Type-checking caches
+.ruff_cache/
+.mypy_cache/
+
+# Claude Code session state
+.remember/
+.claude/
+.codex/
+
+# Build artifacts
+site/
+
+# Environment
+.env
+.venv/
+venv/
+uv.lock
+
+# Uploads (user data)
+uploads/*
+!uploads/.gitkeep
+
+# Notes (encrypted runtime data)
+notes/*
+!notes/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots & debug artifacts
+/*.png
+
+# Playwright MCP logs
+.playwright-mcp/
+.playwright-cli/
+/output/playwright/
+
+# Runtime config
+.opsec_config.json
+
+# Agent review artifacts
+agents_review/
+
+# Local Codex stage runner
+# These files are operator-local and intentionally excluded from project pytest collection.
+tools/close_plan_stages.py
+tests/test_close_plan_stages.py
+
+# Local feature worktrees
+.worktrees/
