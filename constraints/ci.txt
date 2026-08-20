@@ -4,7 +4,7 @@
 acme==5.5.0
 ast-serialize==0.5.0
 babel==2.18.0
-backrefs==6.2
+backrefs==8.0
 bandit==1.9.4
 boolean.py==5.0
 build==1.4.3
