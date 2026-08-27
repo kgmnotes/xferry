@@ -15,8 +15,9 @@ from importlib import resources
 from pathlib import Path, PurePosixPath
 
 import pytest
-from packaging.requirements import Requirement
 from setuptools import find_packages
+
+from packaging.requirements import Requirement
 
 try:
     import tomllib
