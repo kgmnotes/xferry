@@ -675,6 +675,40 @@ def test_basic_empty_payload_returns_exact_canonical_error_envelope(
     assert not (upload_dir / "empty.txt").exists()
 
 
+def test_advanced_upload_to_deleted_smuggle_name_cannot_retain_provenance(
+    upload_server: UploadServer,
+    upload_dir: Path,
+) -> None:
+    source_path = upload_dir / "source.txt"
+    source_path.write_bytes(b"source")
+    created = upload_server.handle_smuggle(
+        make_request("SMUGGLE", "/uploads/source.txt?mode=constructor&output_format=xhtml")
+    )
+    artifact_url = _json(created)["artifact"]["url"]
+    artifact_name = Path(str(artifact_url)).name
+    assert upload_server.handle_delete(make_request("DELETE", str(artifact_url))).status_code == 200
+    with upload_server._get_handler_context().smuggle_temp.transaction() as registry:
+        registry.add(upload_dir / artifact_name)
+
+    payload = b"advanced attacker XHTML"
+    response = upload_server.handle_advanced_upload(
+        _bind_advanced_session_dispatch(
+            make_request(
+                "POST",
+                "/advanced",
+                headers={"Content-Type": "application/json"},
+                body=_canonical_json_payload(payload, name=artifact_name),
+            )
+        )
+    )
+    assert response.status_code == 201
+
+    served = upload_server.handle_get(make_request("GET", f"/uploads/{artifact_name}"))
+    assert served.headers["Content-Type"] == "application/octet-stream"
+    assert served.headers["Content-Disposition"].startswith("attachment;")
+    assert "Content-Security-Policy" not in served.headers
+
+
 def test_basic_invalid_multipart_returns_canonical_invalid_field_error(
     upload_server: UploadServer,
     upload_dir: Path,

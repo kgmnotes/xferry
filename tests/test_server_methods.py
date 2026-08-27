@@ -1764,6 +1764,68 @@ class TestServerHelpers:
         assert artifact_response.stream_cleanup is not None
         artifact_response.stream_cleanup()
 
+    def test_deleted_smuggle_name_cannot_retain_generated_provenance(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+
+        deleted = server.handle_delete(make_request("DELETE", artifact_url))
+        assert deleted.status_code == 200
+        assert not server.handler_context.smuggle_temp.contains(server.upload_dir / artifact_name)
+        with server.handler_context.smuggle_temp.transaction() as registry:
+            registry.add(server.upload_dir / artifact_name)
+
+        uploaded = server.handle_post(
+            make_request(
+                "POST",
+                "/uploads",
+                headers={"X-File-Name": artifact_name},
+                body=b"attacker-controlled XHTML",
+            )
+        )
+        assert uploaded.status_code == 201
+        response = server.handle_get(make_request("GET", f"/uploads/{artifact_name}"))
+
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
+
+    def test_cleared_smuggle_name_cannot_retain_generated_provenance(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+
+        cleared = server.handle_delete(make_request("DELETE", "/uploads?clear=true"))
+        assert cleared.status_code == 200
+        assert not server.handler_context.smuggle_temp.contains(server.upload_dir / artifact_name)
+
+        uploaded = server.handle_post(
+            make_request(
+                "POST",
+                "/uploads",
+                headers={"X-File-Name": artifact_name},
+                body=b"attacker-controlled XHTML",
+            )
+        )
+        assert uploaded.status_code == 201
+        response = server.handle_get(make_request("GET", f"/uploads/{artifact_name}"))
+
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
+
     def test_smuggle_encrypted_response_exposes_verification_password(
         self,
         server,

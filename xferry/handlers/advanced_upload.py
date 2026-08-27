@@ -266,6 +266,7 @@ class AdvancedUploadHandlersMixin(BaseHandler):
                 file_data,
             )
             safe_filename = file_path.name
+            self._get_handler_context().smuggle_temp.discard(file_path)
             diagnostic["normalized_filename"] = safe_filename
             diagnostic["collision_renamed"] = safe_filename != requested_safe_filename
             diagnostic["payload_size"] = len(file_data)

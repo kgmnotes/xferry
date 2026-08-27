@@ -372,6 +372,7 @@ class FileHandlersMixin(BaseHandler):
         try:
             deleted_name = file_path.name
             file_path.unlink()
+            self._get_handler_context().smuggle_temp.discard(file_path)
             logger.debug(f"DELETE {deleted_name}")
             return json_response(
                 {
@@ -513,6 +514,11 @@ class FileHandlersMixin(BaseHandler):
                         "reason": self._clear_failure_reason(exc),
                     }
                 )
+
+        coordinator = self._get_handler_context().smuggle_temp
+        for registered_path in coordinator.snapshot():
+            if not Path(registered_path).exists():
+                coordinator.discard(registered_path)
 
         if failures:
             return self._error_response(
@@ -759,6 +765,7 @@ class FileHandlersMixin(BaseHandler):
             )
             requested_safe_filename = safe_filename
             safe_filename = file_path.name
+            self._get_handler_context().smuggle_temp.discard(file_path)
 
             logger.debug(f"Upload: {safe_filename} ({len(payload)} bytes)")
             response = HTTPResponse(201)
