@@ -96,6 +96,14 @@ def test_direct_server_config_cannot_bypass_allowed_host_validation(tmp_path: Pa
         resolve_server_config(acme)
 
 
+def test_direct_config_rejects_non_ascii_ascii_alias_allowed_host() -> None:
+    """Catch direct config canonicalizing a Unicode alias into an ASCII authority."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    with pytest.raises(ValueError, match="invalid allowed host"):
+        resolve_server_config(ServerConfig(allowed_hosts=("ban\u212a.example",)))
+
+
 @pytest.mark.parametrize(
     "host",
     ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"],

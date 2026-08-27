@@ -12,6 +12,7 @@ from xferry.request_admission import (
     RequestAdmissionConfig,
     RequestAdmissionContext,
     RequestAdmissionPolicy,
+    parse_http_origin,
 )
 
 
@@ -185,6 +186,39 @@ def test_idna_deviation_allowed_host_is_rejected_instead_of_widened(
     """Catch an operator U-label silently becoming a distinct ASCII allowlist entry."""
     with pytest.raises(ValueError, match="invalid allowed host"):
         _policy(deviation_host)
+
+
+def test_non_ascii_ascii_alias_request_host_is_invalid() -> None:
+    """Catch Unicode canonical aliases impersonating an allowed ASCII Host."""
+    result = _policy("bank.example").admit(_request("Host: ban\u212a.example"))
+
+    assert result == AdmissionFailure(
+        status=400,
+        code="invalid_header",
+        message="Invalid Host header",
+        field="Host",
+    )
+
+
+def test_non_ascii_ascii_alias_allowed_host_is_rejected() -> None:
+    """Catch operator Unicode aliases silently widening an ASCII allowlist."""
+    with pytest.raises(ValueError, match="invalid allowed host"):
+        _policy("ban\u212a.example")
+
+
+def test_non_ascii_ascii_alias_strict_origin_is_invalid() -> None:
+    """Catch strict Origin parsing accepting a Unicode alias of an ASCII host."""
+    with pytest.raises(ValueError):
+        parse_http_origin("http://ban\u212a.example")
+
+
+def test_non_ascii_ascii_alias_cannot_prove_same_origin() -> None:
+    """Catch a Unicode alias comparing equal to the admitted ASCII authority."""
+    policy = _policy("bank.example")
+    context = policy.admit(_request("Host: bank.example"))
+    assert isinstance(context, RequestAdmissionContext)
+
+    assert policy.is_same_origin(context, "http://ban\u212a.example") is False
 
 
 _PROTECTED_FIELDS = (
@@ -463,3 +497,20 @@ def test_request_security_reprs_redact_credentials_principal_and_direct_peer() -
     assert credential not in security_repr
     assert principal not in security_repr
     assert peer not in security_repr
+
+
+def test_credentialed_origin_repr_redacts_userinfo_from_admission_and_request() -> None:
+    """Catch generated reprs exposing usernames or passwords embedded in Origin."""
+    username = "repr-user"
+    password = "repr-pass"
+    origin = f"https://{username}:{password}@example.test"
+    policy = _policy("example.test")
+    request = _request("Host: example.test", f"Origin: {origin}")
+    admitted = policy.admit(request)
+    assert isinstance(admitted, RequestAdmissionContext)
+    assert admitted.origin == origin
+    request.set_admission_context(admitted)
+
+    for rendered in (repr(admitted), repr(request.security_context)):
+        assert username not in rendered
+        assert password not in rendered

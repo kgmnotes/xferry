@@ -58,7 +58,7 @@ class RequestAdmissionContext:
 
     authority: RequestAuthority | None
     authorization: str | None = field(default=None, repr=False)
-    origin: str | None = None
+    origin: str | None = field(default=None, repr=False)
     sec_fetch_site: str | None = None
     connection: str | None = None
     upgrade: str | None = None
@@ -374,6 +374,8 @@ def _normalize_dns_host(value: str) -> str:
     if not candidate or candidate.endswith("."):
         raise ValueError("invalid DNS host")
     source = unicodedata.normalize("NFC", candidate.lower())
+    if not candidate.isascii() and source.isascii():
+        raise ValueError("invalid DNS host")
     try:
         normalized = source.encode("idna").decode("ascii").lower()
         if not source.isascii():

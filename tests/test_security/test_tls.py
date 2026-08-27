@@ -65,6 +65,12 @@ def test_normalize_domain_rejects_lossy_idna_deviation_characters(domain: str) -
         normalize_domain(domain)
 
 
+def test_normalize_domain_rejects_non_ascii_ascii_alias() -> None:
+    """Catch a Unicode canonical alias silently becoming an ASCII certificate name."""
+    with pytest.raises(ValueError, match="invalid domain"):
+        normalize_domain("ban\u212a.example")
+
+
 class TestCheckOpenSSL:
     def test_returns_bool(self):
         result = check_openssl_available()
