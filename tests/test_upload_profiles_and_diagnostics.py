@@ -22,7 +22,7 @@ from xferry.advanced_sessions import (
 )
 from xferry.handlers import HandlerMixin
 from xferry.handlers.upload_diagnostics import UploadDiagnostics, add_upload_diagnostics
-from xferry.http import HTTPRequest, error_response, json_response
+from xferry.http import HTTPRequest, HTTPResponse, error_response, json_response
 from xferry.security.crypto import compute_hmac, xor_encrypt
 from xferry.storage import UploadStorageQuotaExceeded
 
@@ -707,6 +707,93 @@ def test_advanced_upload_to_deleted_smuggle_name_cannot_retain_provenance(
     assert served.headers["Content-Type"] == "application/octet-stream"
     assert served.headers["Content-Disposition"].startswith("attachment;")
     assert "Content-Security-Policy" not in served.headers
+
+
+def test_advanced_upload_get_waits_for_stale_smuggle_provenance_to_clear(
+    upload_server: UploadServer,
+    upload_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = upload_dir / "source.txt"
+    source_path.write_bytes(b"source")
+    created = upload_server.handle_smuggle(
+        make_request("SMUGGLE", "/uploads/source.txt?mode=constructor&output_format=xhtml")
+    )
+    artifact_url = _json(created)["artifact"]["url"]
+    artifact_name = Path(str(artifact_url)).name
+    assert upload_server.handle_delete(make_request("DELETE", str(artifact_url))).status_code == 200
+    with upload_server._get_handler_context().smuggle_temp.transaction() as registry:
+        registry.add(upload_dir / artifact_name)
+
+    original_publish = upload_server._get_upload_storage().publish_bytes
+    published = threading.Event()
+    allow_return = threading.Event()
+    upload_done = threading.Event()
+    get_done = threading.Event()
+    errors: list[BaseException] = []
+    responses: dict[str, object] = {}
+
+    def publish_then_pause(*args: object, **kwargs: object) -> object:
+        result = original_publish(*args, **kwargs)
+        published.set()
+        assert allow_return.wait(timeout=1)
+        return result
+
+    monkeypatch.setattr(upload_server._get_upload_storage(), "publish_bytes", publish_then_pause)
+
+    def run_upload() -> None:
+        try:
+            responses["upload"] = upload_server.handle_advanced_upload(
+                _bind_advanced_session_dispatch(
+                    make_request(
+                        "POST",
+                        "/advanced",
+                        headers={"Content-Type": "application/json"},
+                        body=_canonical_json_payload(
+                            b"advanced attacker XHTML",
+                            name=artifact_name,
+                        ),
+                    )
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - test thread handoff
+            errors.append(exc)
+        finally:
+            upload_done.set()
+
+    def run_get() -> None:
+        try:
+            responses["served"] = upload_server.handle_get(
+                make_request("GET", f"/uploads/{artifact_name}")
+            )
+        except BaseException as exc:  # pragma: no cover - test thread handoff
+            errors.append(exc)
+        finally:
+            get_done.set()
+
+    upload_thread = threading.Thread(target=run_upload)
+    get_thread = threading.Thread(target=run_get)
+    upload_thread.start()
+    assert published.wait(timeout=1)
+    get_thread.start()
+    try:
+        assert not get_done.wait(timeout=0.2)
+    finally:
+        allow_return.set()
+        upload_thread.join(timeout=1)
+        get_thread.join(timeout=1)
+
+    assert not errors
+    assert upload_done.is_set()
+    assert get_done.is_set()
+    upload_response = responses["upload"]
+    served_response = responses["served"]
+    assert isinstance(upload_response, HTTPResponse)
+    assert isinstance(served_response, HTTPResponse)
+    assert upload_response.status_code == 201
+    assert served_response.headers["Content-Type"] == "application/octet-stream"
+    assert served_response.headers["Content-Disposition"].startswith("attachment;")
+    assert "Content-Security-Policy" not in served_response.headers
 
 
 def test_basic_invalid_multipart_returns_canonical_invalid_field_error(

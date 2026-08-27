@@ -759,13 +759,12 @@ class FileHandlersMixin(BaseHandler):
             )
 
         try:
-            file_path = self._get_upload_storage().publish_bytes(
+            file_path = self._publish_ordinary_upload(
                 self.upload_dir / safe_filename,
                 payload,
             )
             requested_safe_filename = safe_filename
             safe_filename = file_path.name
-            self._get_handler_context().smuggle_temp.discard(file_path)
 
             logger.debug(f"Upload: {safe_filename} ({len(payload)} bytes)")
             response = HTTPResponse(201)

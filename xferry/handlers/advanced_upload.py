@@ -261,12 +261,11 @@ class AdvancedUploadHandlersMixin(BaseHandler):
 
         try:
             requested_safe_filename = safe_filename
-            file_path = self._get_upload_storage().publish_bytes(
+            file_path = self._publish_ordinary_upload(
                 self.upload_dir / safe_filename,
                 file_data,
             )
             safe_filename = file_path.name
-            self._get_handler_context().smuggle_temp.discard(file_path)
             diagnostic["normalized_filename"] = safe_filename
             diagnostic["collision_renamed"] = safe_filename != requested_safe_filename
             diagnostic["payload_size"] = len(file_data)

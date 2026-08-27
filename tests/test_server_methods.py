@@ -1796,6 +1796,85 @@ class TestServerHelpers:
         assert response.headers["Content-Disposition"].startswith("attachment;")
         assert "Content-Security-Policy" not in response.headers
 
+    def test_basic_upload_get_waits_for_stale_smuggle_provenance_to_clear(
+        self,
+        temp_dir,
+        monkeypatch,
+    ):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+        assert server.handle_delete(make_request("DELETE", artifact_url)).status_code == 200
+        with server.handler_context.smuggle_temp.transaction() as registry:
+            registry.add(server.upload_dir / artifact_name)
+
+        original_publish = server._get_upload_storage().publish_bytes
+        published = threading.Event()
+        allow_return = threading.Event()
+        upload_done = threading.Event()
+        get_done = threading.Event()
+        errors: list[BaseException] = []
+        responses: dict[str, HTTPResponse] = {}
+
+        def publish_then_pause(*args, **kwargs):
+            result = original_publish(*args, **kwargs)
+            published.set()
+            assert allow_return.wait(timeout=1)
+            return result
+
+        monkeypatch.setattr(server._get_upload_storage(), "publish_bytes", publish_then_pause)
+
+        def run_upload() -> None:
+            try:
+                responses["upload"] = server.handle_post(
+                    make_request(
+                        "POST",
+                        "/uploads",
+                        headers={"X-File-Name": artifact_name},
+                        body=b"attacker-controlled XHTML",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - test thread handoff
+                errors.append(exc)
+            finally:
+                upload_done.set()
+
+        def run_get() -> None:
+            try:
+                responses["served"] = server.handle_get(
+                    make_request("GET", f"/uploads/{artifact_name}")
+                )
+            except BaseException as exc:  # pragma: no cover - test thread handoff
+                errors.append(exc)
+            finally:
+                get_done.set()
+
+        upload_thread = threading.Thread(target=run_upload)
+        get_thread = threading.Thread(target=run_get)
+        upload_thread.start()
+        assert published.wait(timeout=1)
+        get_thread.start()
+        try:
+            assert not get_done.wait(timeout=0.2)
+        finally:
+            allow_return.set()
+            upload_thread.join(timeout=1)
+            get_thread.join(timeout=1)
+
+        assert not errors
+        assert upload_done.is_set()
+        assert get_done.is_set()
+        assert responses["upload"].status_code == 201
+        assert responses["served"].headers["Content-Type"] == "application/octet-stream"
+        assert responses["served"].headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in responses["served"].headers
+
     def test_cleared_smuggle_name_cannot_retain_generated_provenance(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
         server = make_server(root_dir=str(temp_dir), quiet=True)
