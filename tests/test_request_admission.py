@@ -53,6 +53,9 @@ def _policy(
         ("HTTP/1.1", ("Host: 127.0.0.1:8080",), "127.0.0.1", 8080),
         ("HTTP/1.1", ("Host: [0:0:0:0:0:0:0:1]:443",), "::1", 443),
         ("HTTP/1.1", ("Host: b\u00fccher.example",), "xn--bcher-kva.example", None),
+        ("HTTP/1.1", ("Host: B\u00dcCHER.Example.",), "xn--bcher-kva.example", None),
+        ("HTTP/1.1", ("Host: BU\u0308CHER.Example.",), "xn--bcher-kva.example", None),
+        ("HTTP/1.1", ("Host: xn--fa-hia.example",), "xn--fa-hia.example", None),
     ],
 )
 def test_admit_canonicalizes_valid_request_authorities(
@@ -62,7 +65,13 @@ def test_admit_canonicalizes_valid_request_authorities(
     expected_port: int | None,
 ) -> None:
     """Catch rejecting valid HTTP/1.0 omission or canonical authority aliases."""
-    policy = _policy("localhost", "127.0.0.1", "[::1]", "xn--bcher-kva.example")
+    policy = _policy(
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "xn--bcher-kva.example",
+        "xn--fa-hia.example",
+    )
 
     result = policy.admit(_request(*headers, version=version))
 
@@ -141,6 +150,41 @@ def test_admit_distinguishes_disallowed_valid_host_from_invalid_header() -> None
         message="Misdirected Request",
         field="Host",
     )
+
+
+@pytest.mark.parametrize(
+    ("deviation_host", "mapped_ascii_host"),
+    [
+        ("fa\u00df.example", "fass.example"),
+        ("\u03c2.example", "xn--4xa.example"),
+        ("soft\u00adhyphen.example", "softhyphen.example"),
+    ],
+)
+def test_idna_deviation_request_host_is_invalid_instead_of_mapped(
+    deviation_host: str,
+    mapped_ascii_host: str,
+) -> None:
+    """Catch lossy IDNA-2003 mappings impersonating an allowed ASCII authority."""
+    result = _policy(mapped_ascii_host).admit(_request(f"Host: {deviation_host}"))
+
+    assert result == AdmissionFailure(
+        status=400,
+        code="invalid_header",
+        message="Invalid Host header",
+        field="Host",
+    )
+
+
+@pytest.mark.parametrize(
+    "deviation_host",
+    ["fa\u00df.example", "\u03c2.example", "soft\u00adhyphen.example"],
+)
+def test_idna_deviation_allowed_host_is_rejected_instead_of_widened(
+    deviation_host: str,
+) -> None:
+    """Catch an operator U-label silently becoming a distinct ASCII allowlist entry."""
+    with pytest.raises(ValueError, match="invalid allowed host"):
+        _policy(deviation_host)
 
 
 _PROTECTED_FIELDS = (
@@ -342,6 +386,7 @@ def test_policy_accepts_bare_or_bracketed_ipv6_config_and_canonicalizes_it() -> 
     [
         (False, "LOCALHOST.", None, "http://localhost", True),
         (False, "localhost", 80, "http://LOCALHOST.:80/", True),
+        (False, "127.0.0.1", 8080, "http://127.0.0.1:8080/", True),
         (True, "xn--bcher-kva.example", None, "https://b\u00fccher.example:443", True),
         (True, "::1", 8443, "https://[0:0:0:0:0:0:0:1]:8443/", True),
         (True, "example.test", None, "http://example.test", False),
@@ -368,6 +413,26 @@ def test_same_origin_compares_effective_scheme_canonical_host_and_port(
     assert policy.is_same_origin(context, origin) is expected
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://exam\tple.test",
+        "http://example.test?",
+        "http://example.test#",
+        "http://example.test/?",
+        "http://example.test/#",
+        "http://example.test\x1f",
+    ],
+)
+def test_same_origin_rejects_lossy_raw_origin_representations(origin: str) -> None:
+    """Catch urlsplit deleting security-significant raw bytes or empty delimiters."""
+    policy = _policy("example.test")
+    context = policy.admit(_request("Host: example.test"))
+    assert isinstance(context, RequestAdmissionContext)
+
+    assert policy.is_same_origin(context, origin) is False
+
+
 def test_admitted_types_are_immutable() -> None:
     """Catch downstream code mutating trusted authority facts after admission."""
     result = _policy("example.test").admit(_request("Host: example.test"))
@@ -376,3 +441,25 @@ def test_admitted_types_are_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         result.authority.host = "attacker.example"  # type: ignore[misc]
+
+
+def test_request_security_reprs_redact_credentials_principal_and_direct_peer() -> None:
+    """Catch generated dataclass reprs exposing secrets or high-cardinality identity data."""
+    credential = "Basic repr-credential-sentinel"
+    principal = "repr-principal-sentinel"
+    peer = "198.51.100.237"
+    policy = _policy("example.test")
+    request = _request("Host: example.test", f"Authorization: {credential}")
+    request.attach_direct_peer((peer, 54321))
+    admitted = policy.admit(request)
+    assert isinstance(admitted, RequestAdmissionContext)
+    request.set_admission_context(admitted)
+    request.set_verified_principal(principal)
+
+    admission_repr = repr(admitted)
+    security_repr = repr(request.security_context)
+
+    assert credential not in admission_repr
+    assert credential not in security_repr
+    assert principal not in security_repr
+    assert peer not in security_repr

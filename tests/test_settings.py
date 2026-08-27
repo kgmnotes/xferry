@@ -228,10 +228,16 @@ def test_public_direct_secure_sslip_validates() -> None:
     assert config.limits.body_memory_budget == 512 * 1024 * 1024
 
 
-def test_public_direct_wildcard_file_certificates_require_explicit_allowed_hosts() -> None:
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"],
+)
+def test_public_direct_wildcard_file_certificates_require_explicit_allowed_hosts(
+    host: str,
+) -> None:
     """Catch wildcard public-direct deriving certificate authority from no domain."""
     settings = ServerSettings(
-        host="0.0.0.0",
+        host=host,
         port=443,
         public_direct=True,
         cert_file="/etc/xferry/cert.pem",

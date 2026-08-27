@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse
 
 from ..advanced_sessions import AdvancedSessionDispatch
@@ -23,8 +23,8 @@ _REQUEST_TARGET_INVALID_RE = re.compile(r"[\x00-\x20\x7f]")
 class RequestSecurityContext:
     """Security facts bound to one request by the server pipeline."""
 
-    direct_peer: tuple[str, int] | None = None
-    verified_principal: str | None = None
+    direct_peer: tuple[str, int] | None = field(default=None, repr=False)
+    verified_principal: str | None = field(default=None, repr=False)
     admission: RequestAdmissionContext | None = None
 
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -56,7 +57,7 @@ class RequestAdmissionContext:
     """Trusted singleton security values produced by one admission decision."""
 
     authority: RequestAuthority | None
-    authorization: str | None = None
+    authorization: str | None = field(default=None, repr=False)
     origin: str | None = None
     sec_fetch_site: str | None = None
     connection: str | None = None
@@ -112,7 +113,11 @@ class RequestAdmissionPolicy:
 
         bind_host = _canonical_config_host(config.bind_host, field="bind host", allow_wildcard=True)
         if not explicit:
-            if bind_host in {"0.0.0.0", "::", "localhost"} or _is_loopback_ip(bind_host):
+            if (
+                is_unspecified_host(bind_host)
+                or bind_host == "localhost"
+                or _is_loopback_ip(bind_host)
+            ):
                 allow_loopback = True
             else:
                 allowed.add(bind_host)
@@ -190,25 +195,14 @@ class RequestAdmissionPolicy:
         if authority is None:
             return False
         try:
-            parsed = urlsplit(origin)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.netloc
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.path not in {"", "/"}
-                or parsed.query
-                or parsed.fragment
-            ):
-                return False
-            origin_authority = _parse_request_authority(parsed.netloc)
+            origin_scheme, origin_authority = parse_http_origin(origin)
         except (ValueError, UnicodeError):
             return False
 
         return (
-            parsed.scheme == self.scheme
+            origin_scheme == self.scheme
             and origin_authority.host == authority.host
-            and origin_authority.effective_port(parsed.scheme)
+            and origin_authority.effective_port(origin_scheme)
             == authority.effective_port(self.scheme)
         )
 
@@ -221,6 +215,40 @@ class RequestAdmissionPolicy:
 def normalize_allowed_hosts(values: tuple[str, ...]) -> tuple[str, ...]:
     """Return de-duplicated canonical configured Host/IP entries."""
     return _normalize_allowed_hosts(values)
+
+
+def is_unspecified_host(value: str) -> bool:
+    """Return whether *value* is an IPv4/IPv6 unspecified-address spelling."""
+    candidate = value.strip()
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = candidate[1:-1]
+    try:
+        return ipaddress.ip_address(candidate).is_unspecified
+    except ValueError:
+        return False
+
+
+def parse_http_origin(value: str) -> tuple[str, RequestAuthority]:
+    """Parse one lossless HTTP Origin into its scheme and canonical authority."""
+    if (
+        not value
+        or "?" in value
+        or "#" in value
+        or any(ord(char) < 0x20 or ord(char) == 0x7F or char.isspace() for char in value)
+    ):
+        raise ValueError("invalid HTTP origin")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("invalid HTTP origin")
+    return parsed.scheme, _parse_request_authority(parsed.netloc)
 
 
 def _normalize_allowed_hosts(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -342,10 +370,19 @@ def _is_loopback_ip(host: str) -> bool:
 
 
 def _normalize_dns_host(value: str) -> str:
-    if value.startswith("*.") or value.endswith(".."):
+    candidate = value[:-1] if value.endswith(".") else value
+    if not candidate or candidate.endswith("."):
         raise ValueError("invalid DNS host")
+    source = unicodedata.normalize("NFC", candidate.lower())
     try:
-        normalized = value.rstrip(".").encode("idna").decode("ascii").lower()
+        normalized = source.encode("idna").decode("ascii").lower()
+        if not source.isascii():
+            round_trip = unicodedata.normalize(
+                "NFC",
+                normalized.encode("ascii").decode("idna").lower(),
+            )
+            if round_trip != source:
+                raise ValueError("invalid DNS host")
     except UnicodeError as exc:
         raise ValueError("invalid DNS host") from exc
     if not normalized or len(normalized) > 253 or _DNS_HOST_RE.fullmatch(normalized) is None:
@@ -362,5 +399,7 @@ __all__ = [
     "RequestAdmissionContext",
     "RequestAdmissionPolicy",
     "RequestAuthority",
+    "is_unspecified_host",
     "normalize_allowed_hosts",
+    "parse_http_origin",
 ]

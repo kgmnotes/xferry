@@ -45,6 +45,26 @@ def test_normalize_domain_returns_lowercase_idna_without_trailing_dot() -> None:
     assert normalize_domain("BÜCHER.Example.") == "xn--bcher-kva.example"
 
 
+def test_normalize_domain_preserves_nfc_equivalent_round_tripping_idn() -> None:
+    """Catch strict deviation handling accidentally rejecting canonical Unicode equivalents."""
+    assert normalize_domain("BU\u0308CHER.Example.") == "xn--bcher-kva.example"
+
+
+def test_normalize_domain_preserves_ascii_alabel_exactly() -> None:
+    """Catch Unicode deviation rejection accidentally decoding valid ASCII A-labels."""
+    assert normalize_domain("XN--FA-HIA.Example.") == "xn--fa-hia.example"
+
+
+@pytest.mark.parametrize(
+    "domain",
+    ["fa\u00df.example", "\u03c2.example", "soft\u00adhyphen.example"],
+)
+def test_normalize_domain_rejects_lossy_idna_deviation_characters(domain: str) -> None:
+    """Catch certificate names silently mapping to a different lowercase NFC U-label."""
+    with pytest.raises(ValueError, match="invalid domain"):
+        normalize_domain(domain)
+
+
 class TestCheckOpenSSL:
     def test_returns_bool(self):
         result = check_openssl_available()

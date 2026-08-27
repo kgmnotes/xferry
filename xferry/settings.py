@@ -20,7 +20,7 @@ from .http.io import (
     DEFAULT_MAX_HEADER_SIZE,
 )
 from .notepad_service import DEFAULT_MAX_NOTE_STORAGE_BYTES, DEFAULT_MAX_NOTES
-from .request_admission import normalize_allowed_hosts
+from .request_admission import is_unspecified_host, normalize_allowed_hosts
 from .runtime_posture import (
     BODY_ADMISSION_BUDGET_NOTE,
     WEBSOCKET_WORKER_NOTE,
@@ -237,7 +237,7 @@ class ServerSettings:
             raise SettingsError(
                 "public_direct disables plugins unless plugins_allow_public_direct is true"
             )
-        wildcard_bind = self.host.strip().lower().strip("[]") in {"0.0.0.0", "::"}
+        wildcard_bind = is_unspecified_host(self.host)
         if (
             wildcard_bind
             and self.cert_file

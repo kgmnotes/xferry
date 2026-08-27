@@ -12,7 +12,6 @@ import datetime as dt
 import hashlib
 import ipaddress
 import os
-import re
 import subprocess
 import tempfile
 import urllib.error
@@ -31,6 +30,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from ..request_admission import _normalize_dns_host
+
 if TYPE_CHECKING:
     from acme import client, messages, standalone
 
@@ -41,7 +42,6 @@ DEFAULT_ACME_HTTP_PORT = 80
 DEFAULT_RENEWAL_DAYS = 30
 DEFAULT_PUBLIC_IP_URL = "https://api.ipify.org"
 
-_DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$")
 _WILDCARD_BIND_HOST = "0.0.0.0"  # nosec B104
 
 
@@ -104,20 +104,9 @@ def normalize_domain(domain: str) -> str:
     if domain.startswith("*."):
         raise ValueError("wildcard certificates require DNS-01 and are not supported")
     try:
-        normalized = domain.rstrip(".").encode("idna").decode("ascii").lower()
-    except UnicodeError as err:
+        return _normalize_dns_host(domain)
+    except ValueError as err:
         raise ValueError(f"invalid domain name: {domain!r}") from err
-
-    if not normalized or len(normalized) > 253 or not _DOMAIN_RE.fullmatch(normalized):
-        raise ValueError(f"invalid domain name: {domain!r}")
-
-    labels = normalized.split(".")
-    for label in labels:
-        if not label or len(label) > 63:
-            raise ValueError(f"invalid domain label in {domain!r}")
-        if label.startswith("-") or label.endswith("-"):
-            raise ValueError(f"invalid domain label in {domain!r}")
-    return normalized
 
 
 def _directory_slug(directory_url: str) -> str:

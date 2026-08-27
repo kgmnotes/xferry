@@ -96,6 +96,74 @@ def test_direct_server_config_cannot_bypass_allowed_host_validation(tmp_path: Pa
         resolve_server_config(acme)
 
 
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"],
+)
+def test_direct_public_config_classifies_every_unspecified_bind_form(
+    host: str,
+    tmp_path: Path,
+) -> None:
+    """Catch equivalent wildcard IP spellings bypassing explicit file-cert authorities."""
+    from xferry.server_config import (
+        AuthConfig,
+        ServerConfig,
+        ServerLimits,
+        TLSConfig,
+        resolve_server_config,
+    )
+
+    config = ServerConfig(
+        host=host,
+        port=8443,
+        root_dir=tmp_path,
+        limits=ServerLimits(body_memory_budget=1024, upload_storage_limit=1024),
+        tls=TLSConfig(cert_file=tmp_path / "cert.pem", key_file=tmp_path / "key.pem"),
+        auth=AuthConfig(auth_file=tmp_path / "auth.txt"),
+        public_direct=True,
+    )
+
+    with pytest.raises(ValueError, match="explicit allowed_hosts"):
+        resolve_server_config(config)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://exam\tple.test",
+        "http://example.test?",
+        "http://example.test#",
+        "http://example.test/?",
+        "http://example.test/#",
+        "http://example.test\x1f",
+    ],
+)
+def test_cors_origin_rejects_lossy_raw_urlsplit_representations(origin: str) -> None:
+    """Catch config validation accepting an origin after parser data loss."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    with pytest.raises(ValueError, match="invalid CORS origin"):
+        resolve_server_config(ServerConfig(cors_origin=origin))
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://BÜCHER.example./",
+        "http://192.0.2.10:8080/",
+        "http://[2001:db8::1]:8080/",
+    ],
+)
+def test_cors_origin_strict_parser_preserves_supported_authorities(origin: str) -> None:
+    """Catch strict raw validation rejecting legitimate DNS, IPv4, or bracketed IPv6."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    config = resolve_server_config(ServerConfig(cors_origin=origin))
+
+    assert config.cors_origin == origin
+    assert config.cors_origins == (origin,)
+
+
 def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_derived_limits(
     tmp_path: Path,
 ) -> None:
