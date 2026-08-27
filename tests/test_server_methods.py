@@ -1729,6 +1729,41 @@ class TestServerHelpers:
         assert ordinary_response.headers["Content-Type"] == "application/octet-stream"
         assert "Content-Security-Policy" not in ordinary_response.headers
 
+    @pytest.mark.parametrize("extension", ["xhtml", "xht", "xhtm"])
+    def test_ordinary_xhtml_uploads_are_forced_to_download(self, server, extension):
+        uploaded = server.upload_dir / f"ordinary.{extension}"
+        uploaded.write_text("<html><script>window.executed=true</script></html>", encoding="utf-8")
+
+        response = server.handle_get(make_request("GET", f"/uploads/{uploaded.name}"))
+
+        assert response.status_code == 200
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
+
+    def test_generated_xhtml_smuggle_artifact_keeps_active_content_contract(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+
+        smuggle_response = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(smuggle_response.body)["artifact"]["url"]
+        artifact_response = server.handle_get(make_request("GET", artifact_url))
+
+        assert artifact_response.status_code == 200
+        assert artifact_response.headers["Content-Type"] == "application/xhtml+xml; charset=utf-8"
+        assert artifact_response.headers["Content-Security-Policy"] == (
+            "default-src 'none'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'unsafe-inline' data:; img-src data:; connect-src blob:; "
+            "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'"
+        )
+        assert artifact_response.stream_path is not None
+        assert artifact_response.stream_cleanup is not None
+        artifact_response.stream_cleanup()
+
     def test_smuggle_encrypted_response_exposes_verification_password(
         self,
         server,

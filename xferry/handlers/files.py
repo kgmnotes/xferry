@@ -266,7 +266,12 @@ class FileHandlersMixin(BaseHandler):
     @staticmethod
     def _should_force_download(content_type: str) -> bool:
         """Return True for browser-executable uploaded content."""
-        return content_type.startswith("text/html") or content_type == "image/svg+xml"
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        return (
+            media_type.startswith("text/html")
+            or media_type == "image/svg+xml"
+            or media_type == "application/xhtml+xml"
+        )
 
     @staticmethod
     def _safe_download_filename(filename: str) -> str:
