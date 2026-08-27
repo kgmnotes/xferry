@@ -313,6 +313,7 @@ def test_rendered_public_config_loads_with_finite_security_limits(tmp_path: Path
     assert settings.public_direct is True
     assert settings.sslip is True
     assert settings.auth_file == "/etc/xferry/auth"
+    assert settings.allowed_hosts == ("8-8-8-8.sslip.io",)
     assert settings.port == 443
     assert settings.upload_storage_limit_mb == 4096
     assert settings.body_memory_budget_mb == 256
@@ -331,6 +332,7 @@ def test_rendered_private_config_loads_with_the_same_auth_and_quota_boundary(
     assert settings.host == "127.0.0.1"
     assert settings.port == 8080
     assert settings.auth_file == "/etc/xferry/auth"
+    assert settings.allowed_hosts == ("127.0.0.1",)
     assert settings.upload_storage_limit_mb == 4096
     assert settings.body_memory_budget_mb == 256
     assert settings.effective_tls_enabled() is False
@@ -349,6 +351,7 @@ def test_rendered_domain_config_loads_with_acme_domain_tls(tmp_path: Path) -> No
 
     assert settings.letsencrypt is True
     assert settings.domain == "files.example.com"
+    assert settings.allowed_hosts == ("files.example.com",)
     assert settings.sslip is False
 
 

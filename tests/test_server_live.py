@@ -192,6 +192,121 @@ class _TimeoutAfterHeadersSocket:
 
 
 class TestLiveRequestHandling:
+    def test_trusted_admission_rejects_forged_and_ambiguous_requests_on_socket(
+        self,
+        temp_dir: Path,
+    ) -> None:
+        """Catch the real listener routing forged/duplicate authorities into handlers."""
+        with _LiveServer(temp_dir) as live:
+            requests = (
+                (
+                    "PING / HTTP/1.1\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "PING / HTTP/1.1\r\nHost:   \r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "PING / HTTP/1.1\r\nHost: example.test:0\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"PING / HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    " folded\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "POST /forged.txt HTTP/1.1\r\n"
+                    "Host: attacker.example\r\n"
+                    "Origin: http://attacker.example\r\n"
+                    "Content-Length: 6\r\n"
+                    "Connection: close\r\n\r\n"
+                    "forged",
+                    421,
+                    "misdirected_request",
+                ),
+                (
+                    f"PING / HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{live.port}\r\n"
+                    "Authorization: Basic bad\r\n"
+                    "Authorization: Basic Zm9vOmJhcg==\r\n"
+                    "Connection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"POST /origin.txt HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    f"Origin: http://127.0.0.1:{live.port}\r\n"
+                    f"Origin: http://127.0.0.1:{live.port}\r\n"
+                    "Content-Length: 6\r\nConnection: close\r\n\r\norigin",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"GET /notes/ws HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"OPTIONS / HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    "Access-Control-Request-Method: STEALTH\r\n"
+                    "Access-Control-Request-Method: STEALTH\r\n"
+                    "Connection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+            )
+            for raw_request, expected_status, expected_code in requests:
+                with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                    sock.settimeout(2.0)
+                    sock.sendall(raw_request.encode("ascii"))
+                    status, headers, body = _recv_http_response(sock)
+
+                assert status.startswith(f"HTTP/1.1 {expected_status}")
+                assert headers["connection"] == "close"
+                assert headers["cache-control"] == "no-store"
+                assert "access-control-allow-origin" not in headers
+                assert "www-authenticate" not in headers
+                assert json.loads(body)["error"]["code"] == expected_code
+
+            with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                sock.settimeout(2.0)
+                sock.sendall(b"PING / HTTP/1.0\r\n\r\n")
+                status, headers, body = _recv_http_response(sock)
+
+            assert status.startswith("HTTP/1.1 200")
+            assert headers["connection"] == "close"
+            assert json.loads(body)["health"] == "ready"
+
+        assert not (temp_dir / "uploads" / "forged.txt").exists()
+        assert not (temp_dir / "uploads" / "origin.txt").exists()
+
+        with _LiveServer(temp_dir, cors_origin="http://attacker.example") as live:
+            with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                sock.settimeout(2.0)
+                sock.sendall(
+                    b"POST /cors-forged.txt HTTP/1.1\r\n"
+                    b"Host: attacker.example\r\n"
+                    b"Origin: http://attacker.example\r\n"
+                    b"Content-Length: 6\r\n\r\nforged"
+                )
+                status, headers, body = _recv_http_response(sock)
+
+            assert status.startswith("HTTP/1.1 421")
+            assert "access-control-allow-origin" not in headers
+            assert json.loads(body)["error"]["code"] == "misdirected_request"
+
+        assert not (temp_dir / "uploads" / "cors-forged.txt").exists()
+
     def test_info_and_fetch_use_canonical_contracts_over_live_socket(
         self,
         temp_dir: Path,

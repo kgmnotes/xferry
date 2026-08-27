@@ -61,6 +61,7 @@ _NORMAL_HELP_DESTS = frozenset(
         "tls",
         "auth",
         "auth_file",
+        "allowed_host",
     }
 )
 
@@ -477,6 +478,13 @@ value remains authoritative. Use --help-all for the exhaustive option list.
         metavar="FILE",
         help="Read Basic Auth credentials from one user:pass line in FILE",
     )
+    auth.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        metavar="HOST",
+        help="Admit this Host/IP (repeatable; replaces file/env list)",
+    )
 
     if not show_all_help:
         for action in parser._actions:
@@ -597,6 +605,7 @@ _CLI_TO_SETTINGS: dict[str, str] = {
     "acme_http_port": "acme_http_port",
     "auth": "auth",
     "auth_file": "auth_file",
+    "allowed_host": "allowed_hosts",
 }
 
 
@@ -609,7 +618,8 @@ def _cli_values_from_args(
     for dest, field_name in _CLI_TO_SETTINGS.items():
         if dest not in explicit_dests:
             continue
-        values[field_name] = getattr(args, dest)
+        value = getattr(args, dest)
+        values[field_name] = tuple(value) if dest == "allowed_host" else value
     return values
 
 

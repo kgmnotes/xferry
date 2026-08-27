@@ -13,6 +13,8 @@ workers = 10
 
 [security]
 auth_file = /etc/xferry/auth
+# Auto-mode admits loopback plus the final sslip certificate hostname.
+allowed_hosts =
 
 [tls]
 # Runtime TLS becomes active through sslip/letsencrypt/cert+key even if

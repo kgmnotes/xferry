@@ -65,7 +65,7 @@ class WebSocketRuntime:
 
     def handle_session(self, sock: socket.socket, request: HTTPRequest) -> None:
         """Perform the handshake and frame loop for one already-admitted socket."""
-        ws_key = request.headers.get("sec-websocket-key", "")
+        ws_key = request.admission_context.websocket_key or ""
         try:
             sock.sendall(build_ws_handshake_response(ws_key))
         except Exception:

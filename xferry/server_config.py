@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from .extensions import PluginSpec
 from .features import registry_methods
+from .request_admission import normalize_allowed_hosts
 from .runtime_posture import RuntimePosture
 
 DEFAULT_STREAM_SEND_IDLE_TIMEOUT = 5.0
@@ -112,6 +113,7 @@ class ServerConfig:
     plugins: PluginConfig = field(default_factory=PluginConfig)
     cors_origin: str | None = None
     cors_origins: tuple[str, ...] = ()
+    allowed_hosts: tuple[str, ...] | None = None
     public_direct: bool = False
     runtime_posture: RuntimePosture | None = None
 
@@ -184,7 +186,13 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
 
     tls = _resolve_tls(config.tls)
     cors_origin, cors_origins = _resolve_cors(config.cors_origin, config.cors_origins)
+    allowed_hosts = normalize_allowed_hosts(tuple(config.allowed_hosts or ()))
     plugins = _resolve_plugins(config.plugins)
+
+    if tls.domain and allowed_hosts:
+        certificate_domain = normalize_allowed_hosts((tls.domain,))[0]
+        if certificate_domain not in allowed_hosts:
+            raise ValueError("certificate domain must be included in allowed_hosts")
 
     if config.public_direct:
         if not (tls.cert_file and tls.key_file) and not (tls.letsencrypt or tls.sslip):
@@ -210,6 +218,11 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
             raise ValueError(
                 "public_direct disables plugins unless plugins_allow_public_direct is true"
             )
+        wildcard_bind = host.strip().lower().strip("[]") in {"0.0.0.0", "::"}
+        if wildcard_bind and tls.cert_file and tls.key_file and not allowed_hosts:
+            raise ValueError(
+                "public_direct wildcard bind with certificate files requires explicit allowed_hosts"
+            )
 
     return replace(
         config,
@@ -222,6 +235,7 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
         plugins=plugins,
         cors_origin=cors_origin,
         cors_origins=cors_origins,
+        allowed_hosts=allowed_hosts,
     )
 
 

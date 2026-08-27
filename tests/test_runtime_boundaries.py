@@ -11,7 +11,7 @@ import pytest
 
 from tests.conftest import make_request
 from xferry.metrics import MetricsCollector
-from xferry.websocket import WS_CLOSE, WS_TEXT, parse_ws_frame
+from xferry.websocket import WS_CLOSE, WS_TEXT, build_ws_handshake_response, parse_ws_frame
 
 
 class _TLSStub:
@@ -260,6 +260,24 @@ def test_websocket_failed_handshake_releases_admission_once() -> None:
     assert metrics.snapshot()["websocket"]["active"] == 0
     assert metrics.snapshot()["websocket"]["closed"] == 1
     assert sock.sent == []
+
+
+def test_websocket_handshake_uses_the_admitted_key_not_the_legacy_last_value_map() -> None:
+    """Catch the final accept-key sink rereading mutable last-value headers."""
+    metrics = MetricsCollector()
+    runtime = _websocket_runtime(metrics=metrics, handle_message=lambda _sock, _data: None)
+    sock = _ClientSocketStub([b""])
+    admitted_key = "dGhlIHNhbXBsZSBub25jZQ=="
+    request = make_request(
+        "GET",
+        "/notes/ws",
+        headers={"Sec-WebSocket-Key": admitted_key},
+    )
+    request.headers["sec-websocket-key"] = "d3JvbmctbGFzdC12YWx1ZQ=="
+
+    assert runtime.upgrade(sock, request) is True
+
+    assert sock.sent[0] == build_ws_handshake_response(admitted_key)
 
 
 @pytest.mark.parametrize("failure_kind", ["handler", "frame"])

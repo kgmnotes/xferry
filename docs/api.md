@@ -141,6 +141,43 @@ The receive layer enforces protocol framing before handler dispatch:
   response is built, except aggregate body-memory budget exhaustion, which
   returns a JSON `503`. Rejections are counted under `metrics.receive`.
 
+### Trusted request admission
+
+After parsing and direct-peer attachment, but before keep-alive,
+authentication, route selection, Advanced sessions, WebSocket handling, CORS,
+or dispatch, XFerry admits the request authority and security-sensitive
+singleton fields.
+
+- HTTP/1.1 and every other parser-accepted version except exact HTTP/1.0 require
+  exactly one nonempty valid `Host`. HTTP/1.0 may omit it; a present value uses
+  the same strict grammar.
+- DNS/IDNA case and a terminal root dot, IPv4, and bracketed IPv6 are
+  canonicalized. A request Host may include a decimal port from 1 through
+  65535. Configured allowed hosts are host/IP values only, without ports.
+- Duplicate occurrences, including identical values, or obs-fold are rejected for `Host`,
+  `Authorization`, `Origin`, `Sec-Fetch-Site`, `Connection`, `Upgrade`,
+  `Sec-WebSocket-Key`, `Sec-WebSocket-Version`,
+  `Access-Control-Request-Method`, and `Access-Control-Request-Headers`. A
+  single comma-list value remains valid for fields such as `Connection` and
+  preflight requested headers.
+- Invalid or ambiguous protected fields return closed `400 invalid_header`.
+  A syntactically valid but unapproved Host returns closed
+  `421 misdirected_request`. Both responses use `Cache-Control: no-store`, emit
+  no CORS or authentication challenge, and occur before auth/session/handler
+  side effects.
+- Same-origin compares the effective server TLS scheme, canonical admitted
+  host, and effective port. An exact CORS origin can authorize its documented
+  browser behavior only after Host admission; it never expands allowed hosts.
+
+Configure authorities with repeatable `--allowed-host HOST`,
+`XFERRY_ALLOWED_HOSTS`, or `[security] allowed_hosts`. INI and environment
+lists use ASCII whitespace, never commas. Each higher-precedence layer replaces
+the lower list as a whole. Empty/omitted selects auto-mode: loopback binds add
+`localhost` and loopback IP forms, wildcard binds admit only loopback forms,
+and concrete binds admit their canonical host. The active ACME/domain/sslip
+certificate name is included before listener bind. Explicit entries reject
+wildcards, CIDRs, URLs, schemes, ports, userinfo, paths, queries, and fragments.
+
 ---
 
 ## GET
@@ -1851,7 +1888,8 @@ same-origin or explicitly allowed by `--cors-origin`. Protected methods are
 `POST`, `PUT`, `PATCH`, `DELETE`, `NONE`, `NOTE`, `SMUGGLE`, plus unknown
 methods that carry advanced-upload data.
 
-Requests with an `Origin` header must match the request host/scheme or a
+Requests with an `Origin` header must match the admitted canonical request
+host/effective port and active server scheme or a
 configured CORS origin. `Sec-Fetch-Site: cross-site` and `same-site` requests
 without `Origin` are rejected; with `Origin`, they require a configured CORS
 origin. Non-browser API clients that omit both `Origin` and `Sec-Fetch-Site`

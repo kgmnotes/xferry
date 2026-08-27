@@ -25,6 +25,35 @@ from xferry.websocket import WS_CLOSE, WS_PING, WS_PONG, WS_TEXT, parse_ws_frame
 EXPECTED_CORE_METHODS = list(registry_methods())
 
 
+def test_tls_setup_finalizes_sslip_admission_policy_before_listener_bind(
+    temp_dir,
+    monkeypatch,
+):
+    """Catch the runtime certificate hostname remaining disallowed after TLS setup."""
+    from xferry.request_admission import RequestAdmissionContext
+
+    server = make_server(
+        root_dir=str(temp_dir),
+        quiet=True,
+        host="0.0.0.0",
+        sslip=True,
+        allowed_hosts=(),
+    )
+
+    def resolve_sslip() -> None:
+        server._tls.domain = "203-0-113-10.sslip.io"
+
+    monkeypatch.setattr(server._tls, "setup", resolve_sslip)
+
+    server._setup_tls()
+
+    request = HTTPRequest(b"PING / HTTP/1.1\r\nHost: 203-0-113-10.sslip.io\r\n\r\n")
+    assert isinstance(
+        server.request_admission_policy.admit(request),
+        RequestAdmissionContext,
+    )
+
+
 class ServerStub(HandlerMixin):
     """Minimal server with auth and dispatch for unit testing."""
 
@@ -187,6 +216,23 @@ class TestAuthenticateRequest:
                 "details": {},
             }
         }
+
+    def test_real_server_authentication_consumes_admitted_authorization(self, temp_dir):
+        """Catch Basic Auth falling back to the mutable last-value compatibility map."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
+        creds = base64.b64encode(b"admin:secret123").decode("ascii")
+        request = make_request(
+            "GET",
+            "/",
+            headers={"Authorization": f"Basic {creds}"},
+        )
+        request.headers["authorization"] = "Basic Zm9yZ2VkOmNyZWRlbnRpYWxz"
+
+        response = server._authenticate_request(request, ADDR)
+
+        assert response is None
+        assert request.security_context.verified_principal == "admin"
 
 
 # ── _dispatch_handler tests ───────────────────────────────────────
@@ -428,6 +474,35 @@ class TestFullMode:
 
 
 class TestWebSocketOriginValidation:
+    def test_origin_and_upgrade_helpers_consume_admitted_values(self, temp_dir):
+        """Catch WS route/origin policy returning to mutable last-value headers."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        req = make_request(
+            "GET",
+            "/notes/ws",
+            headers={
+                "Host": "127.0.0.1:8080",
+                "Origin": "http://127.0.0.1:8080",
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            },
+        )
+        for field in (
+            "host",
+            "origin",
+            "upgrade",
+            "connection",
+            "sec-websocket-key",
+            "sec-websocket-version",
+        ):
+            req.headers[field] = "forged"
+
+        assert server._is_websocket_upgrade_attempt(req) is True
+        assert server._is_websocket_origin_allowed(req) is True
+
     def test_missing_origin_allowed(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(root_dir=str(temp_dir), quiet=True)
@@ -551,6 +626,40 @@ class TestWebSocketOriginValidation:
 
 
 class TestCorsContract:
+    def test_http_security_consumers_use_admitted_connection_origin_and_fetch_site(
+        self,
+        temp_dir,
+    ):
+        """Catch keep-alive, CORS, or browser policy rereading mutable headers."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(
+            root_dir=str(temp_dir),
+            quiet=True,
+            cors_origin="https://app.example",
+        )
+        req = make_request(
+            "POST",
+            "/upload.txt",
+            headers={
+                "Host": "127.0.0.1:8080",
+                "Origin": "https://app.example",
+                "Sec-Fetch-Site": "cross-site",
+                "Connection": "keep-alive",
+            },
+        )
+        req.headers.update(
+            {
+                "host": "attacker.example",
+                "origin": "https://attacker.example",
+                "sec-fetch-site": "same-origin",
+                "connection": "close",
+            }
+        )
+
+        assert server._should_keep_alive(req) is True
+        assert server._resolve_cors_origin(req) == "https://app.example"
+        assert server._is_browser_mutation_allowed(req) is True
+
     def test_multi_origin_http_cors_reflects_only_matching_request_origin(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(
@@ -673,6 +782,30 @@ class TestCorsContract:
         allowed = response.headers["Access-Control-Allow-Methods"]
         assert "XUPLOAD" in allowed
         assert "SMUGGLE" in allowed
+
+    def test_options_consumes_admitted_preflight_values_not_mutable_headers(self, temp_dir):
+        """Catch OPTIONS falling back to the parser's last-value compatibility map."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(
+            root_dir=str(temp_dir),
+            quiet=True,
+            cors_origin="https://app.example",
+        )
+        req = make_request(
+            "OPTIONS",
+            "/",
+            headers={
+                "Access-Control-Request-Method": "XUPLOAD",
+                "Access-Control-Request-Headers": "Content-Type, X-XFerry-Data",
+            },
+        )
+        req.headers["access-control-request-method"] = "DELETE"
+        req.headers["access-control-request-headers"] = "Authorization"
+
+        response = server.handle_options(req)
+
+        assert "XUPLOAD" in response.headers["Access-Control-Allow-Methods"]
+        assert response.headers["Access-Control-Allow-Headers"] == ("Content-Type, X-XFerry-Data")
 
     def test_wildcard_options_advertises_only_read_methods(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
@@ -1492,8 +1625,19 @@ class TestServerHelpers:
 
         http11 = make_request("GET", "/")
         http11_close = make_request("GET", "/", headers={"Connection": "close"})
-        http10 = HTTPRequest(b"GET / HTTP/1.0\r\n\r\n")
-        http10_keep = HTTPRequest(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
+        http10 = make_request(
+            "GET",
+            "/",
+            http_version="HTTP/1.0",
+            default_host=None,
+        )
+        http10_keep = make_request(
+            "GET",
+            "/",
+            headers={"Connection": "keep-alive"},
+            http_version="HTTP/1.0",
+            default_host=None,
+        )
 
         assert server._should_keep_alive(http11) is True
         assert server._should_keep_alive(http11_close) is False
@@ -2426,6 +2570,7 @@ class TestServerHelpers:
             409: "conflict",
             413: "payload_too_large",
             415: "unsupported_media_type",
+            421: "misdirected_request",
             429: "rate_limited",
             500: "internal_error",
             501: "feature_unavailable",

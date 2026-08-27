@@ -570,7 +570,7 @@ class FileHandlersMixin(BaseHandler):
         if not getattr(self, "cors_origin", None):
             return response
 
-        requested_method = request.headers.get("access-control-request-method", "")
+        requested_method = request.admission_context.preflight_method or ""
         logger.debug(f"OPTIONS preflight: {requested_method}")
         response.set_header(
             "Access-Control-Allow-Methods",
@@ -580,7 +580,7 @@ class FileHandlersMixin(BaseHandler):
             ),
         )
 
-        requested_headers = request.headers.get("access-control-request-headers", "")
+        requested_headers = request.admission_context.preflight_headers or ""
         allowed_headers = resolve_preflight_allow_headers(
             requested_headers,
             allow_advanced=getattr(self, "cors_origins", ()) != ("*",),

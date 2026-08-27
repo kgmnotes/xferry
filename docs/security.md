@@ -32,12 +32,14 @@ Before exposing xferry outside a trusted network, provide all of the following:
    timeout limits.
 4. Finite upload, note, and temporary-artifact quotas, plus a free-space
    reserve or external hard quota.
-5. Exact allowed browser origins. Wildcard CORS permits read-only requests and
+5. An explicit request-Host allowlist matching every certificate and gateway
+   authority. Do not treat CORS origins as request authorities.
+6. Exact allowed browser origins. Wildcard CORS permits read-only requests and
    does not authorize mutations.
-6. Proxy-side per-client throttling when the direct TCP peer is a proxy.
-7. Process or container resource limits, logs, and monitoring.
-8. Backups and a tested recovery procedure for operator-owned state.
-9. Test data or data the operator is explicitly permitted to handle.
+7. Proxy-side per-client throttling when the direct TCP peer is a proxy.
+8. Process or container resource limits, logs, and monitoring.
+9. Backups and a tested recovery procedure for operator-owned state.
+10. Test data or data the operator is explicitly permitted to handle.
 
 The [public deployment guide](public-direct.md) turns this baseline into a
 configuration procedure.
@@ -51,6 +53,12 @@ configuration procedure.
   untrusted network.
 - The runtime identifies the direct accepted-socket peer. Forwarding headers do
   not establish client identity or a loopback boundary.
+- Every HTTP/1.1 request must carry one valid admitted `Host`; HTTP/1.0 may omit
+  it. Duplicate or folded security fields fail before authentication, routing,
+  CORS, or WebSocket handling. A valid but unapproved authority receives 421.
+- Configure request authorities with `[security] allowed_hosts`,
+  `XFERRY_ALLOWED_HOSTS`, or repeatable `--allowed-host`. CORS is independent
+  and never expands this allowlist.
 - Each active WebSocket occupies one worker.
 - Request-body admission limits are not a process memory ceiling.
 - Filesystem quotas assume the operator controls other writers to the data

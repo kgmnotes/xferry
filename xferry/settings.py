@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import re
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +20,7 @@ from .http.io import (
     DEFAULT_MAX_HEADER_SIZE,
 )
 from .notepad_service import DEFAULT_MAX_NOTE_STORAGE_BYTES, DEFAULT_MAX_NOTES
+from .request_admission import normalize_allowed_hosts
 from .runtime_posture import (
     BODY_ADMISSION_BUDGET_NOTE,
     WEBSOCKET_WORKER_NOTE,
@@ -98,6 +100,7 @@ class ServerSettings:
 
     auth: str | None = None
     auth_file: str | None = None
+    allowed_hosts: tuple[str, ...] = ()
     cors_origin: str = ""
 
     plugin_allowlist: tuple[str, ...] = ()
@@ -191,6 +194,15 @@ class ServerSettings:
         if self.auth_file == "":
             raise SettingsError("--auth-file value must not be empty")
 
+        try:
+            normalized_allowed_hosts = normalize_allowed_hosts(tuple(self.allowed_hosts))
+        except (TypeError, ValueError) as exc:
+            raise SettingsError(str(exc)) from None
+        if self.domain and normalized_allowed_hosts:
+            certificate_domain = normalize_allowed_hosts((self.domain,))[0]
+            if certificate_domain not in normalized_allowed_hosts:
+                raise SettingsError("certificate domain must be included in allowed_hosts")
+
         if self.public_direct:
             self._validate_public_direct()
 
@@ -224,6 +236,16 @@ class ServerSettings:
         if self.plugin_allowlist and not self.plugins_allow_public_direct:
             raise SettingsError(
                 "public_direct disables plugins unless plugins_allow_public_direct is true"
+            )
+        wildcard_bind = self.host.strip().lower().strip("[]") in {"0.0.0.0", "::"}
+        if (
+            wildcard_bind
+            and self.cert_file
+            and self.key_file
+            and not normalize_allowed_hosts(tuple(self.allowed_hosts))
+        ):
+            raise SettingsError(
+                "public_direct wildcard bind with certificate files requires explicit allowed_hosts"
             )
 
     def to_server_config(self) -> ServerConfig:
@@ -297,6 +319,7 @@ class ServerSettings:
                     allow_public_direct=self.plugins_allow_public_direct,
                 ),
                 cors_origin=self.cors_origin,
+                allowed_hosts=self.allowed_hosts,
                 public_direct=self.public_direct,
                 runtime_posture=self.runtime_posture(),
             )
@@ -397,6 +420,7 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
     "security": {
         "auth": "auth",
         "auth_file": "auth_file",
+        "allowed_hosts": "allowed_hosts",
     },
     "cors": {
         "cors_origin": "cors_origin",
@@ -520,6 +544,8 @@ workers = 10
 
 [security]
 auth_file = /etc/xferry/auth
+# ASCII-whitespace-separated host/IP values; empty uses listener auto-mode.
+allowed_hosts =
 
 [tls]
 # Runtime TLS becomes active through sslip/letsencrypt/cert+key even if
@@ -615,6 +641,8 @@ def _parse_field_value(field_name: str, raw_value: object) -> object:
             raise SettingsError(f"{field_name} must be a number") from None
     if field_name == "plugin_allowlist":
         return tuple(part.strip() for part in value.split(",") if part.strip())
+    if field_name == "allowed_hosts":
+        return tuple(part for part in re.split(r"[ \t\r\n\f\v]+", value) if part)
     if value == "" and field_name in {
         "domain",
         "email",

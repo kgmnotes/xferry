@@ -42,12 +42,28 @@ For a real domain, replace the sample `sslip = true` setting with:
 [tls]
 letsencrypt = true
 domain = files.example.com
+
+[security]
+auth_file = /etc/xferry/auth
+allowed_hosts = files.example.com
 ```
 
 Alternatively, configure both `cert_file` and `key_file` for certificates
-managed outside xferry. Public-direct rejects self-signed-only TLS, missing
-file-backed authentication, disabled body or stream timeouts, wildcard CORS,
-and an unbounded upload capacity declaration.
+managed outside xferry. A wildcard bind with file certificates must set an
+explicit `allowed_hosts` list because XFerry cannot infer the certificate
+names from files. INI and `XFERRY_ALLOWED_HOSTS` values use ASCII whitespace
+between host/IP entries; the CLI uses repeatable `--allowed-host`. A layer
+replaces the whole lower-precedence list, an empty value selects auto-mode,
+and entries cannot be URLs, ports, CIDRs, wildcards, or comma lists.
+
+Auto-mode on a wildcard bind admits loopback authorities and adds the final
+ACME/sslip certificate hostname after TLS setup, before the listener binds.
+An explicit ACME domain must also appear in the explicit allowlist. CORS
+origins are a separate browser policy and never add request authorities.
+
+Public-direct rejects self-signed-only TLS, missing file-backed authentication,
+disabled body or stream timeouts, wildcard CORS, an unbounded upload capacity
+declaration, and an unresolved request-authority policy.
 
 Validate without starting the listener:
 
@@ -58,7 +74,8 @@ xferry run --config /etc/xferry/xferry.ini --print-config
 
 The printed posture is redacted. Inspect the effective URL, data root, TLS and
 authentication modes, workers, body budget, WebSocket admission, and storage
-limits.
+limits. Confirm the printed request-authority mode/list matches the certificate
+and gateway health-check `Host` value.
 
 ## Add external controls
 
@@ -70,6 +87,7 @@ Before routing traffic, configure:
 - a hard disk or volume quota and free-space alerts;
 - process memory, CPU, PID, and file-descriptor limits;
 - exact allowed browser origins when a separate frontend origin is required;
+- exact allowed request authorities for every certificate/gateway hostname;
 - off-host monitoring with normal certificate verification;
 - backups of data and ACME state, plus a tested restore procedure.
 

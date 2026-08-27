@@ -22,7 +22,9 @@ the host filesystem, backups, and the operator are external.
 | Credential interception or guessing | Verified TLS, file-backed credentials, authentication rate limiting, proxy throttling |
 | Path traversal or symlink escape | Shared descendant resolver and uploads-only access boundary |
 | Cross-origin browser mutation | Same-origin checks and exact allowed origins; wildcard CORS is read-only |
-| Ambiguous HTTP framing | Header and body caps, rejected transfer encoding, rejected conflicting content lengths; identical duplicate values are accepted |
+| DNS rebinding or untrusted authority | Earliest Host admission against listener/certificate policy; CORS cannot widen authorities |
+| Ambiguous security headers | Duplicate/folded protected fields rejected before auth, routing, CORS, Advanced sessions, or WebSocket handling |
+| Ambiguous HTTP framing | Header and body caps, rejected transfer encoding, rejected conflicting content lengths; identical duplicate values remain accepted for Content-Length |
 | Memory or storage exhaustion | Body admission budget, per-request caps, quotas, free-space reserve, SMUGGLE retention |
 | Worker exhaustion | Finite thread pool, request timeouts, and WebSocket admission limit |
 | Secret disclosure | Redacted configuration, bounded diagnostics, low-cardinality metrics, and file-backed auth |
@@ -35,6 +37,11 @@ the host filesystem, backups, and the operator are external.
 TLS protects a direct network connection, but a tunnel or reverse proxy may
 terminate TLS before xferry. The runtime trusts the direct accepted-socket peer
 for peer identity; forwarding headers do not change it.
+
+Request authority is admitted independently from browser CORS policy. The
+effective server TLS scheme plus canonical Host and effective port define
+same-origin. A gateway must forward one allowed Host; duplicated or folded
+security fields are rejected rather than interpreted first- or last-value.
 
 The operator controls filesystem permissions, other writers, backups, and hard
 quotas. Application-level scans and quotas cannot provide a strong storage

@@ -209,6 +209,7 @@ def render_managed_config(plan: SetupPlan) -> str:
         "",
         "[security]",
         f"auth_file = {plan.layout.auth_file}",
+        f"allowed_hosts = {plan.domain or plan.bind_host}",
         "",
         "[limits]",
         f"max_size_mb = {plan.resources.max_upload_mib}",

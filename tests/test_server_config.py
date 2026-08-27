@@ -56,6 +56,46 @@ def test_server_config_models_are_frozen_slotted_and_composed(tmp_path: Path) ->
     assert config.plugins is plugins
 
 
+def test_direct_server_config_cannot_bypass_allowed_host_validation(tmp_path: Path) -> None:
+    """Catch in-process server construction bypassing operator authority validation."""
+    from xferry.server_config import (
+        AuthConfig,
+        ServerConfig,
+        ServerLimits,
+        TLSConfig,
+        resolve_server_config,
+    )
+
+    public_file_tls = ServerConfig(
+        host="0.0.0.0",
+        port=8443,
+        root_dir=tmp_path,
+        limits=ServerLimits(
+            body_memory_budget=1024,
+            upload_storage_limit=1024,
+        ),
+        tls=TLSConfig(cert_file=tmp_path / "cert.pem", key_file=tmp_path / "key.pem"),
+        auth=AuthConfig(auth_file=tmp_path / "auth.txt"),
+        public_direct=True,
+    )
+    with pytest.raises(ValueError, match="explicit allowed_hosts"):
+        resolve_server_config(public_file_tls)
+
+    resolved = resolve_server_config(
+        replace(public_file_tls, allowed_hosts=("FILES.EXAMPLE.", "[::1]"))
+    )
+    assert resolved.allowed_hosts == ("files.example", "::1")
+
+    acme = ServerConfig(
+        host="0.0.0.0",
+        root_dir=tmp_path,
+        tls=TLSConfig(letsencrypt=True, domain="files.example"),
+        allowed_hosts=("other.example",),
+    )
+    with pytest.raises(ValueError, match="certificate domain"):
+        resolve_server_config(acme)
+
+
 def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_derived_limits(
     tmp_path: Path,
 ) -> None:
@@ -296,7 +336,7 @@ def test_server_request_cors_uses_resolved_origins_without_reparsing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catches request handling reparsing the already validated CORS string."""
-    from xferry.http import HTTPRequest
+    from tests.conftest import make_request
     from xferry.server import XFerryServer
 
     server = XFerryServer(
@@ -310,8 +350,10 @@ def test_server_request_cors_uses_resolved_origins_without_reparsing(
         "xferry.http.cors.parse_cors_origins",
         lambda _configured: pytest.fail("request CORS must use config.cors_origins"),
     )
-    request = HTTPRequest(
-        b"GET / HTTP/1.1\r\nHost: server.example\r\nOrigin: https://app.example\r\n\r\n"
+    request = make_request(
+        "GET",
+        "/",
+        headers={"Host": "server.example", "Origin": "https://app.example"},
     )
 
     assert server._resolve_cors_origin(request) == "https://app.example"

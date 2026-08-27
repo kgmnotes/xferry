@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse
 
 from ..advanced_sessions import AdvancedSessionDispatch
+from ..request_admission import RequestAdmissionContext
 
 logger = logging.getLogger("xferry")
 
@@ -18,12 +19,13 @@ _HTTP_VERSION_RE = re.compile(r"^HTTP/\d+\.\d+$")
 _REQUEST_TARGET_INVALID_RE = re.compile(r"[\x00-\x20\x7f]")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RequestSecurityContext:
     """Security facts bound to one request by the server pipeline."""
 
     direct_peer: tuple[str, int] | None = None
     verified_principal: str | None = None
+    admission: RequestAdmissionContext | None = None
 
 
 class HTTPRequest:
@@ -144,14 +146,35 @@ class HTTPRequest:
 
     def attach_direct_peer(self, direct_peer: tuple[str, int]) -> None:
         """Attach the accepted-socket peer before any authentication checks."""
-        self.security_context = RequestSecurityContext(direct_peer=direct_peer)
+        self.security_context = RequestSecurityContext(
+            direct_peer=direct_peer,
+            verified_principal=self.security_context.verified_principal,
+            admission=self.security_context.admission,
+        )
+
+    def set_admission_context(self, admission: RequestAdmissionContext) -> None:
+        """Attach trusted security fields produced by the request admission gate."""
+        self.security_context = RequestSecurityContext(
+            direct_peer=self.security_context.direct_peer,
+            verified_principal=self.security_context.verified_principal,
+            admission=admission,
+        )
 
     def set_verified_principal(self, principal: str) -> None:
         """Record the exact principal returned by the one successful auth check."""
         self.security_context = RequestSecurityContext(
             direct_peer=self.security_context.direct_peer,
             verified_principal=principal,
+            admission=self.security_context.admission,
         )
+
+    @property
+    def admission_context(self) -> RequestAdmissionContext:
+        """Return trusted admission facts or fail on an invalid direct-call path."""
+        admission = self.security_context.admission
+        if admission is None:
+            raise RuntimeError("request has not passed trusted admission")
+        return admission
 
     @property
     def content_length(self) -> int:

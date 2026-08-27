@@ -368,6 +368,7 @@ def test_docker_public_direct_compose_uses_ghcr_image_and_config() -> None:
     assert settings.port == 8443
     assert settings.acme_http_port == 8080
     assert settings.auth_file == "/run/secrets/xferry_auth"
+    assert settings.allowed_hosts == ()
     assert settings.upload_storage_limit_mb == 4096
     assert settings.upload_file_limit == 4096
     assert settings.upload_reserve_free_mb == 1024

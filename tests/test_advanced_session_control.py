@@ -580,7 +580,8 @@ def test_duplicate_control_headers_fail_closed_before_allocation(
         body=VALID_CREATE,
     )
 
-    _assert_error(response, status=400, code="invalid_field", field=field)
+    expected_code = "invalid_field" if field == "Content-Type" else "invalid_header"
+    _assert_error(response, status=400, code=expected_code, field=field)
     assert "allow" not in response.headers
     assert source.calls == []
 
@@ -594,14 +595,14 @@ def test_duplicate_control_headers_fail_closed_before_allocation(
     ],
 )
 @pytest.mark.parametrize("order", ["bad-then-good", "good-then-bad"])
-def test_remote_no_auth_duplicate_policy_headers_forbid_peer_before_header_oracle(
+def test_remote_no_auth_duplicate_policy_headers_fail_global_admission_first(
     temp_dir: Path,
     header_name: str,
     bad_value: str,
     good_value: str,
     order: str,
 ) -> None:
-    """Catches duplicate policy-header validation outranking no-auth peer rejection."""
+    """Catches remote Advanced routes bypassing the earliest global header gate."""
     clock = Clock()
     source = SequentialBytes(bytes(range(32)))
     server = _make_control_server(
@@ -642,7 +643,10 @@ def test_remote_no_auth_duplicate_policy_headers_forbid_peer_before_header_oracl
     expired = _send(server, "GET", CURRENT, headers=_current_headers(token))
 
     for response in (rejected_create, rejected_current):
-        _assert_error(response, status=403, code="forbidden_peer", field=None)
+        _assert_error(response, status=400, code="invalid_header", field=header_name)
+        assert response.headers["cache-control"] == "no-store"
+        assert "www-authenticate" not in response.headers
+        assert not any(name.startswith("access-control-allow-") for name in response.headers)
         assert "allow" not in response.headers
     assert source.calls == []
     _assert_error(expired, status=404, code="advanced_session_not_found", field=SESSION_HEADER)
@@ -1343,7 +1347,7 @@ def test_session_data_auth_origin_precede_header_grammar_and_touch(temp_dir: Pat
 
     _assert_error(remote_bad_token, status=403, code="forbidden_peer", field=None)
     _assert_error(wildcard_origin, status=403, code="forbidden_origin", field="Origin")
-    _assert_error(duplicate_origin, status=400, code="invalid_field", field="Origin")
+    _assert_error(duplicate_origin, status=400, code="invalid_header", field="Origin")
     _assert_error(expired, status=404, code="advanced_session_not_found", field=SESSION_HEADER)
 
 

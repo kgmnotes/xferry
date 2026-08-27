@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,64 @@ def test_ini_file_env_and_cli_precedence(tmp_path: Path) -> None:
     assert settings.max_size_mb == 64
     assert settings.body_memory_budget_mb == 256
     assert settings.auth_file == "/etc/xferry/auth"
+
+
+def test_allowed_hosts_whitespace_layers_replace_the_lower_precedence_list() -> None:
+    """Catch allowlist layers merging values or treating commas as separators."""
+    file_settings = load_settings_text(
+        """
+        [security]
+        allowed_hosts = ini.example 192.0.2.10
+        """,
+        validate=False,
+    )
+
+    from_file = resolve_settings(file_settings=file_settings)
+    from_env = resolve_settings(
+        file_settings=file_settings,
+        env={"XFERRY_ALLOWED_HOSTS": "env.example\t[::1]"},
+    )
+    from_cli = resolve_settings(
+        file_settings=file_settings,
+        env={"XFERRY_ALLOWED_HOSTS": "env.example [::1]"},
+        cli_values={"allowed_hosts": ("CLI.EXAMPLE.", "127.0.0.1")},
+    )
+
+    assert from_file.allowed_hosts == ("ini.example", "192.0.2.10")
+    assert from_env.allowed_hosts == ("env.example", "[::1]")
+    assert from_cli.allowed_hosts == ("CLI.EXAMPLE.", "127.0.0.1")
+    assert from_cli.to_server_config().allowed_hosts == ("cli.example", "127.0.0.1")
+
+
+@pytest.mark.parametrize("source", ["", " \t\n"])
+def test_empty_allowed_hosts_value_selects_auto_mode(source: str) -> None:
+    """Catch explicit empty INI/env values inheriting a lower-precedence list."""
+    file_settings = load_settings_text(
+        """
+        [security]
+        allowed_hosts = lower.example
+        """,
+        validate=False,
+    )
+
+    settings = resolve_settings(
+        file_settings=file_settings,
+        env={"XFERRY_ALLOWED_HOSTS": source},
+    )
+
+    assert settings.allowed_hosts == ()
+    assert settings.to_server_config().allowed_hosts == ()
+
+
+def test_allowed_hosts_rejects_comma_instead_of_splitting_it() -> None:
+    """Catch the external list grammar silently accepting forbidden comma syntax."""
+    with pytest.raises(SettingsError, match="invalid allowed host"):
+        load_settings_text(
+            """
+            [security]
+            allowed_hosts = first.example,second.example
+            """
+        )
 
 
 def test_smuggle_temp_limits_follow_file_env_and_cli_precedence(tmp_path: Path) -> None:
@@ -167,6 +226,39 @@ def test_public_direct_secure_sslip_validates() -> None:
     assert config.tls.sslip is True
     assert config.auth.auth_file == Path("/etc/xferry/auth")
     assert config.limits.body_memory_budget == 512 * 1024 * 1024
+
+
+def test_public_direct_wildcard_file_certificates_require_explicit_allowed_hosts() -> None:
+    """Catch wildcard public-direct deriving certificate authority from no domain."""
+    settings = ServerSettings(
+        host="0.0.0.0",
+        port=443,
+        public_direct=True,
+        cert_file="/etc/xferry/cert.pem",
+        key_file="/etc/xferry/key.pem",
+        auth_file="/etc/xferry/auth",
+        body_memory_budget_mb=512,
+        upload_storage_limit_mb=4096,
+    )
+
+    with pytest.raises(SettingsError, match="explicit allowed_hosts"):
+        settings.validate()
+
+    settings = replace(settings, allowed_hosts=("files.example",))
+    settings.validate()
+
+
+def test_explicit_acme_domain_must_be_in_allowed_hosts() -> None:
+    """Catch a certificate domain that request admission would reject after startup."""
+    settings = ServerSettings(
+        host="0.0.0.0",
+        letsencrypt=True,
+        domain="files.example",
+        allowed_hosts=("other.example",),
+    )
+
+    with pytest.raises(SettingsError, match="certificate domain"):
+        settings.validate()
 
 
 def test_public_direct_rejects_all_zero_upload_disk_controls() -> None:
@@ -623,7 +715,11 @@ def test_public_direct_preset_engages_existing_hardened_validation() -> None:
 @pytest.mark.parametrize(
     "tls_values",
     [
-        {"cert_file": "cert.pem", "key_file": "key.pem"},
+        {
+            "cert_file": "cert.pem",
+            "key_file": "key.pem",
+            "allowed_hosts": ("files.example.com",),
+        },
         {"letsencrypt": True, "domain": "files.example.com"},
         {"sslip": True},
     ],

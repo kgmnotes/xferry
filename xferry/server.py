@@ -18,7 +18,6 @@ from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
@@ -38,6 +37,7 @@ from .http.io import receive_request_result as _receive_request_result_io
 from .lifecycle import ServerLifecycle
 from .metrics import MetricsCollector
 from .notepad_service import DEFAULT_MAX_NOTES, NoteStoragePolicy
+from .request_admission import RequestAdmissionConfig, RequestAdmissionPolicy
 from .request_pipeline import RequestPipeline, ResponseBuildArgs
 from .security.auth import AuthRateLimiter, BasicAuthenticator, generate_random_credentials
 from .security.tls_manager import TLSManager
@@ -64,6 +64,7 @@ _DEFAULT_ERROR_CODES = {
     409: "conflict",
     413: "payload_too_large",
     415: "unsupported_media_type",
+    421: "misdirected_request",
     429: "rate_limited",
     500: "internal_error",
     501: "feature_unavailable",
@@ -145,6 +146,7 @@ class XFerryServer(HandlerMixin):
         self.cors_origins = config.cors_origins
         self.public_direct = config.public_direct
         self.runtime_posture = config.runtime_posture
+        self.allowed_hosts = tuple(config.allowed_hosts or ())
 
         # TLS settings (delegated to TLSManager; these fields stay as read-only
         # views used by status printing and request handling).
@@ -172,6 +174,16 @@ class XFerryServer(HandlerMixin):
         self.acme_server = tls_config.acme_server
         self.acme_http_address = tls_config.acme_http_address
         self.acme_http_port = tls_config.acme_http_port
+        self._request_admission_config = RequestAdmissionConfig(
+            bind_host=self.host,
+            server_port=self.port,
+            tls_enabled=tls_config.enabled,
+            allowed_hosts=self.allowed_hosts,
+            certificate_domain=tls_config.domain,
+        )
+        self.request_admission_policy = RequestAdmissionPolicy.from_config(
+            self._request_admission_config
+        )
 
         # Temporary SMUGGLE files (deleted after serving)
         self._temp_smuggle_files: set[str] = set()
@@ -409,6 +421,15 @@ class XFerryServer(HandlerMixin):
     def _setup_tls(self) -> None:
         """Set up the TLS context (delegated to TLSManager)."""
         self._tls.setup()
+        self.request_admission_policy = RequestAdmissionPolicy.from_config(
+            RequestAdmissionConfig(
+                bind_host=self._request_admission_config.bind_host,
+                server_port=self._request_admission_config.server_port,
+                tls_enabled=self._request_admission_config.tls_enabled,
+                allowed_hosts=self._request_admission_config.allowed_hosts,
+                certificate_domain=self._tls.domain,
+            )
+        )
 
     @property
     def tls_enabled(self) -> bool:
@@ -677,7 +698,7 @@ class XFerryServer(HandlerMixin):
 
     def _should_keep_alive(self, request: HTTPRequest) -> bool:
         """Determine whether to keep the connection alive after this request."""
-        conn_header = request.headers.get("connection", "").lower()
+        conn_header = (request.admission_context.connection or "").lower()
         if conn_header == "close":
             return False
 
@@ -769,7 +790,7 @@ class XFerryServer(HandlerMixin):
                 field="Authorization",
             )
 
-        auth_header = request.headers.get("authorization")
+        auth_header = request.admission_context.authorization
         verified_principal = self.authenticator.verify(auth_header)
         if verified_principal is None:
             if self._rate_limiter:
@@ -931,7 +952,7 @@ class XFerryServer(HandlerMixin):
 
     def _resolve_cors_origin(self, request: HTTPRequest) -> str | None:
         """Resolve configured CORS origins against the request Origin header."""
-        request_origin = request.headers.get("origin")
+        request_origin = request.admission_context.origin
         if not request_origin or not self.cors_origins:
             return None
         if self.cors_origins == ("*",):
@@ -961,15 +982,16 @@ class XFerryServer(HandlerMixin):
         if not self._is_browser_protected_mutation(request):
             return True
 
-        origin = request.headers.get("origin")
+        admission = request.admission_context
+        origin = admission.origin
         if origin:
             if (
-                fetch_site := request.headers.get("sec-fetch-site", "").strip().lower()
+                fetch_site := (admission.sec_fetch_site or "").strip().lower()
             ) and fetch_site not in _FETCH_METADATA_SAME_ORIGIN_VALUES:
                 return self._is_explicit_cors_origin(origin)
             return self._is_browser_origin_allowed_for_mutation(request, origin)
 
-        fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+        fetch_site = (admission.sec_fetch_site or "").strip().lower()
         if not fetch_site:
             return True
         return fetch_site in _FETCH_METADATA_SAME_ORIGIN_VALUES
@@ -1019,20 +1041,14 @@ class XFerryServer(HandlerMixin):
             )
             return response
 
-        host, header_error = self._advanced_session_control_singleton_header(request, "Host")
-        if header_error is not None:
-            return header_error
-        origin, header_error = self._advanced_session_control_singleton_header(request, "Origin")
-        if header_error is not None:
-            return header_error
-        fetch_site, header_error = self._advanced_session_control_singleton_header(
-            request,
-            "Sec-Fetch-Site",
-        )
-        if header_error is not None:
-            return header_error
+        admission = request.admission_context
+        origin = admission.origin
+        fetch_site = admission.sec_fetch_site
 
-        if origin is not None and not self._is_exact_control_origin(origin, host):
+        if origin is not None and not self.request_admission_policy.is_same_origin(
+            admission,
+            origin,
+        ):
             return self._control_error(
                 403,
                 "forbidden_origin",
@@ -1086,18 +1102,9 @@ class XFerryServer(HandlerMixin):
             )
             return response
 
-        host, header_error = self._advanced_session_control_singleton_header(request, "Host")
-        if header_error is not None:
-            return header_error
-        origin, header_error = self._advanced_session_control_singleton_header(request, "Origin")
-        if header_error is not None:
-            return header_error
-        fetch_site, header_error = self._advanced_session_control_singleton_header(
-            request,
-            "Sec-Fetch-Site",
-        )
-        if header_error is not None:
-            return header_error
+        admission = request.admission_context
+        origin = admission.origin
+        fetch_site = admission.sec_fetch_site
 
         fetch_site_value = fetch_site.strip().lower() if fetch_site is not None else ""
         if origin is not None:
@@ -1110,7 +1117,10 @@ class XFerryServer(HandlerMixin):
                     "Forbidden origin",
                     field="Sec-Fetch-Site",
                 )
-            if self._is_exact_control_origin(origin, host) or self._is_explicit_cors_origin(origin):
+            if self.request_admission_policy.is_same_origin(
+                admission,
+                origin,
+            ) or self._is_explicit_cors_origin(origin):
                 return None
             return self._control_error(
                 403,
@@ -1129,23 +1139,6 @@ class XFerryServer(HandlerMixin):
 
         return None
 
-    def _advanced_session_control_singleton_header(
-        self,
-        request: HTTPRequest,
-        header_name: str,
-    ) -> tuple[str | None, HTTPResponse | None]:
-        values = request.get_header_values(header_name)
-        if len(values) > 1:
-            return None, self._control_error(
-                400,
-                "invalid_field",
-                "Invalid field",
-                field=header_name,
-            )
-        if not values:
-            return None, None
-        return values[0], None
-
     @staticmethod
     def _is_loopback_peer(host: str) -> bool:
         try:
@@ -1161,13 +1154,6 @@ class XFerryServer(HandlerMixin):
         if principal is None:
             raise RuntimeError("advanced session control reached without verified principal")
         return AdvancedSessionPrincipal("basic", principal)
-
-    def _is_exact_control_origin(self, origin: str, host: str | None) -> bool:
-        """Strict control-plane origin: exactly effective scheme plus Host."""
-        if not host:
-            return False
-        expected_scheme = "https" if self.tls_enabled else "http"
-        return origin == f"{expected_scheme}://{host}"
 
     @staticmethod
     def _control_error(
@@ -1202,20 +1188,8 @@ class XFerryServer(HandlerMixin):
         return origin != "*" and origin in self.cors_origins
 
     def _is_same_http_origin(self, request: HTTPRequest, origin: str) -> bool:
-        """Compare Origin against the request Host and effective server scheme."""
-        host = request.headers.get("host", "")
-        if not host:
-            return False
-
-        expected_scheme = "https" if self.tls_enabled else "http"
-        parsed = urlsplit(origin)
-        expected_origin = f"{expected_scheme}://{host}"
-        return (
-            parsed.scheme.lower() == expected_scheme
-            and parsed.netloc.lower() == host.lower()
-            and parsed.path in ("", "/")
-            and origin.rstrip("/").lower() == expected_origin.lower()
-        )
+        """Compare Origin against the canonical admitted authority."""
+        return self.request_admission_policy.is_same_origin(request.admission_context, origin)
 
     def _build_error_response(
         self,
@@ -1239,26 +1213,15 @@ class XFerryServer(HandlerMixin):
 
     def _is_websocket_origin_allowed(self, request: HTTPRequest) -> bool:
         """Allow same-origin upgrades by default; cross-origin requires explicit opt-in."""
-        origin = request.headers.get("origin", "")
+        admission = request.admission_context
+        origin = admission.origin or ""
         if not origin:
             return True
 
         if self._is_explicit_cors_origin(origin):
             return True
 
-        host = request.headers.get("host", "")
-        if not host:
-            return False
-
-        expected_scheme = "https" if self.tls_enabled else "http"
-        parsed = urlsplit(origin)
-        expected_origin = f"{expected_scheme}://{host}"
-        return (
-            parsed.scheme == expected_scheme
-            and parsed.netloc == host
-            and parsed.path in ("", "/")
-            and expected_origin == origin.rstrip("/")
-        )
+        return self.request_admission_policy.is_same_origin(admission, origin)
 
     def _is_websocket_upgrade_attempt(self, request: HTTPRequest) -> bool:
         """Return True when the request appears to target the WebSocket handshake path."""
@@ -1268,13 +1231,14 @@ class XFerryServer(HandlerMixin):
             or not websocket_route_enabled(request.raw_path)
         ):
             return False
+        admission = request.admission_context
         return any(
             (
-                request.headers.get("upgrade"),
-                request.headers.get("connection"),
-                request.headers.get("sec-websocket-key"),
-                request.headers.get("sec-websocket-version"),
-                request.headers.get("origin"),
+                admission.upgrade,
+                admission.connection,
+                admission.websocket_key,
+                admission.websocket_version,
+                admission.origin,
             )
         )
 
