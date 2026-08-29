@@ -19,7 +19,6 @@ from xferry.handlers import HandlerMixin
 from xferry.handlers.smuggle import SmuggleTempPolicy
 from xferry.http import HTTPRequest, HTTPResponse
 from xferry.http.io import RequestReceiveResult
-from xferry.security.auth import AuthRateLimiter, BasicAuthenticator
 from xferry.websocket import WS_CLOSE, WS_PING, WS_PONG, WS_TEXT, parse_ws_frame
 
 EXPECTED_CORE_METHODS = list(registry_methods())
@@ -62,7 +61,6 @@ class ServerStub(HandlerMixin):
         root_dir: Path,
         upload_dir: Path,
         *,
-        auth: BasicAuthenticator | None = None,
         opsec: bool = False,
     ):
         self.root_dir = root_dir
@@ -73,9 +71,6 @@ class ServerStub(HandlerMixin):
         self._smuggle_lock = threading.Lock()
         self._notes_lock = threading.Lock()
         self._ecdh_manager = None
-
-        self.authenticator = auth
-        self._rate_limiter = AuthRateLimiter() if auth else None
 
         self.method_handlers = self.build_method_handlers()
 
@@ -90,40 +85,6 @@ class ServerStub(HandlerMixin):
             "status_counts": {},
         }
 
-    # Mirror of XFerryServer._authenticate_request
-    def _authenticate_request(
-        self,
-        request: HTTPRequest,
-        client_address: tuple[str, int],
-    ) -> HTTPResponse | None:
-        if not self.authenticator:
-            return None
-        ip = client_address[0]
-        if self._rate_limiter and self._rate_limiter.is_blocked(ip):
-            response = HTTPResponse(429)
-            response.set_body(
-                json.dumps({"error": "Too Many Requests", "status": 429}),
-                "application/json",
-            )
-            return response
-        auth_header = request.headers.get("authorization")
-        if not self.authenticator.authenticate(auth_header):
-            if self._rate_limiter:
-                self._rate_limiter.record_failure(ip)
-            response = HTTPResponse(401)
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            response.set_body(
-                json.dumps({"error": "Unauthorized", "status": 401}),
-                "application/json",
-            )
-            return response
-        if self._rate_limiter:
-            self._rate_limiter.reset(ip)
-        return None
-
 
 @pytest.fixture
 def server(temp_dir, upload_dir):
@@ -134,8 +95,7 @@ def server(temp_dir, upload_dir):
 @pytest.fixture
 def auth_server(temp_dir, upload_dir):
     (temp_dir / "index.html").write_text("<html>ok</html>")
-    auth = BasicAuthenticator({"admin": "secret123"})
-    return ServerStub(temp_dir, upload_dir, auth=auth)
+    return make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
 
 
 @pytest.fixture
@@ -151,45 +111,57 @@ ADDR = ("127.0.0.1", 12345)
 
 
 class TestAuthenticateRequest:
-    def test_no_auth_configured_returns_none(self, server):
+    def test_no_auth_configured_returns_none(self, temp_dir):
+        server = make_server(root_dir=str(temp_dir), quiet=True)
         req = make_request("GET", "/")
         assert server._authenticate_request(req, ADDR) is None
 
     def test_rate_limited_returns_429(self, auth_server):
-        # Trigger rate limit by failing multiple times
-        for _ in range(10):
+        for _ in range(5):
             req = make_request("GET", "/")
-            auth_server._authenticate_request(req, ADDR)
+            result = auth_server._authenticate_request(req, ADDR)
+            assert result is not None
+            assert result.status_code == 401
 
         req = make_request("GET", "/")
         result = auth_server._authenticate_request(req, ADDR)
         assert result is not None
         assert result.status_code == 429
+        assert "WWW-Authenticate" not in result.headers
+        assert result.headers["Cache-Control"] == "no-store"
+        assert int(result.headers["Retry-After"]) >= 1
 
-    def test_successful_auth_resets_rate_limiter(self, auth_server):
-        # Fail a few times
+    def test_successful_auth_resets_admission_failures(self, auth_server):
         for _ in range(3):
             req = make_request("GET", "/")
             auth_server._authenticate_request(req, ADDR)
 
-        # Succeed
         creds = base64.b64encode(b"admin:secret123").decode()
         req = make_request("GET", "/", headers={"Authorization": f"Basic {creds}"})
         auth_server._authenticate_request(req, ADDR)
 
-        # Should not be blocked
-        assert not auth_server._rate_limiter.is_blocked(ADDR[0])
+        for _ in range(5):
+            response = auth_server._authenticate_request(make_request("GET", "/"), ADDR)
+            assert response is not None
+            assert response.status_code == 401
 
-    def test_real_server_rate_limited_returns_429(self, temp_dir, monkeypatch):
+        blocked = auth_server._authenticate_request(make_request("GET", "/"), ADDR)
+        assert blocked is not None
+        assert blocked.status_code == 429
+
+    def test_real_server_rate_limited_returns_429(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
-        assert server._rate_limiter is not None
-        monkeypatch.setattr(server._rate_limiter, "is_blocked", lambda _ip: True)
+        for _ in range(5):
+            server._authenticate_request(make_request("GET", "/"), ADDR)
 
         response = server._authenticate_request(make_request("GET", "/"), ADDR)
 
         assert response is not None
         assert response.status_code == 429
+        assert "WWW-Authenticate" not in response.headers
+        assert response.headers["Cache-Control"] == "no-store"
+        assert int(response.headers["Retry-After"]) >= 1
         assert json.loads(response.body) == {
             "error": {
                 "code": "rate_limited",
@@ -208,6 +180,7 @@ class TestAuthenticateRequest:
         assert response is not None
         assert response.status_code == 401
         assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted Area"'
+        assert response.headers["Cache-Control"] == "no-store"
         assert json.loads(response.body) == {
             "error": {
                 "code": "authentication_required",

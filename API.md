@@ -511,6 +511,20 @@ PING / HTTP/1.1
       "accepted": 150,
       "rejected": 1
     },
+    "authentication": {
+      "active": 0,
+      "attempts": 12,
+      "succeeded": 9,
+      "failed": 3,
+      "errors": 0,
+      "denials": 1,
+      "denial_reasons": {
+        "capacity": 0,
+        "cooldown": 1,
+        "peer_capacity": 0,
+        "timeout": 0
+      }
+    },
     "response": {
       "bytes": 524288,
       "stream_aborts": 0,
@@ -715,9 +729,9 @@ that policy to prevent method drift.
 `requests` contains totals, status/error counts, and `latency_ms`; `receive`
 contains request bytes and rejected framing; `response` contains response bytes
 and streamed-response aborts. `connections`, `timeouts`, `request_admission`,
-`websocket`, and `worker` are independent canonical groups. Worker failures
-are counted in `worker`, and accepted WebSocket upgrades are counted in
-`websocket`, not in request-response aliases.
+`authentication`, `websocket`, and `worker` are independent canonical groups.
+Worker failures are counted in `worker`, and accepted WebSocket upgrades are
+counted in `websocket`, not in request-response aliases.
 
 `storage.usage` is refreshed with exact filesystem scans when `PING` or
 `GET /metrics` builds its snapshot. `uploads` is aggregate regular-file usage
@@ -730,6 +744,14 @@ disk-full denials, note byte/count denials, and SMUGGLE temporary byte/file
 denials. `advanced_upload.decode_rejections` similarly uses the fixed reasons
 shown above. Paths, filenames, note titles, session IDs, methods, encodings,
 and exception messages never become metric labels.
+
+`authentication` reports bounded Basic Auth verifier work and admission
+denials using only fixed labels. `active` is the current number of in-flight
+verifications, `attempts` is the cumulative admitted verifier count, and
+`succeeded`, `failed`, and `errors` partition completed verifier outcomes.
+`denial_reasons` uses only `capacity`, `cooldown`, `peer_capacity`, and
+`timeout`; direct peers, usernames, credentials, principals, and Authorization
+header values are not metric labels or metric values.
 
 `storage.scans` contains cumulative `count`, examined `items`, `total_ms`,
 `avg_ms`, and `max_ms` for five fixed scopes: `info`, `upload_quota`,

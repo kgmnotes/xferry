@@ -1244,6 +1244,7 @@ class TestRequestPipeline:
 
         assert result is False
         assert sock.sent == []
+        assert server.auth_calls == [("/notes/ws", ("127.0.0.1", 12345))]
         assert server.handled_websocket_paths == ["/notes/ws"]
         assert server.websocket_upgrade_calls == 1
         assert server.record_calls == []

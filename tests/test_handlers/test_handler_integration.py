@@ -2383,42 +2383,80 @@ class TestHandleOpsecUpload:
         assert list(upload_dir.iterdir()) == []
 
 
-# ── Auth rate limiter tests ────────────────────────────────────────
+# ── Auth admission controller tests ────────────────────────────────
 
 
-class TestAuthRateLimiter:
+class TestAuthAdmissionController:
     def test_not_blocked_initially(self):
-        from xferry.security.auth import AuthRateLimiter
+        from xferry.security.auth import AuthAdmissionController, AuthAttemptLease
 
-        rl = AuthRateLimiter(max_attempts=3, cooldown=10.0)
-        assert rl.is_blocked("1.2.3.4") is False
+        controller = AuthAdmissionController(
+            max_failures=3,
+            cooldown=10.0,
+            max_active=1,
+            max_pending=1,
+        )
+
+        lease = controller.acquire("1.2.3.4")
+
+        assert isinstance(lease, AuthAttemptLease)
 
     def test_blocked_after_max_failures(self):
-        from xferry.security.auth import AuthRateLimiter
+        from xferry.security.auth import AuthAdmissionController, AuthAdmissionDenied
 
-        rl = AuthRateLimiter(max_attempts=3, cooldown=10.0)
+        controller = AuthAdmissionController(
+            max_failures=3,
+            cooldown=10.0,
+            max_active=1,
+            max_pending=1,
+        )
         for _ in range(3):
-            rl.record_failure("1.2.3.4")
-        assert rl.is_blocked("1.2.3.4") is True
+            lease = controller.acquire("1.2.3.4")
+            assert not isinstance(lease, AuthAdmissionDenied)
+            lease.finish("failed")
+
+        denied = controller.acquire("1.2.3.4")
+        assert isinstance(denied, AuthAdmissionDenied)
+        assert denied.reason == "cooldown"
 
     def test_reset_unblocks(self):
-        from xferry.security.auth import AuthRateLimiter
+        from xferry.security.auth import AuthAdmissionController, AuthAdmissionDenied
 
-        rl = AuthRateLimiter(max_attempts=2, cooldown=10.0)
-        rl.record_failure("1.2.3.4")
-        rl.record_failure("1.2.3.4")
-        assert rl.is_blocked("1.2.3.4") is True
-        rl.reset("1.2.3.4")
-        assert rl.is_blocked("1.2.3.4") is False
+        controller = AuthAdmissionController(
+            max_failures=2,
+            cooldown=10.0,
+            max_active=1,
+            max_pending=1,
+        )
+        first = controller.acquire("1.2.3.4")
+        assert not isinstance(first, AuthAdmissionDenied)
+        first.finish("failed")
+        second = controller.acquire("1.2.3.4")
+        assert not isinstance(second, AuthAdmissionDenied)
+        second.finish("succeeded")
+
+        third = controller.acquire("1.2.3.4")
+        assert not isinstance(third, AuthAdmissionDenied)
+        third.finish("succeeded")
 
     def test_different_ips_independent(self):
-        from xferry.security.auth import AuthRateLimiter
+        from xferry.security.auth import AuthAdmissionController, AuthAdmissionDenied
 
-        rl = AuthRateLimiter(max_attempts=2, cooldown=10.0)
-        rl.record_failure("1.1.1.1")
-        rl.record_failure("1.1.1.1")
-        assert rl.is_blocked("1.1.1.1") is True
-        assert rl.is_blocked("2.2.2.2") is False
+        controller = AuthAdmissionController(
+            max_failures=2,
+            cooldown=10.0,
+            max_active=1,
+            max_pending=1,
+        )
+        for _ in range(2):
+            lease = controller.acquire("1.1.1.1")
+            assert not isinstance(lease, AuthAdmissionDenied)
+            lease.finish("failed")
+
+        assert isinstance(controller.acquire("1.1.1.1"), AuthAdmissionDenied)
+        independent = controller.acquire("2.2.2.2")
+        assert not isinstance(independent, AuthAdmissionDenied)
+        independent.finish("succeeded")
 
 
 # ── HEAD tests ────────────────────────────────────────────────────

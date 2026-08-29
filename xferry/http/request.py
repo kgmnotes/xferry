@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse
 
 from ..advanced_sessions import AdvancedSessionDispatch
@@ -17,6 +18,7 @@ logger = logging.getLogger("xferry")
 _HTTP_METHOD_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HTTP_VERSION_RE = re.compile(r"^HTTP/\d+\.\d+$")
 _REQUEST_TARGET_INVALID_RE = re.compile(r"[\x00-\x20\x7f]")
+AuthenticationMode = Literal["unchecked", "disabled", "basic"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,7 @@ class RequestSecurityContext:
 
     direct_peer: tuple[str, int] | None = field(default=None, repr=False)
     verified_principal: str | None = field(default=None, repr=False)
+    authentication_mode: AuthenticationMode = field(default="unchecked", repr=False)
     admission: RequestAdmissionContext | None = None
 
 
@@ -149,6 +152,7 @@ class HTTPRequest:
         self.security_context = RequestSecurityContext(
             direct_peer=direct_peer,
             verified_principal=self.security_context.verified_principal,
+            authentication_mode=self.security_context.authentication_mode,
             admission=self.security_context.admission,
         )
 
@@ -157,7 +161,17 @@ class HTTPRequest:
         self.security_context = RequestSecurityContext(
             direct_peer=self.security_context.direct_peer,
             verified_principal=self.security_context.verified_principal,
+            authentication_mode=self.security_context.authentication_mode,
             admission=admission,
+        )
+
+    def set_authentication_disabled(self) -> None:
+        """Record that this request passed while Basic Auth was disabled."""
+        self.security_context = RequestSecurityContext(
+            direct_peer=self.security_context.direct_peer,
+            verified_principal=None,
+            authentication_mode="disabled",
+            admission=self.security_context.admission,
         )
 
     def set_verified_principal(self, principal: str) -> None:
@@ -165,6 +179,7 @@ class HTTPRequest:
         self.security_context = RequestSecurityContext(
             direct_peer=self.security_context.direct_peer,
             verified_principal=principal,
+            authentication_mode="basic",
             admission=self.security_context.admission,
         )
 

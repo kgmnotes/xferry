@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,12 @@ from .metrics import MetricsCollector
 from .notepad_service import DEFAULT_MAX_NOTES, NoteStoragePolicy
 from .request_admission import RequestAdmissionConfig, RequestAdmissionPolicy
 from .request_pipeline import RequestPipeline, ResponseBuildArgs
-from .security.auth import AuthRateLimiter, BasicAuthenticator, generate_random_credentials
+from .security.auth import (
+    AuthAdmissionController,
+    AuthAdmissionDenied,
+    BasicAuthenticator,
+    generate_random_credentials,
+)
 from .security.tls_manager import TLSManager
 from .server_config import ServerConfig, resolve_server_config, validate_plugin_specs
 from .smuggle.policy import SmuggleTempPolicy
@@ -71,6 +77,12 @@ _DEFAULT_ERROR_CODES = {
     503: "server_busy",
     507: "storage_quota_exceeded",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthRuntime:
+    authenticator: BasicAuthenticator | None
+    controller: AuthAdmissionController | None
 
 
 class _JSONLogFormatter(logging.Formatter):
@@ -235,8 +247,11 @@ class XFerryServer(HandlerMixin):
         )
 
         # Basic Auth
-        self.authenticator: BasicAuthenticator | None = None
-        self._rate_limiter: AuthRateLimiter | None = None
+        self._auth_runtime_lock = threading.Lock()
+        self._auth_runtime = _AuthRuntime(None, None)
+        self._auth_event_log_lock = threading.Lock()
+        self._auth_event_log_last: float | None = None
+        self._auth_event_log_suppressed = 0
         self._setup_auth(
             auth_config.auth,
             str(auth_config.auth_file) if auth_config.auth_file else None,
@@ -329,12 +344,31 @@ class XFerryServer(HandlerMixin):
         return _handle_plugin
 
     def set_authenticator(self, authenticator: BasicAuthenticator | None) -> None:
-        """Install an authenticator and keep auth rate limiting in sync."""
-        previous_mode_has_authenticator = self.authenticator is not None
-        self.authenticator = authenticator
-        self._rate_limiter = AuthRateLimiter() if authenticator else None
+        """Install one atomically paired authenticator/admission runtime."""
+        controller = (
+            AuthAdmissionController(workers=self.max_workers) if authenticator is not None else None
+        )
+        runtime = _AuthRuntime(authenticator, controller)
+        with self._auth_runtime_lock:
+            previous_mode_has_authenticator = self._auth_runtime.authenticator is not None
+            self._auth_runtime = runtime
         if previous_mode_has_authenticator != (authenticator is not None):
             self.advanced_session_store.invalidate_all()
+
+    def _current_auth_runtime(self) -> _AuthRuntime:
+        """Return the current Basic Auth runtime as one consistent snapshot."""
+        with self._auth_runtime_lock:
+            return self._auth_runtime
+
+    @property
+    def authenticator(self) -> BasicAuthenticator | None:
+        """Compatibility view of the authenticator in the current runtime."""
+        return self._current_auth_runtime().authenticator
+
+    @property
+    def _auth_controller(self) -> AuthAdmissionController | None:
+        """Compatibility view of the controller in the current runtime."""
+        return self._current_auth_runtime().controller
 
     def _setup_auth(self, auth: str | None, auth_file: str | None = None) -> None:
         """Set up Basic Auth."""
@@ -776,42 +810,82 @@ class XFerryServer(HandlerMixin):
 
         Returns an error HTTPResponse to send back, or None if auth passed.
         """
-        if not self.authenticator:
+        runtime = self._current_auth_runtime()
+        authenticator = runtime.authenticator
+        controller = runtime.controller
+        if authenticator is None or controller is None:
+            request.set_authentication_disabled()
             return None
 
-        ip = client_address[0]
-
-        if self._rate_limiter and self._rate_limiter.is_blocked(ip):
-            logger.warning(f"Rate limited: {ip}")
-            return self._build_error_response(
-                429,
-                "Too Many Requests",
-                code="rate_limited",
-                field="Authorization",
-            )
-
         auth_header = request.admission_context.authorization
-        verified_principal = self.authenticator.verify(auth_header)
-        if verified_principal is None:
-            if self._rate_limiter:
-                self._rate_limiter.record_failure(ip)
-            logger.warning(f"Auth rejected: {ip}")
-            response = self._build_error_response(
-                401,
-                "Unauthorized",
-                code="authentication_required",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+        ip = client_address[0]
+        admission = controller.acquire(ip)
+        if isinstance(admission, AuthAdmissionDenied):
+            self._metrics.record_authentication_denial(admission.reason)
+            self._log_authentication_event()
+            return self._build_auth_rate_limited_response(admission)
 
-        if self._rate_limiter:
-            self._rate_limiter.reset(ip)
+        self._metrics.record_authentication_started()
+        try:
+            verified_principal = authenticator.verify(auth_header)
+        except BaseException as exc:
+            admission.finish("error")
+            self._metrics.record_authentication_finished("error")
+            self._log_authentication_event()
+            if not isinstance(exc, Exception):
+                raise
+            return self._build_auth_challenge_response(authenticator)
+
+        if verified_principal is None:
+            admission.finish("failed")
+            self._metrics.record_authentication_finished("failed")
+            self._log_authentication_event()
+            return self._build_auth_challenge_response(authenticator)
+
+        admission.finish("succeeded")
+        self._metrics.record_authentication_finished("succeeded")
         request.set_verified_principal(verified_principal)
         return None
+
+    def _log_authentication_event(self) -> None:
+        """Emit one fixed aggregate warning per interval without identity data."""
+        now = time.monotonic()
+        with self._auth_event_log_lock:
+            last = self._auth_event_log_last
+            if last is not None and now - last < 5.0:
+                self._auth_event_log_suppressed += 1
+                return
+            suppressed = self._auth_event_log_suppressed
+            self._auth_event_log_suppressed = 0
+            self._auth_event_log_last = now
+        logger.warning("Authentication events observed (suppressed=%d)", suppressed)
+
+    def _build_auth_rate_limited_response(self, denial: AuthAdmissionDenied) -> HTTPResponse:
+        """Build the public response for bounded authentication admission denials."""
+        response = self._build_error_response(
+            429,
+            "Too Many Requests",
+            code="rate_limited",
+            field="Authorization",
+            no_store=True,
+        )
+        response.set_header("Retry-After", str(denial.retry_after))
+        return response
+
+    def _build_auth_challenge_response(self, authenticator: BasicAuthenticator) -> HTTPResponse:
+        """Build a private Basic Auth challenge response."""
+        response = self._build_error_response(
+            401,
+            "Unauthorized",
+            code="authentication_required",
+            field="Authorization",
+            no_store=True,
+        )
+        response.set_header(
+            "WWW-Authenticate",
+            authenticator.get_www_authenticate_header(),
+        )
+        return response
 
     def _send_response(
         self,
@@ -1019,7 +1093,10 @@ class XFerryServer(HandlerMixin):
         if not self._is_advanced_session_control_route(request):
             return None
 
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session control reached before authentication")
+        if auth_mode == "disabled":
             direct_peer = request.security_context.direct_peer
             if direct_peer is None or not self._is_loopback_peer(direct_peer[0]):
                 return self._control_error(
@@ -1029,17 +1106,7 @@ class XFerryServer(HandlerMixin):
                     field=None,
                 )
         elif request.security_context.verified_principal is None:
-            response = self._control_error(
-                401,
-                "authentication_required",
-                "Unauthorized",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+            raise RuntimeError("Basic Auth request has no verified principal")
 
         admission = request.admission_context
         origin = admission.origin
@@ -1080,7 +1147,10 @@ class XFerryServer(HandlerMixin):
         ):
             return None
 
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session data reached before authentication")
+        if auth_mode == "disabled":
             direct_peer = request.security_context.direct_peer
             if direct_peer is None or not self._is_loopback_peer(direct_peer[0]):
                 return self._control_error(
@@ -1090,17 +1160,7 @@ class XFerryServer(HandlerMixin):
                     field=None,
                 )
         elif request.security_context.verified_principal is None:
-            response = self._control_error(
-                401,
-                "authentication_required",
-                "Unauthorized",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+            raise RuntimeError("Basic Auth request has no verified principal")
 
         admission = request.admission_context
         origin = admission.origin
@@ -1148,8 +1208,11 @@ class XFerryServer(HandlerMixin):
 
     def _advanced_session_principal(self, request: HTTPRequest) -> AdvancedSessionPrincipal:
         """Bridge the already-verified auth context into the session store principal."""
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "disabled":
             return AdvancedSessionPrincipal("no_auth", None)
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session principal requested before authentication")
         principal = request.security_context.verified_principal
         if principal is None:
             raise RuntimeError("advanced session control reached without verified principal")

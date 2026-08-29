@@ -9,6 +9,8 @@ import pytest
 
 from xferry.metrics import (
     ADVANCED_DECODE_REJECTION_REASONS,
+    AUTHENTICATION_DENIAL_REASONS,
+    AUTHENTICATION_OUTCOMES,
     QUOTA_DENIAL_REASONS,
     SCAN_OBSERVATION_SCOPES,
     STORAGE_USAGE_SCOPES,
@@ -27,6 +29,7 @@ class TestMetricsCollector:
             "requests",
             "connections",
             "request_admission",
+            "authentication",
             "receive",
             "response",
             "timeouts",
@@ -60,6 +63,20 @@ class TestMetricsCollector:
             "stream_abort_reasons": {},
         }
         assert snap["request_admission"] == {"active": 0, "accepted": 0, "rejected": 0}
+        assert snap["authentication"] == {
+            "active": 0,
+            "attempts": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "errors": 0,
+            "denials": 0,
+            "denial_reasons": {
+                "capacity": 0,
+                "cooldown": 0,
+                "peer_capacity": 0,
+                "timeout": 0,
+            },
+        }
         assert snap["websocket"] == {
             "active": 0,
             "rejected_admissions": 0,
@@ -174,6 +191,7 @@ class TestMetricsCollector:
         snap["receive"]["rejection_reasons"]["body_too_large"] = 999  # type: ignore[index]
         snap["response"]["stream_abort_reasons"]["timeout"] = 999  # type: ignore[index]
         snap["worker"]["exception_sources"]["worker_future"] = 999  # type: ignore[index]
+        snap["authentication"]["denial_reasons"]["cooldown"] = 999  # type: ignore[index]
         snap["storage"]["usage"]["uploads"]["bytes"] = 999  # type: ignore[index]
         snap["storage"]["quota_denials"]["uploads"]["bytes"] = 999  # type: ignore[index]
         snap["storage"]["scans"]["info"]["count"] = 999  # type: ignore[index]
@@ -197,6 +215,7 @@ class TestMetricsCollector:
             "exception_sources": {"handle_client": 1},
             "last_exception_type": "RuntimeError",
         }
+        assert snap2["authentication"]["denial_reasons"]["cooldown"] == 0  # type: ignore[index]
         assert snap2["storage"]["usage"]["uploads"]["bytes"] == 0  # type: ignore[index]
         assert snap2["storage"]["quota_denials"]["uploads"]["bytes"] == 0  # type: ignore[index]
         assert snap2["storage"]["scans"]["info"]["count"] == 0  # type: ignore[index]
@@ -259,6 +278,79 @@ class TestMetricsCollector:
             m.record_quota_denial("uploads/private-name.txt", "bytes")
         with pytest.raises(ValueError, match="unknown uploads quota denial reason"):
             m.record_quota_denial("uploads", "private-name.txt")
+
+    @pytest.mark.parametrize("reason", sorted(AUTHENTICATION_DENIAL_REASONS))
+    def test_authentication_denials_are_closed_low_cardinality_labels(
+        self,
+        reason: str,
+    ) -> None:
+        m = MetricsCollector()
+        m.record_authentication_denial(reason)
+        m.record_authentication_denial(reason)
+
+        auth: dict[str, Any] = m.snapshot()["authentication"]  # type: ignore[assignment]
+        assert auth["denials"] == 2
+        assert auth["denial_reasons"][reason] == 2
+
+    @pytest.mark.parametrize("outcome", sorted(AUTHENTICATION_OUTCOMES))
+    def test_authentication_attempts_are_closed_low_cardinality_labels(
+        self,
+        outcome: str,
+    ) -> None:
+        m = MetricsCollector()
+        m.record_authentication_started()
+        m.record_authentication_finished(outcome)
+
+        auth: dict[str, Any] = m.snapshot()["authentication"]  # type: ignore[assignment]
+        assert auth["active"] == 0
+        assert auth["attempts"] == 1
+        expected_key = "errors" if outcome == "error" else outcome
+        assert auth[expected_key] == 1
+
+    def test_auth_metrics_reject_unknown_labels(self) -> None:
+        m = MetricsCollector()
+
+        with pytest.raises(ValueError, match="unknown authentication denial reason"):
+            m.record_authentication_denial("203.0.113.10")
+        m.record_authentication_started()
+        with pytest.raises(ValueError, match="unknown authentication outcome"):
+            m.record_authentication_finished("admin")
+
+    def test_authentication_metrics_are_thread_safe(self) -> None:
+        m = MetricsCollector()
+        cases = (
+            ("succeeded", "capacity"),
+            ("failed", "cooldown"),
+            ("error", "peer_capacity"),
+            ("succeeded", "timeout"),
+        )
+
+        def worker(outcome: str, reason: str) -> None:
+            for _ in range(250):
+                m.record_authentication_started()
+                m.record_authentication_finished(outcome)
+                m.record_authentication_denial(reason)
+
+        threads = [threading.Thread(target=worker, args=case) for case in cases]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert m.snapshot()["authentication"] == {
+            "active": 0,
+            "attempts": 1000,
+            "succeeded": 500,
+            "failed": 250,
+            "errors": 250,
+            "denials": 1000,
+            "denial_reasons": {
+                "capacity": 250,
+                "cooldown": 250,
+                "peer_capacity": 250,
+                "timeout": 250,
+            },
+        }
 
     @pytest.mark.parametrize("reason", sorted(ADVANCED_DECODE_REJECTION_REASONS))
     def test_advanced_decode_rejections_are_closed_low_cardinality_labels(
