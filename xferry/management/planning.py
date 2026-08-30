@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Literal
 
 from xferry.security.tls import normalize_domain, sslip_domain_for_ip, validate_public_ipv4
+from xferry.settings import render_settings_ini
 
 from .model import (
     HostFacts,
@@ -196,46 +197,55 @@ def check_setup_preflight(plan: SetupPlan, probes: SetupProbes) -> SetupPrefligh
 
 def render_managed_config(plan: SetupPlan) -> str:
     """Render a complete, secret-free INI accepted by the settings loader."""
-    server = [
-        "[server]",
-        f"host = {plan.bind_host}",
-        f"port = {plan.port}",
-        f"root_dir = {plan.layout.data_root}",
-        f"workers = {plan.resources.workers}",
-    ]
-    if plan.mode is not SetupMode.PRIVATE:
-        server.extend(("preset = public-direct", "public_direct = true"))
-    common = server + [
-        "",
-        "[security]",
-        f"auth_file = {plan.layout.auth_file}",
-        f"allowed_hosts = {plan.domain or plan.bind_host}",
-        "",
-        "[limits]",
-        f"max_size_mb = {plan.resources.max_upload_mib}",
-        f"body_memory_budget_mb = {plan.resources.body_budget_mib}",
-        f"upload_storage_limit_mb = {plan.resources.upload_storage_mib}",
-        f"upload_reserve_free_mb = {plan.resources.reserve_mib}",
-        "body_idle_timeout = 5",
-        "body_timeout = 300",
-        "stream_send_idle_timeout = 5",
-        "stream_send_timeout = 300",
-    ]
+    values: dict[str, object] = {
+        "host": plan.bind_host,
+        "port": plan.port,
+        "root_dir": plan.layout.data_root,
+        "workers": plan.resources.workers,
+        "auth_file": plan.layout.auth_file,
+        "allowed_hosts": (plan.domain or plan.bind_host,),
+        "max_size_mb": plan.resources.max_upload_mib,
+        "body_memory_budget_mb": plan.resources.body_budget_mib,
+        "upload_storage_limit_mb": plan.resources.upload_storage_mib,
+        "upload_reserve_free_mb": plan.resources.reserve_mib,
+        "body_idle_timeout": 5,
+        "body_timeout": 300,
+        "stream_send_idle_timeout": 5,
+        "stream_send_timeout": 300,
+    }
+    field_names = list(values)
     if plan.mode is SetupMode.PRIVATE:
-        return "\n".join(common) + "\n"
-    public = [
-        "[tls]",
-        f"letsencrypt = {'false' if plan.mode is SetupMode.SSLIP else 'true'}",
-        f"sslip = {'true' if plan.mode is SetupMode.SSLIP else 'false'}",
-    ]
+        return render_settings_ini(
+            target="managed",
+            values=values,
+            field_names=field_names,
+        )
+
+    values.update(
+        {
+            "preset": "public-direct",
+            "public_direct": True,
+            "letsencrypt": plan.mode is SetupMode.DOMAIN,
+            "sslip": plan.mode is SetupMode.SSLIP,
+            "acme_http_port": 80,
+        }
+    )
+    field_names.extend(("preset", "public_direct", "letsencrypt", "sslip"))
     if plan.mode is SetupMode.SSLIP:
-        public.append(f"public_ip = {plan.public_ip}")
+        values["public_ip"] = plan.public_ip
+        field_names.append("public_ip")
     else:
-        public.append(f"domain = {plan.domain}")
+        values["domain"] = plan.domain
+        field_names.append("domain")
     if plan.email:
-        public.append(f"email = {plan.email}")
-    public.extend(("acme_http_port = 80", ""))
-    return "\n".join(common + [""] + public) + "\n"
+        values["email"] = plan.email
+        field_names.append("email")
+    field_names.append("acme_http_port")
+    return render_settings_ini(
+        target="managed",
+        values=values,
+        field_names=field_names,
+    )
 
 
 def _public_plan(

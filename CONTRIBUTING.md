@@ -45,6 +45,7 @@ ruff check xferry tests tools
 ruff format --check xferry tests tools
 mypy xferry
 pytest --cov=xferry --cov-report=term-missing
+python tools/render_settings.py --check
 python tools/sync_docs.py --check
 python tools/check_stale_docs.py
 python tools/check_public_surface.py
@@ -63,6 +64,14 @@ are canonical. Their `docs/` copies are generated:
 ```bash
 python tools/sync_docs.py --write
 python tools/sync_docs.py --check
+```
+
+The marked settings regions in the Docker and systemd INI examples are also
+generated from the operator settings schema:
+
+```bash
+python tools/render_settings.py --write
+python tools/render_settings.py --check
 ```
 
 Keep API examples synchronized with actual handlers and tests. Architectural

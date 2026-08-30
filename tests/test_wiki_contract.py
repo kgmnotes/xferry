@@ -72,6 +72,7 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
     for marker in (
         "pages: write",
         "id-token: write",
+        "python tools/render_settings.py --check",
         "python tools/sync_docs.py --check",
         "python tools/check_stale_docs.py",
         "mkdocs build --strict",
@@ -81,6 +82,30 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
         "name: github-pages",
     ):
         assert marker in workflow
+
+    assert workflow.index("python tools/render_settings.py --check") < workflow.index(
+        "python tools/sync_docs.py --check"
+    )
+
+
+def test_pre_commit_checks_settings_before_documentation_mirrors() -> None:
+    config = _read(".pre-commit-config.yaml")
+
+    settings_check = "entry: python tools/render_settings.py --check"
+    docs_check = "entry: python tools/sync_docs.py --check"
+    assert settings_check in config
+    assert docs_check in config
+    assert config.index(settings_check) < config.index(docs_check)
+
+
+def test_ci_checks_settings_before_documentation_mirrors() -> None:
+    workflow = _read(".github/workflows/ci.yml")
+
+    settings_check = "python tools/render_settings.py --check"
+    docs_check = "python tools/sync_docs.py --check"
+    assert settings_check in workflow
+    assert docs_check in workflow
+    assert workflow.index(settings_check) < workflow.index(docs_check)
 
 
 def test_primary_user_journey_is_english() -> None:

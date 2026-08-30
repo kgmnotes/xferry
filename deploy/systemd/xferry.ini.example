@@ -2,6 +2,7 @@
 # `sudo xferry setup` writes the managed file atomically; use this only for
 # reviewing the equivalent settings or for an explicitly manual deployment.
 
+# BEGIN GENERATED: xferry-settings/systemd
 [server]
 preset = public-direct
 host = 0.0.0.0
@@ -47,3 +48,4 @@ cors_origin =
 plugin_allowlist =
 plugins_allow_public_direct = false
 plugins_override_core = false
+# END GENERATED: xferry-settings/systemd

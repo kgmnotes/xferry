@@ -319,6 +319,34 @@ def test_rendered_public_config_loads_with_finite_security_limits(tmp_path: Path
     assert settings.body_memory_budget_mb == 256
 
 
+def test_managed_config_delegates_shape_and_serialization_to_settings_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed values stay dynamic while canonical INI metadata comes from the schema."""
+    plan = build_setup_plan(SetupOptions(), _facts(), resolve_public_ip=lambda: "8.8.8.8")
+    captured: dict[str, object] = {}
+
+    def capture_renderer(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "schema-rendered\n"
+
+    monkeypatch.setattr("xferry.management.planning.render_settings_ini", capture_renderer)
+
+    assert render_managed_config(plan) == "schema-rendered\n"
+    assert captured["target"] == "managed"
+    values = captured["values"]
+    field_names = captured["field_names"]
+    assert isinstance(values, dict)
+    assert isinstance(field_names, list)
+    assert set(field_names) == set(values)
+    assert values["root_dir"] == plan.layout.data_root
+    assert values["auth_file"] == plan.layout.auth_file
+    assert values["allowed_hosts"] == (plan.domain,)
+    assert values["public_direct"] is True
+    assert values["sslip"] is True
+    assert values["letsencrypt"] is False
+
+
 def test_rendered_private_config_loads_with_the_same_auth_and_quota_boundary(
     tmp_path: Path,
 ) -> None:
