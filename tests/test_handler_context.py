@@ -120,6 +120,68 @@ def test_server_smuggle_creation_and_cleanup_remain_serialized(tmp_path: Path) -
     assert all(not path.exists() for path in paths)
 
 
+def test_server_constructs_one_notepad_service_under_concurrent_first_use(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import xferry.handlers.notepad as notepad_module
+
+    class TrackingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._condition = threading.Condition()
+            self.attempts = 0
+
+        def __enter__(self):
+            with self._condition:
+                self.attempts += 1
+                self._condition.notify_all()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            self._lock.release()
+
+        def wait_for_attempts(self, expected: int) -> bool:
+            with self._condition:
+                return self._condition.wait_for(
+                    lambda: self.attempts >= expected,
+                    timeout=1.0,
+                )
+
+    server = make_server(root_dir=str(tmp_path), quiet=True)
+    tracking_lock = TrackingLock()
+    server._notepad_service_lock = tracking_lock
+    real_factory = notepad_module.NotepadService
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+    factory_calls = 0
+
+    def blocking_factory(*args, **kwargs):
+        nonlocal factory_calls
+        factory_calls += 1
+        factory_entered.set()
+        assert release_factory.wait(timeout=2.0)
+        return real_factory(*args, **kwargs)
+
+    monkeypatch.setattr(notepad_module, "NotepadService", blocking_factory)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        first = executor.submit(server._get_notepad_service)
+        try:
+            assert factory_entered.wait(timeout=1.0)
+            remaining = [executor.submit(server._get_notepad_service) for _index in range(7)]
+            assert tracking_lock.wait_for_attempts(8)
+        finally:
+            release_factory.set()
+
+        services = [first.result(), *(future.result() for future in remaining)]
+
+    assert factory_calls == 1
+    assert services
+    assert all(service is services[0] for service in services)
+
+
 def test_base_handler_fallback_reuses_legacy_stub_objects(tmp_path: Path) -> None:
     class StubHandler(BaseHandler):
         pass
@@ -149,12 +211,24 @@ def test_files_and_smuggle_handlers_do_not_reach_server_temp_fields() -> None:
     files_source = (REPO_ROOT / "xferry" / "handlers" / "files.py").read_text(encoding="utf-8")
     smuggle_source = (REPO_ROOT / "xferry" / "handlers" / "smuggle.py").read_text(encoding="utf-8")
     server_source = (REPO_ROOT / "xferry" / "server.py").read_text(encoding="utf-8")
+    extensions_source = (REPO_ROOT / "xferry" / "extensions.py").read_text(encoding="utf-8")
 
     for source in (files_source, smuggle_source):
         assert "_smuggle_lock" not in source
         assert "_temp_smuggle_files" not in source
 
+    for token in (
+        "server: object",
+        "server=self",
+        "context.server",
+        "def __getattr__",
+        "@property\n    def server",
+    ):
+        assert token not in extensions_source
+        assert token not in server_source
+
     assert "HandlerRuntimeContext(" in server_source
+    assert "PluginServices(" in server_source
     assert "SmuggleTempCoordinator(" in server_source
     assert "self.get_smuggle_temp_usage()" in server_source
     assert "self.handler_context.smuggle_temp.remove_all_registered()" in server_source

@@ -22,7 +22,13 @@ from typing import Any
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
-from .extensions import HandlerContext, PluginMethodSpec, PluginSpec, coerce_plugin_specs
+from .extensions import (
+    HandlerContext,
+    PluginMethodSpec,
+    PluginServices,
+    PluginSpec,
+    coerce_plugin_specs,
+)
 from .features import (
     core_method_spec,
     cors_methods,
@@ -203,6 +209,7 @@ class XFerryServer(HandlerMixin):
 
         # Notes lock for thread-safe notepad writes
         self._notes_lock = threading.Lock()
+        self._notepad_service_lock = threading.Lock()
 
         # ECDH key manager for Secure Notepad v2
         self._ecdh_manager = None
@@ -314,6 +321,10 @@ class XFerryServer(HandlerMixin):
             )
 
         core_methods = set(registry_methods())
+        plugin_services = PluginServices(
+            upload_dir=self.upload_dir,
+            upload_storage=self.upload_storage,
+        )
         for plugin in coerce_plugin_specs(plugins, plugin_modules):
             for method_spec in plugin.methods:
                 method = method_spec.method
@@ -321,7 +332,7 @@ class XFerryServer(HandlerMixin):
                     raise ValueError(f"plugin method {method} would override a core method")
 
                 context = HandlerContext(
-                    server=self,
+                    services=plugin_services,
                     plugin_name=plugin.name,
                 )
                 self.method_handlers.register(

@@ -55,6 +55,7 @@ class NotepadHandlersMixin(BaseHandler):
 
     # Set by XFerryServer.__init__
     _notes_lock: threading.Lock
+    _notepad_service_lock: threading.Lock
     _notepad_service: NotepadService | None
     note_storage_policy: NoteStoragePolicy
 
@@ -280,19 +281,27 @@ class NotepadHandlersMixin(BaseHandler):
     def _get_notepad_service(self) -> NotepadService:
         """Return the lazily created note-domain service."""
         service = getattr(self, "_notepad_service", None)
-        if service is None:
-            session_exists = (
-                self._note_session_is_active if self._ecdh_manager is not None else None
-            )
-            service = NotepadService(
-                self.notes_dir,
-                self._notes_lock,
-                session_exists=session_exists,
-                storage_policy=getattr(self, "note_storage_policy", NoteStoragePolicy()),
-                metrics=self._get_metrics_collector(),
-            )
-            self._notepad_service = service
-        return service
+        if service is not None:
+            return service
+
+        creation_lock = getattr(self, "_notepad_service_lock", None)
+        if creation_lock is None:
+            creation_lock = self._notes_lock
+        with creation_lock:
+            service = getattr(self, "_notepad_service", None)
+            if service is None:
+                session_exists = (
+                    self._note_session_is_active if self._ecdh_manager is not None else None
+                )
+                service = NotepadService(
+                    self.notes_dir,
+                    self._notes_lock,
+                    session_exists=session_exists,
+                    storage_policy=getattr(self, "note_storage_policy", NoteStoragePolicy()),
+                    metrics=self._get_metrics_collector(),
+                )
+                self._notepad_service = service
+            return service
 
     def _note_session_is_active(self, session_id: str) -> bool:
         """Return ``True`` when *session_id* is still active in the ECDH manager."""
