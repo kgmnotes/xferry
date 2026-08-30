@@ -45,6 +45,10 @@ def test_repository_documentation_contract_is_clean() -> None:
         ("SMUGGLE is profile-gated.\n", "profile-gated availability"),
         ("pip install xferry[crypto,dev]\n", "crypto-extra guidance"),
         ("SMUGGLE supports DLP/proxy bypass.\n", "avoid bypass wording"),
+        (
+            "Download Quarterly-Report.pdf.\n",
+            "neutral controlled-test artifact",
+        ),
         ("python -m src --help\n", "python -m xferry"),
         ("from src import XFerryServer\n", "from xferry"),
         ("Run sudo xferry update --version 0.2.0.\n", "public update command"),
@@ -95,6 +99,52 @@ def test_current_managed_and_compose_profile_flags_are_allowed(tmp_path: Path) -
     )
 
     assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+@pytest.mark.parametrize("forbidden", ('"dlp"', '"red-team"'))
+def test_package_metadata_rejects_non_neutral_security_keywords(
+    tmp_path: Path,
+    forbidden: str,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "keywords = [\n"
+        '  "security-research",\n'
+        '  "authorized-testing",\n'
+        '  "controlled-testing",\n'
+        '  "http-testing",\n'
+        f"  {forbidden},\n"
+        "]\n",
+        encoding="utf-8",
+    )
+
+    findings = check_stale_docs.find_semantic_contract_issues(
+        tmp_path,
+        ("pyproject.toml",),
+    )
+
+    assert any("authorized, controlled security research" in item.message for item in findings)
+
+
+def test_package_metadata_accepts_neutral_authorized_research_keywords(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "keywords = [\n"
+        '  "security-research",\n'
+        '  "authorized-testing",\n'
+        '  "controlled-testing",\n'
+        '  "http-testing",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        check_stale_docs.find_semantic_contract_issues(
+            tmp_path,
+            ("pyproject.toml",),
+        )
+        == []
+    )
 
 
 def test_unrelated_storage_publication_wording_remains_allowed(tmp_path: Path) -> None:

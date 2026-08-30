@@ -266,6 +266,10 @@ STALE_PATTERNS: tuple[StalePattern, ...] = (
         "stale SMUGGLE framing; avoid bypass wording",
     ),
     StalePattern(
+        re.compile(r"\bQuarterly[- ]Report\b", re.IGNORECASE),
+        "replace lure-style document naming with a neutral controlled-test artifact",
+    ),
+    StalePattern(
         re.compile(
             r"(?:via\s+email\s+and\s+messengers|email(?:,|\s+and)\s+messengers)", re.IGNORECASE
         ),
@@ -433,6 +437,44 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         ),
         "CONTRIBUTING must preserve local checks, documentation sync, and source-first "
         "release status",
+    ),
+    SemanticRequirement(
+        Path("CONTRIBUTING.md"),
+        re.compile(
+            r"\A(?=[\s\S]*PluginServices\(upload_dir, upload_storage\))"
+            r"(?=[\s\S]*HandlerContext\(services, plugin_name\))"
+            r"(?=[\s\S]*context\.server[\s\S]*without[\s\S]*compatibility shim)"
+            r"(?=[\s\S]*upload_storage\.publish_bytes)"
+            r"(?=[\s\S]*ordinary XHTML[\s\S]*attachment)"
+            r"(?=[\s\S]*admission[\s\S]*authentication[\s\S]*before plugin dispatch)"
+            r"[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "CONTRIBUTING must document the exact narrow plugin API and provenance boundary",
+    ),
+    SemanticRequirement(
+        Path("docs/architecture.md"),
+        re.compile(
+            r"\A(?=[\s\S]*PluginServices\(upload_dir, upload_storage\))"
+            r"(?=[\s\S]*HandlerContext\(services, plugin_name\))"
+            r"(?=[\s\S]*no `context\.server` compatibility path)"
+            r"(?=[\s\S]*admission[\s\S]*authentication[\s\S]*before[\s\S]*plugin dispatch)"
+            r"(?=[\s\S]*ordinary XHTML[\s\S]*attachment)[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "architecture docs must preserve least-authority plugin services and provenance",
+    ),
+    SemanticRequirement(
+        Path("pyproject.toml"),
+        re.compile(
+            r'\A(?![\s\S]*"(?:dlp|red-team)")'
+            r'(?=[\s\S]*"security-research")'
+            r'(?=[\s\S]*"authorized-testing")'
+            r'(?=[\s\S]*"controlled-testing")'
+            r'(?=[\s\S]*"http-testing")[\s\S]*',
+            re.IGNORECASE,
+        ),
+        "package keywords must describe authorized, controlled security research",
     ),
     SemanticRequirement(
         Path("docs/operations.md"),

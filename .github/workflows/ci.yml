@@ -165,8 +165,9 @@ jobs:
       - name: Check generated docs and semantic guards
         run: |
           set -euo pipefail
-          ruff check tools/render_settings.py tools/sync_docs.py tools/check_stale_docs.py
+          ruff check tools/render_settings.py tools/render_contracts.py tools/sync_docs.py tools/check_stale_docs.py
           python tools/render_settings.py --check
+          python tools/render_contracts.py --check
           python tools/sync_docs.py --check
           python tools/check_stale_docs.py
 

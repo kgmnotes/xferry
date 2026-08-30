@@ -73,6 +73,21 @@ unless the operator enables core override, and public-direct rejects plugins
 unless they are explicitly allowed. Advanced Session creation also rejects a
 plugin conflict with `POST`, `PUT`, `PATCH`, or `NONE`.
 
+The plugin handler boundary is the frozen, slotted
+`PluginServices(upload_dir, upload_storage)` inside
+`HandlerContext(services, plugin_name)`. A handler receives only its plugin
+name, the upload directory path, and the quota-aware upload publication
+service. Published `file_path` values must be direct children of that upload
+directory. There is no `context.server` compatibility path; authentication,
+request-pipeline, TLS, lifecycle, metrics, Notepad, Advanced Session, and
+SMUGGLE coordinator state are not part of the supported plugin API. Admission
+and authentication run before plugin dispatch.
+
+Files published by a plugin remain ordinary-upload provenance. In particular,
+ordinary XHTML is sent as an attachment even when its name resembles a
+generated artifact; only core artifacts registered with the SMUGGLE
+coordinator retain runnable, one-shot handling.
+
 ## Browser UI
 
 The bundled UI uses classic same-origin JavaScript without a build step.

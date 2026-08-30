@@ -46,6 +46,7 @@ ruff format --check xferry tests tools
 mypy xferry
 pytest --cov=xferry --cov-report=term-missing
 python tools/render_settings.py --check
+python tools/render_contracts.py --check
 python tools/sync_docs.py --check
 python tools/check_stale_docs.py
 python tools/check_public_surface.py
@@ -59,19 +60,18 @@ include `first-run`, `ui-contracts`, `request-matrix`, `advanced`, `files`,
 ## Documentation
 
 The root files `API.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`
-are canonical. Their `docs/` copies are generated:
-
-```bash
-python tools/sync_docs.py --write
-python tools/sync_docs.py --check
-```
-
-The marked settings regions in the Docker and systemd INI examples are also
-generated from the operator settings schema:
+are canonical. Their `docs/` copies are generated. The marked settings regions
+in the Docker and systemd INI examples come from the operator settings schema;
+the marked method and capability tables in `API.md` come from the runtime
+contract registries. Regenerate all derived files in this order:
 
 ```bash
 python tools/render_settings.py --write
+python tools/render_contracts.py --write
+python tools/sync_docs.py --write
 python tools/render_settings.py --check
+python tools/render_contracts.py --check
+python tools/sync_docs.py --check
 ```
 
 Keep API examples synchronized with actual handlers and tests. Architectural
@@ -98,6 +98,32 @@ itself still holds; otherwise replace the decision set deliberately.
    policy, and `PING` discovery where applicable.
 4. Document the wire contract in `API.md`.
 5. Add an ADR only when the change makes a durable architectural decision.
+
+## Writing a plugin method
+
+Plugins are loaded only through an explicit operator allowlist. A
+`PluginMethodSpec` handler has the signature
+`(HTTPRequest, HandlerContext) -> HTTPResponse`. The frozen, slotted public
+boundary is exactly `PluginServices(upload_dir, upload_storage)` inside
+`HandlerContext(services, plugin_name)`: handlers may read
+`context.plugin_name`, `context.services.upload_dir`, and
+`context.services.upload_storage`.
+
+The former `context.server` reference is removed without a property, alias,
+`__getattr__`, or compatibility shim. No authentication controller, request
+pipeline, TLS or lifecycle state, metrics collector, Notepad service, Advanced
+Session store, or SMUGGLE coordinator is part of the supported plugin API.
+Publish bytes with the quota-aware
+`context.services.upload_storage.publish_bytes(file_path, data)` service;
+`file_path` must be a direct child of `context.services.upload_dir`. Do not
+write directly into the upload directory when publishing a plugin result.
+
+Plugin publication does not grant SMUGGLE provenance. An ordinary XHTML file,
+including one with a SMUGGLE-like name, remains an ordinary upload and is sent
+as an attachment; only artifacts registered by the core SMUGGLE coordinator
+retain the runnable, one-shot contract. Request admission and authentication
+complete before plugin dispatch. Core override and public-direct plugin use
+each require explicit operator opt-in.
 
 ## Distribution verification
 

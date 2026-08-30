@@ -90,15 +90,43 @@ WebSocket message shapes remain documented in their separate section.
 
 XFerry has one always-on core method surface. The handler registry, exact-origin
 CORS preflight, browser UI affordances, and WebSocket notes all use this full
-surface by default. Core methods are:
+surface by default. The canonical runtime-backed core contract is:
 
-`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `FETCH`, `INFO`,
-`PING`, `NONE`, `NOTE`, `SMUGGLE`, plus syntactically valid unregistered
-methods when an authorized Advanced Session selects the upload route.
+<!-- BEGIN GENERATED: xferry-contracts/core-methods -->
+| `method` | `mutating` | `cors_exact` | `cors_wildcard` | `ui_group` | `exposure_note` |
+| --- | --- | --- | --- | --- | --- |
+| `GET` | `false` | `true` | `true` | `request` | Reads the built-in UI or files within the uploads scope. |
+| `HEAD` | `false` | `true` | `true` | `request` | Reads response metadata without returning a response body. |
+| `POST` | `true` | `true` | `false` | `upload` | Stores an ordinary upload from the request body. |
+| `PUT` | `true` | `true` | `false` | `upload` | Stores an ordinary upload through the legacy upload handler. |
+| `PATCH` | `true` | `true` | `false` | `upload` | Creates or updates an uploaded file from the request body. |
+| `DELETE` | `true` | `true` | `false` | `files` | Deletes uploaded files or explicitly clears the uploads scope. |
+| `OPTIONS` | `false` | `true` | `true` | `request` | Reports CORS preflight policy without mutating server state. |
+| `FETCH` | `false` | `true` | `true` | `files` | Downloads an uploaded file with FETCH status metadata. |
+| `INFO` | `false` | `true` | `true` | `request` | Lists or inspects paths constrained to the uploads scope. |
+| `PING` | `false` | `true` | `true` | `request` | Reports health, method discovery, and operational metrics. |
+| `NONE` | `true` | `true` | `false` | `upload` | Stores an ordinary upload through the legacy NONE method. |
+| `NOTE` | `true` | `true` | `false` | `notepad` | Reads and mutates encrypted Secure Notepad state. |
+| `SMUGGLE` | `true` | `true` | `false` | `files` | Creates a controlled temporary HTML download artifact. |
+<!-- END GENERATED: xferry-contracts/core-methods -->
+
+Syntactically valid unregistered methods are outside the core registry. They
+select the upload route only when an authorized Advanced Session explicitly
+admits them under its scoped contract.
 
 Wildcard CORS remains read-only and lists only read methods; exact CORS origins
 can receive the full method list and can echo a requested unknown advanced
 upload method when the method token is valid.
+
+### Plugin handler boundary
+
+Explicitly enabled plugin handlers have the public callable shape
+`(HTTPRequest, HandlerContext) -> HTTPResponse`. The immutable, slotted service
+boundary is exactly `PluginServices(upload_dir, upload_storage)` nested in
+`HandlerContext(services, plugin_name)`. A handler can use
+`context.services.upload_dir`, `context.services.upload_storage`, and
+`context.plugin_name`; there is no `HandlerContext.server` property, shim,
+alias, or wider runtime authority.
 
 ---
 
@@ -192,8 +220,11 @@ the built-in UI assets. Other file paths are resolved inside `uploads/`;
 `/file.txt` and `/uploads/file.txt` both target `<root>/uploads/file.txt`.
 
 **Response:** File contents with appropriate `Content-Type`. Bundled HTML files
-include `Content-Security-Policy`; uploaded HTML/SVG files are forced to
-download as attachments.
+include `Content-Security-Policy`. Ordinary uploaded HTML, SVG, and XHTML
+files are forced to download as attachments. A registered SMUGGLE artifact is
+the intentional exception: its synchronized provenance preserves the generated
+runnable media type and one-shot cleanup lifecycle. Replacing or deleting that
+file clears the provenance before ordinary upload behavior can resume.
 
 The bundled UI CSP currently includes `default-src 'self'`, `script-src
 'self'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data:`,
@@ -633,91 +664,39 @@ SMUGGLE request. It includes `schema_version=1`, `source_max_bytes`,
 `trigger_events`, `custom_trigger_methods`, `temp_policy`, and boolean `caps`.
 Current defaults, limits, and built-ins are:
 
-- default builder values: `mode=simple`, `preset=direct`, `locale=ru`,
-  `encryption=none`, `payload_encoding=base64`, `trigger_method=svg`,
-  `trigger_event=onload`, `output_format=html`,
-  `download_variant=blob-anchor`, `page_template=default`,
-  `mime_type=application/octet-stream`, `delay_ms=0`, `null_byte=false`, and
-  `show_notice=true`
-- field limits: `download_name` 120 characters, `download_ext` 32 characters,
-  `title` 120 characters, `message` 280 characters, `cta_label` 80 characters,
-  `delay_ms` `0..10000`, `mime_type` 120 characters, and `trigger_event` 64
-  characters
-- modes: `simple`, `constructor` (`mode=simple|constructor`)
-- mode applicability: `preset`, `cta_label`, and `delay_ms` are simple-only;
-  `payload_encoding`, `trigger_method`, `trigger_event`, `output_format`,
-  `download_variant`, `page_template`, `mime_type`, and `null_byte` are
-  constructor-only
-- encryption modes: `none`, `xor`, `aes` (`encryption=none|xor|aes`).
-  `none` leaves bytes unchanged and carries no password. `xor` is explicit
-  compatibility obfuscation with a password gate, not confidentiality.
-  `aes` is password-based AES-256-GCM using the canonical XFerry wire format.
-  There is no AES-to-XOR or XOR-to-AES fallback.
-- locales: `ru`, `en`
-- suggested extracted-file extensions: `txt`, `bin`, `dat`, `zip`, `pdf`;
-  `extensions` is a UI suggestion list, not an allowlist or a content-safety
-  boundary
-- constructor MIME presets cover generic/text (`application/octet-stream`,
-  `text/plain`, `text/html`, `text/css`, `text/csv`, `text/javascript`,
-  `application/json`, `application/xml`, `application/pdf`), archives
-  (`application/zip`, `application/gzip`, `application/x-tar`,
-  `application/x-7z-compressed`, `application/vnd.rar`), images/media
-  (`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`,
-  `audio/mpeg`, `video/mp4`), legacy and OOXML Office types
-  (`application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
-  `application/vnd.ms-excel`,
-  `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
-  `application/vnd.ms-powerpoint`,
-  `application/vnd.openxmlformats-officedocument.presentationml.presentation`),
-  packages/binaries (`application/java-archive`,
-  `application/vnd.android.package-archive`, `application/wasm`,
-  `application/vnd.microsoft.portable-executable`, `application/x-msi`), and
-  scripts (`text/x-python`, `application/x-powershell`, `application/x-sh`)
-- `mime_by_extension` supplies matching suggestions for `bin`, `dat`, `txt`,
-  `log`, `md`, `csv`, `html`, `htm`, `css`, `js`, `mjs`, `json`, `xml`, `pdf`,
-  `zip`, `gz`, `tgz`, compound `tar.gz`, `tar`, `7z`, `rar`, `png`, `jpg`,
-  `jpeg`, `gif`, `webp`, `svg`, `mp3`, `mp4`, `doc`, `docx`, `xls`, `xlsx`,
-  `ppt`, `pptx`, `jar`, `apk`, `wasm`, `exe`, `dll`, `scr`, `msi`, `py`, `pyw`,
-  `ps1`, `psm1`, `psd1`, `sh`, `bash`, and `zsh`
-- simple presets: `direct`, `card_manual`, `card_auto`
-- payload encodings: `base64`, `base64url`, `base32`, `percent`, `reverse`,
-  `xor`, `hex`, `split`, `attrs`, `charcode`
-- outer artifact formats: `html`, `htm`, `shtml`, `shtm`, `xhtml`, `xht`,
-  `xhtm`, `xml`, `svg` (this expansion adds no output formats)
-- page templates: `default`, `minimal`, `corporate`, `drive`,
-  `npf-zip-archive-help`
-- download variants: `blob-anchor`, `data-uri`, `iframe-blob`, `filereader`,
-  `fetch-blob`, `window-open`, `loc-assign`, `form-post`, `timeout-blob`,
-  `promise-blob`, `raf-blob`, `microtask-blob`, `observer-blob`,
-  `response-blob`, `readable-stream`, `message-channel-blob`,
-  `idle-callback-blob`
-- trigger map: `svg:onload`; `body:onload,onpageshow`;
-  `img:onerror,onload`; `audio:onerror,onloadstart`;
-  `video:onerror,onloadstart`; `source:onerror`;
-  `input:onfocus,oninput,onchange,onkeydown`;
-  `select:onfocus,onchange`;
-  `button:onfocus,onclick,onpointerdown,onkeydown`;
-  `textarea:onfocus,oninput,onchange,onkeydown`;
-  `details:ontoggle,onclick`; `iframe:srcdoc,onload`;
-  `animate:onbegin,onend,onrepeat`; `animmotion:onbegin,onend,onrepeat`;
-  `set:onbegin,onend`;
-  `cssanim:onanimationstart,onanimationend,onanimationiteration`;
-  `csstransition:ontransitionrun,ontransitionstart,ontransitionend`;
-  `link:onerror,onload`; `script:onerror`; `form:onsubmit`;
-  `custom:onfocus`; `focusin:onfocusin`;
-  `contentvis:oncontentvisibilityautostatechange`.
-  Clients should still prefer the exact `trigger_events` map returned by the
-  running server over a hard-coded copy.
-- custom trigger eligibility: `custom_trigger_methods` lists the canonical,
-  registered element-method tokens that may accept a validated custom event:
-  `svg`, `body`, `img`, `audio`, `video`, `source`, `input`, `select`, `button`,
-  `textarea`, `details`, `iframe`, `animate`, `animmotion`, `set`, `cssanim`,
-  `csstransition`, `link`, `script`, `form`, `custom`, `focusin`, and
-  `contentvis`
-- capability flags: `one_shot`, `constructor`, `xor_obfuscation`,
-  `aes_gcm`, `source_cap_enforced`, `custom_extension`, `custom_mime_type`,
-  `custom_trigger_event`, and `searchable_options` are boolean; the current
-  built-in implementation reports all nine as `true`
+<!-- BEGIN GENERATED: xferry-contracts/smuggle-capabilities -->
+| Root field | Canonical runtime value (JSON) |
+| --- | --- |
+| `schema_version` | `1` |
+| `source_max_bytes` | `10485760` |
+| `field_limits` | `{"download_name": 120, "download_ext": 32, "title": 120, "message": 280, "cta_label": 80, "delay_ms": 10000, "mime_type": 120, "trigger_event": 64}` |
+| `defaults` | `{"mode": "simple", "preset": "direct", "locale": "ru", "encryption": "none", "payload_encoding": "base64", "trigger_method": "svg", "trigger_event": "onload", "output_format": "html", "download_variant": "blob-anchor", "page_template": "default", "mime_type": "application/octet-stream", "delay_ms": 0, "show_notice": true, "null_byte": false}` |
+| `mode_fields` | `{"simple_only": ["cta_label", "delay_ms", "preset"], "constructor_only": ["download_variant", "mime_type", "null_byte", "output_format", "page_template", "payload_encoding", "trigger_event", "trigger_method"]}` |
+| `extensions` | `["txt", "bin", "dat", "pdf", "zip", "7z", "rar", "tar", "gz", "tar.gz", "csv", "json", "xml", "html", "htm", "js", "css", "svg", "png", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "exe", "dll", "scr", "msi", "ps1", "psm1", "bat", "cmd", "sh", "py", "jar", "apk", "wasm"]` |
+| `mime_presets` | `["application/octet-stream", "text/plain", "text/html", "text/css", "text/csv", "text/javascript", "application/json", "application/xml", "application/pdf", "application/zip", "application/gzip", "application/x-tar", "application/x-7z-compressed", "application/vnd.rar", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "audio/mpeg", "video/mp4", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/java-archive", "application/vnd.android.package-archive", "application/wasm", "application/vnd.microsoft.portable-executable", "application/x-msi", "text/x-python", "application/x-powershell", "application/x-sh"]` |
+| `mime_by_extension` | `{"bin": "application/octet-stream", "dat": "application/octet-stream", "txt": "text/plain", "log": "text/plain", "md": "text/plain", "csv": "text/csv", "html": "text/html", "htm": "text/html", "css": "text/css", "js": "text/javascript", "mjs": "text/javascript", "json": "application/json", "xml": "application/xml", "pdf": "application/pdf", "zip": "application/zip", "gz": "application/gzip", "tgz": "application/gzip", "tar.gz": "application/gzip", "tar": "application/x-tar", "7z": "application/x-7z-compressed", "rar": "application/vnd.rar", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml", "mp3": "audio/mpeg", "mp4": "video/mp4", "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xls": "application/vnd.ms-excel", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "ppt": "application/vnd.ms-powerpoint", "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "jar": "application/java-archive", "apk": "application/vnd.android.package-archive", "wasm": "application/wasm", "exe": "application/vnd.microsoft.portable-executable", "dll": "application/vnd.microsoft.portable-executable", "scr": "application/vnd.microsoft.portable-executable", "msi": "application/x-msi", "py": "text/x-python", "pyw": "text/x-python", "ps1": "application/x-powershell", "psm1": "application/x-powershell", "psd1": "application/x-powershell", "sh": "application/x-sh", "bash": "application/x-sh", "zsh": "application/x-sh"}` |
+| `presets` | `["direct", "card_manual", "card_auto"]` |
+| `locales` | `["ru", "en"]` |
+| `encryption_modes` | `["none", "xor", "aes"]` |
+| `modes` | `["simple", "constructor"]` |
+| `payload_encodings` | `["base64", "base64url", "base32", "percent", "reverse", "xor", "hex", "split", "attrs", "charcode"]` |
+| `output_formats` | `["html", "htm", "shtml", "shtm", "xhtml", "xht", "xhtm", "xml", "svg"]` |
+| `page_templates` | `["default", "minimal", "corporate", "drive", "npf-zip-archive-help"]` |
+| `download_variants` | `["blob-anchor", "data-uri", "iframe-blob", "filereader", "fetch-blob", "window-open", "loc-assign", "form-post", "timeout-blob", "promise-blob", "raf-blob", "microtask-blob", "observer-blob", "response-blob", "readable-stream", "message-channel-blob", "idle-callback-blob"]` |
+| `trigger_events` | `{"svg": ["onload"], "body": ["onload", "onpageshow"], "img": ["onerror", "onload"], "audio": ["onerror", "onloadstart"], "video": ["onerror", "onloadstart"], "source": ["onerror"], "input": ["onfocus", "oninput", "onchange", "onkeydown"], "select": ["onfocus", "onchange"], "button": ["onfocus", "onclick", "onpointerdown", "onkeydown"], "textarea": ["onfocus", "oninput", "onchange", "onkeydown"], "details": ["ontoggle", "onclick"], "iframe": ["srcdoc", "onload"], "animate": ["onbegin", "onend", "onrepeat"], "animmotion": ["onbegin", "onend", "onrepeat"], "set": ["onbegin", "onend"], "cssanim": ["onanimationstart", "onanimationend", "onanimationiteration"], "csstransition": ["ontransitionrun", "ontransitionstart", "ontransitionend"], "link": ["onerror", "onload"], "script": ["onerror"], "form": ["onsubmit"], "custom": ["onfocus"], "focusin": ["onfocusin"], "contentvis": ["oncontentvisibilityautostatechange"]}` |
+| `custom_trigger_methods` | `["svg", "body", "img", "audio", "video", "source", "input", "select", "button", "textarea", "details", "iframe", "animate", "animmotion", "set", "cssanim", "csstransition", "link", "script", "form", "custom", "focusin", "contentvis"]` |
+| `temp_policy` | `{"max_age_seconds": 3600, "max_file_count": 32, "max_total_bytes": 134217728}` |
+| `caps` | `{"one_shot": true, "constructor": true, "xor_obfuscation": true, "aes_gcm": true, "source_cap_enforced": true, "custom_extension": true, "custom_mime_type": true, "custom_trigger_event": true, "searchable_options": true}` |
+<!-- END GENERATED: xferry-contracts/smuggle-capabilities -->
+
+The table serializes each complete root value as JSON. Mapping keys and list
+items remain in runtime insertion order; clients should consume the object from
+`PING` rather than parse this documentation table. `extensions` remains UI
+suggestion data, not an allowlist or content-safety boundary. The closed
+selectors are `mode=simple|constructor` and `encryption=none|xor|aes`; the
+default is `payload_encoding=base64`. `xor` is explicit compatibility
+obfuscation, not confidentiality, and there is no AES-to-XOR or XOR-to-AES
+fallback.
 
 The server owns built-in method name, handler binding, mutation, CORS, UI group,
 and exposure metadata in one typed `CoreMethodSpec` registry. Handler
@@ -881,7 +860,7 @@ or content checks.
 
 **With safe builder parameters:**
 ```
-SMUGGLE /uploads/report.bin?mode=simple&encryption=none&download_name=Quarterly-Report&download_ext=pdf&preset=card_auto&title=Quarterly%20Report&message=Internal%20controlled%20test%20file&cta_label=Download%20test%20artifact&delay_ms=1200&show_notice=1 HTTP/1.1
+SMUGGLE /uploads/research-sample.bin?mode=simple&encryption=none&download_name=controlled-test-artifact&download_ext=pdf&preset=card_auto&title=Controlled%20research%20artifact&message=Authorized%20internal%20test%20file&cta_label=Open%20test%20artifact&delay_ms=1200&show_notice=1 HTTP/1.1
 ```
 
 **Response (200):**
@@ -895,8 +874,8 @@ SMUGGLE /uploads/report.bin?mode=simple&encryption=none&download_name=Quarterly-
     "one_shot": true,
     "expires_at": null
   },
-  "source": {"name": "report.bin", "path": "/uploads/report.bin", "size_bytes": 1234},
-  "download": {"name": "Quarterly-Report.pdf", "name_applied": true, "mime_type": "application/octet-stream"},
+  "source": {"name": "research-sample.bin", "path": "/uploads/research-sample.bin", "size_bytes": 1234},
+  "download": {"name": "controlled-test-artifact.pdf", "name_applied": true, "mime_type": "application/octet-stream"},
   "builder": {
     "schema_version": 1,
     "mode": "simple",

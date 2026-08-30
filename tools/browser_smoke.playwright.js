@@ -7325,12 +7325,12 @@ async (page) => {
     await page.locator("#smuggleEncryption").waitFor({ state: "attached", timeout: 10000 });
     await chooseSmuggleCombobox("smuggleEncryption", "none");
 
-    await page.locator("#smuggleDownloadName").fill("Quarterly-Report");
+    await page.locator("#smuggleDownloadName").fill("controlled-test-artifact");
     await chooseSmuggleCombobox("smuggleDownloadExt", "pdf");
     await chooseSmuggleCombobox("smugglePreset", "card_auto");
     await page.locator("#smugglePageSettings > summary").click();
-    await page.locator("#smuggleTitleInput").fill("Quarterly Report");
-    await page.locator("#smuggleMessageInput").fill("Internal SMUGGLING test");
+    await page.locator("#smuggleTitleInput").fill("Controlled research artifact");
+    await page.locator("#smuggleMessageInput").fill("Controlled transfer test");
     await page.locator("#smuggleDelayMs").fill("1200");
 
     await page.evaluate(() => {
@@ -7422,11 +7422,11 @@ async (page) => {
           modalNode === window.__smuggleModalIdentity &&
           modalNode.dataset.smugglePhase === "editing" &&
           modalNode.querySelector(".smuggle-dialog")?.getAttribute("aria-busy") === "false" &&
-          document.getElementById("smuggleDownloadName")?.value === "Quarterly-Report" &&
+          document.getElementById("smuggleDownloadName")?.value === "controlled-test-artifact" &&
           document.getElementById("smuggleDownloadExt")?.value === "pdf" &&
           document.getElementById("smugglePreset")?.value === "card_auto" &&
-          document.getElementById("smuggleTitleInput")?.value === "Quarterly Report" &&
-          document.getElementById("smuggleMessageInput")?.value === "Internal SMUGGLING test" &&
+          document.getElementById("smuggleTitleInput")?.value === "Controlled research artifact" &&
+          document.getElementById("smuggleMessageInput")?.value === "Controlled transfer test" &&
           document.getElementById("smuggleDelayMs")?.value === "1200" &&
           status.includes(localized) &&
           status.includes("invalid_smuggle_configuration") &&
@@ -7488,7 +7488,11 @@ async (page) => {
         : "HTML сгенерирован"
     ));
     await waitForFilesSummaryText(["SMUGGLE", `/uploads/${name}`, generatedSummary], 10000);
-    await waitForText(page.locator("#smuggleSuccessPanel"), "Quarterly-Report.pdf", 10000);
+    await waitForText(
+      page.locator("#smuggleSuccessPanel"),
+      "controlled-test-artifact.pdf",
+      10000
+    );
     await waitForText(page.locator("#smuggleSuccessPanel"), /\/uploads\/smuggle_[^/\s]+\.html/, 10000);
     const normalizedBaseUrl = String(baseUrl || "").replace(/\/$/, "");
     await waitForPageCondition(
@@ -7566,7 +7570,7 @@ async (page) => {
 
     const popupUrl = await openSmuggleArtifactPopupAndAssert(
       () => page.locator("#smuggleOpenBtn").click(),
-      "Quarterly-Report.pdf"
+      "controlled-test-artifact.pdf"
     );
     await page.locator("#smuggleCloseBtn").click();
     await modal.waitFor({ state: "detached", timeout: 10000 });
@@ -7611,7 +7615,7 @@ async (page) => {
     await chooseSmuggleCombobox("smugglePreset", "card_manual");
     await page.locator("#smugglePageSettings > summary").click();
     await page.locator("#smuggleTitleInput").fill("Request Panel SMUGGLING");
-    await page.locator("#smuggleMessageInput").fill("Request panel SMUGGLING test");
+    await page.locator("#smuggleMessageInput").fill("Request panel controlled transfer test");
     await page.locator("#smuggleCtaLabelInput").fill("Download from request panel");
     await page.locator("#smuggleSubmitBtn").click();
     await waitForPageCondition(
