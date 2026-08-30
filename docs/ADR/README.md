@@ -10,7 +10,7 @@ accepted and match the current implementation.
 | [ADR-003](ADR-003-runtime-crypto-acme.md) | Runtime cryptography and ACME dependencies |
 | [ADR-004](ADR-004-upload-containment.md) | Upload containment |
 | [ADR-005](ADR-005-thread-pool.md) | Thread pool concurrency |
-| [ADR-006](ADR-006-release-artifacts.md) | Release artifacts |
+| [ADR-006](ADR-006-release-artifacts.md) | Source-only distribution |
 | [ADR-007](ADR-007-trusted-proxy-identity.md) | Trusted proxy identity |
 | [ADR-008](ADR-008-notepad-recovery.md) | Notepad recovery |
 | [ADR-009](ADR-009-api-client-compatibility.md) | API and client compatibility, including curl |

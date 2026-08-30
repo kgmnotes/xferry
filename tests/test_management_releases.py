@@ -9,7 +9,7 @@ import os
 import stat
 import urllib.request
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from email.message import Message
 from pathlib import Path
 
@@ -26,6 +26,13 @@ from xferry.management.releases import (
     ReleaseResult,
 )
 from xferry.management.system import CommandResult, MutationLocked, managed_mutation
+from xferry.settings import (
+    ServerSettings,
+    SettingsError,
+    load_settings_text,
+    resolve_settings,
+    sample_config_text,
+)
 
 
 def _layout(tmp_path: Path) -> ManagedLayout:
@@ -282,7 +289,107 @@ def _manager(
         cli_link=tmp_path / "usr/local/bin/xferry",
         acme_root=layout.acme_root,
         staging_parent=tmp_path / "staging",
+        remote_updates_enabled=True,
     )
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_remote_update_is_disabled_before_any_release_boundary(
+    tmp_path: Path,
+    dry_run: bool,
+) -> None:
+    """Source-only defaults must reject update before parsing, I/O, network, or locks."""
+
+    def unexpected_boundary() -> int:
+        raise AssertionError("disabled update crossed a release boundary")
+
+    class UnexpectedDownloader:
+        def download(self, url: str, destination: Path, max_bytes: int) -> None:
+            raise AssertionError(
+                f"disabled update attempted download: {url} {destination} {max_bytes}"
+            )
+
+    runner = FakeRunner()
+    manager = ReleaseManager(
+        layout=_layout(tmp_path),
+        runner=runner,
+        downloader=UnexpectedDownloader(),
+        health_check=lambda *_args: pytest.fail("disabled update attempted a health check"),
+        effective_uid=unexpected_boundary,
+        platform_id=lambda: pytest.fail("disabled update inspected the platform"),
+        staging_parent=tmp_path / "staging",
+    )
+
+    assert manager.update("not-a-version", dry_run) == ReleaseResult(
+        2,
+        "remote_updates_disabled",
+    )
+    assert not (tmp_path / "staging").exists()
+    assert not manager.layout.lock_file.exists()
+    assert runner.commands == []
+
+
+@pytest.mark.parametrize("enable_value", [1, "true"], ids=["integer", "string"])
+def test_remote_update_rejects_truthy_non_boolean_enable_values(
+    tmp_path: Path,
+    enable_value: object,
+) -> None:
+    """Only the literal internal boolean opt-in may cross the remote boundary."""
+    manager = ReleaseManager(
+        layout=_layout(tmp_path),
+        remote_updates_enabled=enable_value,  # type: ignore[arg-type]
+    )
+
+    assert manager.update("0.2.0", True) == ReleaseResult(2, "remote_updates_disabled")
+
+
+def test_remote_update_enablement_has_no_settings_or_environment_surface() -> None:
+    """Operator-controlled settings must not expose the dormant updater opt-in."""
+    field_names = {settings_field.name for settings_field in fields(ServerSettings)}
+
+    assert "remote_updates_enabled" not in field_names
+    assert "remote_update" not in sample_config_text().casefold()
+    assert resolve_settings(env={"XFERRY_REMOTE_UPDATES_ENABLED": "true"}) == resolve_settings()
+    with pytest.raises(SettingsError, match="unknown config key"):
+        load_settings_text("[server]\nremote_updates_enabled = true\n")
+
+
+def test_default_disabled_update_does_not_disable_local_release_operations(
+    tmp_path: Path,
+) -> None:
+    """Source-only admission must preserve verified rollback and conservative uninstall."""
+    layout = _layout(tmp_path)
+    unit, cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
+    _seed_release(layout, "0.1.1", b"release-prior")
+    runner = FakeRunner()
+    manager = ReleaseManager(
+        layout=layout,
+        runner=runner,
+        downloader=FakeDownloader({}),
+        health_check=lambda *_args: HealthResult(True, "healthy"),
+        effective_uid=lambda: 0,
+        root_uid=os.getuid(),
+        unit_path=layout.unit_file,
+        cli_link=layout.cli_link,
+        acme_root=layout.acme_root,
+        staging_parent=tmp_path / "staging",
+    )
+
+    assert manager.rollback("0.1.1", False) == ReleaseResult(
+        0,
+        "rollback_complete",
+        version="0.1.1",
+    )
+    assert (layout.release_root / "current").readlink() == Path("releases/0.1.1")
+
+    assert manager.uninstall(False, False, False) == ReleaseResult(0, "uninstall_complete")
+    assert not unit.exists()
+    assert not cli_link.exists() and not cli_link.is_symlink()
+    assert not layout.release_root.exists()
+    assert config_root.joinpath("xferry.ini").is_file()
+    assert config_root.joinpath("auth").is_file()
+    assert layout.data_root.joinpath("state.db").is_file()
+    assert acme.joinpath("certificate.pem").is_file()
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "4.1.0", "99.0.0"])
@@ -1809,10 +1916,6 @@ class FakeReleaseManager:
 
     calls: list[tuple[object, ...]]
 
-    def update(self, version: str | None, dry_run: bool) -> ReleaseResult:
-        self.calls.append(("update", version, dry_run))
-        return ReleaseResult(0, "update_complete", version=version or "0.2.0")
-
     def rollback(self, to_version: str | None, dry_run: bool) -> ReleaseResult:
         self.calls.append(("rollback", to_version, dry_run))
         return ReleaseResult(0, "rollback_complete", version=to_version or "0.1.0")
@@ -1831,11 +1934,9 @@ def test_cli_dispatches_release_options_and_double_gates_noninteractive_purge(
     monkeypatch.setattr("xferry.management.releases.default_release_manager", lambda: fake)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    assert cli.main(["update", "--version", "0.2.0", "--dry-run"]) == 0
     assert cli.main(["rollback", "--to", "0.1.0", "--dry-run"]) == 0
     assert cli.main(["uninstall", "--purge-data"]) == 0
     assert fake.calls == [
-        ("update", "0.2.0", True),
         ("rollback", "0.1.0", True),
         ("uninstall", True, False, False),
     ]

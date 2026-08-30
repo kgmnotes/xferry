@@ -47,6 +47,27 @@ def test_repository_documentation_contract_is_clean() -> None:
         ("SMUGGLE supports DLP/proxy bypass.\n", "avoid bypass wording"),
         ("python -m src --help\n", "python -m xferry"),
         ("from src import XFerryServer\n", "from xferry"),
+        ("Run sudo xferry update --version 0.2.0.\n", "public update command"),
+        ("Publication requires a version tag.\n", "tag-publication policy"),
+        (
+            "uses: pypa/gh-action-pypi-publish@deadbeef\n",
+            "publisher action is forbidden",
+        ),
+        ("Use ghcr.io/kgmnotes/xferry:latest.\n", "distribution route"),
+        ("No release artifact is currently public.\n", "temporal publication wording"),
+        (
+            "No GitHub Release,\nPyPI package, or GHCR image has been published.\n",
+            "temporal publication wording",
+        ),
+        (
+            "There is no published binary or container image to use as a rollback target at\n"
+            "this time.\n",
+            "temporal publication wording",
+        ),
+        ("permissions: write-all\n", "publisher action is forbidden"),
+        ("token: ${{ secrets.RELEASE_TOKEN }}\n", "publisher action is forbidden"),
+        ("run: hatch publish\n", "publisher action is forbidden"),
+        ("run: twine upload dist/*\n", "publisher action is forbidden"),
     ),
 )
 def test_stale_contract_families_are_reported(
@@ -70,6 +91,28 @@ def test_current_managed_and_compose_profile_flags_are_allowed(tmp_path: Path) -
     )
     (tmp_path / "examples" / "compose.md").write_text(
         "docker compose --profile auth-tls up xferry-auth-tls\n",
+        encoding="utf-8",
+    )
+
+    assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+def test_unrelated_storage_publication_wording_remains_allowed(tmp_path: Path) -> None:
+    """Distribution guards must not flag ordinary atomic file-publication terminology."""
+    write_minimal_docs(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "Upload publication remains atomic inside the local storage transaction.\n",
+        encoding="utf-8",
+    )
+
+    assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+def test_unrelated_markdown_tags_frontmatter_remains_allowed(tmp_path: Path) -> None:
+    """Manual workflow guards must not reserve an ordinary documentation key."""
+    write_minimal_docs(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "---\ntags:\n  - security-research\n---\n",
         encoding="utf-8",
     )
 

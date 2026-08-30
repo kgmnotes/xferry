@@ -1,4 +1,4 @@
-"""Verified immutable release updates, rollback, and conservative uninstall."""
+"""Verified local release lifecycle support with remote updates disabled by default."""
 
 from __future__ import annotations
 
@@ -259,6 +259,7 @@ class ReleaseManager:
         acme_root: Path | None = None,
         staging_parent: Path | None = None,
         health_timeout: float = 2.0,
+        remote_updates_enabled: bool = False,
     ) -> None:
         self.layout = replace(
             layout or ManagedLayout(),
@@ -277,9 +278,12 @@ class ReleaseManager:
         self.acme_root = acme_root or self.layout.acme_root
         self.staging_parent = staging_parent
         self.health_timeout = health_timeout
+        self._remote_updates_enabled = remote_updates_enabled is True
 
     def update(self, version: str | None, dry_run: bool) -> ReleaseResult:
         """Download, verify, install, switch, and health-gate one exact release."""
+        if not self._remote_updates_enabled:
+            return ReleaseResult(2, "remote_updates_disabled")
         if not dry_run and self.effective_uid() != 0:
             return ReleaseResult(3, "release_requires_root")
         requested = None if version is None else _safe_version(version)

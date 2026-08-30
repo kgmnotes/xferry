@@ -29,23 +29,6 @@ EXPECTED_MODES = (
 )
 
 
-def _workflow_job(workflow: str, job_name: str) -> str:
-    lines = workflow.splitlines()
-    marker = f"  {job_name}:"
-    try:
-        start = lines.index(marker)
-    except ValueError as exc:
-        raise AssertionError(f"workflow job {job_name!r} is missing") from exc
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if len(line) - len(line.lstrip()) == 2 and line.endswith(":"):
-            end = index
-            break
-    return "\n".join(lines[start:end])
-
-
 def test_browser_smoke_exposes_independent_journeys() -> None:
     assert browser_smoke.SMOKE_MODES == EXPECTED_MODES
 
@@ -692,9 +675,8 @@ def test_smuggle_mode_exercises_real_none_xor_and_aes_artifacts() -> None:
     assert "URLSearchParams" not in request_assertion
 
 
-def test_workflows_gate_source_wheel_image_and_preserve_diagnostics() -> None:
+def test_ci_gates_source_wheel_image_and_preserves_diagnostics() -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    release = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
     assert "Compact source and wheel browser journeys" in ci
     assert ci.count("--mode first-run") >= 2
@@ -711,24 +693,3 @@ def test_workflows_gate_source_wheel_image_and_preserve_diagnostics() -> None:
     assert "--mode full" in ci
     assert "Upload browser journey diagnostics" in ci
     assert "if: always()" in ci
-
-    build = _workflow_job(release, "build")
-    image_verify = _workflow_job(release, "image-verify")
-    publish_ghcr = _workflow_job(release, "publish-ghcr")
-
-    assert "Installed wheel external first-run" in build
-    assert "--mode first-run" in build
-    assert "--target-url" in build
-    assert "Installed wheel full browser aggregate" in build
-    assert "--installed-package" in build
-    assert "--mode full" in build
-    assert "Upload wheel browser diagnostics" in build
-    assert (
-        'xferry-wheel-smoke/bin/xferry" \\\n              run \\\n              --host 127.0.0.1'
-    ) in build
-
-    assert "Hardened local image lifecycle smoke" in image_verify
-    assert "--browser-first-run" in image_verify
-    assert "Upload image browser diagnostics" in image_verify
-    assert "docker/login-action" not in image_verify
-    assert "docker/login-action@v3" in publish_ghcr

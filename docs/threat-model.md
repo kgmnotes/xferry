@@ -62,4 +62,4 @@ limited to a direct loopback peer.
   compromised browser
 
 Review this model when authentication, storage boundaries, proxy trust,
-cryptography, release artifacts, or the always-on method surface changes.
+cryptography, distribution policy, or the always-on method surface changes.

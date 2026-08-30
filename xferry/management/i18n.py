@@ -57,7 +57,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Restart the managed service.",
         "command_doctor": "Check the managed installation.",
         "command_credentials": "Manage service credentials.",
-        "command_update": "Optionally update a long-lived installation from the verified channel.",
         "command_rollback": "Restore a verified release on a long-lived installation.",
         "command_uninstall": "Remove the managed installation safely.",
         "command_examples": "Print copy-paste management command examples.",
@@ -114,9 +113,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Перезапустить управляемую службу.",
         "command_doctor": "Проверить управляемую установку.",
         "command_credentials": "Управлять учётными данными службы.",
-        "command_update": (
-            "При необходимости обновить долгоживущую установку из проверенного канала."
-        ),
         "command_rollback": "Восстановить проверенный выпуск долгоживущей установки.",
         "command_uninstall": "Безопасно удалить управляемую установку.",
         "command_examples": "Показать готовые к копированию примеры команд управления.",
@@ -139,6 +135,7 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
     "en": {
         "update_complete": "XFerry {version} was verified and activated.",
         "update_dry_run": "XFerry {version} passed update verification; no managed state changed.",
+        "remote_updates_disabled": ("Remote updates are disabled; use a reviewed source checkout."),
         "rollback_complete": "XFerry rolled back to verified release {version}.",
         "rollback_dry_run": (
             "XFerry {version} passed rollback verification; no managed state changed."
@@ -197,6 +194,9 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
     "ru": {
         "update_complete": "XFerry {version} проверен и активирован.",
         "update_dry_run": "XFerry {version} прошёл проверку обновления; состояние не изменено.",
+        "remote_updates_disabled": (
+            "Удалённые обновления отключены; используйте проверенную копию исходного кода."
+        ),
         "rollback_complete": "XFerry возвращён к проверенному выпуску {version}.",
         "rollback_dry_run": "XFerry {version} прошёл проверку отката; состояние не изменено.",
         "uninstall_complete": "Файлы запуска XFerry удалены; настройки, данные и ACME сохранены.",

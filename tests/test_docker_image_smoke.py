@@ -378,23 +378,6 @@ def test_smoke_runs_the_full_file_lifecycle_against_canonical_3_contracts(
     ]
 
 
-def _workflow_job(workflow: str, job_name: str) -> str:
-    lines = workflow.splitlines()
-    marker = f"  {job_name}:"
-    try:
-        start = lines.index(marker)
-    except ValueError as exc:
-        raise AssertionError(f"workflow job {job_name!r} is missing") from exc
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if len(line) - len(line.lstrip()) == 2 and line.endswith(":"):
-            end = index
-            break
-    return "\n".join(lines[start:end])
-
-
 def valid_inspect_document() -> dict[str, Any]:
     return {
         "State": {"Running": True},
@@ -638,39 +621,16 @@ def test_inspect_validator_rejects_any_extra_non_loopback_binding(section: str) 
         )
 
 
-def test_workflows_smoke_the_local_and_immutable_registry_image_identities() -> None:
+def test_ci_smokes_the_local_image_without_a_registry_identity() -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    release = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
     assert "python tools/docker_image_smoke.py" in ci
     assert "--image xferry:ci" in ci
     assert "--browser-first-run" in ci
     assert "docker-first-run" in ci
-
-    image_verify = _workflow_job(release, "image-verify")
-    publish_ghcr = _workflow_job(release, "publish-ghcr")
-    registry_smoke = _workflow_job(release, "registry-smoke")
-
-    release_smoke = "python tools/docker_image_smoke.py"
-    assert release_smoke in image_verify
-    assert "--image xferry:release-smoke" in image_verify
-    assert "--browser-first-run" in image_verify
-    assert "image-first-run" in image_verify
-    assert "docker/login-action" not in image_verify
-    assert "docker/build-push-action" not in image_verify
-    assert "push: true" not in image_verify
-
-    assert release_smoke in publish_ghcr
-    assert '--image "${IMAGE}@${DIGEST}"' in publish_ghcr
-    assert "docker/build-push-action" not in publish_ghcr
-    assert "uses: actions/checkout@" in publish_ghcr
-    assert "persist-credentials: false" in publish_ghcr
-    assert publish_ghcr.index("uses: actions/checkout@") < publish_ghcr.index(release_smoke)
-
-    assert release_smoke in registry_smoke
-    assert (
-        "--image ghcr.io/kgmnotes/xferry@${{ needs.publish-ghcr.outputs.digest }}" in registry_smoke
-    )
+    assert "ghcr.io/kgmnotes/xferry" not in ci
+    assert "docker/login-action" not in ci
+    assert "docker push" not in ci
 
 
 def test_browser_first_run_uses_canonical_external_target(

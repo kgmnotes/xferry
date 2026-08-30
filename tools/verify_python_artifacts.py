@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and smoke-test XFerry wheel/sdist release artifacts."""
+"""Validate and smoke-test local XFerry wheel and sdist build products."""
 
 from __future__ import annotations
 

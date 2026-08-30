@@ -1,4 +1,4 @@
-"""Build the deterministic SCIE assets verified by the release workflow."""
+"""Build deterministic SCIE products for local and automated verification."""
 
 from __future__ import annotations
 

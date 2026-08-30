@@ -124,5 +124,6 @@ used for each deployment. To recover:
 5. Restore traffic only after authenticated HTTPS `PING` and a file lifecycle
    check pass.
 
-There is no published binary or container image to use as a rollback target at
-this time.
+There is no supported binary or container distribution to use as a rollback
+target. Recovery uses a retained, reviewed source revision and its locked
+environment.

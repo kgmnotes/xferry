@@ -50,7 +50,7 @@ def test_release_builder_help_runs_when_invoked_directly_in_isolated_mode() -> N
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Build the deterministic SCIE assets" in result.stdout
+    assert "Build deterministic SCIE products" in result.stdout
 
 
 class FakeRunner:
@@ -834,6 +834,7 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         cli_link=layout.cli_link,
         acme_root=layout.acme_root,
         staging_parent=tmp_path / "staging",
+        remote_updates_enabled=True,
     )
 
     updated = manager.update("0.2.0", False)

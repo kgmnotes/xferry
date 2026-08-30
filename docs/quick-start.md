@@ -1,7 +1,7 @@
 # Quick start
 
-The current version is installed from source. No GitHub Release, PyPI package,
-or GHCR image exists for `0.1.0`.
+The supported distribution is a reviewed source checkout. Automated workflows do
+not publish a GitHub Release, PyPI package, release binary, or GHCR image.
 
 ## Install
 

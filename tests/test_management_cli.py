@@ -181,6 +181,22 @@ def test_module_entrypoint_keeps_direct_command_help_portable_without_linux_back
 
 @pytest.mark.parametrize(
     "argv",
+    (("update",), ("update", "--help"), ("help", "update")),
+)
+def test_update_is_not_a_public_management_command(
+    argv: tuple[str, ...],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The source-only policy must not leave a hidden parser or help route."""
+    assert main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert "update" not in captured.out
+    assert "usage" in captured.err.lower()
+
+
+@pytest.mark.parametrize(
+    "argv",
     [
         ["setup", "--dry-run"],
         ["credentials", "reset"],
@@ -190,7 +206,6 @@ def test_module_entrypoint_keeps_direct_command_help_portable_without_linux_back
         ["stop"],
         ["restart"],
         ["doctor"],
-        ["update", "--dry-run"],
         ["rollback", "--dry-run"],
         ["uninstall", "--dry-run"],
     ],
@@ -366,21 +381,21 @@ def test_root_help_separates_optional_long_lived_maintenance(
     maintenance_heading: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Update and rollback must not look required for a disposable deployment."""
+    """Local rollback must not look required for a disposable deployment."""
     assert main(argv) == 0
     output = capsys.readouterr().out
     assert maintenance_heading in output
-    assert "  update" in output
+    assert "  update" not in output
     assert "  rollback" in output
     assert "Legacy server options" not in output
     assert "xferry [SERVER OPTIONS]" not in output
 
 
-@pytest.mark.parametrize("command", ["update", "rollback"])
+@pytest.mark.parametrize("command", ["rollback"])
 def test_optional_maintenance_commands_keep_focused_help(
     command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Moving maintenance out of primary help must not remove its explicit help."""
+    """Moving rollback out of primary help must not remove its explicit help."""
     assert main(["help", command]) == 0
     assert f"usage: xferry {command}" in capsys.readouterr().out
 
@@ -388,7 +403,6 @@ def test_optional_maintenance_commands_keep_focused_help(
 @pytest.mark.parametrize(
     ("command", "example"),
     [
-        ("update", f"sudo xferry update --version {__version__}"),
         ("rollback", f"sudo xferry rollback --to {__version__}"),
     ],
 )

@@ -37,7 +37,6 @@ def test_active_project_coordinates_use_kgmnotes() -> None:
 
     assert stale_paths == []
     assert "https://github.com/kgmnotes/xferry" in _read("pyproject.toml")
-    assert "ghcr.io/kgmnotes/xferry" in _read(".github/workflows/release.yml")
 
 
 def test_landing_pages_are_compact_routes() -> None:

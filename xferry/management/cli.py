@@ -31,10 +31,7 @@ _PRIMARY_COMMANDS = (
     "examples",
     "uninstall",
 )
-_MAINTENANCE_COMMANDS = (
-    "update",
-    "rollback",
-)
+_MAINTENANCE_COMMANDS = ("rollback",)
 _COMMANDS = (
     *_PRIMARY_COMMANDS,
     *_MAINTENANCE_COMMANDS,
@@ -52,7 +49,6 @@ _COMMAND_EXAMPLES = {
     "restart": "sudo xferry restart",
     "doctor": "sudo xferry doctor",
     "credentials": "sudo xferry credentials reset",
-    "update": f"sudo xferry update --version {__version__}",
     "rollback": f"sudo xferry rollback --to {__version__}",
     "uninstall": "sudo xferry uninstall",
     "examples": "xferry examples",
@@ -158,10 +154,6 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
     elif command == "doctor":
         parser.add_argument("--deep", action="store_true")
         parser.add_argument("--skip-network", action="store_true")
-        parser.add_argument("--json", action="store_true")
-    elif command == "update":
-        parser.add_argument("--version", metavar="VERSION")
-        parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--json", action="store_true")
     elif command == "rollback":
         parser.add_argument("--to", metavar="VERSION")
@@ -339,9 +331,7 @@ def _release_handler(args: argparse.Namespace, context: ManagementContext) -> in
     from .releases import default_release_manager
 
     manager = default_release_manager()
-    if args.command == "update":
-        result = manager.update(args.version, args.dry_run)
-    elif args.command == "rollback":
+    if args.command == "rollback":
         result = manager.rollback(args.to, args.dry_run)
     else:
         confirmed = bool(args.yes)
@@ -536,7 +526,6 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         "status": _status_handler,
         "stop": _service_action_handler,
         "uninstall": _release_handler,
-        "update": _release_handler,
         "restart": _service_action_handler,
     }
     handler = handlers.get(command, _not_implemented_handler)

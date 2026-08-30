@@ -49,7 +49,7 @@ nav:
           - Runtime crypto and ACME: ADR/ADR-003-runtime-crypto-acme.md
           - Upload containment: ADR/ADR-004-upload-containment.md
           - Thread pool: ADR/ADR-005-thread-pool.md
-          - Release artifacts: ADR/ADR-006-release-artifacts.md
+          - Source-only distribution: ADR/ADR-006-release-artifacts.md
           - Trusted proxy identity: ADR/ADR-007-trusted-proxy-identity.md
           - Notepad recovery: ADR/ADR-008-notepad-recovery.md
           - API and client compatibility: ADR/ADR-009-api-client-compatibility.md

@@ -129,33 +129,10 @@ def _workflow_job(workflow: str, job_name: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def _workflow_job_header(job: str) -> str:
-    return job.split("\n    steps:", maxsplit=1)[0]
+def _assert_manual_only_release_trigger(workflow: str) -> None:
+    trigger_header = workflow.split("\npermissions:", maxsplit=1)[0]
 
-
-def _workflow_job_needs(job: str) -> set[str]:
-    header = _workflow_job_header(job)
-    lines = header.splitlines()
-    for index, line in enumerate(lines):
-        prefix = "    needs:"
-        if not line.startswith(prefix):
-            continue
-
-        value = line.removeprefix(prefix).strip()
-        if value.startswith("[") and value.endswith("]"):
-            return {item.strip() for item in value[1:-1].split(",") if item.strip()}
-        if value:
-            return {value}
-
-        dependencies: set[str] = set()
-        for dependency_line in lines[index + 1 :]:
-            if dependency_line.startswith("      - "):
-                dependencies.add(dependency_line.removeprefix("      - ").strip())
-                continue
-            if dependency_line.strip():
-                break
-        return dependencies
-    return set()
+    assert trigger_header == "name: Release Verification\n\non:\n  workflow_dispatch:\n"
 
 
 def _workflow_named_step(workflow: str, name: str) -> str:
@@ -175,20 +152,6 @@ def _workflow_named_step(workflow: str, name: str) -> str:
             end = index
             break
     return "\n".join(lines[start:end])
-
-
-def _assert_release_source_version_step(job: str) -> None:
-    step = _workflow_named_step(job, "Check release source version")
-
-    assert "if:" not in step
-    assert "XFERRY_RELEASE_REF: ${{ github.ref }}" in step
-    assert "XFERRY_RELEASE_REF_NAME: ${{ github.ref_name }}" in step
-    assert "from xferry.management.versions import is_supported_release_version" in step
-    assert "is_supported_release_version(__version__)" in step
-    assert "is_supported_release_version(tag_version)" in step
-    assert 'ref.startswith("refs/tags/v")' in step
-    assert 'tag_version = ref_name.removeprefix("v")' in step
-    assert "tag_version != __version__" in step
 
 
 def _assert_websocket_risk_lane_argv(step: str) -> None:
@@ -355,7 +318,7 @@ def test_systemd_install_script_fails_clearly_when_the_managed_scie_is_missing(
     assert result.stderr.strip() == f"installed XFerry executable is missing: {missing}"
 
 
-def test_docker_public_direct_compose_uses_ghcr_image_and_config() -> None:
+def test_docker_public_direct_compose_builds_the_source_checkout_and_uses_config() -> None:
     compose_path = REPO_ROOT / "deploy/docker/docker-compose.public-direct.yml"
     config_path = REPO_ROOT / "deploy/docker/xferry.ini.example"
 
@@ -376,9 +339,10 @@ def test_docker_public_direct_compose_uses_ghcr_image_and_config() -> None:
 
     compose = compose_path.read_text(encoding="utf-8")
     assert "name: xferry-public-direct" in compose
-    assert 'image: "${XFERRY_IMAGE:?' in compose
-    assert "ghcr.io/kgmnotes/xferry@sha256:<digest>" in compose
-    assert "latest" not in compose.lower()
+    assert "    build:\n      context: ../..\n      dockerfile: Dockerfile" in compose
+    assert "image: xferry:public-direct-local" in compose
+    assert "XFERRY_IMAGE" not in compose
+    assert "ghcr.io/" not in compose
     assert "container_name:" not in compose
     assert "    command:\n      - run\n      - --config" in compose
     assert "--config" in compose
@@ -410,8 +374,8 @@ def test_docker_public_direct_runtime_files_are_ignored() -> None:
     assert "!.gitignore" in secrets_ignore.splitlines()
 
 
-def test_source_first_docs_publish_the_supported_operator_contract() -> None:
-    """Keep source installation and unpublished-artifact status consistent."""
+def test_source_only_docs_publish_the_supported_operator_contract() -> None:
+    """Keep the durable source distribution and non-publication policy consistent."""
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     quick_start = (REPO_ROOT / "docs/quick-start.md").read_text(encoding="utf-8")
     operations = (REPO_ROOT / "docs/operations.md").read_text(encoding="utf-8")
@@ -419,9 +383,10 @@ def test_source_first_docs_publish_the_supported_operator_contract() -> None:
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     for document in (readme, quick_start):
-        assert "No GitHub Release" in document
-        assert "PyPI" in document
-        assert "GHCR" in document
+        normalized_document = re.sub(r"\s+", " ", document).lower()
+        assert "supported distribution" in normalized_document
+        assert "source checkout" in normalized_document
+        assert "do not publish" in normalized_document
         assert "python -m pip install ." in document
 
     assert "git clone https://github.com/kgmnotes/xferry.git" in quick_start
@@ -432,17 +397,98 @@ def test_source_first_docs_publish_the_supported_operator_contract() -> None:
         "## Stop and protect data"
     )
 
-    assert "public distribution is source-only" in operations
+    assert "distribution is source-only" in operations
+    assert "Remote updates are not\nexposed by the public CLI" in operations
     assert "Docker from the checkout" in operations
     assert "down --volumes" in operations
     assert "destructive" in operations
-    assert "release workflow" in contributing
-    assert "manual workflow run verifies artifacts but does not publish" in re.sub(
-        r"\s+", " ", contributing
-    )
-    assert "source installation first" in contributing
+    normalized_contributing = re.sub(r"\s+", " ", contributing)
+    assert "manual Release Verification workflow" in normalized_contributing
+    assert "They do not upload or publish" in normalized_contributing
+    assert "documentation and examples source-only" in normalized_contributing
     assert "## [0.1.0] - 2026-08-20" in changelog
     assert "Source distribution" in changelog
+
+
+def test_release_verification_workflow_is_manual_read_only_and_non_publishing() -> None:
+    """Manual build checks must not become a package, registry, or release channel."""
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    _assert_manual_only_release_trigger(workflow)
+    assert "needs: [build, image-verify, scie-verify]" in workflow
+
+    build = _workflow_job(workflow, "build")
+    image_verify = _workflow_job(workflow, "image-verify")
+    scie_verify = _workflow_job(workflow, "scie-verify")
+    gate = _workflow_job(workflow, "release-gate")
+
+    assert "Build wheel and sdist" in build
+    assert "python -m build --sdist --wheel --outdir dist" in build
+    assert "Validate wheel and sdist contents" in build
+    assert "Offline wheel and sdist smoke" in build
+    assert "Hardened local image lifecycle smoke" in image_verify
+    assert "docker build --tag xferry:release-smoke ." in image_verify
+    assert "python tools/docker_image_smoke.py" in image_verify
+    assert "--image xferry:release-smoke" in image_verify
+    assert image_verify.index("Build local image for lifecycle smoke") < image_verify.index(
+        "Hardened local image lifecycle smoke"
+    )
+    assert "Build deterministic SCIE release bundle" in scie_verify
+    assert "python tools/build_scie_release.py --output-dir dist/scie" in scie_verify
+    assert 'manifest = json.loads((bundle / "xferry-release.json").read_text' in scie_verify
+    assert 'executable.stat().st_size == manifest["executable"]["size"]' in scie_verify
+    assert "hashlib.sha256(executable.read_bytes()).hexdigest()" in scie_verify
+    assert 'bundle / "SHA256SUMS"' in scie_verify
+    assert '"$executable" run --version' in scie_verify
+    assert '"$executable" run --check-config' in scie_verify
+    assert "Smoke SCIE on supported Linux bases" in scie_verify
+    for image in ("ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12"):
+        assert image in scie_verify
+    assert (
+        scie_verify.index("Build deterministic SCIE release bundle")
+        < scie_verify.index("Verify SCIE manifest and checksums")
+        < scie_verify.index("Smoke SCIE without host Python")
+    )
+    assert "without publication" in gate
+
+    for forbidden in (
+        "actions/upload-artifact",
+        "actions/download-artifact",
+        "actions/attest",
+        "docker/login-action",
+        "docker push",
+        "gh release",
+        "gh-action-pypi-publish",
+        "packages: write",
+        "contents: write",
+        "id-token: write",
+        "attestations: write",
+        "permissions: write-all",
+        "${{ secrets.",
+        "ghcr.io/kgmnotes/xferry",
+        "pypi.org",
+        "hatch publish",
+        "twine upload",
+    ):
+        assert forbidden not in workflow
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "  push:\n    branches: [main]",
+        "  pull_request:",
+        "  schedule:\n    - cron: '0 0 * * *'",
+        "  repository_dispatch:",
+        "  workflow_call:",
+    ),
+)
+def test_release_workflow_guard_rejects_nonmanual_triggers(trigger: str) -> None:
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    mutated = workflow.replace("\npermissions:", f"\n{trigger}\npermissions:", 1)
+
+    with pytest.raises(AssertionError):
+        _assert_manual_only_release_trigger(mutated)
 
 
 def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
@@ -458,7 +504,7 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
         "--config /run/secrets/xferry-curl.conf",
         "direct TCP peer",
         '"health":"ready"',
-        "no published binary or container image",
+        "no supported binary or container distribution",
     ):
         assert required in public_direct
 
@@ -485,81 +531,6 @@ def test_operator_docs_define_launch_presets_and_capacity_boundaries() -> None:
     assert "WebSocket" in corpus
     assert "worker" in corpus
     assert "file-backed credentials" in corpus
-
-
-def test_release_workflow_verifies_both_artifact_types_before_publishing() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    build = _workflow_job(workflow, "build")
-    image_verify = _workflow_job(workflow, "image-verify")
-    release_gate = _workflow_job(workflow, "release-gate")
-    publish_pypi = _workflow_job(workflow, "publish-pypi")
-    publish_ghcr = _workflow_job(workflow, "publish-ghcr")
-    publish_github_release = _workflow_job(workflow, "publish-github-release")
-    registry_smoke = _workflow_job(workflow, "registry-smoke")
-
-    assert _workflow_job_needs(release_gate) == {"build", "image-verify", "scie-verify"}
-    assert _workflow_job_needs(publish_pypi) == {"release-gate"}
-    assert _workflow_job_needs(publish_ghcr) == {"release-gate"}
-    assert _workflow_job_needs(publish_github_release) == {"release-gate"}
-    assert _workflow_job_needs(registry_smoke) == {
-        "publish-pypi",
-        "publish-ghcr",
-        "publish-github-release",
-    }
-
-    publish_condition = "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-    assert publish_condition in _workflow_job_header(publish_pypi)
-    assert publish_condition in _workflow_job_header(publish_ghcr)
-    assert publish_condition in _workflow_job_header(publish_github_release)
-    assert publish_condition in _workflow_job_header(registry_smoke)
-
-    _assert_release_source_version_step(build)
-    _assert_release_source_version_step(image_verify)
-    _assert_release_source_version_step(_workflow_job(workflow, "scie-verify"))
-
-    assert "pypa/gh-action-pypi-publish" not in build
-    assert "docker/login-action" not in image_verify
-    assert "docker/build-push-action" not in image_verify
-    assert "push: true" not in image_verify
-
-
-def test_release_workflow_preserves_verified_scie_and_image_artifact_identity() -> None:
-    """Catches a publisher rebuilding or selecting artifacts by mutable names."""
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    image_verify = _workflow_job(workflow, "image-verify")
-    scie_verify = _workflow_job(workflow, "scie-verify")
-    release_gate = _workflow_job(workflow, "release-gate")
-
-    assert "id: upload-image-archive" in image_verify
-    assert "docker save xferry:release-smoke" in image_verify
-    assert "sha256sum" in image_verify
-    assert "docker image inspect --format '{{.Id}}' xferry:release-smoke" in image_verify
-    assert "xferry-image-${{ github.run_id }}-${{ github.run_attempt }}" in image_verify
-    assert (
-        "docker-image-artifact-id: ${{ steps.upload-image-archive.outputs.artifact-id }}"
-        in _workflow_job_header(image_verify)
-    )
-
-    assert "id: upload-scie" in scie_verify
-    assert "xferry-scie-${{ github.run_id }}-${{ github.run_attempt }}" in scie_verify
-    assert "scie-artifact-id: ${{ steps.upload-scie.outputs.artifact-id }}" in _workflow_job_header(
-        scie_verify
-    )
-
-    for artifact_output in (
-        "python-dists-artifact-id",
-        "docker-image-artifact-id",
-        "scie-artifact-id",
-    ):
-        assert artifact_output in _workflow_job_header(release_gate)
-    for environment_name in (
-        "PYTHON_DISTS_ARTIFACT_ID",
-        "DOCKER_IMAGE_ARTIFACT_ID",
-        "SCIE_ARTIFACT_ID",
-    ):
-        assert f'test -n "${{{environment_name}}}"' in release_gate
 
 
 @pytest.mark.parametrize(
@@ -603,31 +574,6 @@ def test_python_artifact_jobs_share_ordered_validation_and_offline_install_gate(
 
     if job_name == "build":
         assert job.index("Offline wheel and sdist smoke") < job.index("Static UI wheel asset check")
-        assert (
-            '"$RUNNER_TEMP/xferry-fresh-artifacts/wheel-venv" \\\n'
-            '            "$RUNNER_TEMP/xferry-wheel-smoke"'
-        ) in offline
-        assert "${RUNNER_TEMP}/xferry-wheel-smoke/bin/xferry" in job
-        assert "${RUNNER_TEMP}/xferry-wheel-smoke/bin/python" in job
-
-
-def test_release_workflow_verifies_scie_assets_before_the_shared_gate() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    scie_verify = _workflow_job(workflow, "scie-verify")
-    release_gate = _workflow_job(workflow, "release-gate")
-
-    assert _workflow_job_needs(release_gate) == {"build", "image-verify", "scie-verify"}
-    assert "python tools/build_scie_release.py --output-dir dist/scie" in scie_verify
-    assert '"${executable}" run --version' in scie_verify
-    assert '"${executable}" run --check-config' in scie_verify
-    assert '"/release/${executable}" run --version' in scie_verify
-    assert "ubuntu:22.04" in scie_verify
-    assert "ubuntu:24.04" in scie_verify
-    assert "ubuntu:26.04" in scie_verify
-    assert "debian:12" in scie_verify
-    assert "actions/attest@" in scie_verify
-    assert "gh release upload" in _workflow_job(workflow, "publish-github-release")
 
 
 @pytest.mark.parametrize(
@@ -786,155 +732,3 @@ def test_compose_contributor_commands_start_the_server_via_run() -> None:
     compose = (REPO_ROOT / "examples/docker/docker-compose.yml").read_text(encoding="utf-8")
 
     assert compose.count("    command:\n      - run\n      - --host") == 3
-
-
-def test_release_workflow_manual_runs_use_safe_artifact_names_and_never_publish() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    build = _workflow_job(workflow, "build")
-    image_verify = _workflow_job(workflow, "image-verify")
-    publish_pypi = _workflow_job(workflow, "publish-pypi")
-    publish_ghcr = _workflow_job(workflow, "publish-ghcr")
-    publish_github_release = _workflow_job(workflow, "publish-github-release")
-    registry_smoke = _workflow_job(workflow, "registry-smoke")
-
-    assert '      - "v*"' in workflow
-    assert "  workflow_dispatch:" in workflow
-    _assert_release_source_version_step(build)
-    _assert_release_source_version_step(image_verify)
-
-    for verification_job in (build, image_verify):
-        artifact_names = [
-            line.strip()
-            for line in verification_job.splitlines()
-            if line.strip().startswith("name:") and "${{" in line
-        ]
-        assert artifact_names
-        assert all("github.ref_name" not in line for line in artifact_names)
-        assert all("github.run_id" in line for line in artifact_names)
-        assert all("github.run_attempt" in line for line in artifact_names)
-
-    publish_condition = "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-    for publish_job in (publish_pypi, publish_ghcr, publish_github_release, registry_smoke):
-        header = _workflow_job_header(publish_job)
-        assert publish_condition in header
-        assert "workflow_dispatch" not in header
-
-
-def test_release_workflow_hands_verified_python_artifacts_to_pypi_by_id() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    build = _workflow_job(workflow, "build")
-    release_gate = _workflow_job(workflow, "release-gate")
-    publish_pypi = _workflow_job(workflow, "publish-pypi")
-
-    assert "id: upload-python-dists" in build
-    assert "uses: actions/upload-artifact@" in build
-    assert (
-        "python-dists-artifact-id: ${{ steps.upload-python-dists.outputs.artifact-id }}"
-        in _workflow_job_header(build)
-    )
-    assert (
-        "python-dists-artifact-id: ${{ needs.build.outputs.python-dists-artifact-id }}"
-        in _workflow_job_header(release_gate)
-    )
-
-    assert "uses: actions/download-artifact@" in publish_pypi
-    assert (
-        "artifact-ids: ${{ needs.release-gate.outputs.python-dists-artifact-id }}" in publish_pypi
-    )
-    assert "path: dist" in publish_pypi
-    assert "merge-multiple: true" in publish_pypi
-    assert "pypa/gh-action-pypi-publish@" in publish_pypi
-
-
-def test_release_workflow_publishes_only_verified_scie_release_assets() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    publish_github_release = _workflow_job(workflow, "publish-github-release")
-
-    header = _workflow_job_header(publish_github_release)
-    assert "contents: write" in header
-    assert "packages: write" not in header
-    assert "id-token: write" not in header
-    assert "attestations: write" not in header
-    assert "uses: actions/download-artifact" in publish_github_release
-    assert (
-        "artifact-ids: ${{ needs.release-gate.outputs.scie-artifact-id }}" in publish_github_release
-    )
-    assert "gh release create" in publish_github_release
-    assert "gh release upload" in publish_github_release
-    assert "--clobber" in publish_github_release
-    for asset in (
-        "xferry-*-linux-x86_64",
-        "install.sh",
-        "SHA256SUMS",
-        "xferry-release.json",
-        "xferry-scie-sbom.cdx.json",
-    ):
-        assert asset in publish_github_release
-
-
-def test_release_workflow_republishes_the_smoke_tested_image_by_identity() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    publish_ghcr = _workflow_job(workflow, "publish-ghcr")
-
-    assert "packages: write" in _workflow_job_header(publish_ghcr)
-    assert "ghcr.io/kgmnotes/xferry" in publish_ghcr
-    assert "uses: actions/download-artifact" in publish_ghcr
-    assert (
-        "artifact-ids: ${{ needs.release-gate.outputs.docker-image-artifact-id }}" in publish_ghcr
-    )
-    assert "sha256sum --check" in publish_ghcr
-    assert "docker load" in publish_ghcr
-    assert "docker image inspect --format '{{.Id}}' xferry:release-smoke" in publish_ghcr
-    assert "candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" in publish_ghcr
-    assert "docker build " not in publish_ghcr
-    assert "context: ." not in publish_ghcr
-    assert "docker/build-push-action" not in publish_ghcr
-    assert "@${DIGEST}" in publish_ghcr
-    assert "python tools/docker_image_smoke.py" in publish_ghcr
-    immutable_smoke = _workflow_named_step(workflow, "Smoke immutable registry image")
-    promotion = _workflow_named_step(workflow, "Promote verified digest to release tags")
-    digest_preserving_create = (
-        'docker buildx imagetools create --prefer-index=false --tag "${tag}" "${IMAGE}@${DIGEST}"'
-    )
-    promoted_digest_check = (
-        'resolved="$(docker buildx imagetools inspect "${tag}" --format \'{{.Digest}}\')"'
-    )
-    assert publish_ghcr.index(immutable_smoke) < publish_ghcr.index(promotion)
-    assert digest_preserving_create in promotion
-    assert promoted_digest_check in promotion
-    assert promotion.index(digest_preserving_create) < promotion.index(promoted_digest_check)
-    assert promotion.index(promoted_digest_check) < promotion.index(
-        'if [ "${resolved}" != "${DIGEST}" ]; then'
-    )
-    assert "does not resolve to verified digest" in publish_ghcr
-    assert "actions/attest-build-provenance@" in publish_ghcr
-    assert "push-to-registry: true" in publish_ghcr
-    assert "digest: ${{ steps.resolve-digest.outputs.digest }}" in _workflow_job_header(
-        publish_ghcr
-    )
-
-
-def test_release_workflow_smokes_the_public_registry_consumers_after_publication() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    registry_smoke = _workflow_job(workflow, "registry-smoke")
-    header = _workflow_job_header(registry_smoke)
-
-    assert "contents: read" in header
-    assert "packages: write" not in header
-    assert "id-token: write" not in header
-    assert "python -m venv" in registry_smoke
-    assert "--index-url https://pypi.org/simple" in registry_smoke
-    assert '"xferry==${GITHUB_REF_NAME#v}"' in registry_smoke
-    assert (
-        "docker pull ghcr.io/kgmnotes/xferry@${{ needs.publish-ghcr.outputs.digest }}"
-        in registry_smoke
-    )
-    assert "python tools/docker_image_smoke.py" in registry_smoke
-    assert (
-        "--image ghcr.io/kgmnotes/xferry@${{ needs.publish-ghcr.outputs.digest }}" in registry_smoke
-    )

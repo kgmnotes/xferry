@@ -162,6 +162,32 @@ ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version"})
 
 SMUGGLE_LEGACY_ASSERTION_PATHS = frozenset({Path("tools/browser_smoke.playwright.js")})
 STALE_PATTERNS: tuple[StalePattern, ...] = (
+    StalePattern(
+        re.compile(r"(?<![\w-])(?:sudo\s+)?xferry\s+update\b", re.IGNORECASE),
+        "removed public update command; supported distribution is source-only",
+    ),
+    StalePattern(
+        re.compile(r"publication requires\s+(?:a\s+)?version tag", re.IGNORECASE),
+        "stale tag-publication policy; automated distribution is disabled",
+    ),
+    StalePattern(
+        re.compile(
+            r"(?:pypa/gh-action-pypi-publish|docker/(?:login|build-push)-action|"
+            r"softprops/action-gh-release|gh\s+release\s+(?:create|upload)|"
+            r"twine\s+upload|(?:uv|hatch)\s+publish|push:\s*true|packages:\s*write|"
+            r"contents:\s*write|permissions:\s*write-all|\$\{\{\s*secrets\.)",
+            re.IGNORECASE,
+        ),
+        "publisher action is forbidden by the source-only distribution policy",
+    ),
+    StalePattern(
+        re.compile(
+            r"(?:releases/latest|ghcr\.io/kgmnotes/xferry|"
+            r"(?<![\w.-])(?:python\s+-m\s+)?pip\s+install\s+xferry(?:\b|\[))",
+            re.IGNORECASE,
+        ),
+        "unsupported public distribution route; install from a reviewed source checkout",
+    ),
     StalePattern(re.compile(r"--root\b"), "legacy CLI flag `--root`; use `--dir`"),
     StalePattern(
         re.compile(r"--max-upload\b(?!-)"),
@@ -311,6 +337,19 @@ STALE_PATTERNS: tuple[StalePattern, ...] = (
     ),
 )
 
+STALE_DOCUMENT_PATTERNS: tuple[StalePattern, ...] = (
+    StalePattern(
+        re.compile(
+            r"(?:tag-triggered\s+publication|release\s+artifact\s+is\s+currently\s+public|"
+            r"no\s+GitHub\s+Release,\s*PyPI|"
+            r"no\s+published\s+(?:binary|container\s+image)[\s\S]{0,120}?at\s+this\s+time|"
+            r"(?:before|until)\s+publication\s+exists)",
+            re.IGNORECASE,
+        ),
+        "temporal publication wording conflicts with the durable source-only policy",
+    ),
+)
+
 REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 11))
 
 ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
@@ -343,7 +382,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("README.md"),
         re.compile(
-            r"\A(?=[\s\S]*No GitHub Release, PyPI[\s\S]*GHCR[\s\S]*published)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*workflows[\s\S]*do\s+not\s+publish)"
             r"(?=[\s\S]*python -m pip install \.)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
@@ -357,8 +397,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("docs/quick-start.md"),
         re.compile(
-            r"\A(?=[\s\S]*installed from source)"
-            r"(?=[\s\S]*No GitHub Release, PyPI package[\s\S]*GHCR image)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*do\s+not\s+publish[\s\S]*GitHub Release[\s\S]*PyPI package)"
             r"(?=[\s\S]*git clone https://github\.com/kgmnotes/xferry\.git)"
             r"(?=[\s\S]*python -m pip install \.)"
             r"(?=[\s\S]*xferry run --preset local --open)"
@@ -370,7 +410,9 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("SECURITY.md"),
         re.compile(
-            r"\A(?=[\s\S]*authoriz\w*[\s\S]*test data)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*automation[\s\S]*does\s+not\s+publish)"
+            r"(?=[\s\S]*authoriz\w*[\s\S]*test data)"
             r"(?=[\s\S]*## External exposure baseline)"
             r"(?=[\s\S]*TLS[\s\S]*Basic Auth[\s\S]*finite[\s\S]*quota)"
             r"(?=[\s\S]*server does not retain[\s\S]*client-derived AES key)[\s\S]*",
@@ -384,8 +426,9 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"\A(?=[\s\S]*python -m pip install -e)"
             r"(?=[\s\S]*python tools/sync_docs\.py --check)"
             r"(?=[\s\S]*python tools/check_stale_docs\.py)"
-            r"(?=[\s\S]*No release artifact is currently public)"
-            r"(?=[\s\S]*source installation first)[\s\S]*",
+            r"(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*do not upload or[\s\S]*publish)"
+            r"(?=[\s\S]*documentation and[\s\S]*examples source-only)[\s\S]*",
             re.IGNORECASE,
         ),
         "CONTRIBUTING must preserve local checks, documentation sync, and source-first "
@@ -394,7 +437,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("docs/operations.md"),
         re.compile(
-            r"\A(?=[\s\S]*public distribution[\s\S]*source-only)"
+            r"\A(?=[\s\S]*distribution[\s\S]*source-only)"
+            r"(?=[\s\S]*remote updates[\s\S]*not[\s\S]*exposed[\s\S]*public CLI)"
             r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
             r"(?=[\s\S]*body-memory-budget[\s\S]*not an[\s\S]*RSS ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
@@ -410,7 +454,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*--write-sample-config)"
             r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
             r"(?=[\s\S]*direct TCP peer)"
-            r"(?=[\s\S]*no published binary or container image)[\s\S]*",
+            r"(?=[\s\S]*no supported binary or container distribution)[\s\S]*",
             re.IGNORECASE,
         ),
         "public-direct must defer to security policy and preserve validation and proxy boundaries",
@@ -648,6 +692,24 @@ def scan_file(path: Path, repo_root: Path) -> list[Finding]:
             if pattern.regex.search(line):
                 findings.append(Finding(relative, line_number, line.strip(), pattern.message))
 
+    for pattern in STALE_DOCUMENT_PATTERNS:
+        if relative in pattern.ignored_paths:
+            continue
+        if superseded_adr and pattern.allow_in_superseded_adr:
+            continue
+        match = pattern.regex.search(text)
+        if match is None:
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        findings.append(
+            Finding(
+                relative,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                pattern.message,
+            )
+        )
+
     if superseded_adr:
         return findings
     for match in SERVER_COMMAND_PATTERN.finditer(text):
@@ -804,7 +866,7 @@ def find_source_first_issues(
     ):
         return [
             contract_finding(
-                path, "source install must precede launch and exclude unpublished artifacts"
+                path, "source install must precede launch and exclude unsupported channels"
             )
         ]
     return []

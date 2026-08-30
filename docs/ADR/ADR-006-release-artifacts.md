@@ -1,31 +1,35 @@
-# ADR-006: Release artifacts
+# ADR-006: Source-only distribution
 
 - **Status:** accepted
 
 ## Context
 
 The repository can build Python distributions, a container image, and SCIE
-installer assets. Users need to distinguish source availability from artifacts
-that have passed the release workflow and actually been published.
+installer assets. Build verification and supported distribution are separate
+security boundaries.
 
 ## Decision
 
-Keep source installation as the current user path. Version `0.1.0` has no
-GitHub Release, PyPI publication, or GHCR image.
+Support distribution only from a reviewed source checkout. Automated jobs do
+not publish to PyPI, GHCR, or GitHub Releases and do not expose build products
+as release downloads.
 
-The release workflow verifies three artifact lanes before publication:
+CI and the manual Release Verification workflow verify three ephemeral build
+lanes:
 
 1. wheel and source distribution;
 2. the tested container image;
 3. the SCIE executable, installer, manifest, checksums, and SBOM.
 
-Manual workflow runs verify artifacts only. Tag-triggered publication is
-eligible only after the shared release gate succeeds. Published container use
-must resolve to an immutable digest rather than a floating tag.
+The manual workflow has read-only repository permissions, no tag trigger, no
+artifact upload, no publisher credentials, and no publication jobs. Its shared
+gate records only that all verification lanes completed.
 
 ## Consequences
 
-- Documentation cannot advertise download URLs before publication exists.
-- A build output is not a release merely because it was produced locally.
-- Rollback material must come from a previously verified and retained
-  artifact, not a rebuilt approximation.
+- Documentation and examples use source checkout installation only.
+- A build output is not a supported release or distribution artifact.
+- Managed rollback may use only a previously verified release already retained
+  on that host; it does not create or fetch rollback material.
+- Adding any publication channel requires a new reviewed architecture decision
+  and explicit operator documentation.

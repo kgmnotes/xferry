@@ -7,8 +7,8 @@ service. Use it only with explicit authorization and test data. Binding to a
 public address, enabling TLS, or adding Basic Auth does not by itself make an
 internet-facing deployment safe.
 
-Version `0.1.0` is available as source. No GitHub Release, PyPI package, or
-GHCR image has been published.
+The supported distribution is a reviewed source checkout. Project automation
+does not publish packages, release binaries, or registry images.
 
 ## Report a vulnerability
 

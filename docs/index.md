@@ -17,8 +17,9 @@ experiments in one local web UI and HTTP API.
 - [Configure a public-direct deployment](public-direct.md)
 - [Integrate with the HTTP and WebSocket API](api.md)
 
-Version `0.1.0` is available from source. No GitHub Release, PyPI package, or
-GHCR image has been published.
+The supported distribution is a reviewed source checkout. Automated workflows
+verify build products but do not publish packages, release binaries, or
+registry images.
 
 Developer reference material includes the [architecture](architecture.md),
 [frontend contract](frontend-contract.md), and [active ADR set](ADR/README.md).

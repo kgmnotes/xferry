@@ -92,13 +92,14 @@ itself still holds; otherwise replace the decision set deliberately.
 4. Document the wire contract in `API.md`.
 5. Add an ADR only when the change makes a durable architectural decision.
 
-## Release workflow
+## Distribution verification
 
-The repository contains a release workflow for Python distributions, a
-container image, and SCIE installer assets. Publication requires a version tag
-and all verification lanes to pass. A manual workflow run verifies artifacts
-but does not publish them. No release artifact is currently public, so user
-documentation must keep source installation first.
+The supported distribution is a reviewed source checkout. CI and the manual
+Release Verification workflow build wheel, source-distribution, container, and
+SCIE products only inside their verification jobs. They do not upload or
+publish packages, release binaries, or registry images. Keep documentation and
+examples source-only; adding a distribution channel requires a new reviewed
+architecture decision and an explicit policy change.
 
 ## Security reports
 
