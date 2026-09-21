@@ -4350,7 +4350,7 @@ async (page) => {
       "upload Send empty state",
       () => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
-        const notification = document.querySelector('[data-app-notification="upload-send"]');
+        const status = document.getElementById("uploadStatus");
         const dropZone = document.getElementById("dropZone");
         const uploadButton = document.getElementById("uploadBtn");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
@@ -4361,7 +4361,8 @@ async (page) => {
           trace.open === false &&
           !trace.querySelector("[data-tool-trace-phase]") &&
           !document.querySelector('[data-tool-summary-scope="upload"]') &&
-          !notification &&
+          status &&
+          status.hidden &&
           dropZone &&
           dropRect &&
           dropRect.width > 0 &&
@@ -4573,7 +4574,8 @@ async (page) => {
     return { desktop, mobile };
   }
 
-  async function uploadViaDom(name, filePath = uploadFilePath) {
+  async function uploadViaDom(name, filePath = uploadFilePath, options = {}) {
+    const { verifyStatusLifecycle = false } = options;
     await page.locator("#tab-upload").click();
     await waitForTabState("upload", { focused: true });
     await assertUploadChooserReady();
@@ -4590,11 +4592,13 @@ async (page) => {
       ([targetPath]) => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
         const area = document.getElementById("uploadRequestArea");
+        const status = document.getElementById("uploadStatus");
         return Boolean(
           trace &&
           !trace.querySelector("[data-tool-trace-phase]") &&
           !document.querySelector('[data-tool-summary-scope="upload"]') &&
-          !document.querySelector('[data-app-notification="upload-send"]') &&
+          status &&
+          status.hidden &&
           area &&
           area.dataset.exchangePhase === "ready" &&
           area.dataset.exchangePath === targetPath
@@ -4611,12 +4615,12 @@ async (page) => {
       10000
     );
     await waitForPageCondition(
-      "upload success notification and technical trace",
+      "upload success status and technical trace",
       ([targetName]) => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
         const responseArea = document.getElementById("uploadResponseArea");
-        const notification = document.querySelector('[data-app-notification="upload-send"]');
-        const message = notification?.querySelector('[data-app-notification-message]')?.textContent || "";
+        const status = document.getElementById("uploadStatus");
+        const message = document.getElementById("uploadStatusMessage")?.textContent || "";
         return Boolean(
           trace &&
           !trace.querySelector("[data-tool-trace-phase]") &&
@@ -4624,7 +4628,9 @@ async (page) => {
           responseArea?.dataset.exchangePhase === "complete" &&
           responseArea.textContent.includes("HTTP/1.1 201") &&
           responseArea.textContent.includes(targetName) &&
-          notification?.dataset.tone === "success" &&
+          status &&
+          !status.hidden &&
+          status.dataset.tone === "success" &&
           /Загрузка завершена|Upload complete/.test(message) &&
           /1/.test(message)
         );
@@ -4632,18 +4638,22 @@ async (page) => {
       [name],
       15000
     );
-    const uploadTrace = page.locator('[data-tool-trace-scope="upload"]');
-    if (!await uploadTrace.evaluate((details) => details.open)) {
-      await uploadTrace.locator(":scope > summary").click();
-    }
+    await page.locator("#uploadStatusDetailsBtn").focus();
+    await page.keyboard.press("Enter");
     await waitForPageCondition(
-      "upload Inspect opens inline trace",
+      "upload Details opens inline trace and focuses its summary",
       () => {
-        const trace = document.querySelector('[data-tool-trace-scope="upload"]');
+        const trace = document.getElementById("uploadTechnicalDetails");
+        const detailsButton = document.getElementById("uploadStatusDetailsBtn");
+        const summary = trace?.querySelector(":scope > summary");
         const responseArea = document.getElementById("uploadResponseArea");
         return Boolean(
           trace &&
           trace.open &&
+          detailsButton?.getAttribute("aria-expanded") === "true" &&
+          detailsButton?.getAttribute("aria-controls") === "uploadTechnicalDetails" &&
+          summary &&
+          document.activeElement === summary &&
           responseArea &&
           responseArea.dataset.exchangePhase === "complete" &&
           responseArea.innerText.includes("HTTP/1.1 201")
@@ -4666,6 +4676,46 @@ async (page) => {
       ["HTTP/1.1 201"],
       /^xferry-upload-response-.*\.http$/
     );
+    if (verifyStatusLifecycle) {
+      await page.waitForTimeout(5250);
+      await waitForPageCondition(
+        "upload success status remains after five seconds",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const message = document.getElementById("uploadStatusMessage")?.textContent || "";
+          return Boolean(
+            status &&
+            !status.hidden &&
+            status.dataset.tone === "success" &&
+            /Загрузка завершена|Upload complete/.test(message)
+          );
+        }
+      );
+
+      await page.locator("#fileInput").setInputFiles(unicodeUploadFilePath);
+      await waitForPageCondition(
+        "selecting another file hides the completed upload status",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const pendingRow = document.querySelector("#fileList [data-remove-index]");
+          return Boolean(status && status.hidden && pendingRow);
+        }
+      );
+      await page.locator("#fileList [data-remove-index]").click();
+      await waitForPageCondition(
+        "removing the replacement file keeps upload status hidden",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const uploadButton = document.getElementById("uploadBtn");
+          return Boolean(
+            status &&
+            status.hidden &&
+            uploadButton?.disabled &&
+            !document.querySelector("#fileList .file-item")
+          );
+        }
+      );
+    }
     await page.locator("#tab-files").click();
     await waitForTabState("files", {}, 10000);
 
@@ -10045,7 +10095,9 @@ async (page) => {
     });
 
     const uploadName = uploadFilePath.split(/[\\/]/).pop();
-    const upload = await uploadViaDom(uploadName);
+    const upload = await uploadViaDom(uploadName, uploadFilePath, {
+      verifyStatusLifecycle: true,
+    });
     await browseUploadsAndAssert(uploadName);
     await waitForLiveRegionText("filesResponseAreaLive", "INFO /uploads 200 OK", 10000);
     await fetchViaServerFilesAndAssert(uploadName);
@@ -10700,9 +10752,9 @@ async (page) => {
       const basicSuccess = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
-        notificationTone: document.querySelector(
-          '[data-app-notification="upload-send"]'
-        )?.dataset.tone || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
       };
 
       state.phase = "basic-error";
@@ -10711,9 +10763,9 @@ async (page) => {
       const basicError = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
-        notificationTone: document.querySelector(
-          '[data-app-notification="upload-send"]'
-        )?.dataset.tone || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
         card: document.querySelector("#uploadHttpErrorHost .http-error-card")?.textContent || "",
       };
       app.service("http-errors").close("uploadHttpErrorHost", { restore: false });
@@ -10759,9 +10811,14 @@ async (page) => {
       if (
         setup.basicSuccess.phase !== "complete" ||
         !setup.basicSuccess.summary.includes("/uploads/basic-final-server.txt") ||
-        setup.basicSuccess.notificationTone !== "success" ||
+        setup.basicSuccess.statusTone !== "success" ||
+        !setup.basicSuccess.statusVisible ||
+        !/Upload complete|Загрузка завершена/.test(setup.basicSuccess.statusText) ||
         setup.basicError.phase !== "error" ||
-        setup.basicError.notificationTone !== "error" ||
+        setup.basicError.statusTone !== "error" ||
+        !setup.basicError.statusVisible ||
+        !/Upload complete|Загрузка завершена/.test(setup.basicError.statusText) ||
+        !/1 error|1 ошиб/.test(setup.basicError.statusText) ||
         !setup.basicError.card.includes("Basic nested contract error") ||
         setup.advancedSuccess.phase !== "complete" ||
         !setup.advancedSuccess.summary.includes("/uploads/advanced-final-server.txt") ||
@@ -11544,9 +11601,9 @@ async (page) => {
         responseText: document.getElementById("uploadResponseArea")?.textContent || "",
         responseStatus: inspectorState?.response?.status ?? null,
         responseStatusText: inspectorState?.response?.statusText || "",
-        notificationTone: document.querySelector(
-          '[data-app-notification="upload-send"]'
-        )?.dataset.tone || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
         state: app.getState("upload"),
         calls,
       };
@@ -11557,7 +11614,10 @@ async (page) => {
     if (
       basicInitial.responseStatus !== 403 ||
       basicInitial.responseStatusText !== "Forbidden" ||
-      basicInitial.notificationTone !== "error"
+      basicInitial.statusTone !== "error" ||
+      !basicInitial.statusVisible ||
+      !basicInitial.statusText.includes("Upload complete") ||
+      !basicInitial.statusText.includes("1 error")
     ) {
       throw new Error(`Basic single 403 did not retain the real status: ${JSON.stringify(basicInitial)}`);
     }
@@ -11739,11 +11799,13 @@ async (page) => {
 
       const getUploadSummary = () => {
         const inspectorState = app.service("inspector").getInspectorState("upload");
-        const notification = document.querySelector('[data-app-notification="upload-send"]');
+        const status = document.getElementById("uploadStatus");
         return {
           phase: inspectorState?.response?.phase || "",
           status: inspectorState?.response?.statusText || "",
-          danger: notification?.dataset.tone === "error",
+          danger: status?.dataset.tone === "error",
+          statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+          statusVisible: status?.hidden === false,
           responseStatus: inspectorState?.response?.status ?? null,
         };
       };
@@ -11928,10 +11990,16 @@ async (page) => {
       recovery.pureStatusZero.responseStatus !== 0 ||
       recovery.pureStatusZero.status === "201 Error" ||
       !recovery.pureStatusZero.danger ||
+      !recovery.pureStatusZero.statusVisible ||
+      !recovery.pureStatusZero.statusText.includes("Upload complete") ||
+      !recovery.pureStatusZero.statusText.includes("1 error") ||
       recovery.mixedStatusZeroAndForbidden.phase !== "error" ||
       recovery.mixedStatusZeroAndForbidden.responseStatus !== 403 ||
       recovery.mixedStatusZeroAndForbidden.status !== "Forbidden" ||
-      !recovery.mixedStatusZeroAndForbidden.danger
+      !recovery.mixedStatusZeroAndForbidden.danger ||
+      !recovery.mixedStatusZeroAndForbidden.statusVisible ||
+      !recovery.mixedStatusZeroAndForbidden.statusText.includes("Upload complete") ||
+      !recovery.mixedStatusZeroAndForbidden.statusText.includes("2 errors")
     ) {
       throw new Error(`Basic recovery controls/regression failed: ${JSON.stringify(recovery)}`);
     }

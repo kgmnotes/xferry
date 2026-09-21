@@ -1465,6 +1465,68 @@
     gap: var(--space-2);
 }
 
+.upload-status {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--accent-secondary) 28%, var(--border-subtle));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--accent-secondary) 9%, var(--bg-elevated));
+    color: var(--text-secondary);
+}
+
+.upload-status[hidden] {
+    display: none;
+}
+
+.upload-status__icon {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    color: var(--accent-secondary);
+    font-weight: 800;
+    line-height: 1;
+}
+
+.upload-status__message {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 650;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.upload-status__details {
+    justify-self: end;
+    white-space: nowrap;
+}
+
+.upload-status[data-tone="success"] {
+    border-color: color-mix(in srgb, var(--accent-primary) 32%, var(--border-subtle));
+    background: color-mix(in srgb, var(--accent-primary) 9%, var(--bg-elevated));
+}
+
+.upload-status[data-tone="success"] .upload-status__icon {
+    color: var(--accent-primary);
+}
+
+.upload-status[data-tone="error"] {
+    border-color: color-mix(in srgb, var(--accent-danger) 34%, var(--border-subtle));
+    background: color-mix(in srgb, var(--accent-danger) 9%, var(--bg-elevated));
+}
+
+.upload-status[data-tone="error"] .upload-status__icon {
+    color: var(--accent-danger);
+}
+
 .tool-trace {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -3443,6 +3505,15 @@
     #upload-tab #uploadCompareBtn {
         width: 100%;
         min-height: 44px;
+    }
+
+    .upload-status {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .upload-status__details {
+        grid-column: 2;
+        justify-self: start;
     }
 
     #upload-tab .upload-profile-group,

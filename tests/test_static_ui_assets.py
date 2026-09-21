@@ -903,6 +903,70 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     )
 
 
+def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> None:
+    """Catches Upload feedback drifting away from its local technical details."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+    core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
+    files_js = (UI_ROOT / "files.js").read_text(encoding="utf-8")
+    features_css = (UI_ROOT / "features.css").read_text(encoding="utf-8")
+    upload_tab = extract_workspace_panel(html, "upload-tab")
+
+    assert upload_tab.count('id="uploadStatus"') == 1
+    assert upload_tab.count('id="uploadStatusMessage"') == 1
+    assert upload_tab.count('id="uploadStatusDetailsBtn"') == 1
+    assert upload_tab.count('id="uploadTechnicalDetails"') == 1
+
+    status_tag = re.search(r'<div\b[^>]*\bid="uploadStatus"[^>]*>', upload_tab)
+    details_button_tag = re.search(
+        r'<button\b[^>]*\bid="uploadStatusDetailsBtn"[^>]*>',
+        upload_tab,
+    )
+    details_tag = re.search(
+        r'<details\b[^>]*\bid="uploadTechnicalDetails"[^>]*>',
+        upload_tab,
+    )
+    assert status_tag is not None
+    assert re.search(r'\bhidden(?:\s|=|>)', status_tag.group(0))
+    assert details_button_tag is not None
+    assert 'aria-controls="uploadTechnicalDetails"' in details_button_tag.group(0)
+    assert 'aria-expanded="false"' in details_button_tag.group(0)
+    assert details_tag is not None
+    assert 'data-tool-trace-scope="upload"' in details_tag.group(0)
+    assert re.search(
+        r'<div\b(?=[^>]*\bid="uploadStatus")(?=[^>]*\bhidden\b)[^>]*>'
+        r'.*?</div>\s*'
+        r'<details\b(?=[^>]*\bid="uploadTechnicalDetails")'
+        r'(?=[^>]*\bdata-tool-trace-scope="upload")[^>]*>',
+        upload_tab,
+        flags=re.DOTALL,
+    )
+
+    for locale in ("ru", "en"):
+        assert "uploadStatusDetails" in extract_locale_keys(core_js, locale)
+
+    assert "app.service('notifications')" not in upload_js
+    assert "uploadNotificationId" not in upload_js
+    assert "timeoutMs" not in upload_js
+    assert "renderUploadStatus({ announce: false });" in upload_js
+
+    for files_notification_contract in (
+        "const notifications = app.service('notifications');",
+        "notifications.show({",
+        "id: 'files-delete',",
+        "timeoutMs: 5000,",
+    ):
+        assert files_notification_contract in files_js
+
+    status_rule = re.search(
+        r"^\.upload-status\s*\{(?P<body>.*?)^\}",
+        features_css,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert status_rule is not None
+    assert "position: fixed" not in status_rule.group("body")
+
+
 def test_upload_exchange_logs_have_download_controls() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(

@@ -262,7 +262,19 @@
 
                             <div class="sr-only" id="uploadResponseAreaLive" role="status" aria-live="polite" aria-atomic="true"></div>
                             <div class="http-error-host" id="uploadHttpErrorHost" data-http-error-host="upload"></div>
-                            <details class="tool-trace" data-tool-trace-scope="upload">
+                            <div class="upload-status" id="uploadStatus" data-tone="pending" hidden>
+                                <span class="upload-status__icon" aria-hidden="true">…</span>
+                                <p class="upload-status__message" id="uploadStatusMessage"></p>
+                                <button
+                                    class="btn-ghost btn--sm upload-status__details"
+                                    id="uploadStatusDetailsBtn"
+                                    type="button"
+                                    aria-controls="uploadTechnicalDetails"
+                                    aria-expanded="false"
+                                    data-i18n="uploadStatusDetails"
+                                >Детали</button>
+                            </div>
+                            <details class="tool-trace" id="uploadTechnicalDetails" data-tool-trace-scope="upload">
                                 <summary class="tool-trace__summary">
                                     <span class="tool-trace__label" data-i18n="toolTraceSummary">Технические детали</span>
                                 </summary>

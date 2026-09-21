@@ -23,7 +23,6 @@ const {
 } = app.service('inspector');
 const dialogs = app.service('dialogs');
 const httpErrors = app.service('http-errors');
-const notifications = app.service('notifications');
 
 function sendCustomRequest(...args) {
     return app.service('http').request(...args);
@@ -46,14 +45,13 @@ const uploadState = {
         compareBlockedReason: '',
     },
     compareResults: [],
-    notification: {
+    status: {
         phase: 'idle',
         current: 0,
         total: 0,
         successCount: 0,
         failCount: 0,
         blockedReason: '',
-        origin: null,
     },
 };
 let activeBasicUploadErrorFile = null;
@@ -63,9 +61,14 @@ const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'n
     : 512) + 1;
 const uploadMethodButtons = Array.from(document.querySelectorAll('.upload-method-btn[data-upload-method]'));
 const uploadProfileButtons = Array.from(document.querySelectorAll('.upload-profile-btn[data-upload-profile]'));
-const uploadNotificationId = 'upload-send';
+const uploadStatus = document.getElementById('uploadStatus');
+const uploadStatusIcon = uploadStatus?.querySelector('.upload-status__icon') || null;
+const uploadStatusMessage = document.getElementById('uploadStatusMessage');
+const uploadStatusDetailsBtn = document.getElementById('uploadStatusDetailsBtn');
+const uploadTechnicalDetails = document.getElementById('uploadTechnicalDetails');
+const uploadTechnicalDetailsSummary = uploadTechnicalDetails?.querySelector('summary') || null;
 
-function getUploadNotificationMessage(state = uploadState.notification) {
+function getUploadStatusMessage(state = uploadState.status) {
     if (state.phase === 'sending') {
         if (state.current > 0 && state.total > 0) {
             return t('uploadProgress')
@@ -86,28 +89,94 @@ function getUploadNotificationMessage(state = uploadState.notification) {
     return `${t('uploadComplete')}: ${counts.join(', ')}`;
 }
 
-function renderUploadNotification(options = {}) {
-    const state = uploadState.notification;
-    if (state.phase === 'idle') {
-        return false;
-    }
-    const notification = {
-        tone: state.phase === 'sending'
-            ? 'pending'
-            : (state.phase === 'complete' ? 'success' : 'error'),
-        message: getUploadNotificationMessage(state),
-        timeoutMs: state.phase === 'complete' ? 5000 : null,
-        origin: state.origin,
-    };
-    if (options.create === true) {
-        return notifications.show({ id: uploadNotificationId, ...notification });
-    }
-    return notifications.update(uploadNotificationId, notification);
+function getUploadStatusTone(state = uploadState.status) {
+    if (state.phase === 'complete') return 'success';
+    if (state.phase === 'error') return 'error';
+    return 'pending';
 }
 
-function setUploadNotification(nextState, options = {}) {
-    Object.assign(uploadState.notification, nextState);
-    return renderUploadNotification(options);
+function getUploadStatusIcon(tone) {
+    if (tone === 'success') return '✓';
+    if (tone === 'error') return '!';
+    return '…';
+}
+
+function syncUploadStatusDetailsExpanded() {
+    if (uploadStatusDetailsBtn) {
+        uploadStatusDetailsBtn.setAttribute(
+            'aria-expanded',
+            String(Boolean(uploadTechnicalDetails?.open))
+        );
+    }
+}
+
+function renderUploadStatus(options = {}) {
+    const state = uploadState.status;
+    if (state.phase === 'idle') {
+        if (uploadStatus) {
+            uploadStatus.hidden = true;
+        }
+        return false;
+    }
+
+    const tone = getUploadStatusTone(state);
+    const message = getUploadStatusMessage(state);
+    if (uploadStatus) {
+        uploadStatus.dataset.tone = tone;
+        uploadStatus.hidden = false;
+    }
+    if (uploadStatusIcon) {
+        uploadStatusIcon.textContent = getUploadStatusIcon(tone);
+    }
+    if (uploadStatusMessage) {
+        uploadStatusMessage.textContent = message;
+    }
+    syncUploadStatusDetailsExpanded();
+    if (options.announce !== false) {
+        announceLiveRegion(
+            tone === 'error' ? 'appNotificationAlert' : 'appNotificationLive',
+            message
+        );
+    }
+    return true;
+}
+
+function setUploadStatus(nextState, options = {}) {
+    Object.assign(uploadState.status, nextState);
+    return renderUploadStatus(options);
+}
+
+function resetUploadStatus() {
+    Object.assign(uploadState.status, {
+        phase: 'idle',
+        current: 0,
+        total: 0,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+    });
+    if (uploadStatusMessage) {
+        uploadStatusMessage.textContent = '';
+    }
+    if (uploadStatusIcon) {
+        uploadStatusIcon.textContent = '…';
+    }
+    if (uploadStatus) {
+        uploadStatus.dataset.tone = 'pending';
+    }
+    return renderUploadStatus({ announce: false });
+}
+
+function openUploadTechnicalDetails() {
+    if (!uploadTechnicalDetails) {
+        return;
+    }
+    uploadTechnicalDetails.open = true;
+    syncUploadStatusDetailsExpanded();
+    if (typeof uploadTechnicalDetails.scrollIntoView === 'function') {
+        uploadTechnicalDetails.scrollIntoView({ block: 'nearest' });
+    }
+    focusElementWithoutScroll(uploadTechnicalDetailsSummary);
 }
 
 function getUploadByteView(bodyBytes) {
@@ -677,6 +746,12 @@ if (uploadCompareBtn) {
         void compareBasicUploadProfiles();
     });
 }
+if (uploadStatusDetailsBtn) {
+    uploadStatusDetailsBtn.addEventListener('click', openUploadTechnicalDetails);
+}
+if (uploadTechnicalDetails) {
+    uploadTechnicalDetails.addEventListener('toggle', syncUploadStatusDetailsExpanded);
+}
 
 if (fileList) {
     fileList.addEventListener('click', (e) => {
@@ -752,6 +827,9 @@ if (uploadProfileButtons.length > 0) {
 function handleFiles(files) {
     if (!hasSupportedUploadMethod()) {
         return;
+    }
+    if (files?.length > 0) {
+        resetUploadStatus();
     }
 
     for (const file of files) {
@@ -878,6 +956,9 @@ function removeFile(index) {
     if (fileData?.status === 'error') {
         invalidateBasicUploadError(fileData);
     }
+    if (fileData) {
+        resetUploadStatus();
+    }
     renderFileList();
     refreshUploadSelectionLocale();
     syncUploadWorkspaceSelectionState();
@@ -993,12 +1074,12 @@ async function beginBasicUploadTransport(state, file, bodyBytes, onProgress = nu
 
 function announceBasicUploadRoutingBlock(blockedReason) {
     uploadState.routing.blockedReason = blockedReason;
-    setUploadNotification({
+    setUploadStatus({
         phase: 'error',
         blockedReason,
         successCount: 0,
         failCount: 0,
-    }, { create: true });
+    });
 }
 
 function parseUploadJson(text) {
@@ -1095,14 +1176,14 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
                 : 'xferry-upload-response',
         },
     });
-    setUploadNotification({
+    setUploadStatus({
         phase: failCount === 0 ? 'complete' : 'error',
         current: results.length,
         total: results.length,
         successCount,
         failCount,
         blockedReason: '',
-    }, { create: true });
+    });
 }
 
 async function uploadFiles(fileDataList, options = {}) {
@@ -1129,15 +1210,14 @@ async function uploadFiles(fileDataList, options = {}) {
 
     uploadState.actionPhase = 'sending';
     refreshUploadActionState();
-    setUploadNotification({
+    setUploadStatus({
         phase: 'sending',
         current: 0,
         total: pendingFiles.length,
         successCount: 0,
         failCount: 0,
         blockedReason: '',
-        origin,
-    }, { create: true });
+    });
     setExchangeInspector('upload', {
         phase: 'sending',
         request: buildUploadRequestInspectorModel(pendingFiles.map((fileData, index) => ({
@@ -1158,7 +1238,7 @@ async function uploadFiles(fileDataList, options = {}) {
     let routingBlocked = false;
 
     for (const [index, fileData] of pendingFiles.entries()) {
-        setUploadNotification({
+        setUploadStatus({
             phase: 'sending',
             current: index + 1,
             total: pendingFiles.length,
@@ -1593,7 +1673,7 @@ app.on(app.events.LOCALE_CHANGED, () => {
     refreshUploadRequestPreview();
     renderBasicUploadComparison();
     refreshUploadActionState();
-    renderUploadNotification();
+    renderUploadStatus({ announce: false });
 });
 app.on(app.events.SERVER_METHODS_CHANGED, refreshUploadMethodAvailability);
 document.addEventListener('xferry:response-options-changed', refreshUploadRequestPreview);
