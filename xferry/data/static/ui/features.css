@@ -2828,85 +2828,6 @@
     display: none;
 }
 
-.file-toast-region {
-    position: fixed;
-    z-index: 950;
-    right: max(var(--space-4), env(safe-area-inset-right));
-    bottom: max(var(--space-4), env(safe-area-inset-bottom));
-    display: grid;
-    width: min(360px, calc(100vw - var(--space-6)));
-    pointer-events: none;
-}
-
-.file-toast {
-    display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) 44px;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 0;
-    min-height: 60px;
-    padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 32%, var(--border-subtle));
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-    color: var(--text-primary);
-    pointer-events: auto;
-}
-
-.file-toast__icon {
-    display: inline-grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
-    color: var(--accent-primary);
-    font-weight: 800;
-    line-height: 1;
-}
-
-.file-toast__message {
-    min-width: 0;
-    margin: 0;
-    color: var(--text-emphasis);
-    font-size: 0.88rem;
-    font-weight: 700;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-.file-toast__dismiss {
-    width: 44px;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    color: var(--text-muted);
-}
-
-.file-toast__dismiss:focus-visible {
-    outline: 3px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-    .file-toast {
-        animation: file-toast-enter 160ms ease-out;
-    }
-}
-
-@keyframes file-toast-enter {
-    from {
-        opacity: 0;
-        transform: translateY(8px);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
 .file-browser__list-shell {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -3671,13 +3592,6 @@
     .file-browser__global-actions-menu {
         right: 0;
         width: min(320px, calc(100vw - var(--space-6)));
-    }
-
-    .file-toast-region {
-        right: max(var(--space-3), env(safe-area-inset-right));
-        bottom: max(var(--space-3), env(safe-area-inset-bottom));
-        left: max(var(--space-3), env(safe-area-inset-left));
-        width: auto;
     }
 
     .notepad-toolbar {

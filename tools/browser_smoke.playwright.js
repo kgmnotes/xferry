@@ -1307,7 +1307,7 @@ async (page) => {
           "responseAreaLive",
           "uploadResponseAreaLive",
           "filesResponseAreaLive",
-          "filesToastLive",
+          "appNotificationLive",
           "opsecResponseAreaLive",
         ];
 
@@ -1334,6 +1334,14 @@ async (page) => {
           opsecWarning.getAttribute("aria-atomic") === "true"
         );
 
+        const notificationAlert = document.getElementById("appNotificationAlert");
+        const notificationAlertOk = Boolean(
+          notificationAlert &&
+          notificationAlert.getAttribute("role") === "alert" &&
+          notificationAlert.getAttribute("aria-live") === "assertive" &&
+          notificationAlert.getAttribute("aria-atomic") === "true"
+        );
+
         const notepadSaveIndicator = document.getElementById("notepadSaveIndicator");
         const notepadConnStatus = document.getElementById("notepadConnStatus");
         const notepadConnStatusText = document.getElementById("notepadConnStatusText");
@@ -1353,7 +1361,7 @@ async (page) => {
           !document.querySelector('[data-exchange-scope="files"]')
         );
 
-        return panelsOk && liveOk && filesSummaryOk && opsecWarningOk && notepadStatusOk;
+        return panelsOk && liveOk && notificationAlertOk && filesSummaryOk && opsecWarningOk && notepadStatusOk;
       },
       null,
       timeout
@@ -4624,7 +4632,10 @@ async (page) => {
       [name],
       15000
     );
-    await page.locator('[data-tool-trace-scope="upload"] > summary').click();
+    const uploadTrace = page.locator('[data-tool-trace-scope="upload"]');
+    if (!await uploadTrace.evaluate((details) => details.open)) {
+      await uploadTrace.locator(":scope > summary").click();
+    }
     await waitForPageCondition(
       "upload Inspect opens inline trace",
       () => {
@@ -9263,7 +9274,7 @@ async (page) => {
       const contract = { toastFocusEvents: [], listener: null };
       contract.listener = (event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest("[data-files-toast]")) {
+        if (target instanceof Element && target.closest("[data-app-notification]")) {
           contract.toastFocusEvents.push({
             tagName: target.tagName,
             className: target.className,
@@ -9292,9 +9303,9 @@ async (page) => {
       await waitForPageCondition(
         `selected upload success toast is stable (${name})`,
         ([expectedMessage]) => {
-          const toast = document.querySelector("#filesToastRegion [data-files-toast]");
-          const message = toast?.querySelector("[data-files-toast-message]");
-          const live = document.getElementById("filesToastLive");
+          const toast = document.querySelector('[data-app-notification="files-delete"]');
+          const message = toast?.querySelector("[data-app-notification-message]");
+          const live = document.getElementById("appNotificationLive");
           const summary = document.querySelector('[data-tool-summary-scope="files"]');
           const focusContract = window.__filesBulkDeleteToastFocusContract;
           return Boolean(
@@ -9312,10 +9323,10 @@ async (page) => {
       );
 
       const toastSnapshot = await page.evaluate(([expectedMessage]) => {
-        const region = document.getElementById("filesToastRegion");
-        const toast = region?.querySelector("[data-files-toast]");
-        const message = toast?.querySelector("[data-files-toast-message]");
-        const dismiss = toast?.querySelector("[data-files-toast-dismiss]");
+        const region = document.getElementById("appNotificationRegion");
+        const toast = region?.querySelector('[data-app-notification="files-delete"]');
+        const message = toast?.querySelector("[data-app-notification-message]");
+        const dismiss = toast?.querySelector("[data-app-notification-dismiss]");
         const summary = document.querySelector('[data-tool-summary-scope="files"]');
         const regionStyle = region ? getComputedStyle(region) : null;
         const toastRect = toast?.getBoundingClientRect();
@@ -9323,7 +9334,7 @@ async (page) => {
         return {
           expectedMessage,
           message: message?.textContent?.trim() || "",
-          liveMessage: document.getElementById("filesToastLive")?.textContent?.trim() || "",
+          liveMessage: document.getElementById("appNotificationLive")?.textContent?.trim() || "",
           regionPosition: regionStyle?.position || "",
           toastRect: toastRect ? {
             left: toastRect.left,
@@ -9393,11 +9404,11 @@ async (page) => {
           contract.listener = null;
         }
       });
-      const dismissButton = page.locator("#filesToastRegion [data-files-toast-dismiss]");
+      const dismissButton = page.locator('[data-app-notification="files-delete"] [data-app-notification-dismiss]');
       await dismissButton.focus();
       await waitForPageCondition(
         `selected upload toast dismiss target receives deliberate focus (${name})`,
-        () => document.activeElement?.matches("[data-files-toast-dismiss]") === true,
+        () => document.activeElement?.matches("[data-app-notification-dismiss]") === true,
         null,
         10000
       );
@@ -9407,7 +9418,7 @@ async (page) => {
         () => {
           const summary = document.querySelector('[data-tool-summary-scope="files"]');
           return Boolean(
-            !document.querySelector("#filesToastRegion [data-files-toast]") &&
+            !document.querySelector('[data-app-notification="files-delete"]') &&
             document.activeElement?.id === "browsePathInput" &&
             summary?.dataset.phase === "empty"
           );
@@ -11919,7 +11930,7 @@ async (page) => {
       !recovery.pureStatusZero.danger ||
       recovery.mixedStatusZeroAndForbidden.phase !== "error" ||
       recovery.mixedStatusZeroAndForbidden.responseStatus !== 403 ||
-      recovery.mixedStatusZeroAndForbidden.status !== "403 Forbidden" ||
+      recovery.mixedStatusZeroAndForbidden.status !== "Forbidden" ||
       !recovery.mixedStatusZeroAndForbidden.danger
     ) {
       throw new Error(`Basic recovery controls/regression failed: ${JSON.stringify(recovery)}`);

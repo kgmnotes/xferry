@@ -1576,17 +1576,12 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
     files_js = (UI_ROOT / "files.js").read_text(encoding="utf-8")
+    components_css = (UI_ROOT / "components.css").read_text(encoding="utf-8")
     features_css = (UI_ROOT / "features.css").read_text(encoding="utf-8")
     files_tab = extract_workspace_panel(html, "files-tab")
 
-    assert files_tab.count('id="filesToastRegion"') == 1
-    assert files_tab.count('id="filesToastLive"') == 1
-    assert '<div class="file-toast-region" id="filesToastRegion">' in files_tab
-    assert (
-        '<div class="sr-only" id="filesToastLive" role="status" '
-        'aria-live="polite" aria-atomic="true"></div>'
-    ) in files_tab
-    assert files_tab.index('id="serverFiles"') < files_tab.index('id="filesToastRegion"')
+    assert 'id="filesToastRegion"' not in files_tab
+    assert 'id="filesToastLive"' not in files_tab
 
     expected_copy = {
         "ru": {
@@ -1594,47 +1589,49 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
             "deleteSelectedFilesRefreshError": (
                 "Файлы удалены ({0}), но список не удалось обновить"
             ),
-            "filesToastDismiss": "Закрыть уведомление",
         },
         "en": {
             "deleteSelectedFilesSuccess": "Selected files deleted",
             "deleteSelectedFilesRefreshError": (
                 "Files deleted ({0}), but the list could not be refreshed"
             ),
-            "filesToastDismiss": "Dismiss notification",
         },
     }
     for locale, labels in expected_copy.items():
         locale_block = extract_locale_block(core_js, locale)
         for key, label in labels.items():
             assert f'{key}: "{label}"' in locale_block
+        assert "filesToastDismiss:" not in locale_block
 
-    toast_helpers = files_js.split("function clearFilesToastTimer()", 1)[1].split(
+    toast_helpers = files_js.split("function getFilesDeletedToastMessage()", 1)[1].split(
         "refreshFilesMethodAvailability();",
         1,
     )[0]
     for snippet in (
-        "const filesToastRegionEl = document.getElementById('filesToastRegion');",
-        "function getFilesDeletedToastMessage()",
+        "const notifications = app.service('notifications');",
         "function syncFilesToastCopy()",
         "function dismissFilesToast({ restoreFocus = false } = {})",
-        "function scheduleFilesToastDismiss(toast, delay = 5000)",
         "function showFilesDeletedToast(deletedCount)",
-        "toast.dataset.filesToast = '';",
-        "message.dataset.filesToastMessage = '';",
-        "closeButton.dataset.filesToastDismiss = '';",
-        "closeButton.addEventListener('click', () => dismissFilesToast({ restoreFocus: true }))",
-        "announceLiveRegion('filesToastLive', getFilesDeletedToastMessage());",
-        "toast.addEventListener('focusin', clearFilesToastTimer);",
-        "event.stopPropagation();",
-        "dismissFilesToast({ restoreFocus: true });",
+        "notifications.update('files-delete', {",
+        "notifications.dismiss('files-delete', { restoreFocus });",
+        "notifications.show({",
+        "id: 'files-delete',",
+        "tone: 'success',",
+        "message: getFilesDeletedToastMessage(),",
+        "timeoutMs: 5000,",
+        "origin: browsePathInput,",
     ):
-        assert snippet in files_js
+        assert snippet in toast_helpers or snippet in files_js
     assert "filesToastDeletedCount || 0" in toast_helpers
-    assert "if (restoreFocus && toastHadFocus)" in toast_helpers
-    assert "focusFilesBrowserAnchor();" in toast_helpers
-    assert "toast.focus(" not in toast_helpers
-    assert "closeButton.focus(" not in toast_helpers
+    for legacy_snippet in (
+        "filesToastRegionEl",
+        "filesToastTimer",
+        "data-files-toast",
+        "filesToastLive",
+        "filesToastDismiss",
+        "document.createElement('div')",
+    ):
+        assert legacy_snippet not in toast_helpers
 
     bulk_delete = files_js.split("async function deleteSelectedUploadFiles", 1)[1].split(
         "// ===== DELETE file =====",
@@ -1664,9 +1661,13 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     assert "if (!suppressLiveAnnouncements)" in browse_directory
     assert "filesBrowseStatusEl.setAttribute('aria-live', 'polite');" in browse_directory
 
-    region_block = features_css.split("\n.file-toast-region {", 1)[1].split("\n}", 1)[0]
-    toast_block = features_css.split("\n.file-toast {", 1)[1].split("\n}", 1)[0]
-    dismiss_block = features_css.split("\n.file-toast__dismiss {", 1)[1].split("\n}", 1)[0]
+    region_block = components_css.split("\n.app-notification-region {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    toast_block = components_css.split("\n.app-notification {", 1)[1].split("\n}", 1)[0]
+    dismiss_block = components_css.split("\n.app-notification__dismiss {", 1)[1].split(
+        "\n}", 1
+    )[0]
     for declaration in (
         "position: fixed;",
         "right: max(var(--space-4), env(safe-area-inset-right));",
@@ -1679,8 +1680,9 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     assert "min-height: 60px;" in toast_block
     for declaration in ("width: 44px;", "min-width: 44px;", "min-height: 44px;"):
         assert declaration in dismiss_block
-    assert ".file-toast__dismiss:focus-visible" in features_css
-    assert "@media (prefers-reduced-motion: no-preference)" in features_css
+    assert ".app-notification__dismiss:focus-visible" in components_css
+    assert "@media (prefers-reduced-motion: no-preference)" in components_css
+    assert ".file-toast" not in features_css
 
 
 def test_files_inspection_ui_uses_one_opt_in_info_contract_and_safe_fallback() -> None:
