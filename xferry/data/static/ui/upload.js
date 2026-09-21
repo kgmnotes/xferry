@@ -3,14 +3,12 @@
 
 const {
     t,
-    escapeHtml: esc,
     formatSize,
     serverUrl: SERVER_URL,
     announceLiveRegion,
     bindDropZoneKeyboardTrigger,
     isServerMethodInGroup,
     focusElementWithoutScroll,
-    switchWorkspace: switchTab,
 } = app.service('core');
 const {
     binaryTextPreviewLimit: exchangeBinaryTextPreviewLimit,
@@ -21,11 +19,11 @@ const {
     createPreviewBody: createExchangePreviewBody,
     createTextBody: createExchangeTextBody,
     setInspector: setExchangeInspector,
-    setSummaryActions: setToolSummaryActions,
     withNoGzipHeader: withUiNoGzipHeader,
 } = app.service('inspector');
 const dialogs = app.service('dialogs');
 const httpErrors = app.service('http-errors');
+const notifications = app.service('notifications');
 
 function sendCustomRequest(...args) {
     return app.service('http').request(...args);
@@ -48,6 +46,15 @@ const uploadState = {
         compareBlockedReason: '',
     },
     compareResults: [],
+    notification: {
+        phase: 'idle',
+        current: 0,
+        total: 0,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+        origin: null,
+    },
 };
 let activeBasicUploadErrorFile = null;
 const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header']);
@@ -56,6 +63,52 @@ const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'n
     : 512) + 1;
 const uploadMethodButtons = Array.from(document.querySelectorAll('.upload-method-btn[data-upload-method]'));
 const uploadProfileButtons = Array.from(document.querySelectorAll('.upload-profile-btn[data-upload-profile]'));
+const uploadNotificationId = 'upload-send';
+
+function getUploadNotificationMessage(state = uploadState.notification) {
+    if (state.phase === 'sending') {
+        if (state.current > 0 && state.total > 0) {
+            return t('uploadProgress')
+                .replace('{0}', String(state.current))
+                .replace('{1}', String(state.total));
+        }
+        return t('uploadStarting');
+    }
+    if (state.blockedReason) {
+        return t(state.blockedReason === 'conflict'
+            ? 'uploadRoutingConflict'
+            : 'uploadRoutingUnknown');
+    }
+    const counts = [`${state.successCount} ${t('successCount')}`];
+    if (state.failCount > 0) {
+        counts.push(`${state.failCount} ${t('errorCount')}`);
+    }
+    return `${t('uploadComplete')}: ${counts.join(', ')}`;
+}
+
+function renderUploadNotification(options = {}) {
+    const state = uploadState.notification;
+    if (state.phase === 'idle') {
+        return false;
+    }
+    const notification = {
+        tone: state.phase === 'sending'
+            ? 'pending'
+            : (state.phase === 'complete' ? 'success' : 'error'),
+        message: getUploadNotificationMessage(state),
+        timeoutMs: state.phase === 'complete' ? 5000 : null,
+        origin: state.origin,
+    };
+    if (options.create === true) {
+        return notifications.show({ id: uploadNotificationId, ...notification });
+    }
+    return notifications.update(uploadNotificationId, notification);
+}
+
+function setUploadNotification(nextState, options = {}) {
+    Object.assign(uploadState.notification, nextState);
+    return renderUploadNotification(options);
+}
 
 function getUploadByteView(bodyBytes) {
     if (!bodyBytes) {
@@ -227,9 +280,7 @@ const uploadBtn = document.getElementById('uploadBtn');
 const uploadCompareBtn = document.getElementById('uploadCompareBtn');
 const uploadCompareResults = document.getElementById('uploadCompareResults');
 const uploadRequestSummary = document.getElementById('uploadRequestSummary');
-const uploadResponseAreaEl = document.getElementById('uploadResponseArea');
 const uploadSelectionState = document.getElementById('uploadSelectionState');
-const uploadSummaryEl = document.querySelector('[data-tool-summary-scope="upload"]');
 const uploadSummaryFields = Object.freeze({
     requestLine: document.querySelector('[data-upload-summary="request-line"]'),
     bodyKind: document.querySelector('[data-upload-summary="body-kind"]'),
@@ -525,9 +576,6 @@ function refreshUploadRequestPreview() {
                 emptyText: t('exchangeResponseEmpty'),
             },
         });
-        if (typeof setToolSummaryActions === 'function') {
-            setToolSummaryActions('upload', '');
-        }
         return;
     }
 
@@ -658,50 +706,6 @@ if (fileList) {
             removeFile(index);
         }
     });
-}
-
-if (uploadResponseAreaEl) {
-    uploadResponseAreaEl.addEventListener('click', (e) => {
-        const actionBtn = e.target.closest('[data-upload-response-action]');
-        if (!actionBtn) return;
-
-        handleUploadResultAction(actionBtn);
-    });
-}
-
-if (uploadSummaryEl) {
-    uploadSummaryEl.addEventListener('click', (e) => {
-        const actionBtn = e.target.closest('[data-upload-response-action]');
-        if (!actionBtn) return;
-
-        handleUploadResultAction(actionBtn);
-    });
-}
-
-function openUploadTraceDetails() {
-    const traceDetails = document.querySelector('[data-tool-trace-scope="upload"]');
-    if (!traceDetails) {
-        return;
-    }
-
-    traceDetails.open = true;
-    focusElementWithoutScroll(traceDetails.querySelector('summary'));
-}
-
-function handleUploadResultAction(actionBtn) {
-    if (!actionBtn) {
-        return;
-    }
-
-    if (actionBtn.dataset.uploadResponseAction === 'view-files') {
-        const browseInput = document.getElementById('browsePathInput');
-        if (browseInput) {
-            browseInput.value = '/uploads';
-        }
-        switchTab('files', document.getElementById('tab-files'), { focusTabButton: true });
-    } else if (actionBtn.dataset.uploadResponseAction === 'show-trace') {
-        openUploadTraceDetails();
-    }
 }
 
 // Drag & Drop
@@ -989,10 +993,12 @@ async function beginBasicUploadTransport(state, file, bodyBytes, onProgress = nu
 
 function announceBasicUploadRoutingBlock(blockedReason) {
     uploadState.routing.blockedReason = blockedReason;
-    announceLiveRegion(
-        'uploadResponseAreaLive',
-        t(blockedReason === 'conflict' ? 'uploadRoutingConflict' : 'uploadRoutingUnknown')
-    );
+    setUploadNotification({
+        phase: 'error',
+        blockedReason,
+        successCount: 0,
+        failCount: 0,
+    }, { create: true });
 }
 
 function parseUploadJson(text) {
@@ -1059,27 +1065,6 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
 
     setExchangeInspector('upload', {
         phase: failCount === 0 ? 'complete' : 'error',
-        summaryMetaMode: singleSuccessfulResult ? 'replace' : '',
-        summaryMeta: singleSuccessfulResult
-            ? [
-                {
-                    label: t('responseSummaryFieldStatus'),
-                    value: `${finalStatus} ${finalStatusText}`.trim(),
-                    tone: finalStatus >= 400 ? 'danger' : 'success',
-                    field: 'status',
-                },
-                {
-                    label: t('uploadResultServerPath'),
-                    value: singleSuccessfulResult.path,
-                    field: 'server-path',
-                },
-                {
-                    label: t('uploadResultSize'),
-                    value: formatSize(singleSuccessfulResult.size),
-                    field: 'size',
-                },
-            ]
-            : [],
         request: lastRequestExchange
             ? {
                 ...lastRequestExchange,
@@ -1110,21 +1095,14 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
                 : 'xferry-upload-response',
         },
     });
-    if (typeof setToolSummaryActions === 'function') {
-        setToolSummaryActions(
-            'upload',
-            successCount > 0
-                ? `
-                    <button class="btn-info btn--sm" type="button" data-upload-response-action="show-trace" data-testid="upload-result-trace-btn">${esc(t('uploadResultTraceAction'))}</button>
-                    <button class="btn-info btn--sm" type="button" data-upload-response-action="view-files" data-testid="upload-result-files-btn">${esc(t('uploadResultFilesAction'))}</button>
-                `
-                : ''
-        );
-    }
-    announceLiveRegion(
-        'uploadResponseAreaLive',
-        `${t('uploadComplete')}: ${successCount} ${t('successCount')}, ${failCount} ${t('errorCount')}`
-    );
+    setUploadNotification({
+        phase: failCount === 0 ? 'complete' : 'error',
+        current: results.length,
+        total: results.length,
+        successCount,
+        failCount,
+        blockedReason: '',
+    }, { create: true });
 }
 
 async function uploadFiles(fileDataList, options = {}) {
@@ -1151,10 +1129,15 @@ async function uploadFiles(fileDataList, options = {}) {
 
     uploadState.actionPhase = 'sending';
     refreshUploadActionState();
-    announceLiveRegion('uploadResponseAreaLive', t('uploadStarting'));
-    if (typeof setToolSummaryActions === 'function') {
-        setToolSummaryActions('upload', '');
-    }
+    setUploadNotification({
+        phase: 'sending',
+        current: 0,
+        total: pendingFiles.length,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+        origin,
+    }, { create: true });
     setExchangeInspector('upload', {
         phase: 'sending',
         request: buildUploadRequestInspectorModel(pendingFiles.map((fileData, index) => ({
@@ -1174,7 +1157,12 @@ async function uploadFiles(fileDataList, options = {}) {
     const exchangeEntries = [];
     let routingBlocked = false;
 
-    for (const fileData of pendingFiles) {
+    for (const [index, fileData] of pendingFiles.entries()) {
+        setUploadNotification({
+            phase: 'sending',
+            current: index + 1,
+            total: pendingFiles.length,
+        });
         fileData.status = 'uploading';
         fileData.progress = 0;
         renderFileList();
@@ -1605,6 +1593,7 @@ app.on(app.events.LOCALE_CHANGED, () => {
     refreshUploadRequestPreview();
     renderBasicUploadComparison();
     refreshUploadActionState();
+    renderUploadNotification();
 });
 app.on(app.events.SERVER_METHODS_CHANGED, refreshUploadMethodAvailability);
 document.addEventListener('xferry:response-options-changed', refreshUploadRequestPreview);

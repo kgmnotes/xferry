@@ -158,6 +158,276 @@ def extract_workspace_panel(html: str, panel_id: str) -> str:
     return html[panel_start : panel_start + 1 + next_panel.start()]
 
 
+def test_global_notification_service_updates_one_toast_and_preserves_accessible_lifecycle() -> None:
+    """Catches duplicate upload toasts, disappearing errors, and focus loss on dismissal."""
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.dataset = {};
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this.className = '';
+    this.textContent = '';
+    this.focused = false;
+  }
+
+  append(...nodes) {
+    nodes.forEach(node => {
+      node.parentNode = this;
+      this.children.push(node);
+    });
+  }
+
+  appendChild(node) {
+    this.append(node);
+    return node;
+  }
+
+  remove() {
+    if (!this.parentNode) return;
+    this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+    this.parentNode = null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) || null;
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatch(type, event = {}) {
+    const payload = {
+      target: this,
+      relatedTarget: null,
+      preventDefault() {},
+      stopPropagation() {},
+      ...event,
+    };
+    (this.listeners.get(type) || []).forEach(listener => listener(payload));
+  }
+
+  contains(candidate) {
+    return this === candidate || this.children.some(child => child.contains(candidate));
+  }
+
+  querySelector(selector) {
+    const match = /^\[data-([a-z0-9-]+)(?:="([^"]*)")?\]$/.exec(selector);
+    if (!match) throw new Error(`Unsupported selector: ${selector}`);
+    const key = match[1].replace(/-([a-z])/g, (_whole, letter) => letter.toUpperCase());
+    const expected = match[2];
+    const queue = [...this.children];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (
+        Object.prototype.hasOwnProperty.call(current.dataset, key)
+        && (expected === undefined || current.dataset[key] === expected)
+      ) {
+        return current;
+      }
+      queue.push(...current.children);
+    }
+    return null;
+  }
+
+  focus() {
+    this.focused = true;
+    document.activeElement = this;
+  }
+
+  get isConnected() {
+    let current = this;
+    while (current) {
+      if (current === document.body) return true;
+      current = current.parentNode;
+    }
+    return false;
+  }
+}
+
+const body = new FakeElement('body');
+const region = new FakeElement('div');
+const polite = new FakeElement('div');
+const alert = new FakeElement('div');
+body.append(region, polite, alert);
+const elements = new Map([
+  ['appNotificationRegion', region],
+  ['appNotificationLive', polite],
+  ['appNotificationAlert', alert],
+]);
+const timers = new Map();
+let timerId = 0;
+let locale = 'en';
+const announcements = [];
+const listeners = new Map();
+const services = new Map();
+const core = {
+  t(key) {
+    if (key !== 'notificationDismiss') return key;
+    return locale === 'en' ? 'Dismiss notification' : 'Закрыть уведомление';
+  },
+  announceLiveRegion(id, message) {
+    announcements.push([id, message]);
+    elements.get(id).textContent = message;
+  },
+  focusElementWithoutScroll(element) {
+    element?.focus();
+  },
+};
+const app = {
+  events: { LOCALE_CHANGED: 'locale.changed' },
+  service(name) {
+    if (name === 'core') return core;
+    return services.get(name);
+  },
+  registerService(name, api) {
+    services.set(name, api);
+  },
+  on(name, listener) {
+    const registered = listeners.get(name) || [];
+    registered.push(listener);
+    listeners.set(name, registered);
+  },
+};
+
+globalThis.document = {
+  body,
+  activeElement: null,
+  createElement: tagName => new FakeElement(tagName),
+  getElementById: id => elements.get(id) || null,
+};
+globalThis.window = {
+  XferryApp: app,
+  setTimeout(callback, delay) {
+    const id = ++timerId;
+    timers.set(id, { callback, delay });
+    return id;
+  },
+  clearTimeout(id) {
+    timers.delete(id);
+  },
+};
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+vm.runInThisContext(source, { filename: process.argv[1] });
+const notifications = services.get('notifications');
+const origin = new FakeElement('button');
+body.append(origin);
+
+notifications.show({
+  id: 'upload',
+  tone: 'pending',
+  message: 'Uploading files',
+  timeoutMs: null,
+  origin,
+});
+const pendingToast = region.querySelector('[data-app-notification="upload"]');
+const pendingMessage = pendingToast.querySelector('[data-app-notification-message]');
+notifications.update('upload', {
+  tone: 'success',
+  message: 'Upload complete: 2 successful',
+  timeoutMs: 5000,
+});
+const successToast = region.querySelector('[data-app-notification="upload"]');
+const successMessage = successToast.querySelector('[data-app-notification-message]');
+const successTimer = [...timers.values()][0];
+const successSnapshot = {
+  count: region.children.length,
+  sameElement: pendingToast === successToast,
+  pendingMessage: pendingMessage.textContent,
+  message: successMessage.textContent,
+  tone: successToast.dataset.tone,
+  timeout: successTimer?.delay || null,
+};
+successTimer.callback();
+const missingUpdate = notifications.update('upload', {
+  tone: 'success',
+  message: 'Translated success',
+  timeoutMs: 5000,
+});
+const missingUpdateDidNotRecreate = !region.querySelector('[data-app-notification="upload"]');
+
+notifications.show({
+  id: 'upload',
+  tone: 'error',
+  message: 'Upload complete: 1 error',
+  timeoutMs: null,
+  origin,
+});
+const errorToast = region.querySelector('[data-app-notification="upload"]');
+const dismiss = errorToast.querySelector('[data-app-notification-dismiss]');
+locale = 'ru';
+(listeners.get('locale.changed') || []).forEach(listener => listener({ lang: 'ru' }));
+dismiss.focus();
+dismiss.dispatch('click');
+
+process.stdout.write(JSON.stringify({
+  registered: Boolean(notifications),
+  success: successSnapshot,
+  successRemoved: missingUpdateDidNotRecreate && !errorToast.isConnected,
+  missingUpdate,
+  errorWasPersistent: timers.size === 0,
+  dismissLabel: dismiss.getAttribute('aria-label'),
+  originFocused: origin.focused,
+  announcements,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script, str(UI_ROOT / "notifications.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "registered": True,
+        "success": {
+            "count": 1,
+            "sameElement": True,
+            "pendingMessage": "Upload complete: 2 successful",
+            "message": "Upload complete: 2 successful",
+            "tone": "success",
+            "timeout": 5000,
+        },
+        "successRemoved": True,
+        "missingUpdate": False,
+        "errorWasPersistent": True,
+        "dismissLabel": "Закрыть уведомление",
+        "originFocused": True,
+        "announcements": [
+            ["appNotificationLive", "Uploading files"],
+            ["appNotificationLive", "Upload complete: 2 successful"],
+            ["appNotificationAlert", "Upload complete: 1 error"],
+        ],
+    }
+
+
+def test_global_notification_host_is_outside_hidden_workspaces_and_loaded_before_workflows() -> None:
+    """Catches notifications becoming invisible when their originating tab is hidden."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+
+    assert html.count('id="appNotificationRegion"') == 1
+    assert html.count('id="appNotificationLive"') == 1
+    assert html.count('id="appNotificationAlert"') == 1
+    assert html.index('id="appNotificationRegion"') > html.index("</main>")
+    assert html.index('/static/ui/core.js') < html.index('/static/ui/notifications.js')
+    assert html.index('/static/ui/notifications.js') < html.index('/static/ui/upload.js')
+
+
 def test_static_ui_uses_larger_readable_base_scale() -> None:
     tokens_css = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "tokens.css").read_text(
         encoding="utf-8"
@@ -540,11 +810,13 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         'id="uploadRequestSummary"',
         'class="upload-primary-action"',
         'id="uploadCompareResults"',
-        'data-testid="upload-result"',
         'data-tool-trace-scope="upload"',
     )
     positions = [upload_tab.index(marker) for marker in source_order]
     assert positions == sorted(positions)
+    assert 'data-tool-summary-scope="upload"' not in upload_tab
+    assert 'data-tool-trace-phase' not in upload_tab
+    assert 'data-tool-trace-scope="upload"' in upload_tab
     assert upload_tab.index('role="radiogroup"') < upload_tab.index('id="dropZone"')
     assert upload_tab.index('id="uploadSelectionState"') > upload_tab.index(
         'class="upload-primary-action"'
@@ -817,6 +1089,7 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "/static/ui/theme.js",
         "/static/ui/bootstrap.js",
         "/static/ui/core.js",
+        "/static/ui/notifications.js",
         "/static/ui/dialogs.js",
         "/static/ui/inspector.js",
         "/static/ui/http-errors.js",
@@ -841,6 +1114,7 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
 
     expected_initializers = {
         "core.js": "initializeCore",
+        "notifications.js": "initializeNotifications",
         "dialogs.js": "initializeDialogs",
         "inspector.js": "initializeInspector",
         "http-errors.js": "initializeHttpErrors",

@@ -261,29 +261,10 @@
                             </section>
 
                             <div class="sr-only" id="uploadResponseAreaLive" role="status" aria-live="polite" aria-atomic="true"></div>
-                            <section
-                                class="tool-result tool-result--inline"
-                                data-testid="upload-result"
-                                data-tool-summary-visible-when-empty="true"
-                                data-tool-summary-scope="upload"
-                                data-tool-summary-idle-title-key="uploadResultIdleTitle"
-                                data-tool-summary-idle-body-key="uploadResultIdleBody"
-                                aria-labelledby="uploadResultTitle"
-                            >
-                                <div class="tool-result__header">
-                                    <p class="eyebrow" data-i18n="toolResultEyebrow">РЕЗУЛЬТАТ</p>
-                                    <span class="tool-result__badge" data-tool-summary-badge></span>
-                                </div>
-                                <h3 class="tool-result__title" id="uploadResultTitle" data-tool-summary-title></h3>
-                                <p class="tool-result__body" data-tool-summary-body></p>
-                                <div class="tool-result__meta" data-tool-summary-meta></div>
-                                <div class="tool-result__actions" data-tool-summary-actions hidden></div>
-                            </section>
                             <div class="http-error-host" id="uploadHttpErrorHost" data-http-error-host="upload"></div>
                             <details class="tool-trace" data-tool-trace-scope="upload">
                                 <summary class="tool-trace__summary">
                                     <span class="tool-trace__label" data-i18n="toolTraceSummary">Технические детали</span>
-                                    <span class="tool-trace__phase" data-tool-trace-phase></span>
                                 </summary>
                                 <div class="exchange-inspector exchange-inspector--tool" data-exchange-scope="upload">
                                     <div class="exchange-inspector__scroll">
@@ -915,6 +896,10 @@
             </section>
         </main>
 
+        <div class="app-notification-region" id="appNotificationRegion"></div>
+        <div class="sr-only" id="appNotificationLive" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="sr-only" id="appNotificationAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
         <footer class="site-footer">
             <p id="appVersion" data-app-version="0.1.0">v0.1.0</p>
             <a href="https://t.me/kgmnotes" target="_blank" rel="noopener" id="telegramLink" class="telegram-link">@kgmnotes</a>
@@ -923,6 +908,7 @@
 
     <script src="/static/ui/bootstrap.js"></script>
     <script src="/static/ui/core.js"></script>
+    <script src="/static/ui/notifications.js"></script>
     <script src="/static/ui/dialogs.js"></script>
     <script src="/static/ui/inspector.js"></script>
     <script src="/static/ui/http-errors.js"></script>

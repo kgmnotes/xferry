@@ -4341,24 +4341,19 @@ async (page) => {
     await waitForPageCondition(
       "upload Send empty state",
       () => {
-        const summary = document.querySelector('[data-tool-summary-scope="upload"]');
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
+        const notification = document.querySelector('[data-app-notification="upload-send"]');
         const dropZone = document.getElementById("dropZone");
         const uploadButton = document.getElementById("uploadBtn");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
-        const actions = summary?.querySelector("[data-tool-summary-actions]");
-        const text = (summary?.innerText || summary?.textContent || "").trim();
         const dropRect = dropZone?.getBoundingClientRect();
         const buttonRect = uploadButton?.getBoundingClientRect();
         return Boolean(
-          summary &&
-          summary.dataset.phase === "empty" &&
-          text.length > 0 &&
-          text.length <= 180 &&
-          /Choose|Выберите/.test(text) &&
-          /Send|Отправить/.test(text) &&
           trace &&
           trace.open === false &&
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          !notification &&
           dropZone &&
           dropRect &&
           dropRect.width > 0 &&
@@ -4369,8 +4364,7 @@ async (page) => {
           buttonRect.width > 0 &&
           buttonRect.height > 0 &&
           fileInputs.length === 1 &&
-          fileInputs[0].tabIndex === -1 &&
-          (!actions || actions.hidden || !(actions.innerText || "").trim())
+          fileInputs[0].tabIndex === -1
         );
       },
       null,
@@ -4590,6 +4584,9 @@ async (page) => {
         const area = document.getElementById("uploadRequestArea");
         return Boolean(
           trace &&
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          !document.querySelector('[data-app-notification="upload-send"]') &&
           area &&
           area.dataset.exchangePhase === "ready" &&
           area.dataset.exchangePath === targetPath
@@ -4601,48 +4598,33 @@ async (page) => {
 
     await page.locator("#uploadBtn").click();
     await waitForLiveRegionText(
-      "uploadResponseAreaLive",
+      "appNotificationLive",
       /Загрузка завершена|Upload complete/,
       10000
     );
     await waitForPageCondition(
-      "upload success summary",
-      ([targetName, targetSize]) => {
-        const summary = document.querySelector('[data-tool-summary-scope="upload"]');
+      "upload success notification and technical trace",
+      ([targetName]) => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
-        const status = summary?.querySelector('[data-upload-result-field="status"]');
-        const serverPath = summary?.querySelector('[data-upload-result-field="server-path"]');
-        const size = summary?.querySelector('[data-upload-result-field="size"]');
-        const statusValue = status?.querySelector(".tool-result__meta-value");
-        const serverPathValue = serverPath?.querySelector(".tool-result__meta-value");
-        const sizeValue = size?.querySelector(".tool-result__meta-value");
-        const traceAction = summary?.querySelector('[data-upload-response-action="show-trace"]');
-        const filesAction = summary?.querySelector('[data-upload-response-action="view-files"]');
-        const text = summary?.innerText || summary?.textContent || "";
-        const traceActionText = traceAction?.textContent || "";
+        const responseArea = document.getElementById("uploadResponseArea");
+        const notification = document.querySelector('[data-app-notification="upload-send"]');
+        const message = notification?.querySelector('[data-app-notification-message]')?.textContent || "";
         return Boolean(
-          summary &&
-          summary.dataset.phase === "complete" &&
           trace &&
-          text.includes(targetName) &&
-          statusValue &&
-          statusValue.textContent.includes("201") &&
-          serverPathValue &&
-          serverPathValue.textContent.trim() === `/uploads/${targetName}` &&
-          sizeValue &&
-          sizeValue.textContent.trim() === targetSize &&
-          traceAction &&
-          traceAction.getBoundingClientRect().width > 0 &&
-          /Inspect|technical details|технические детали/i.test(traceActionText) &&
-          filesAction &&
-          filesAction.getBoundingClientRect().width > 0 &&
-          /Files|Файлы/.test(filesAction.textContent || "")
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          responseArea?.dataset.exchangePhase === "complete" &&
+          responseArea.textContent.includes("HTTP/1.1 201") &&
+          responseArea.textContent.includes(targetName) &&
+          notification?.dataset.tone === "success" &&
+          /Загрузка завершена|Upload complete/.test(message) &&
+          /1/.test(message)
         );
       },
-      [name, selectedSizeText.trim()],
+      [name],
       15000
     );
-    await page.locator('[data-upload-response-action="show-trace"]').click();
+    await page.locator('[data-tool-trace-scope="upload"] > summary').click();
     await waitForPageCondition(
       "upload Inspect opens inline trace",
       () => {
@@ -4673,7 +4655,7 @@ async (page) => {
       ["HTTP/1.1 201"],
       /^xferry-upload-response-.*\.http$/
     );
-    await page.locator('[data-upload-response-action="view-files"]').click();
+    await page.locator("#tab-files").click();
     await waitForTabState("files", {}, 10000);
 
     return { selectedSizeText: selectedSizeText.trim() };
@@ -10707,9 +10689,9 @@ async (page) => {
       const basicSuccess = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
-        serverPath: document.querySelector(
-          '[data-upload-result-field="server-path"] .tool-result__meta-value'
-        )?.textContent || "",
+        notificationTone: document.querySelector(
+          '[data-app-notification="upload-send"]'
+        )?.dataset.tone || "",
       };
 
       state.phase = "basic-error";
@@ -10718,6 +10700,9 @@ async (page) => {
       const basicError = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
+        notificationTone: document.querySelector(
+          '[data-app-notification="upload-send"]'
+        )?.dataset.tone || "",
         card: document.querySelector("#uploadHttpErrorHost .http-error-card")?.textContent || "",
       };
       app.service("http-errors").close("uploadHttpErrorHost", { restore: false });
@@ -10763,8 +10748,9 @@ async (page) => {
       if (
         setup.basicSuccess.phase !== "complete" ||
         !setup.basicSuccess.summary.includes("/uploads/basic-final-server.txt") ||
-        setup.basicSuccess.serverPath !== "/uploads/basic-final-server.txt" ||
+        setup.basicSuccess.notificationTone !== "success" ||
         setup.basicError.phase !== "error" ||
+        setup.basicError.notificationTone !== "error" ||
         !setup.basicError.card.includes("Basic nested contract error") ||
         setup.advancedSuccess.phase !== "complete" ||
         !setup.advancedSuccess.summary.includes("/uploads/advanced-final-server.txt") ||
@@ -11542,11 +11528,14 @@ async (page) => {
         new File(["denied"], "single-403.txt", { type: "text/plain" }),
       ]);
       await app.invoke("upload", "send");
+      const inspectorState = app.service("inspector").getInspectorState("upload");
       const result = {
         responseText: document.getElementById("uploadResponseArea")?.textContent || "",
-        summaryStatus: document.querySelector(
-          '[data-tool-summary-scope="upload"] [data-tool-summary-field="status"] .tool-result__meta-value'
-        )?.textContent || "",
+        responseStatus: inspectorState?.response?.status ?? null,
+        responseStatusText: inspectorState?.response?.statusText || "",
+        notificationTone: document.querySelector(
+          '[data-app-notification="upload-send"]'
+        )?.dataset.tone || "",
         state: app.getState("upload"),
         calls,
       };
@@ -11554,7 +11543,11 @@ async (page) => {
       return result;
     });
 
-    if (basicInitial.summaryStatus !== "403 Forbidden") {
+    if (
+      basicInitial.responseStatus !== 403 ||
+      basicInitial.responseStatusText !== "Forbidden" ||
+      basicInitial.notificationTone !== "error"
+    ) {
       throw new Error(`Basic single 403 did not retain the real status: ${JSON.stringify(basicInitial)}`);
     }
 
@@ -11734,14 +11727,12 @@ async (page) => {
       findUploadRow("single-403.txt")?.querySelector("[data-remove-index]")?.click();
 
       const getUploadSummary = () => {
-        const value = document.querySelector(
-          '[data-tool-summary-scope="upload"] [data-tool-summary-field="status"] .tool-result__meta-value'
-        );
         const inspectorState = app.service("inspector").getInspectorState("upload");
+        const notification = document.querySelector('[data-app-notification="upload-send"]');
         return {
-          phase: document.querySelector('[data-tool-summary-scope="upload"]')?.dataset.phase || "",
-          status: value?.textContent || "",
-          danger: Boolean(value?.classList.contains("tool-result__meta-value--danger")),
+          phase: inspectorState?.response?.phase || "",
+          status: inspectorState?.response?.statusText || "",
+          danger: notification?.dataset.tone === "error",
           responseStatus: inspectorState?.response?.status ?? null,
         };
       };

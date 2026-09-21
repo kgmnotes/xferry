@@ -9,7 +9,7 @@ commands and redacted state through that namespace.
 
 1. `bootstrap.js` creates the namespace, event bus, DOM contract, and
    registries.
-2. `core.js`, `dialogs.js`, and `inspector.js` register shared services.
+2. `core.js`, `notifications.js`, `dialogs.js`, and `inspector.js` register shared services.
 3. `upload.js`, `requests.js`, `files.js`, `opsec.js`, and `notepad.js`
    register workflows.
 4. `app.js` initializes discovery and shortcuts, then emits `app.ready`.
