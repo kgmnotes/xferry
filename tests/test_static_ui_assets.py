@@ -270,6 +270,7 @@ const elements = new Map([
 ]);
 const timers = new Map();
 let timerId = 0;
+let nowMs = 0;
 let locale = 'en';
 const announcements = [];
 const listeners = new Map();
@@ -313,13 +314,21 @@ globalThis.window = {
   XferryApp: app,
   setTimeout(callback, delay) {
     const id = ++timerId;
-    timers.set(id, { callback, delay });
+    timers.set(id, {
+      callback() {
+        timers.delete(id);
+        callback();
+      },
+      delay,
+      dueAt: nowMs + delay,
+    });
     return id;
   },
   clearTimeout(id) {
     timers.delete(id);
   },
 };
+Date.now = () => nowMs;
 
 const source = fs.readFileSync(process.argv[1], 'utf8');
 vm.runInThisContext(source, { filename: process.argv[1] });
@@ -374,6 +383,44 @@ locale = 'ru';
 dismiss.focus();
 dismiss.dispatch('click');
 
+notifications.show({
+  id: 'timer-contract',
+  tone: 'success',
+  message: 'Timer starts',
+  timeoutMs: 5000,
+  origin,
+});
+const timerToast = region.querySelector('[data-app-notification="timer-contract"]');
+const [initialTimerId, initialTimer] = [...timers.entries()][0];
+nowMs = 1000;
+notifications.update('timer-contract', {
+  tone: 'success',
+  message: 'Timer translated',
+  timeoutMs: 5000,
+});
+const [localeTimerId, localeTimer] = [...timers.entries()][0];
+nowMs = 2000;
+timerToast.dispatch('mouseenter');
+const hoverPaused = timers.size === 0;
+nowMs = 4000;
+timerToast.dispatch('mouseleave');
+const [hoverTimerId, hoverTimer] = [...timers.entries()][0];
+nowMs = 4500;
+timerToast.dispatch('focusin');
+const focusPaused = timers.size === 0;
+nowMs = 6000;
+timerToast.dispatch('focusout');
+const [focusTimerId, focusTimer] = [...timers.entries()][0];
+nowMs = 6500;
+notifications.update('timer-contract', {
+  tone: 'success',
+  message: 'Timer localized again',
+  timeoutMs: 5000,
+});
+const [finalLocaleTimerId, finalLocaleTimer] = [...timers.entries()][0];
+nowMs = 8500;
+finalLocaleTimer.callback();
+
 process.stdout.write(JSON.stringify({
   registered: Boolean(notifications),
   success: successSnapshot,
@@ -382,6 +429,21 @@ process.stdout.write(JSON.stringify({
   errorWasPersistent: timers.size === 0,
   dismissLabel: dismiss.getAttribute('aria-label'),
   originFocused: origin.focused,
+  timerContract: {
+    initialDueAt: initialTimer?.dueAt || null,
+    localeTimerReused: localeTimerId === initialTimerId,
+    localeDueAt: localeTimer?.dueAt || null,
+    hoverPaused,
+    hoverResumeDelay: hoverTimer?.delay || null,
+    hoverResumeDueAt: hoverTimer?.dueAt || null,
+    focusPaused,
+    focusTimerReplaced: focusTimerId !== hoverTimerId,
+    focusResumeDelay: focusTimer?.delay || null,
+    focusResumeDueAt: focusTimer?.dueAt || null,
+    finalLocaleTimerReused: finalLocaleTimerId === focusTimerId,
+    finalLocaleDueAt: finalLocaleTimer?.dueAt || null,
+    removedAtDeadline: !timerToast.isConnected && timers.size === 0,
+  },
   announcements,
 }));
 """
@@ -408,10 +470,28 @@ process.stdout.write(JSON.stringify({
         "errorWasPersistent": True,
         "dismissLabel": "Закрыть уведомление",
         "originFocused": True,
+        "timerContract": {
+            "initialDueAt": 5000,
+            "localeTimerReused": True,
+            "localeDueAt": 5000,
+            "hoverPaused": True,
+            "hoverResumeDelay": 3000,
+            "hoverResumeDueAt": 7000,
+            "focusPaused": True,
+            "focusTimerReplaced": True,
+            "focusResumeDelay": 2500,
+            "focusResumeDueAt": 8500,
+            "finalLocaleTimerReused": True,
+            "finalLocaleDueAt": 8500,
+            "removedAtDeadline": True,
+        },
         "announcements": [
             ["appNotificationLive", "Uploading files"],
             ["appNotificationLive", "Upload complete: 2 successful"],
             ["appNotificationAlert", "Upload complete: 1 error"],
+            ["appNotificationLive", "Timer starts"],
+            ["appNotificationLive", "Timer translated"],
+            ["appNotificationLive", "Timer localized again"],
         ],
     }
 

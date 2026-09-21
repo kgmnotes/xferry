@@ -26,18 +26,53 @@ function clearNotificationTimer(record) {
         window.clearTimeout(record.timer);
         record.timer = null;
     }
+    if (record) {
+        record.deadlineAt = null;
+    }
 }
 
-function scheduleNotificationDismiss(record, delay = record?.timeoutMs) {
-    clearNotificationTimer(record);
-    if (!record || !Number.isFinite(delay) || delay <= 0) {
+function scheduleNotificationDismiss(record) {
+    if (
+        !record
+        || record.timer !== null
+        || record.pauseReasons.size > 0
+        || !Number.isFinite(record.remainingMs)
+        || record.remainingMs <= 0
+    ) {
         return;
     }
+    const delay = record.remainingMs;
+    record.deadlineAt = Date.now() + delay;
     record.timer = window.setTimeout(() => {
+        record.timer = null;
+        record.deadlineAt = null;
+        record.remainingMs = 0;
         if (record.toast.isConnected) {
             dismissNotification(record.id);
         }
     }, delay);
+}
+
+function resetNotificationTimer(record) {
+    clearNotificationTimer(record);
+    record.remainingMs = Number.isFinite(record.timeoutMs) && record.timeoutMs > 0
+        ? record.timeoutMs
+        : null;
+    scheduleNotificationDismiss(record);
+}
+
+function pauseNotificationTimer(record, reason) {
+    if (!record) return;
+    record.pauseReasons.add(reason);
+    if (record.timer === null) return;
+    record.remainingMs = Math.max(0, record.deadlineAt - Date.now());
+    clearNotificationTimer(record);
+}
+
+function resumeNotificationTimer(record, reason) {
+    if (!record) return;
+    record.pauseReasons.delete(reason);
+    scheduleNotificationDismiss(record);
 }
 
 function syncNotificationDismissLabel(record) {
@@ -54,6 +89,7 @@ function announceNotification(record) {
 }
 
 function applyNotificationOptions(record, options = {}) {
+    let timeoutChanged = false;
     if (options.origin !== undefined) {
         record.origin = options.origin || null;
     }
@@ -64,7 +100,9 @@ function applyNotificationOptions(record, options = {}) {
         record.tone = normalizeNotificationTone(options.tone);
     }
     if (options.timeoutMs !== undefined) {
-        record.timeoutMs = options.timeoutMs === null ? null : Number(options.timeoutMs);
+        const timeoutMs = options.timeoutMs === null ? null : Number(options.timeoutMs);
+        timeoutChanged = timeoutMs !== record.timeoutMs;
+        record.timeoutMs = timeoutMs;
     }
 
     record.toast.className = `app-notification app-notification--${record.tone}`;
@@ -72,7 +110,9 @@ function applyNotificationOptions(record, options = {}) {
     record.icon.textContent = getNotificationIcon(record.tone);
     record.messageElement.textContent = record.message;
     syncNotificationDismissLabel(record);
-    scheduleNotificationDismiss(record);
+    if (timeoutChanged) {
+        resetNotificationTimer(record);
+    }
     announceNotification(record);
 }
 
@@ -123,17 +163,20 @@ function createNotificationRecord(id, origin = null) {
         message: '',
         timeoutMs: null,
         timer: null,
+        deadlineAt: null,
+        remainingMs: null,
+        pauseReasons: new Set(),
     };
 
     dismissButton.addEventListener('click', () => {
         dismissNotification(id, { restoreFocus: true });
     });
-    toast.addEventListener('mouseenter', () => clearNotificationTimer(record));
-    toast.addEventListener('mouseleave', () => scheduleNotificationDismiss(record));
-    toast.addEventListener('focusin', () => clearNotificationTimer(record));
+    toast.addEventListener('mouseenter', () => pauseNotificationTimer(record, 'hover'));
+    toast.addEventListener('mouseleave', () => resumeNotificationTimer(record, 'hover'));
+    toast.addEventListener('focusin', () => pauseNotificationTimer(record, 'focus'));
     toast.addEventListener('focusout', event => {
         if (!toast.contains(event.relatedTarget)) {
-            scheduleNotificationDismiss(record);
+            resumeNotificationTimer(record, 'focus');
         }
     });
     toast.addEventListener('keydown', event => {
