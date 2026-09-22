@@ -68,7 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ===== Система локализации =====
 const translations = {
     ru: {
-        brandTagline: "Инструмент для тестирования SWG",
+        brandTagline: "Инструмент для тестирования SWG/NGFW",
         langRussianSelectedLabel: "Русский язык выбран",
         langRussianSelectLabel: "Переключить на русский язык",
         langEnglishSelectedLabel: "Английский язык выбран",
@@ -699,7 +699,7 @@ const translations = {
         downloadEta: "Осталось"
     },
     en: {
-        brandTagline: "SWG testing tool",
+        brandTagline: "SWG/NGFW testing tool",
         langRussianSelectedLabel: "Russian language selected",
         langRussianSelectLabel: "Switch to Russian",
         langEnglishSelectedLabel: "English language selected",
@@ -1334,7 +1334,7 @@ const translations = {
 const supportedLangs = new Set(['ru', 'en']);
 
 function normalizeLang(lang) {
-    return supportedLangs.has(lang) ? lang : 'ru';
+    return supportedLangs.has(lang) ? lang : 'en';
 }
 
 const storedLang = safeGetStorageItem('lang');
@@ -1353,7 +1353,7 @@ function setLang(lang) {
 }
 
 function applyTranslations() {
-    const localeTranslations = translations[currentLang] || translations.ru;
+    const localeTranslations = translations[currentLang] || translations.en;
 
     // Обновляем все элементы с data-i18n
     document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -1418,8 +1418,8 @@ function updateLangButtons() {
 }
 
 function t(key) {
-    const localeTranslations = translations[currentLang] || translations.ru;
-    return localeTranslations[key] || translations.ru[key] || key;
+    const localeTranslations = translations[currentLang] || translations.en;
+    return localeTranslations[key] || translations.en[key] || key;
 }
 
 // Применяем переводы при загрузке
@@ -1813,7 +1813,7 @@ function switchTab(tabName, tabButton, options = {}) {
 function bindCoreControls() {
     document.querySelectorAll('[data-lang]').forEach(button => {
         button.addEventListener('click', () => {
-            setLang(button.dataset.lang || 'ru');
+            setLang(button.dataset.lang || 'en');
         });
     });
 

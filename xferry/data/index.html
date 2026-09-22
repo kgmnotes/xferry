@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <meta name="description" content="xferry: контролируемый HTTP-инструмент для проверки веб-шлюзов безопасности (SWG) через HTTP-пути передачи файлов и данных">
+    <meta name="description" content="xferry: controlled HTTP tool for testing secure web gateways and next-generation firewalls (SWG/NGFW) across file and data transfer paths">
     <meta name="theme-color" content="#111315">
     <title>xferry</title>
     <link rel="icon" href="/static/ui/xferry-mark.svg" type="image/svg+xml" id="appFavicon" data-theme-dark="/static/ui/xferry-mark.svg" data-theme-light="/static/ui/xferry-mark-light.svg">
@@ -23,27 +23,27 @@
                     <img class="brand-mark" src="/static/ui/xferry-mark.svg" alt="" aria-hidden="true" id="brandMark" data-theme-dark="/static/ui/xferry-mark.svg" data-theme-light="/static/ui/xferry-mark-light.svg">
                     <div class="brand-copy">
                         <h1>xferry</h1>
-                        <p data-i18n="brandTagline">Инструмент для тестирования SWG</p>
+                        <p data-i18n="brandTagline">SWG/NGFW testing tool</p>
                     </div>
                 </div>
             </div>
             <div class="topbar__actions">
                 <div class="lang-switcher">
-                    <button type="button" class="lang-btn active" data-lang="ru" id="langRu" title="Русский язык выбран" aria-label="Русский язык выбран" aria-pressed="true">RU</button>
-                    <button type="button" class="lang-btn" data-lang="en" id="langEn" title="Переключить на английский язык" aria-label="Переключить на английский язык" aria-pressed="false">EN</button>
-                    <button type="button" class="theme-btn" id="themeBtn" title="Тёмная тема включена. Переключить на светлую" aria-label="Тёмная тема включена. Переключить на светлую" aria-pressed="false">🌙</button>
+                    <button type="button" class="lang-btn active" data-lang="en" id="langEn" title="English language selected" aria-label="English language selected" aria-pressed="true">EN</button>
+                    <button type="button" class="lang-btn" data-lang="ru" id="langRu" title="Switch to Russian" aria-label="Switch to Russian" aria-pressed="false">RU</button>
+                    <button type="button" class="theme-btn" id="themeBtn" title="Dark theme is active. Switch to light theme" aria-label="Dark theme is active. Switch to light theme" aria-pressed="false">🌙</button>
                 </div>
             </div>
         </header>
 
         <main class="page-content">
             <section class="workspace-shell">
-                <div class="tabs mode-tabs" role="tablist" aria-label="Режимы сервера" data-i18n-aria-label="serverModesLabel">
-                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="topTabUpload">Отправить</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="topTabFiles">Получить</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Запросы</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Расширенные</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="notepad-tab" tabindex="-1" id="tab-notepad" data-tool-entry="notepad" data-tab-target="notepad" data-i18n="tabNotepad">Блокнот</button>
+                <div class="tabs mode-tabs" role="tablist" aria-label="Server modes" data-i18n-aria-label="serverModesLabel">
+                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="topTabUpload">Upload</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="topTabFiles">Download</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Requests</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Advanced</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="notepad-tab" tabindex="-1" id="tab-notepad" data-tool-entry="notepad" data-tab-target="notepad" data-i18n="tabNotepad">Notepad</button>
                 </div>
 
                 <div class="workspace-stage">

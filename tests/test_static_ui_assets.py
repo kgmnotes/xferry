@@ -554,7 +554,7 @@ def test_secure_web_gateway_positioning_covers_the_full_toolkit() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_index = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
 
-    assert "веб-шлюзов безопасности (SWG)" in html
+    assert "secure web gateways and next-generation firewalls (SWG/NGFW)" in html
     assert "SWG" in core_js
     assert "testing Secure Web Gateways" in readme
     assert "Secure Web Gateway" in normalize_ws(docs_index)
@@ -574,18 +574,17 @@ def test_russian_locale_uses_russian_swg_tool_copy() -> None:
     )
     ru_values = extract_locale_values(core_js, "ru")
 
-    tagline = "Инструмент для тестирования SWG"
-    assert tagline in html
+    tagline = "Инструмент для тестирования SWG/NGFW"
     assert f'brandTagline: "{tagline}"' in core_js
     assert "HTTP-инструмент для Secure Web Gateway проверок" not in html
     assert "HTTP-инструмент для Secure Web Gateway проверок" not in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "topTabUpload", "Отправить"),
-        ("tab-files", "topTabFiles", "Получить"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
     assert 'topTabUpload: "Отправить"' in core_js
     assert 'topTabFiles: "Получить"' in core_js
@@ -654,8 +653,9 @@ def test_header_brand_uses_compact_copy_and_theme_aware_ferry_marks() -> None:
     dark_mark = UI_ROOT / "xferry-mark.svg"
     light_mark = UI_ROOT / "xferry-mark-light.svg"
 
-    assert 'brandTagline: "Инструмент для тестирования SWG"' in core_js
-    assert 'brandTagline: "SWG testing tool"' in core_js
+    assert 'brandTagline: "Инструмент для тестирования SWG/NGFW"' in core_js
+    assert 'brandTagline: "SWG/NGFW testing tool"' in core_js
+    assert '<p data-i18n="brandTagline">SWG/NGFW testing tool</p>' in header
     assert header.count("<img ") == 1
     assert 'id="brandMark"' in header
     assert 'data-theme-dark="/static/ui/xferry-mark.svg"' in header
@@ -708,11 +708,11 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
         assert f'{key}: "{label}"' in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "topTabUpload", "Отправить"),
-        ("tab-files", "topTabFiles", "Получить"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
     assert 'tabUpload: "Upload (regular)"' not in core_js
     assert 'tabOpsec: "Upload (advanced)"' not in core_js
@@ -727,8 +727,8 @@ def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_head
     )
 
     assert extract_top_tab_buttons(html)[:2] == [
-        ("tab-upload", "topTabUpload", "Отправить"),
-        ("tab-files", "topTabFiles", "Получить"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
     ]
     assert 'topTabUpload: "Отправить"' in core_js
     assert 'topTabFiles: "Получить"' in core_js
@@ -1184,11 +1184,11 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
 
     top_tabs = extract_top_tab_buttons(html)
     assert top_tabs == [
-        ("tab-upload", "topTabUpload", "Отправить"),
-        ("tab-files", "topTabFiles", "Получить"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
 
     assert 'id="tab-upload" data-tool-entry="upload" data-tab-target="upload"' in html
@@ -4269,13 +4269,17 @@ def test_files_xor_decrypt_fetch_uses_the_conditional_no_gzip_header_helper() ->
     assert "xhr.setRequestHeader(uiNoGzipHeader, uiNoGzipHeaderValue)" not in decrypt_fetch
 
 
-def test_header_controls_expose_state_and_invalid_locale_falls_back() -> None:
+def test_header_controls_default_to_english_dark_and_invalid_locale_falls_back() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
+    theme_js = (UI_ROOT / "theme.js").read_text(encoding="utf-8")
+    header = html.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
 
-    assert 'id="langRu"' in html and 'aria-pressed="true">RU</button>' in html
-    assert 'id="langEn"' in html and 'aria-pressed="false">EN</button>' in html
-    assert 'id="themeBtn"' in html and 'aria-pressed="false">🌙</button>' in html
+    assert '<html lang="en">' in html
+    assert 'id="langEn"' in header and 'aria-pressed="true">EN</button>' in header
+    assert 'id="langRu"' in header and 'aria-pressed="false">RU</button>' in header
+    assert 'id="themeBtn"' in header and 'aria-pressed="false">🌙</button>' in header
+    assert header.index('id="langEn"') < header.index('id="langRu"') < header.index('id="themeBtn"')
 
     for key in (
         "langRussianSelectedLabel",
@@ -4290,10 +4294,14 @@ def test_header_controls_expose_state_and_invalid_locale_falls_back() -> None:
 
     assert "const supportedLangs = new Set(['ru', 'en']);" in core_js
     assert "function normalizeLang(lang)" in core_js
+    assert "return supportedLangs.has(lang) ? lang : 'en';" in core_js
     assert "let currentLang = normalizeLang(storedLang);" in core_js
-    assert "translations[currentLang] || translations.ru" in core_js
+    assert "translations[currentLang] || translations.en" in core_js
     assert "button.setAttribute('aria-pressed', String(selected));" in core_js
     assert "btn.setAttribute('aria-pressed', String(isLight));" in core_js
+    assert 'localStorage.getItem("theme") === "light"' in theme_js
+    assert 'setAttribute("data-theme", "light")' in theme_js
+    assert 'setAttribute("data-theme", "dark")' not in theme_js
 
 
 def test_advanced_password_error_is_bound_to_the_invalid_field() -> None:

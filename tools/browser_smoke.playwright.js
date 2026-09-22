@@ -467,6 +467,53 @@ async (page) => {
     );
   }
 
+  async function assertDefaultPreferencesContract() {
+    await page.evaluate(() => {
+      localStorage.removeItem("lang");
+      localStorage.removeItem("theme");
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForSpaReady();
+    await waitForPageCondition(
+      "fresh browser defaults to English and dark theme",
+      () => {
+        const root = document.documentElement;
+        const enButton = document.getElementById("langEn");
+        const ruButton = document.getElementById("langRu");
+        const themeButton = document.getElementById("themeBtn");
+        const actionIds = Array.from(
+          document.querySelectorAll(".topbar__actions button")
+        ).map((button) => button.id);
+        return Boolean(
+          root.lang === "en" &&
+          root.getAttribute("data-theme") !== "light" &&
+          localStorage.getItem("lang") === null &&
+          localStorage.getItem("theme") === null &&
+          JSON.stringify(actionIds) === JSON.stringify(["langEn", "langRu", "themeBtn"]) &&
+          enButton?.classList.contains("active") &&
+          enButton?.getAttribute("aria-pressed") === "true" &&
+          ruButton?.getAttribute("aria-pressed") === "false" &&
+          themeButton?.getAttribute("aria-pressed") === "false" &&
+          themeButton?.textContent?.trim() === "🌙" &&
+          document.querySelector(".brand-copy p")?.textContent?.trim() ===
+            "SWG/NGFW testing tool" &&
+          document.getElementById("tab-upload")?.textContent?.trim() === "Upload" &&
+          document.getElementById("tab-files")?.textContent?.trim() === "Download"
+        );
+      },
+      null,
+      10000
+    );
+
+    return page.evaluate(() => ({
+      lang: document.documentElement.lang,
+      theme: document.documentElement.getAttribute("data-theme") || "dark",
+      actionButtonIds: Array.from(
+        document.querySelectorAll(".topbar__actions button")
+      ).map((button) => button.id),
+    }));
+  }
+
   async function assertUnsupportedStoredLanguageFallsBack() {
     await page.evaluate(() => {
       localStorage.setItem("lang", "unsupported-browser-smoke-locale");
@@ -474,18 +521,18 @@ async (page) => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForPageCondition(
-      "unsupported stored language falls back to Russian",
+      "unsupported stored language falls back to English",
       () => {
         const ruButton = document.getElementById("langRu");
         const enButton = document.getElementById("langEn");
         return Boolean(
-          document.documentElement.lang === "ru" &&
-          localStorage.getItem("lang") === "ru" &&
-          ruButton?.classList.contains("active") &&
-          ruButton?.getAttribute("aria-pressed") === "true" &&
-          enButton?.getAttribute("aria-pressed") === "false" &&
-          document.getElementById("tab-upload")?.textContent?.trim() === "Отправить" &&
-          document.getElementById("tab-files")?.textContent?.trim() === "Получить"
+          document.documentElement.lang === "en" &&
+          localStorage.getItem("lang") === "en" &&
+          enButton?.classList.contains("active") &&
+          enButton?.getAttribute("aria-pressed") === "true" &&
+          ruButton?.getAttribute("aria-pressed") === "false" &&
+          document.getElementById("tab-upload")?.textContent?.trim() === "Upload" &&
+          document.getElementById("tab-files")?.textContent?.trim() === "Download"
         );
       },
       null,
@@ -805,7 +852,12 @@ async (page) => {
     await page.locator("#langEn").focus();
     await page.keyboard.press("Tab");
     await waitForPageCondition(
-      "focus ring reaches theme control",
+      "focus order reaches Russian control after English",
+      () => document.activeElement?.id === "langRu"
+    );
+    await page.keyboard.press("Tab");
+    await waitForPageCondition(
+      "focus order reaches theme control after Russian",
       () => document.activeElement?.id === "themeBtn"
     );
     const focusShadow = await page.locator("#themeBtn").evaluate((element) => getComputedStyle(element).boxShadow);
@@ -823,7 +875,7 @@ async (page) => {
         width: 1365,
         height: 768,
         lang: "ru",
-        expectedTagline: "Инструмент для тестирования SWG",
+        expectedTagline: "Инструмент для тестирования SWG/NGFW",
         maxTaglineLines: 1,
         minTitleSize: 45,
         maxTitleSize: 50,
@@ -833,7 +885,7 @@ async (page) => {
         width: 390,
         height: 844,
         lang: "en",
-        expectedTagline: "SWG testing tool",
+        expectedTagline: "SWG/NGFW testing tool",
         maxTaglineLines: 2,
         minTitleSize: 31,
         maxTitleSize: 34,
@@ -932,7 +984,7 @@ async (page) => {
 
     const valid = (
       snapshot.actionsPresent &&
-      JSON.stringify(snapshot.actionButtonIds) === JSON.stringify(["langRu", "langEn", "themeBtn"]) &&
+      JSON.stringify(snapshot.actionButtonIds) === JSON.stringify(["langEn", "langRu", "themeBtn"]) &&
       !snapshot.statusClusterPresent &&
       snapshot.statusChipCount === 0 &&
       !snapshot.serverAddressPresent
@@ -11070,6 +11122,8 @@ async (page) => {
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForAdvancedUploadReady();
+    const defaultPreferences = await assertDefaultPreferencesContract();
+    await waitForAdvancedUploadReady();
     await assertUnsupportedStoredLanguageFallsBack();
     await waitForAdvancedUploadReady();
     const headerStateControls = await assertHeaderStateControls();
@@ -11102,6 +11156,7 @@ async (page) => {
       locales: ["ru", "en"],
       liveRegions: true,
       dialogs: true,
+      defaultPreferences,
       headerStateControls,
       headerBrand,
       headerActions,
@@ -13079,7 +13134,7 @@ async (page) => {
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",
-      brandTaglineText: "Инструмент для тестирования SWG",
+      brandTaglineText: "Инструмент для тестирования SWG/NGFW",
       heroTitleText: "Проверяйте HTTP-пути передачи данных",
       mismatchLabelText: "Не работает",
       smuggleActionLabelText: "HTML Smuggling",
@@ -13113,7 +13168,7 @@ async (page) => {
       requestTabText: "Requests",
       opsecTabText: "Advanced",
       notepadTabText: "Notepad",
-      brandTaglineText: "SWG testing tool",
+      brandTaglineText: "SWG/NGFW testing tool",
       heroTitleText: "Test HTTP data-transfer paths",
       mismatchLabelText: "Mismatches",
       smuggleActionLabelText: "HTML smuggling",
@@ -13148,7 +13203,7 @@ async (page) => {
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",
-      brandTaglineText: "Инструмент для тестирования SWG",
+      brandTaglineText: "Инструмент для тестирования SWG/NGFW",
       heroTitleText: "Проверяйте HTTP-пути передачи данных",
       mismatchLabelText: "Не работает",
       smuggleActionLabelText: "HTML Smuggling",
