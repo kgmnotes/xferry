@@ -8763,7 +8763,7 @@ async (page) => {
         const filenameSource = summary?.querySelector('[data-upload-summary="filename-source"]');
         return Boolean(
           profiles.map((button) => button.dataset.uploadProfile).join(",") ===
-            "multipart,raw-url,raw-header" &&
+            "multipart,raw-url,raw-header,raw-generated" &&
           profiles[0]?.getAttribute("aria-checked") === "true" &&
           profiles[0]?.tabIndex === 0 &&
           profiles.slice(1).every((button) => (
@@ -10490,6 +10490,7 @@ async (page) => {
       const http = app.service("http");
       const calls = [];
       const multiFileCompareStates = [];
+      const batchStatusSnapshots = [];
       let active = 0;
       let maxActive = 0;
       const response = (payload) => ({
@@ -10575,11 +10576,19 @@ async (page) => {
           compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
         });
         await app.invoke("upload", "send");
+        batchStatusSnapshots.push({
+          message: document.getElementById("uploadStatusMessage")?.textContent || "",
+          metaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+          http: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+          path: document.getElementById("uploadStatusPathValue")?.textContent || "",
+          size: document.getElementById("uploadStatusSizeValue")?.textContent || "",
+        });
       }
       http["reset-adapter"]();
       return {
         calls,
         multiFileCompareStates,
+        batchStatusSnapshots,
         maxActive,
         state: app.getState("upload"),
       };
@@ -10590,6 +10599,14 @@ async (page) => {
       queuedSend.multiFileCompareStates.length !== 4 ||
       queuedSend.multiFileCompareStates.some((state) => (
         state.compareProfilesDisabled !== true || state.compareMethodsDisabled !== true
+      )) ||
+      queuedSend.batchStatusSnapshots.length !== 4 ||
+      queuedSend.batchStatusSnapshots.some((snapshot) => (
+        snapshot.metaHidden !== true ||
+        !snapshot.message.includes("2 success") ||
+        snapshot.http ||
+        snapshot.path ||
+        snapshot.size
       )) ||
       queuedSend.calls.map((call) => call.profile).join(",") !==
         "multipart,multipart,raw-url,raw-url,raw-header,raw-header,raw-generated,raw-generated" ||
@@ -10679,6 +10696,42 @@ async (page) => {
         window.XferryApp.service("advanced-session").getSnapshot().active
       )),
     };
+    const readUploadStatusSnapshot = () => page.evaluate(() => {
+      const meta = document.getElementById("uploadStatusMeta");
+      const readField = (name) => {
+        const field = meta?.querySelector(`[data-upload-status-meta="${name}"]`);
+        return {
+          label: field?.querySelector("dt")?.textContent?.trim() || "",
+          value: field?.querySelector("dd")?.textContent?.trim() || "",
+        };
+      };
+      return {
+        message: document.getElementById("uploadStatusMessage")?.textContent?.trim() || "",
+        metaHidden: meta?.hidden,
+        http: readField("http"),
+        path: readField("path"),
+        size: readField("size"),
+      };
+    });
+    const singleStatusEn = await readUploadStatusSnapshot();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const singleStatusMobile = await page.evaluate(() => {
+      const status = document.getElementById("uploadStatus");
+      const meta = document.getElementById("uploadStatusMeta");
+      const statusRect = status?.getBoundingClientRect();
+      const metaRect = meta?.getBoundingClientRect();
+      return {
+        statusVisible: Boolean(status && !status.hidden && status.getClientRects().length > 0),
+        statusRight: statusRect?.right || 0,
+        metaRight: metaRect?.right || 0,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: innerWidth,
+      };
+    });
+    await page.setViewportSize({ width: 1440, height: 1024 });
+    await switchLanguage("ru");
+    const singleStatusRu = await readUploadStatusSnapshot();
+    await switchLanguage("en");
 
     const compareSetup = await page.evaluate(() => {
       const app = window.XferryApp;
@@ -10842,6 +10895,9 @@ async (page) => {
     const basicAdvancedCoexistence = {
       ...coexistenceSetup,
       actualBasicSend,
+      singleStatusEn,
+      singleStatusRu,
+      singleStatusMobile,
       compareSetup,
       profileConfirmation,
       actualBasicCompare,
@@ -10857,6 +10913,24 @@ async (page) => {
       actualBasicSend.profile !== "multipart" ||
       actualBasicSend.sessionHeaderAbsent !== true ||
       actualBasicSend.sessionActive !== true ||
+      singleStatusEn.metaHidden !== false ||
+      singleStatusEn.http.label !== "HTTP status" ||
+      singleStatusEn.http.value !== "201 Created" ||
+      singleStatusEn.path.label !== "Server path" ||
+      singleStatusEn.path.value !== "/uploads/basic-coexists.txt" ||
+      singleStatusEn.size.label !== "Size" ||
+      singleStatusEn.size.value !== "5 B" ||
+      singleStatusRu.metaHidden !== false ||
+      singleStatusRu.http.label !== "HTTP-статус" ||
+      singleStatusRu.http.value !== "201 Created" ||
+      singleStatusRu.path.label !== "Путь на сервере" ||
+      singleStatusRu.path.value !== "/uploads/basic-coexists.txt" ||
+      singleStatusRu.size.label !== "Размер" ||
+      singleStatusRu.size.value !== "5 B" ||
+      singleStatusMobile.statusVisible !== true ||
+      singleStatusMobile.documentWidth > singleStatusMobile.viewportWidth + 1 ||
+      singleStatusMobile.statusRight > singleStatusMobile.viewportWidth + 1 ||
+      singleStatusMobile.metaRight > singleStatusMobile.viewportWidth + 1 ||
       compareSetup.pendingCount !== 1 ||
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
@@ -11134,6 +11208,10 @@ async (page) => {
         statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
         statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
         statusVisible: document.getElementById("uploadStatus")?.hidden === false,
+        statusMetaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+        statusHttp: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+        statusPath: document.getElementById("uploadStatusPathValue")?.textContent || "",
+        statusSize: document.getElementById("uploadStatusSizeValue")?.textContent || "",
       };
 
       state.phase = "basic-error";
@@ -11145,6 +11223,10 @@ async (page) => {
         statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
         statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
         statusVisible: document.getElementById("uploadStatus")?.hidden === false,
+        statusMetaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+        statusHttp: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+        statusPath: document.getElementById("uploadStatusPathValue")?.textContent || "",
+        statusSize: document.getElementById("uploadStatusSizeValue")?.textContent || "",
         card: document.querySelector("#uploadHttpErrorHost .http-error-card")?.textContent || "",
       };
       app.service("http-errors").close("uploadHttpErrorHost", { restore: false });
@@ -11193,11 +11275,19 @@ async (page) => {
         setup.basicSuccess.statusTone !== "success" ||
         !setup.basicSuccess.statusVisible ||
         !/Upload complete|Загрузка завершена/.test(setup.basicSuccess.statusText) ||
+        setup.basicSuccess.statusMetaHidden !== false ||
+        setup.basicSuccess.statusHttp !== "201 Created" ||
+        setup.basicSuccess.statusPath !== "/uploads/basic-final-server.txt" ||
+        setup.basicSuccess.statusSize !== "8 B" ||
         setup.basicError.phase !== "error" ||
         setup.basicError.statusTone !== "error" ||
         !setup.basicError.statusVisible ||
         !/Upload complete|Загрузка завершена/.test(setup.basicError.statusText) ||
         !/1 error|1 ошиб/.test(setup.basicError.statusText) ||
+        setup.basicError.statusMetaHidden !== true ||
+        setup.basicError.statusHttp ||
+        setup.basicError.statusPath ||
+        setup.basicError.statusSize ||
         !setup.basicError.card.includes("Basic nested contract error") ||
         setup.advancedSuccess.phase !== "complete" ||
         !setup.advancedSuccess.summary.includes("/uploads/advanced-final-server.txt") ||

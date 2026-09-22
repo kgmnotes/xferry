@@ -60,6 +60,7 @@ const uploadState = {
         successCount: 0,
         failCount: 0,
         blockedReason: '',
+        singleResult: null,
     },
 };
 let activeBasicUploadErrorFile = null;
@@ -76,6 +77,10 @@ const uploadProfileButtons = Array.from(document.querySelectorAll('.upload-profi
 const uploadStatus = document.getElementById('uploadStatus');
 const uploadStatusIcon = uploadStatus?.querySelector('.upload-status__icon') || null;
 const uploadStatusMessage = document.getElementById('uploadStatusMessage');
+const uploadStatusMeta = document.getElementById('uploadStatusMeta');
+const uploadStatusHttpValue = document.getElementById('uploadStatusHttpValue');
+const uploadStatusPathValue = document.getElementById('uploadStatusPathValue');
+const uploadStatusSizeValue = document.getElementById('uploadStatusSizeValue');
 const uploadStatusDetailsBtn = document.getElementById('uploadStatusDetailsBtn');
 const uploadTechnicalDetails = document.getElementById('uploadTechnicalDetails');
 const uploadTechnicalDetailsSummary = uploadTechnicalDetails?.querySelector('summary') || null;
@@ -122,8 +127,27 @@ function syncUploadStatusDetailsExpanded() {
     }
 }
 
+function renderUploadStatusMeta(singleResult) {
+    const result = singleResult && typeof singleResult === 'object' ? singleResult : null;
+    if (uploadStatusHttpValue) {
+        uploadStatusHttpValue.textContent = result
+            ? `${result.status} ${result.statusText}`.trim()
+            : '';
+    }
+    if (uploadStatusPathValue) {
+        uploadStatusPathValue.textContent = result?.path || '';
+    }
+    if (uploadStatusSizeValue) {
+        uploadStatusSizeValue.textContent = result ? formatSize(result.sizeBytes) : '';
+    }
+    if (uploadStatusMeta) {
+        uploadStatusMeta.hidden = !result;
+    }
+}
+
 function renderUploadStatus(options = {}) {
     const state = uploadState.status;
+    renderUploadStatusMeta(state.phase === 'complete' ? state.singleResult : null);
     if (state.phase === 'idle') {
         if (uploadStatus) {
             uploadStatus.hidden = true;
@@ -166,6 +190,7 @@ function resetUploadStatus() {
         successCount: 0,
         failCount: 0,
         blockedReason: '',
+        singleResult: null,
     });
     if (uploadStatusMessage) {
         uploadStatusMessage.textContent = '';
@@ -1383,6 +1408,7 @@ function announceBasicUploadRoutingBlock(blockedReason) {
         blockedReason,
         successCount: 0,
         failCount: 0,
+        singleResult: null,
     });
 }
 
@@ -1487,6 +1513,14 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
         successCount,
         failCount,
         blockedReason: '',
+        singleResult: singleSuccessfulResult
+            ? {
+                status: singleSuccessfulResult.status,
+                statusText: singleSuccessfulResult.statusText,
+                path: singleSuccessfulResult.path,
+                sizeBytes: singleSuccessfulResult.sizeBytes,
+            }
+            : null,
     });
 }
 
@@ -1521,6 +1555,7 @@ async function uploadFiles(fileDataList, options = {}) {
         successCount: 0,
         failCount: 0,
         blockedReason: '',
+        singleResult: null,
     });
     setExchangeInspector('upload', {
         phase: 'sending',
@@ -1613,7 +1648,7 @@ async function uploadFiles(fileDataList, options = {}) {
                 success,
                 path: success ? result.file.path : '',
                 error: success ? '' : fileData.error,
-                size: fileData.size,
+                sizeBytes: success ? result.file.size_bytes : fileData.size,
                 status: response.status,
                 statusText: response.statusText || (success ? 'Created' : t('error')),
             });
@@ -1641,7 +1676,7 @@ async function uploadFiles(fileDataList, options = {}) {
                 name: fileData.name,
                 success: false,
                 error: fileData.error,
-                size: fileData.size,
+                sizeBytes: fileData.size,
                 status: 0,
                 statusText: t('error'),
             });

@@ -28,10 +28,15 @@ visit that address manually.
 
 In the UI:
 
-1. Open **Send**.
+1. Open **Upload**.
 2. Select a small test file.
-3. Send it and confirm the returned path and size.
+3. Send it and confirm the inline HTTP status, saved server path, and size.
 4. Open **Files**, download the file, and delete it.
+
+A multi-file upload keeps the same inline status area but reports aggregate
+success/error counts instead of retaining one file's path. Expand **Technical
+details** at the bottom of Upload to inspect the generated request and server
+response.
 
 The same flow works with curl:
 

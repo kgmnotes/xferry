@@ -2,9 +2,18 @@
 
 ## Transfer a file
 
-Use **Send** for basic uploads and **Files** to browse, inspect, download, or
-delete them. Start here when checking whether a gateway permits ordinary file
-transfer.
+Use **Upload** for basic uploads and **Files** to browse, inspect, download, or
+delete them. Upload can build Multipart, Raw URL, Raw Header, and No filename
+requests and can declare the file-part or raw-body MIME. No filename sends raw
+bytes to `/` so the server generates the name; it never sends raw bytes to
+`/uploads`.
+
+**Compare profiles** sends one confirmed upload for each of the four request
+profiles. **Compare methods** reuses the active request profile with POST,
+NONE, PUT, and PATCH. Both comparisons create files on the server and may
+trigger gateway inspection; they are mutating tests, not previews or dry runs.
+
+Start here when checking whether a gateway permits ordinary file transfer.
 
 ## Exercise HTTP methods
 

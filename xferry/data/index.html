@@ -295,7 +295,23 @@
                             <div class="http-error-host" id="uploadHttpErrorHost" data-http-error-host="upload"></div>
                             <div class="upload-status" id="uploadStatus" data-tone="pending" hidden>
                                 <span class="upload-status__icon" aria-hidden="true">…</span>
-                                <p class="upload-status__message" id="uploadStatusMessage"></p>
+                                <div class="upload-status__content">
+                                    <p class="upload-status__message" id="uploadStatusMessage"></p>
+                                    <dl class="upload-status__meta" id="uploadStatusMeta" hidden>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="http">
+                                            <dt data-i18n="uploadStatusHttp">HTTP status</dt>
+                                            <dd id="uploadStatusHttpValue"></dd>
+                                        </div>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="path">
+                                            <dt data-i18n="uploadStatusPath">Server path</dt>
+                                            <dd id="uploadStatusPathValue"></dd>
+                                        </div>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="size">
+                                            <dt data-i18n="uploadStatusSize">Size</dt>
+                                            <dd id="uploadStatusSizeValue"></dd>
+                                        </div>
+                                    </dl>
+                                </div>
                                 <button
                                     class="btn-ghost btn--sm upload-status__details"
                                     id="uploadStatusDetailsBtn"

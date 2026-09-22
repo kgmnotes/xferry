@@ -496,7 +496,7 @@ process.stdout.write(JSON.stringify({
     }
 
 
-def test_global_notification_host_is_outside_hidden_workspaces_and_loaded_before_workflows() -> None:
+def test_global_notification_host_is_outside_workspaces_and_loaded_first() -> None:
     """Catches notifications becoming invisible when their originating tab is hidden."""
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
 
@@ -504,8 +504,8 @@ def test_global_notification_host_is_outside_hidden_workspaces_and_loaded_before
     assert html.count('id="appNotificationLive"') == 1
     assert html.count('id="appNotificationAlert"') == 1
     assert html.index('id="appNotificationRegion"') > html.index("</main>")
-    assert html.index('/static/ui/core.js') < html.index('/static/ui/notifications.js')
-    assert html.index('/static/ui/notifications.js') < html.index('/static/ui/upload.js')
+    assert html.index("/static/ui/core.js") < html.index("/static/ui/notifications.js")
+    assert html.index("/static/ui/notifications.js") < html.index("/static/ui/upload.js")
 
 
 def test_static_ui_uses_larger_readable_base_scale() -> None:
@@ -946,7 +946,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     positions = [upload_tab.index(marker) for marker in source_order]
     assert positions == sorted(positions)
     assert 'data-tool-summary-scope="upload"' not in upload_tab
-    assert 'data-tool-trace-phase' not in upload_tab
+    assert "data-tool-trace-phase" not in upload_tab
     assert 'data-tool-trace-scope="upload"' in upload_tab
     assert upload_tab.index('role="radiogroup"') < upload_tab.index('id="dropZone"')
     assert upload_tab.index('id="uploadSelectionState"') > upload_tab.index(
@@ -969,8 +969,15 @@ function extractFunction(source, marker, nextMarker) {
 const source = fs.readFileSync(process.argv[1], 'utf8');
 globalThis.uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
 globalThis.uploadCustomMimeMaxLength = 120;
-globalThis.uploadMimePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\\r\n]|\\.)*"))*$/;
-globalThis.basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
+const uploadMimePatternSource = source.match(/^const uploadMimePattern = (.+);$/m)?.[1];
+if (!uploadMimePatternSource) throw new Error('Could not extract uploadMimePattern');
+globalThis.uploadMimePattern = (0, eval)(uploadMimePatternSource);
+globalThis.basicUploadProfiles = Object.freeze([
+    'multipart',
+    'raw-url',
+    'raw-header',
+    'raw-generated',
+]);
 globalThis.SERVER_URL = 'https://xferry.test/';
 globalThis.location = { href: 'https://xferry.test/' };
 globalThis.withUiNoGzipHeader = headers => ({ ...headers });
@@ -1119,6 +1126,10 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
 
     assert upload_tab.count('id="uploadStatus"') == 1
     assert upload_tab.count('id="uploadStatusMessage"') == 1
+    assert upload_tab.count('id="uploadStatusMeta"') == 1
+    assert upload_tab.count('id="uploadStatusHttpValue"') == 1
+    assert upload_tab.count('id="uploadStatusPathValue"') == 1
+    assert upload_tab.count('id="uploadStatusSizeValue"') == 1
     assert upload_tab.count('id="uploadStatusDetailsBtn"') == 1
     assert upload_tab.count('id="uploadTechnicalDetails"') == 1
 
@@ -1132,7 +1143,7 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
         upload_tab,
     )
     assert status_tag is not None
-    assert re.search(r'\bhidden(?:\s|=|>)', status_tag.group(0))
+    assert re.search(r"\bhidden(?:\s|=|>)", status_tag.group(0))
     assert details_button_tag is not None
     assert 'aria-controls="uploadTechnicalDetails"' in details_button_tag.group(0)
     assert 'aria-expanded="false"' in details_button_tag.group(0)
@@ -1141,7 +1152,7 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     assert 'data-tool-trace-visible-when-empty="true"' in details_tag.group(0)
     assert re.search(
         r'<div\b(?=[^>]*\bid="uploadStatus")(?=[^>]*\bhidden\b)[^>]*>'
-        r'.*?</div>\s*'
+        r".*?</div>\s*"
         r'<details\b(?=[^>]*\bid="uploadTechnicalDetails")'
         r'(?=[^>]*\bdata-tool-trace-scope="upload")[^>]*>',
         upload_tab,
@@ -1150,6 +1161,9 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
 
     for locale in ("ru", "en"):
         assert "uploadStatusDetails" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusHttp" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusPath" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusSize" in extract_locale_keys(core_js, locale)
         assert "uploadTechnicalDetailsEmpty" in extract_locale_keys(core_js, locale)
 
     assert "app.service('notifications')" not in upload_js
@@ -1158,6 +1172,7 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     assert "renderUploadStatus({ announce: false });" in upload_js
     assert "function maybeAutoOpenUploadTechnicalDetails()" in upload_js
     assert "technicalDetailsUserToggled" in upload_js
+    assert "singleResult" in upload_js
 
     for files_notification_contract in (
         "const notifications = app.service('notifications');",
@@ -1174,9 +1189,9 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     )
     assert status_rule is not None
     assert "position: fixed" not in status_rule.group("body")
+    assert ".upload-status__meta" in features_css
     assert (
-        '.tool-trace[data-tool-trace-visible-when-empty="true"][data-phase="empty"]'
-        in features_css
+        '.tool-trace[data-tool-trace-visible-when-empty="true"][data-phase="empty"]' in features_css
     )
 
 
@@ -1185,7 +1200,7 @@ def test_upload_multipart_raw_preview_models_browser_managed_part_headers() -> N
     inspector_js = (UI_ROOT / "inspector.js").read_text(encoding="utf-8")
 
     assert "function buildUploadMultipartPreviewEnvelope" in upload_js
-    assert "Content-Disposition: form-data; name=\"file\"; filename=\"${safeFilename}\"" in upload_js
+    assert 'Content-Disposition: form-data; name="file"; filename="${safeFilename}"' in upload_js
     assert "Content-Type: ${mime}" in upload_js
     assert "rawPrefix" in upload_js
     assert "rawSuffix" in upload_js
@@ -2032,13 +2047,9 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     assert "if (!suppressLiveAnnouncements)" in browse_directory
     assert "filesBrowseStatusEl.setAttribute('aria-live', 'polite');" in browse_directory
 
-    region_block = components_css.split("\n.app-notification-region {", 1)[1].split(
-        "\n}", 1
-    )[0]
+    region_block = components_css.split("\n.app-notification-region {", 1)[1].split("\n}", 1)[0]
     toast_block = components_css.split("\n.app-notification {", 1)[1].split("\n}", 1)[0]
-    dismiss_block = components_css.split("\n.app-notification__dismiss {", 1)[1].split(
-        "\n}", 1
-    )[0]
+    dismiss_block = components_css.split("\n.app-notification__dismiss {", 1)[1].split("\n}", 1)[0]
     for declaration in (
         "position: fixed;",
         "right: max(var(--space-4), env(safe-area-inset-right));",

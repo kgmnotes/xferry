@@ -255,13 +255,25 @@ HEAD /uploads/path/to/file HTTP/1.1
 
 All four methods use the same Basic handler unless an authorized matching
 `X-XFerry-Advanced-Session` selects Advanced dispatch. Basic has three exact
-wire profiles:
+wire profiles: `multipart`, `raw_url`, and `raw_header`. The bundled UI exposes
+four request-building scenarios; **No filename** is an intentional UI-only
+variant of the canonical `raw_url` profile:
 
-| Profile | Request target | Body/headers | Filename source |
-|---------|----------------|--------------|-----------------|
-| **Multipart (default)** | `/uploads` | The browser UI sends one `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the multipart boundary and `Content-Length`. | `X-File-Name`, then part `filename`, then URL, then generated |
-| **Raw URL** | `/uploads/<encoded-name>` | Original file bytes, no `X-File-Name` | URL |
-| **Raw Header** | `/uploads` | Original bytes, `Content-Type: application/octet-stream`, URL-encoded `X-File-Name` | header |
+| UI choice | Request target | Body/headers | Filename source | Canonical response profile |
+|-----------|----------------|--------------|-----------------|----------------------------|
+| **Multipart (default)** | `/uploads` | One `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the outer multipart boundary and `Content-Length`. | part `filename` | `multipart` |
+| **Raw URL** | `/uploads/<encoded-name>` | Original file bytes, no `X-File-Name` | URL | `raw_url` |
+| **Raw Header** | `/uploads` | Original file bytes and a URL-encoded `X-File-Name` | header | `raw_header` |
+| **No filename** | `/` (never raw `/uploads`) | Original file bytes, no `X-File-Name` | generated | `raw_url` |
+
+The UI's **Declared MIME** selector offers Auto, `application/octet-stream`,
+`text/plain`, and a validated custom media type. In Auto mode, Multipart and
+Raw URL use the browser file type when available and otherwise use
+`application/octet-stream`; Raw Header and No filename use
+`application/octet-stream`. For Multipart, the declared value is the MIME of
+the file part only: the browser still generates the outer
+`multipart/form-data; boundary=...` header. For all raw scenarios, the
+declared value is the request `Content-Type`.
 
 Example Raw Header request:
 
@@ -280,7 +292,8 @@ applies only to multipart: a raw request to `/uploads` without
 `X-File-Name` saves a literal filename `uploads`. `X-File-Name` values are
 URL-decoded and sanitized before publication. A multipart part `filename` is
 parsed and sanitized but is not URL-decoded by XFerry. Collisions receive a
-safe suffix.
+safe suffix. The UI's No filename scenario deliberately targets `/`, so it
+reaches the generated-name branch rather than the literal `uploads` case.
 
 For Basic multipart, scalar form fields are ignored. The request must contain
 exactly one top-level file part with a non-empty payload. Zero or multiple file
