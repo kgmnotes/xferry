@@ -1035,8 +1035,6 @@ async (page) => {
       upload: [
         "#dropZone",
         "#uploadBtn",
-        "#uploadCompareBtn",
-        "#uploadCompareMethodsBtn",
         '#upload-tab [data-upload-method="POST"]',
         '#upload-tab [data-upload-profile="multipart"]',
       ],
@@ -4418,6 +4416,8 @@ async (page) => {
         const uploadButton = document.getElementById("uploadBtn");
         const compareProfilesButton = document.getElementById("uploadCompareBtn");
         const compareMethodsButton = document.getElementById("uploadCompareMethodsBtn");
+        const comparisonActions = document.getElementById("uploadComparisonActions");
+        const selection = document.getElementById("uploadSelectionState");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
         const dropRect = dropZone?.getBoundingClientRect();
         const buttonRect = uploadButton?.getBoundingClientRect();
@@ -4436,6 +4436,8 @@ async (page) => {
           uploadButton.disabled &&
           compareProfilesButton?.disabled &&
           compareMethodsButton?.disabled &&
+          comparisonActions?.hidden === true &&
+          selection?.classList.contains("sr-only") &&
           buttonRect &&
           buttonRect.width > 0 &&
           buttonRect.height > 0 &&
@@ -4501,28 +4503,56 @@ async (page) => {
     );
   }
 
-  async function assertUploadPrimaryActionDoesNotShiftAfterSelection() {
+  async function assertUploadPickerActionLayout() {
     await page.locator("#fileInput").setInputFiles([]);
     await assertUploadSendEmptyState();
-    const empty = await page.evaluate(() => {
-      const container = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector(
-        "#upload-tab .upload-primary-action__buttons"
-      );
+    const readGeometry = () => page.evaluate(() => {
+      const row = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
       const selection = document.getElementById("uploadSelectionState");
-      if (!container || !buttons || !selection) {
-        throw new Error("Upload primary action geometry targets are missing");
+      const comparisonActions = document.getElementById("uploadComparisonActions");
+      const mode = document.getElementById("uploadMimeMode");
+      if (!row || !dropZone || !button || !selection || !mode) {
+        throw new Error("Upload picker action geometry targets are missing");
       }
-      const containerRect = container.getBoundingClientRect();
-      const buttonsRect = buttons.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const dropRect = dropZone.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
       return {
-        containerRight: containerRect.right,
-        buttonsLeft: buttonsRect.left,
-        buttonsRight: buttonsRect.right,
-        selectionHidden: selection.hidden,
+        row: {
+          left: rowRect.left,
+          right: rowRect.right,
+          top: rowRect.top,
+          bottom: rowRect.bottom,
+        },
+        drop: {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          width: dropRect.width,
+          height: dropRect.height,
+        },
+        button: {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          width: buttonRect.width,
+          height: buttonRect.height,
+          disabled: button.disabled,
+        },
+        selectionVisuallyHidden: selection.classList.contains("sr-only"),
         selectionText: selection.textContent?.trim() || "",
+        comparisonsHidden: comparisonActions?.hidden === true,
+        customControlAbsent: !document.getElementById("uploadCustomMime"),
+        mimeOptions: Array.from(mode.options).map(option => option.value),
+        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+        uploadState: window.XferryApp?.getState("upload"),
       };
     });
+    const empty = await readGeometry();
 
     await page.locator("#fileInput").setInputFiles(uploadFilePath);
     await waitForPageCondition(
@@ -4530,46 +4560,37 @@ async (page) => {
       () => {
         const selection = document.getElementById("uploadSelectionState");
         const button = document.getElementById("uploadBtn");
-        return Boolean(selection && !selection.hidden && button && !button.disabled);
+        return Boolean(selection && selection.classList.contains("sr-only") && button && !button.disabled);
       }
     );
-    const selected = await page.evaluate(() => {
-      const container = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector(
-        "#upload-tab .upload-primary-action__buttons"
-      );
-      if (!container || !buttons) {
-        throw new Error("Upload primary action geometry targets are missing");
-      }
-      const containerRect = container.getBoundingClientRect();
-      const buttonsRect = buttons.getBoundingClientRect();
-      return {
-        containerRight: containerRect.right,
-        buttonsLeft: buttonsRect.left,
-        buttonsRight: buttonsRect.right,
-        compareProfilesDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
-        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
-        uploadState: window.XferryApp?.getState("upload"),
-      };
-    });
+    const selected = await readGeometry();
 
     const tolerance = 1;
     if (
-      empty.selectionHidden ||
+      empty.selectionVisuallyHidden !== true ||
       !/^(No files selected|Файлы не выбраны)$/.test(empty.selectionText) ||
-      Math.abs(empty.containerRight - empty.buttonsRight) > tolerance ||
-      Math.abs(selected.containerRight - selected.buttonsRight) > tolerance ||
-      Math.abs(empty.buttonsLeft - selected.buttonsLeft) > tolerance ||
-      Math.abs(empty.buttonsRight - selected.buttonsRight) > tolerance ||
-      selected.compareProfilesDisabled !== false ||
-      selected.compareMethodsDisabled !== false ||
+      empty.comparisonsHidden !== true ||
+      empty.customControlAbsent !== true ||
+      empty.mimeOptions.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      empty.button.disabled !== true ||
+      empty.drop.right >= empty.button.left ||
+      Math.abs(empty.drop.top - empty.button.top) > tolerance ||
+      Math.abs(empty.drop.bottom - empty.button.bottom) > tolerance ||
+      Math.abs(empty.drop.height - empty.button.height) > tolerance ||
+      selected.selectionVisuallyHidden !== true ||
+      selected.comparisonsHidden !== true ||
+      selected.button.disabled !== false ||
+      Math.abs(selected.drop.top - selected.button.top) > tolerance ||
+      Math.abs(selected.drop.bottom - selected.button.bottom) > tolerance ||
+      Math.abs(selected.drop.height - selected.button.height) > tolerance ||
+      Math.abs(empty.drop.width - selected.drop.width) > tolerance ||
+      Math.abs(empty.button.width - selected.button.width) > tolerance ||
       selected.technicalOpen !== true ||
       selected.uploadState?.technicalDetailsAutoOpened !== true ||
       selected.uploadState?.technicalDetailsUserToggled !== false
     ) {
       throw new Error(
-        `Upload primary action shifted after file selection: ${JSON.stringify({
+        `Upload picker action layout failed: ${JSON.stringify({
           empty,
           selected,
         })}`
@@ -4589,8 +4610,11 @@ async (page) => {
     const desktop = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
       const technical = document.getElementById("uploadTechnicalDetails");
-      const action = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
+      const picker = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
+      const dropRect = dropZone?.getBoundingClientRect();
+      const buttonRect = button?.getBoundingClientRect();
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
@@ -4598,8 +4622,21 @@ async (page) => {
         technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
-        actionDirection: action ? getComputedStyle(action).flexDirection : "",
-        buttonsColumns: buttons ? getComputedStyle(buttons).gridTemplateColumns : "",
+        pickerColumns: picker ? getComputedStyle(picker).gridTemplateColumns : "",
+        dropRect: dropRect ? {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          height: dropRect.height,
+        } : null,
+        buttonRect: buttonRect ? {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          height: buttonRect.height,
+        } : null,
       };
     });
     await page.screenshot({
@@ -4619,9 +4656,12 @@ async (page) => {
     const mobile = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
       const technical = document.getElementById("uploadTechnicalDetails");
-      const action = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
+      const picker = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
       const panel = document.querySelector("#upload-tab .tool-card--workflow");
+      const dropRect = dropZone?.getBoundingClientRect();
+      const buttonRect = button?.getBoundingClientRect();
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
@@ -4629,8 +4669,21 @@ async (page) => {
         technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
-        actionDirection: action ? getComputedStyle(action).flexDirection : "",
-        buttonsColumns: buttons ? getComputedStyle(buttons).gridTemplateColumns : "",
+        pickerColumns: picker ? getComputedStyle(picker).gridTemplateColumns : "",
+        dropRect: dropRect ? {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          height: dropRect.height,
+        } : null,
+        buttonRect: buttonRect ? {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          height: buttonRect.height,
+        } : null,
         panelRight: panel?.getBoundingClientRect().right || 0,
       };
     });
@@ -4649,12 +4702,19 @@ async (page) => {
       !desktop.technicalVisible ||
       desktop.technicalOpen ||
       desktop.documentWidth > desktop.viewportWidth + 1 ||
+      !desktop.dropRect ||
+      !desktop.buttonRect ||
+      desktop.dropRect.right >= desktop.buttonRect.left ||
+      Math.abs(desktop.dropRect.height - desktop.buttonRect.height) > 1 ||
       !mobile.summaryIsDetails ||
       mobile.summaryOpen ||
       !mobile.technicalVisible ||
       mobile.technicalOpen ||
-      mobile.actionDirection !== "column" ||
-      mobile.buttonsColumns.split(/\s+/).length !== 1 ||
+      !mobile.dropRect ||
+      !mobile.buttonRect ||
+      mobile.buttonRect.top <= mobile.dropRect.bottom ||
+      mobile.buttonRect.height < 44 ||
+      mobile.buttonRect.height >= mobile.dropRect.height ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.panelRight > mobile.viewportWidth + 1
     ) {
@@ -10234,9 +10294,14 @@ async (page) => {
         },
         mime: {
           mode: document.getElementById("uploadMimeMode")?.value,
-          customHidden: document.getElementById("uploadCustomMimeField")?.hidden,
-          errorHidden: document.getElementById("uploadMimeError")?.hidden,
+          options: Array.from(document.getElementById("uploadMimeMode")?.options || [])
+            .map(option => option.value),
+          labels: Array.from(document.getElementById("uploadMimeMode")?.options || [])
+            .map(option => option.textContent.trim()),
+          customAbsent: !document.getElementById("uploadCustomMime"),
+          errorAbsent: !document.getElementById("uploadMimeError"),
         },
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
       };
     });
     if (
@@ -10244,139 +10309,60 @@ async (page) => {
       initialContract.checked.join(",") !== "multipart" ||
       initialContract.tabbable.join(",") !== "multipart" ||
       initialContract.mime.mode !== "auto" ||
-      initialContract.mime.customHidden !== true ||
-      initialContract.mime.errorHidden !== true
+      initialContract.mime.options.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      initialContract.mime.labels.join(",") !==
+        "Auto,application/octet-stream,text/plain,application/pdf" ||
+      initialContract.mime.customAbsent !== true ||
+      initialContract.mime.errorAbsent !== true ||
+      initialContract.comparisonsHidden !== true
     ) {
       throw new Error(`Basic profile radio contract failed: ${JSON.stringify(initialContract)}`);
     }
-    const primaryActionGeometry =
-      await assertUploadPrimaryActionDoesNotShiftAfterSelection();
+    const pickerActionGeometry = await assertUploadPickerActionLayout();
 
-    const invalidMimeValidation = await page.evaluate(() => {
+    await page.evaluate(() => {
       const app = window.XferryApp;
       app.invoke("upload", "handle-files", [
         new File([new TextEncoder().encode("mime")], "mime-check.txt", {
           type: "text/plain",
         }),
       ]);
-      const mode = document.getElementById("uploadMimeMode");
-      const custom = document.getElementById("uploadCustomMime");
-      if (!mode || !custom) throw new Error("Upload MIME controls are missing");
-      mode.value = "custom";
-      mode.dispatchEvent(new Event("change", { bubbles: true }));
-      const captureValidation = () => ({
-        sendDisabled: document.getElementById("uploadBtn")?.disabled,
-        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
-        modeInvalid: mode.getAttribute("aria-invalid"),
-        customInvalid: custom.getAttribute("aria-invalid"),
-        errorHidden: document.getElementById("uploadMimeError")?.hidden,
-      });
-      const unsupported = [
-        `text/plain;${String.fromCharCode(9)}charset=utf-8`,
-        'text/plain; note="☃"',
-        `text/plain; note="${String.fromCharCode(1)}"`,
-      ].map(value => {
-        custom.value = value;
-        custom.dispatchEvent(new Event("input", { bubbles: true }));
-        return captureValidation();
-      });
-      custom.value = "not a mime";
-      custom.dispatchEvent(new Event("input", { bubbles: true }));
-      const invalid = captureValidation();
-      const http = app.service("http");
-      window.__xferryInvalidMimeSendCalls = 0;
-      window.__xferryInvalidMimeOriginalAdapter = http["set-adapter"](() => {
-        window.__xferryInvalidMimeSendCalls += 1;
-        return Promise.resolve(new Response(JSON.stringify({ error: {
-          code: "invalid_mime_shortcut",
-          message: "invalid MIME shortcut must not send",
-        } }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }));
-      });
-      return { invalid, unsupported };
     });
-    await page.keyboard.press("Control+Enter");
-    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
-    const shortcutAndValidMime = await page.evaluate(() => {
-      const app = window.XferryApp;
+    await page.locator("#uploadMimeMode").selectOption("pdf");
+    const mimePreset = await page.evaluate(() => {
       const mode = document.getElementById("uploadMimeMode");
-      const custom = document.getElementById("uploadCustomMime");
-      const shortcut = {
-        sendCalls: window.__xferryInvalidMimeSendCalls,
-        actionPhase: app.getState("upload").actionPhase,
+      return {
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
-        modeDisabled: mode?.disabled,
-        customDisabled: custom?.disabled,
-        fileDisabled: document.getElementById("fileInput")?.disabled,
-        profilesDisabled: Array.from(document.querySelectorAll("[data-upload-profile]"))
-          .some(button => button.disabled),
-      };
-      app.service("http")["set-adapter"](window.__xferryInvalidMimeOriginalAdapter);
-      delete window.__xferryInvalidMimeOriginalAdapter;
-      delete window.__xferryInvalidMimeSendCalls;
-      custom.value = "application/x-browser-smoke; version=1";
-      custom.dispatchEvent(new Event("input", { bubbles: true }));
-      const valid = {
-        sendDisabled: document.getElementById("uploadBtn")?.disabled,
-        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
         modeInvalid: mode.getAttribute("aria-invalid"),
-        customInvalid: custom.getAttribute("aria-invalid"),
-        errorHidden: document.getElementById("uploadMimeError")?.hidden,
+        options: Array.from(mode?.options || []).map(option => option.value),
+        customAbsent: !document.getElementById("uploadCustomMime"),
+        errorAbsent: !document.getElementById("uploadMimeError"),
         summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
         technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
         requestText: document.getElementById("uploadRequestArea")?.textContent,
       };
-      return { shortcut, valid };
     });
-    const mimeValidation = {
-      ...invalidMimeValidation,
-      ...shortcutAndValidMime,
-    };
     if (
-      mimeValidation.invalid.sendDisabled !== true ||
-      mimeValidation.invalid.compareDisabled !== true ||
-      mimeValidation.invalid.compareMethodsDisabled !== true ||
-      mimeValidation.invalid.modeInvalid !== "true" ||
-      mimeValidation.invalid.customInvalid !== "true" ||
-      mimeValidation.invalid.errorHidden !== false ||
-      mimeValidation.unsupported.some(validation => (
-        validation.sendDisabled !== true ||
-        validation.compareDisabled !== true ||
-        validation.compareMethodsDisabled !== true ||
-        validation.modeInvalid !== "true" ||
-        validation.customInvalid !== "true" ||
-        validation.errorHidden !== false
-      )) ||
-      mimeValidation.shortcut.sendCalls !== 0 ||
-      mimeValidation.shortcut.actionPhase !== "idle" ||
-      mimeValidation.shortcut.sendDisabled !== true ||
-      mimeValidation.shortcut.modeDisabled !== false ||
-      mimeValidation.shortcut.customDisabled !== false ||
-      mimeValidation.shortcut.fileDisabled !== false ||
-      mimeValidation.shortcut.profilesDisabled !== false ||
-      mimeValidation.valid.sendDisabled !== false ||
-      mimeValidation.valid.compareDisabled !== false ||
-      mimeValidation.valid.compareMethodsDisabled !== false ||
-      mimeValidation.valid.modeInvalid !== "false" ||
-      mimeValidation.valid.customInvalid !== "false" ||
-      mimeValidation.valid.errorHidden !== true ||
-      mimeValidation.valid.summaryMime !== "application/x-browser-smoke; version=1" ||
-      mimeValidation.valid.technicalOpen !== false ||
-      !mimeValidation.valid.requestText.includes(
+      mimePreset.sendDisabled !== false ||
+      mimePreset.comparisonsHidden !== true ||
+      mimePreset.modeInvalid !== "false" ||
+      mimePreset.options.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      mimePreset.customAbsent !== true ||
+      mimePreset.errorAbsent !== true ||
+      mimePreset.summaryMime !== "application/pdf" ||
+      mimePreset.technicalOpen !== false ||
+      !mimePreset.requestText.includes(
         "Content-Type: multipart/form-data; boundary=<browser-generated>"
       ) ||
-      !mimeValidation.valid.requestText.includes(
+      !mimePreset.requestText.includes(
         'Content-Disposition: form-data; name="file"; filename="mime-check.txt"'
       ) ||
-      !mimeValidation.valid.requestText.includes(
-        "Content-Type: application/x-browser-smoke; version=1"
+      !mimePreset.requestText.includes(
+        "Content-Type: application/pdf"
       )
     ) {
-      throw new Error(`Upload MIME validation failed: ${JSON.stringify(mimeValidation)}`);
+      throw new Error(`Upload MIME preset failed: ${JSON.stringify(mimePreset)}`);
     }
     await page.locator("#uploadTechnicalDetails > summary").click();
     await page.locator("#uploadMimeMode").selectOption("text-plain");
@@ -10512,7 +10498,7 @@ async (page) => {
       return [
         serialize("multipart"),
         serialize("raw-url", "text-plain"),
-        serialize("raw-header", "custom", "application/x-profile-custom; version=1"),
+        serialize("raw-header", "pdf"),
         serialize("raw-generated"),
       ];
     });
@@ -10540,7 +10526,7 @@ async (page) => {
     }
     if (
       rawHeader.pathname !== "/uploads" ||
-      rawHeader.wireHeaders["Content-Type"] !== "application/x-profile-custom; version=1" ||
+      rawHeader.wireHeaders["Content-Type"] !== "application/pdf" ||
       rawHeader.wireHeaders["X-File-Name"] !==
         "%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
       Object.keys(rawHeader.wireHeaders)
@@ -10789,13 +10775,10 @@ async (page) => {
       const app = window.XferryApp;
       const http = app.service("http");
       const mode = document.getElementById("uploadMimeMode");
-      const custom = document.getElementById("uploadCustomMime");
       app.invoke("upload", "set-method", "POST");
       app.invoke("upload", "set-profile", "raw-header");
-      mode.value = "custom";
+      mode.value = "pdf";
       mode.dispatchEvent(new Event("change", { bubbles: true }));
-      custom.value = "application/x-retry; version=1";
-      custom.dispatchEvent(new Event("input", { bubbles: true }));
 
       window.__xferryRetryMimeCalls = [];
       window.__xferryRetryMimeOriginalAdapter = http["set-adapter"](
@@ -10858,7 +10841,7 @@ async (page) => {
       retryMimeSetup.actionPhase !== "idle" ||
       retryMimeSetup.retryPresent !== true ||
       retryMimeSetup.calls.length !== 1 ||
-      retryMimeSetup.calls[0].contentType !== "application/x-retry; version=1"
+      retryMimeSetup.calls[0].contentType !== "application/pdf"
     ) {
       throw new Error(`Basic retry MIME setup failed: ${JSON.stringify(retryMimeSetup)}`);
     }
@@ -10892,7 +10875,7 @@ async (page) => {
       retryMime.calls.some(call => (
         call.method !== "POST" ||
         call.pathname !== "/uploads" ||
-        call.contentType !== "application/x-retry; version=1"
+        call.contentType !== "application/pdf"
       )) ||
       retryMime.pendingCount !== 0 ||
       retryMime.fileCount !== 0
@@ -11010,6 +10993,7 @@ async (page) => {
         sessionActive: app.service("advanced-session").getSnapshot().active,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
         compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
       };
     });
     const compareResponses = [];
@@ -11030,6 +11014,9 @@ async (page) => {
       }
     };
     page.on("response", captureCompareResponse);
+    await page.evaluate(() => {
+      document.getElementById("uploadComparisonActions").hidden = false;
+    });
     await page.locator("#uploadCompareBtn").click();
     await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
     const profileConfirmation = await page.evaluate(() => ({
@@ -11080,12 +11067,9 @@ async (page) => {
       const app = window.XferryApp;
       app.invoke("upload", "set-profile", "raw-header");
       const mode = document.getElementById("uploadMimeMode");
-      const custom = document.getElementById("uploadCustomMime");
-      if (!mode || !custom) throw new Error("Upload MIME controls are missing");
-      mode.value = "custom";
+      if (!mode) throw new Error("Upload MIME controls are missing");
+      mode.value = "pdf";
       mode.dispatchEvent(new Event("change", { bubbles: true }));
-      custom.value = "application/x-method-compare";
-      custom.dispatchEvent(new Event("input", { bubbles: true }));
       return {
         profile: app.getState("upload").profile,
         summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
@@ -11196,6 +11180,7 @@ async (page) => {
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
       compareSetup.compareMethodsDisabled !== false ||
+      compareSetup.comparisonsHidden !== true ||
       profileConfirmation.action !== "Create 4 files" ||
       !profileConfirmation.message.includes("Multipart") ||
       !profileConfirmation.message.includes("No filename") ||
@@ -11214,7 +11199,7 @@ async (page) => {
       actualBasicCompare.requestTracesPresent !== true ||
       actualBasicCompare.responseTracesPresent !== true ||
       methodCompareSetup.profile !== "raw-header" ||
-      methodCompareSetup.summaryMime !== "application/x-method-compare" ||
+      methodCompareSetup.summaryMime !== "application/pdf" ||
       methodCompareSetup.compareMethodsDisabled !== false ||
       methodConfirmation.action !== "Create 4 files" ||
       !expectedMethods.every((method) => methodConfirmation.message.includes(method)) ||
@@ -11235,7 +11220,7 @@ async (page) => {
       actualMethodCompare.title !== "Method comparison" ||
       actualMethodCompare.requestTraces.some((trace, index) => (
         !trace.includes(`${expectedMethods[index]} /uploads HTTP/1.1`) ||
-        !trace.includes("Content-Type: application/x-method-compare") ||
+        !trace.includes("Content-Type: application/pdf") ||
         !trace.includes("X-File-Name: basic-compare-coexists.txt")
       )) ||
       actualMethodCompare.responseTraces.some((trace) => !trace.includes("HTTP/1.1 201"))
@@ -11248,6 +11233,8 @@ async (page) => {
       const app = window.XferryApp;
       await app.service("advanced-session").revoke();
       app.invoke("upload", "handle-files", []);
+      document.getElementById("uploadComparisonActions").hidden = true;
+      document.getElementById("uploadCompareResults").hidden = true;
     });
 
     await page.screenshot({
@@ -11284,8 +11271,8 @@ async (page) => {
       multipartFallbackMime,
       normalizedMultipartMime,
       largePreview,
-      mimeValidation,
-      primaryActionGeometry,
+      mimePreset,
+      pickerActionGeometry,
       queuedSend,
       retryMime,
       basicAdvancedCoexistence,

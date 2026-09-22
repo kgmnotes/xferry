@@ -835,17 +835,22 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     assert 'data-upload-profile="multipart" role="radio" aria-checked="true"' in upload_tab
     assert 'id="uploadMimeMode"' in upload_tab
     assert re.findall(
-        r'<option value="(auto|octet-stream|text-plain|custom)"',
+        r'<option value="(auto|octet-stream|text-plain|pdf)"',
         upload_tab,
-    ) == ["auto", "octet-stream", "text-plain", "custom"]
-    assert 'id="uploadCustomMime"' in upload_tab
-    assert 'id="uploadMimeError"' in upload_tab
-    assert 'aria-describedby="uploadMimeHint uploadMimeError"' in upload_tab
+    ) == ["auto", "octet-stream", "text-plain", "pdf"]
+    assert 'id="uploadCustomMime"' not in upload_tab
+    assert 'id="uploadMimeError"' not in upload_tab
+    assert 'aria-describedby="uploadMimeHint"' in upload_tab
     assert 'id="uploadRequestSummary"' in upload_tab
     for field in ("request-line", "body-kind", "mime", "filename-source"):
         assert f'data-upload-summary="{field}"' in upload_tab
     assert 'id="uploadCompareBtn"' in upload_tab
     assert 'id="uploadCompareMethodsBtn"' in upload_tab
+    comparison_controls = re.search(
+        r'<div\b(?=[^>]*\bid="uploadComparisonActions")(?=[^>]*\bhidden\b)[^>]*>',
+        upload_tab,
+    )
+    assert comparison_controls is not None
     assert 'id="uploadCompareResults"' in upload_tab
     assert "compare: compareBasicUploadProfiles" in upload_js
     assert "'compare-methods': compareBasicUploadMethods" in upload_js
@@ -865,8 +870,7 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
         "uploadMimeModeAuto",
         "uploadMimeModeOctetStream",
         "uploadMimeModeTextPlain",
-        "uploadMimeModeCustom",
-        "uploadCustomMimeLabel",
+        "uploadMimeModePdf",
         "uploadMimeHint",
         "uploadMimeRequired",
         "uploadMimeInvalid",
@@ -922,6 +926,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     ) == ["POST", "NONE", "PUT", "PATCH"]
 
     for element_id in (
+        "uploadPickerActions",
         "dropZone",
         "fileInput",
         "fileList",
@@ -929,6 +934,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         "uploadCompareBtn",
         "uploadCompareMethodsBtn",
         "uploadSelectionState",
+        "uploadComparisonActions",
         "uploadRequestSummary",
     ):
         assert upload_tab.count(f'id="{element_id}"') == 1
@@ -936,10 +942,13 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     source_order = (
         'class="upload-method-section"',
         'id="uploadProfileGroup"',
+        'id="uploadPickerActions"',
         'id="dropZone"',
+        'id="uploadBtn"',
+        'id="uploadSelectionState"',
         'id="fileList"',
         'id="uploadRequestSummary"',
-        'class="upload-primary-action"',
+        'id="uploadComparisonActions"',
         'id="uploadCompareResults"',
         'data-tool-trace-scope="upload"',
     )
@@ -949,9 +958,9 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     assert "data-tool-trace-phase" not in upload_tab
     assert 'data-tool-trace-scope="upload"' in upload_tab
     assert upload_tab.index('role="radiogroup"') < upload_tab.index('id="dropZone"')
-    assert upload_tab.index('id="uploadSelectionState"') > upload_tab.index(
-        'class="upload-primary-action"'
-    )
+    selection_tag = re.search(r'<div\b[^>]*\bid="uploadSelectionState"[^>]*>', upload_tab)
+    assert selection_tag is not None
+    assert re.search(r'class="[^"]*\bsr-only\b[^"]*"', selection_tag.group(0))
 
 
 def test_basic_upload_compiler_supports_no_filename_and_declared_mime_in_node() -> None:
@@ -967,7 +976,7 @@ function extractFunction(source, marker, nextMarker) {
 }
 
 const source = fs.readFileSync(process.argv[1], 'utf8');
-globalThis.uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
+globalThis.uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'pdf', 'custom']);
 globalThis.uploadCustomMimeMaxLength = 120;
 const uploadMimePatternSource = source.match(/^const uploadMimePattern = (.+);$/m)?.[1];
 if (!uploadMimePatternSource) throw new Error('Could not extract uploadMimePattern');
@@ -1070,7 +1079,9 @@ const sampledPlan = globalThis.compileBasicUploadRequest(
 
 process.stdout.write(JSON.stringify({
     multipartAuto: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'auto' }),
+    multipartPdf: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'pdf' }),
     rawUrlText: summarize({ method: 'PUT', profile: 'raw-url', mimeMode: 'text-plain' }),
+    rawHeaderPdf: summarize({ method: 'PATCH', profile: 'raw-header', mimeMode: 'pdf' }),
     rawHeaderCustom: summarize({
         method: 'PATCH',
         profile: 'raw-header',
@@ -1119,12 +1130,37 @@ process.stdout.write(JSON.stringify({
                 "size": 3,
             },
         },
+        "multipartPdf": {
+            "profile": "multipart",
+            "pathname": "/uploads",
+            "wireHeaders": {},
+            "mime": "application/pdf",
+            "filenameSource": "part",
+            "previewFilename": "sample.bin",
+            "formFile": {
+                "name": "sample.bin",
+                "type": "application/pdf",
+                "size": 3,
+            },
+        },
         "rawUrlText": {
             "profile": "raw-url",
             "pathname": "/uploads/sample.bin",
             "wireHeaders": {"Content-Type": "text/plain"},
             "mime": "text/plain",
             "filenameSource": "url",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "rawHeaderPdf": {
+            "profile": "raw-header",
+            "pathname": "/uploads",
+            "wireHeaders": {
+                "Content-Type": "application/pdf",
+                "X-File-Name": "sample.bin",
+            },
+            "mime": "application/pdf",
+            "filenameSource": "header",
             "previewFilename": "sample.bin",
             "formFile": None,
         },

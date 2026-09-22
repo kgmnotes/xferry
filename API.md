@@ -267,10 +267,9 @@ variant of the canonical `raw_url` profile:
 | **No filename** | `/` (never raw `/uploads`) | Original file bytes, no `X-File-Name` | generated | `raw_url` |
 
 The UI's **Declared MIME** selector offers Auto, `application/octet-stream`,
-`text/plain`, and a validated custom media type. Custom values are limited to
-120 printable ASCII characters and must follow media-type syntax. In Auto
-mode, Multipart and Raw URL use the browser file type when available and
-otherwise use `application/octet-stream`; Raw Header and No filename use
+`text/plain`, and `application/pdf`. In Auto mode, Multipart and Raw URL use
+the browser file type when available and otherwise use
+`application/octet-stream`; Raw Header and No filename use
 `application/octet-stream`. For Multipart, the declared value is the MIME of
 the file part only, and the UI previews the browser-normalized `File.type`
 (including its ASCII lowercasing): the browser still generates the outer

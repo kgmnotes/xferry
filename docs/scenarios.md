@@ -8,10 +8,10 @@ requests and can declare the file-part or raw-body MIME. No filename sends raw
 bytes to `/` so the server generates the name; it never sends raw bytes to
 `/uploads`.
 
-**Compare profiles** sends one confirmed upload for each of the four request
-profiles. **Compare methods** reuses the active request profile with POST,
-NONE, PUT, and PATCH. Both comparisons create files on the server and may
-trigger gateway inspection; they are mutating tests, not previews or dry runs.
+Profile and method comparison support remains available internally, but its
+controls are currently hidden from the Upload interface. Use individual sends
+while refining a request; each send may create a file and trigger gateway
+inspection.
 
 Start here when checking whether a gateway permits ordinary file transfer.
 

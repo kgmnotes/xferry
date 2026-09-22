@@ -680,23 +680,36 @@
     width: fit-content;
 }
 
-.upload-primary-action {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+.upload-picker-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 220px);
+    align-items: stretch;
     gap: var(--space-3);
     min-width: 0;
 }
 
-.upload-primary-action #uploadBtn {
-    min-width: min(220px, 100%);
+.upload-picker-actions #dropZone {
+    min-width: 0;
 }
 
-.upload-primary-action__buttons {
+.upload-picker-actions #uploadBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 132px;
+}
+
+.upload-comparison-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);
     flex-wrap: wrap;
+}
+
+.upload-comparison-actions[hidden] {
+    display: none;
 }
 
 .advanced-routing-basic-warning {
@@ -2361,14 +2374,6 @@
     font-weight: 700;
 }
 
-#uploadSelectionState:not([hidden]) {
-    padding: var(--space-2) var(--space-3);
-    border-left: 3px solid var(--accent-secondary);
-    background: var(--bg-accent-soft);
-    color: var(--text-emphasis);
-    font-weight: 700;
-}
-
 .tool-stack--upload .queue-list,
 .tool-stack--files .uploaded-files {
     margin-top: 0;
@@ -3568,21 +3573,27 @@
         line-height: 1;
     }
 
-    #upload-tab .upload-primary-action {
-        align-items: stretch;
-        flex-direction: column;
+    #upload-tab .upload-picker-actions {
+        grid-template-columns: minmax(0, 1fr);
     }
 
-    #upload-tab .upload-primary-action__buttons {
+    #upload-tab .upload-picker-actions #uploadBtn {
+        min-height: 44px;
+    }
+
+    #upload-tab .upload-comparison-actions {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    #upload-tab .upload-comparison-actions[hidden] {
+        display: none;
     }
 
     #upload-tab .response-options__controls {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    #upload-tab #uploadBtn,
     #upload-tab #uploadCompareBtn,
     #upload-tab #uploadCompareMethodsBtn {
         width: 100%;

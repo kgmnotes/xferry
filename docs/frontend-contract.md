@@ -60,6 +60,12 @@ On desktop it may open once for the first ready request without moving focus or
 scroll position; mobile starts collapsed, and a user's explicit open/closed
 choice wins over later live updates.
 
+The visible file queue is the selection summary; the duplicate selected-file
+count remains screen-reader-only. On desktop the Send button is placed beside
+the file drop zone at the same height, while narrow screens stack a compact
+button below it. Profile and method comparison controls remain implemented but
+are hidden from the default Upload interface.
+
 After one successful upload, the existing inline status shows the HTTP status,
 canonical saved server path, and response-reported size. A multi-file result
 shows aggregate success/error counts and clears the single-file metadata. The

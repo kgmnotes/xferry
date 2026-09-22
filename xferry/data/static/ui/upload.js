@@ -66,7 +66,7 @@ const uploadState = {
 let activeBasicUploadErrorFile = null;
 const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
 const basicUploadMethods = Object.freeze(['POST', 'NONE', 'PUT', 'PATCH']);
-const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
+const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'pdf', 'custom']);
 const uploadCustomMimeMaxLength = 120;
 const uploadMimePattern = /^(?=[\x20-\x7E]+$)[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?: *; *[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\]|\\.)*"))*$/;
 const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'number'
@@ -314,6 +314,9 @@ function resolveUploadDeclaredMime(state, file, profile) {
     if (validation.mode === 'text-plain') {
         return 'text/plain';
     }
+    if (validation.mode === 'pdf') {
+        return 'application/pdf';
+    }
     if (validation.mode === 'custom') {
         return validation.mime;
     }
@@ -509,13 +512,6 @@ function setUploadMimeMode(mode) {
     refreshUploadActionState();
 }
 
-function setUploadCustomMime(value) {
-    uploadState.customMime = String(value || '');
-    renderUploadMimeControls();
-    refreshUploadRequestPreview();
-    refreshUploadActionState();
-}
-
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
@@ -527,9 +523,6 @@ const uploadCompareResultsTitle = document.getElementById('uploadCompareResultsT
 const uploadRequestSummary = document.getElementById('uploadRequestSummary');
 const uploadSelectionState = document.getElementById('uploadSelectionState');
 const uploadMimeMode = document.getElementById('uploadMimeMode');
-const uploadCustomMimeField = document.getElementById('uploadCustomMimeField');
-const uploadCustomMime = document.getElementById('uploadCustomMime');
-const uploadMimeError = document.getElementById('uploadMimeError');
 const uploadSummaryFields = Object.freeze({
     requestLine: document.querySelector('[data-upload-summary="request-line"]'),
     bodyKind: document.querySelector('[data-upload-summary="body-kind"]'),
@@ -578,19 +571,6 @@ function renderUploadMimeControls() {
     if (uploadMimeMode) {
         uploadMimeMode.value = validation.mode;
         uploadMimeMode.setAttribute('aria-invalid', String(!validation.valid));
-    }
-    if (uploadCustomMimeField) {
-        uploadCustomMimeField.hidden = validation.mode !== 'custom';
-    }
-    if (uploadCustomMime) {
-        if (uploadCustomMime.value !== uploadState.customMime) {
-            uploadCustomMime.value = uploadState.customMime;
-        }
-        uploadCustomMime.setAttribute('aria-invalid', String(!validation.valid));
-    }
-    if (uploadMimeError) {
-        uploadMimeError.hidden = validation.valid;
-        uploadMimeError.textContent = validation.valid ? '' : t(validation.errorKey);
     }
     return validation;
 }
@@ -735,7 +715,6 @@ function refreshUploadActionState() {
         button.disabled = busy || !enabled;
     });
     if (uploadMimeMode) uploadMimeMode.disabled = busy || !enabled;
-    if (uploadCustomMime) uploadCustomMime.disabled = busy || !enabled;
     if (fileInput) fileInput.disabled = busy || !enabled;
     if (dropZone) {
         dropZone.classList.toggle('is-disabled', busy || !enabled);
@@ -1047,13 +1026,6 @@ uploadProfileButtons.forEach(button => {
 
 uploadMimeMode?.addEventListener('change', () => {
     setUploadMimeMode(uploadMimeMode.value);
-    if (uploadState.mimeMode === 'custom') {
-        focusElementWithoutScroll(uploadCustomMime);
-    }
-});
-
-uploadCustomMime?.addEventListener('input', () => {
-    setUploadCustomMime(uploadCustomMime.value);
 });
 
 if (uploadBtn) {

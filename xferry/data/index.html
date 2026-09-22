@@ -183,26 +183,13 @@
                                 <div class="response-options__controls">
                                     <div class="upload-mime-control">
                                         <label for="uploadMimeMode" data-i18n="uploadMimeModeLabel">Declared MIME</label>
-                                        <select id="uploadMimeMode" aria-describedby="uploadMimeHint uploadMimeError">
+                                        <select id="uploadMimeMode" aria-describedby="uploadMimeHint">
                                             <option value="auto" selected data-i18n="uploadMimeModeAuto">Auto</option>
                                             <option value="octet-stream">application/octet-stream</option>
                                             <option value="text-plain">text/plain</option>
-                                            <option value="custom" data-i18n="uploadMimeModeCustom">Custom</option>
+                                            <option value="pdf" data-i18n="uploadMimeModePdf">application/pdf</option>
                                         </select>
                                         <span class="field-hint" id="uploadMimeHint" data-i18n="uploadMimeHint">Multipart changes the file-part MIME; raw profiles change Content-Type.</span>
-                                        <div class="upload-custom-mime" id="uploadCustomMimeField" hidden>
-                                            <label for="uploadCustomMime" data-i18n="uploadCustomMimeLabel">Custom MIME</label>
-                                            <input
-                                                type="text"
-                                                id="uploadCustomMime"
-                                                maxlength="120"
-                                                autocomplete="off"
-                                                spellcheck="false"
-                                                aria-describedby="uploadMimeError"
-                                                placeholder="application/x-example"
-                                            >
-                                        </div>
-                                        <span class="field-error" id="uploadMimeError" role="alert" hidden></span>
                                     </div>
                                     <label class="checkbox-row" for="responseNoGzip">
                                         <input type="checkbox" id="responseNoGzip">
@@ -211,14 +198,29 @@
                                 </div>
                             </section>
 
-                            <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
-                                <label class="upload-label" for="fileInput">
-                                    <div class="upload-icon" aria-hidden="true">[+]</div>
-                                    <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
-                                    <div class="sr-only" id="uploadMethodHint">POST</div>
-                                </label>
-                                <input type="file" id="fileInput" multiple tabindex="-1">
+                            <div class="upload-picker-actions" id="uploadPickerActions" data-testid="send-primary-action">
+                                <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
+                                    <label class="upload-label" for="fileInput">
+                                        <div class="upload-icon" aria-hidden="true">[+]</div>
+                                        <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
+                                        <div class="sr-only" id="uploadMethodHint">POST</div>
+                                    </label>
+                                    <input type="file" id="fileInput" multiple tabindex="-1">
+                                </div>
+                                <button
+                                    class="btn-info"
+                                    id="uploadBtn"
+                                    disabled
+                                    title="Отправить"
+                                    aria-label="Отправить"
+                                    data-i18n="uploadAllBtn"
+                                    data-i18n-title="uploadAllBtn"
+                                    data-i18n-aria-label="uploadAllBtn"
+                                    data-testid="upload-btn"
+                                >Отправить</button>
                             </div>
+
+                            <div class="sr-only" id="uploadSelectionState" role="status" aria-live="polite" aria-atomic="true" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
 
                             <div class="file-list queue-list" id="fileList" data-testid="file-list"></div>
 
@@ -244,20 +246,7 @@
                                 </dl>
                             </details>
 
-                            <div class="upload-primary-action" data-testid="send-primary-action">
-                                <div class="upload-selection" id="uploadSelectionState" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
-                                <div class="upload-primary-action__buttons">
-                                    <button
-                                        class="btn-info"
-                                        id="uploadBtn"
-                                        disabled
-                                        title="Отправить"
-                                        aria-label="Отправить"
-                                        data-i18n="uploadAllBtn"
-                                        data-i18n-title="uploadAllBtn"
-                                        data-i18n-aria-label="uploadAllBtn"
-                                        data-testid="upload-btn"
-                                    >Отправить</button>
+                            <div class="upload-comparison-actions" id="uploadComparisonActions" hidden>
                                     <button
                                         class="btn-ghost"
                                         id="uploadCompareBtn"
@@ -278,7 +267,6 @@
                                         data-i18n-title="uploadCompareMethodsBtn"
                                         data-i18n-aria-label="uploadCompareMethodsBtn"
                                     >Compare methods</button>
-                                </div>
                             </div>
 
                             <section
