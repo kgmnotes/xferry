@@ -3540,7 +3540,8 @@
     }
 
     #upload-tab #uploadBtn,
-    #upload-tab #uploadCompareBtn {
+    #upload-tab #uploadCompareBtn,
+    #upload-tab #uploadCompareMethodsBtn {
         width: 100%;
         min-height: 44px;
     }

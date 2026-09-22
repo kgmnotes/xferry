@@ -824,6 +824,7 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(
         encoding="utf-8"
     )
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
 
     assert 'id="uploadProfileGroup"' in upload_tab
@@ -844,7 +845,10 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     for field in ("request-line", "body-kind", "mime", "filename-source"):
         assert f'data-upload-summary="{field}"' in upload_tab
     assert 'id="uploadCompareBtn"' in upload_tab
+    assert 'id="uploadCompareMethodsBtn"' in upload_tab
     assert 'id="uploadCompareResults"' in upload_tab
+    assert "compare: compareBasicUploadProfiles" in upload_js
+    assert "'compare-methods': compareBasicUploadMethods" in upload_js
     assert 'id="basicAdvancedRoutingWarning"' not in upload_tab
     assert 'id="basicAdvancedRoutingDisableBtn"' not in upload_tab
     assert 'id="uploadHelpDetails"' not in upload_tab
@@ -875,6 +879,12 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
         "uploadCompareConfirmTitle",
         "uploadCompareConfirmBody",
         "uploadCompareConfirmAction",
+        "uploadCompareMethodsBtn",
+        "uploadCompareMethodsConfirmTitle",
+        "uploadCompareMethodsConfirmBody",
+        "uploadCompareMethodsConfirmAction",
+        "uploadCompareMethodsResultsTitle",
+        "uploadCompareMethodsRunning",
         "uploadRoutingConflict",
         "uploadVerdictDelivered",
         "uploadVerdictMetadataChanged",
@@ -917,6 +927,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         "fileList",
         "uploadBtn",
         "uploadCompareBtn",
+        "uploadCompareMethodsBtn",
         "uploadSelectionState",
         "uploadRequestSummary",
     ):
@@ -4006,8 +4017,8 @@ function extractFunction(source, marker, nextMarker) {
     }
 
 
-def test_basic_upload_comparison_accepts_only_complete_canonical_payload_in_node() -> None:
-    """Execute the real comparison consumer against a server-shaped STAGE-006 response."""
+def test_basic_upload_comparison_normalizes_canonical_payload_profiles_in_node() -> None:
+    """Execute all UI profile tokens against their canonical server-shaped responses."""
     script = r"""
 const fs = require('node:fs');
 
@@ -4031,10 +4042,10 @@ globalThis.getCompareVerdict = extractFunction(
 );
 
 const hash = 'a'.repeat(64);
-const payload = {
+const responsePayload = (profile, carrier, filenameSource, normalizedName = 'compare.txt') => ({
     file: {
-        name: 'compare.txt',
-        path: '/uploads/final-compare.txt',
+        name: normalizedName,
+        path: `/uploads/${normalizedName}`,
         size_bytes: 3,
         size_human: '3.0 B',
         content_type: 'text/plain',
@@ -4043,24 +4054,45 @@ const payload = {
     },
     upload: {
         kind: 'basic',
-        profile: 'multipart',
-        carrier: 'multipart',
-        filename_source: 'part',
-        normalized_name: 'compare.txt',
-        collision_renamed: true,
-        request_body_size: 3,
+        profile,
+        carrier,
+        filename_source: filenameSource,
+        normalized_name: normalizedName,
+        collision_renamed: normalizedName === 'collision-compare.txt',
+        request_body_size: carrier === 'multipart' ? 32 : 3,
         payload_size: 3,
     },
-};
-const verdict = globalThis.getCompareVerdict(
-    { profile: 'multipart', filenameSource: 'part', mime: 'text/plain' },
+});
+const cases = [
+    ['multipart', 'multipart', 'multipart', 'part', 'collision-compare.txt'],
+    ['raw-url', 'raw_url', 'body', 'url', 'compare.txt'],
+    ['raw-header', 'raw_header', 'body', 'header', 'compare.txt'],
+    ['raw-generated', 'raw_url', 'body', 'generated', 'generated-123.bin'],
+];
+const verdicts = Object.fromEntries(cases.map(([
+    uiProfile,
+    serverProfile,
+    carrier,
+    filenameSource,
+    normalizedName,
+]) => [
+    uiProfile,
+    globalThis.getCompareVerdict(
+        { profile: uiProfile, filenameSource, mime: 'text/plain' },
+        { name: 'compare.txt', size: 3 },
+        hash,
+        { ok: true },
+        responsePayload(serverProfile, carrier, filenameSource, normalizedName),
+    ),
+]));
+const wrongCanonicalProfile = globalThis.getCompareVerdict(
+    { profile: 'raw-url', filenameSource: 'url', mime: 'text/plain' },
     { name: 'compare.txt', size: 3 },
     hash,
     { ok: true },
-    payload,
-    null,
+    responsePayload('raw_header', 'body', 'url'),
 );
-process.stdout.write(JSON.stringify({ verdict }));
+process.stdout.write(JSON.stringify({ verdicts, wrongCanonicalProfile }));
 """
 
     completed = subprocess.run(
@@ -4071,7 +4103,15 @@ process.stdout.write(JSON.stringify({ verdict }));
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"verdict": "delivered"}
+    assert json.loads(completed.stdout) == {
+        "verdicts": {
+            "multipart": "delivered",
+            "raw-url": "delivered",
+            "raw-header": "delivered",
+            "raw-generated": "delivered",
+        },
+        "wrongCanonicalProfile": "metadata-changed",
+    }
 
 
 def test_stage006_consumer_validators_reject_incomplete_or_wrong_kind_2xx_in_node() -> None:

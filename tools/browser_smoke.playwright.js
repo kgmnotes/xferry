@@ -1036,6 +1036,7 @@ async (page) => {
         "#dropZone",
         "#uploadBtn",
         "#uploadCompareBtn",
+        "#uploadCompareMethodsBtn",
         '#upload-tab [data-upload-method="POST"]',
         '#upload-tab [data-upload-profile="multipart"]',
       ],
@@ -4415,6 +4416,8 @@ async (page) => {
         const status = document.getElementById("uploadStatus");
         const dropZone = document.getElementById("dropZone");
         const uploadButton = document.getElementById("uploadBtn");
+        const compareProfilesButton = document.getElementById("uploadCompareBtn");
+        const compareMethodsButton = document.getElementById("uploadCompareMethodsBtn");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
         const dropRect = dropZone?.getBoundingClientRect();
         const buttonRect = uploadButton?.getBoundingClientRect();
@@ -4431,6 +4434,8 @@ async (page) => {
           dropRect.height > 0 &&
           uploadButton &&
           uploadButton.disabled &&
+          compareProfilesButton?.disabled &&
+          compareMethodsButton?.disabled &&
           buttonRect &&
           buttonRect.width > 0 &&
           buttonRect.height > 0 &&
@@ -4542,6 +4547,8 @@ async (page) => {
         containerRight: containerRect.right,
         buttonsLeft: buttonsRect.left,
         buttonsRight: buttonsRect.right,
+        compareProfilesDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
         technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
         uploadState: window.XferryApp?.getState("upload"),
       };
@@ -4555,6 +4562,8 @@ async (page) => {
       Math.abs(selected.containerRight - selected.buttonsRight) > tolerance ||
       Math.abs(empty.buttonsLeft - selected.buttonsLeft) > tolerance ||
       Math.abs(empty.buttonsRight - selected.buttonsRight) > tolerance ||
+      selected.compareProfilesDisabled !== false ||
+      selected.compareMethodsDisabled !== false ||
       selected.technicalOpen !== true ||
       selected.uploadState?.technicalDetailsAutoOpened !== true ||
       selected.uploadState?.technicalDetailsUserToggled !== false
@@ -10260,6 +10269,7 @@ async (page) => {
       const invalid = {
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
         modeInvalid: mode.getAttribute("aria-invalid"),
         customInvalid: custom.getAttribute("aria-invalid"),
         errorHidden: document.getElementById("uploadMimeError")?.hidden,
@@ -10269,6 +10279,7 @@ async (page) => {
       const valid = {
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
         modeInvalid: mode.getAttribute("aria-invalid"),
         customInvalid: custom.getAttribute("aria-invalid"),
         errorHidden: document.getElementById("uploadMimeError")?.hidden,
@@ -10281,11 +10292,13 @@ async (page) => {
     if (
       mimeValidation.invalid.sendDisabled !== true ||
       mimeValidation.invalid.compareDisabled !== true ||
+      mimeValidation.invalid.compareMethodsDisabled !== true ||
       mimeValidation.invalid.modeInvalid !== "true" ||
       mimeValidation.invalid.customInvalid !== "true" ||
       mimeValidation.invalid.errorHidden !== false ||
       mimeValidation.valid.sendDisabled !== false ||
       mimeValidation.valid.compareDisabled !== false ||
+      mimeValidation.valid.compareMethodsDisabled !== false ||
       mimeValidation.valid.modeInvalid !== "false" ||
       mimeValidation.valid.customInvalid !== "false" ||
       mimeValidation.valid.errorHidden !== true ||
@@ -10476,6 +10489,7 @@ async (page) => {
       const app = window.XferryApp;
       const http = app.service("http");
       const calls = [];
+      const multiFileCompareStates = [];
       let active = 0;
       let maxActive = 0;
       const response = (payload) => ({
@@ -10555,11 +10569,17 @@ async (page) => {
           { type: "text/plain" }
         ));
         app.invoke("upload", "handle-files", files);
+        multiFileCompareStates.push({
+          profile,
+          compareProfilesDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+          compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+        });
         await app.invoke("upload", "send");
       }
       http["reset-adapter"]();
       return {
         calls,
+        multiFileCompareStates,
         maxActive,
         state: app.getState("upload"),
       };
@@ -10567,6 +10587,10 @@ async (page) => {
     if (
       queuedSend.calls.length !== 8 ||
       queuedSend.maxActive !== 1 ||
+      queuedSend.multiFileCompareStates.length !== 4 ||
+      queuedSend.multiFileCompareStates.some((state) => (
+        state.compareProfilesDisabled !== true || state.compareMethodsDisabled !== true
+      )) ||
       queuedSend.calls.map((call) => call.profile).join(",") !==
         "multipart,multipart,raw-url,raw-url,raw-header,raw-header,raw-generated,raw-generated" ||
       queuedSend.calls.map((call) => call.method).join(",") !==
@@ -10613,12 +10637,14 @@ async (page) => {
         sessionActive: session.getSnapshot().active,
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
       };
     });
     if (
       coexistenceSetup.sessionActive !== true ||
       coexistenceSetup.sendDisabled !== false ||
-      coexistenceSetup.compareDisabled !== false
+      coexistenceSetup.compareDisabled !== false ||
+      coexistenceSetup.compareMethodsDisabled !== false
     ) {
       throw new Error(
         `Basic/Advanced session coexistence setup failed: ${JSON.stringify(coexistenceSetup)}`
@@ -10669,6 +10695,7 @@ async (page) => {
         pendingCount: app.getState("upload").pendingCount,
         sessionActive: app.service("advanced-session").getSnapshot().active,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
       };
     });
     const compareResponses = [];
@@ -10691,6 +10718,12 @@ async (page) => {
     page.on("response", captureCompareResponse);
     await page.locator("#uploadCompareBtn").click();
     await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
+    const profileConfirmation = await page.evaluate(() => ({
+      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
+      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
+      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
+        ?.textContent?.trim() || "",
+    }));
     await page.locator('#appDialog [data-dialog-action="confirm"]').click();
     await waitForPageCondition(
       "real Basic comparison settles while Advanced session stays active",
@@ -10714,9 +10747,12 @@ async (page) => {
       return {
         sessionActive: snapshot.active,
         sessionPhase: snapshot.phase,
+        axis: app.getState("upload").compareAxis,
         profiles: results.map((result) => result.profile),
         verdicts: results.map((result) => result.verdict),
         domProfiles: rows.map((row) => row.dataset.uploadCompareResult),
+        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
+        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
         requestTracesPresent: rows.every((row) => Boolean(
           row.querySelector("[data-upload-compare-request]")?.textContent
         )),
@@ -10725,12 +10761,95 @@ async (page) => {
         )),
       };
     });
+
+    const methodCompareSetup = await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "set-profile", "raw-header");
+      const mode = document.getElementById("uploadMimeMode");
+      const custom = document.getElementById("uploadCustomMime");
+      if (!mode || !custom) throw new Error("Upload MIME controls are missing");
+      mode.value = "custom";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+      custom.value = "application/x-method-compare";
+      custom.dispatchEvent(new Event("input", { bubbles: true }));
+      return {
+        profile: app.getState("upload").profile,
+        summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+      };
+    });
+    const methodCompareResponses = [];
+    const expectedMethods = ["POST", "NONE", "PUT", "PATCH"];
+    const captureMethodCompareResponse = (response) => {
+      const request = response.request();
+      if (
+        expectedMethods.includes(request.method()) &&
+        requestPathname(request) === "/uploads"
+      ) {
+        methodCompareResponses.push({
+          method: request.method(),
+          status: response.status(),
+          path: requestPathname(request),
+          sessionHeaderAbsent: !request.headers()["x-xferry-advanced-session"],
+        });
+      }
+    };
+    page.on("response", captureMethodCompareResponse);
+    await page.locator("#uploadCompareMethodsBtn").click();
+    await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
+    const methodConfirmation = await page.evaluate(() => ({
+      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
+      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
+      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
+        ?.textContent?.trim() || "",
+    }));
+    await page.locator('#appDialog [data-dialog-action="confirm"]').click();
+    await waitForPageCondition(
+      "real Basic method comparison settles while Advanced session stays active",
+      () => {
+        const app = window.XferryApp;
+        const state = app.getState("upload");
+        return state.actionPhase === "idle" &&
+          state.compareAxis === "method" &&
+          state.compareResults.length === 4 &&
+          state.compareResults.every((result) => result.verdict !== "not-run") &&
+          app.service("advanced-session").getSnapshot().active === true;
+      },
+      null,
+      15000
+    );
+    page.off("response", captureMethodCompareResponse);
+    const actualMethodCompare = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const results = app.getState("upload").compareResults;
+      const rows = Array.from(document.querySelectorAll("[data-upload-compare-result]"));
+      return {
+        axis: app.getState("upload").compareAxis,
+        methods: results.map((result) => result.method),
+        profiles: results.map((result) => result.profile),
+        verdicts: results.map((result) => result.verdict),
+        domValues: rows.map((row) => row.dataset.uploadCompareResult),
+        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
+        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
+        requestTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-request]")?.textContent || ""
+        )),
+        responseTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-response]")?.textContent || ""
+        )),
+      };
+    });
     const basicAdvancedCoexistence = {
       ...coexistenceSetup,
       actualBasicSend,
       compareSetup,
+      profileConfirmation,
       actualBasicCompare,
       compareResponses,
+      methodCompareSetup,
+      methodConfirmation,
+      actualMethodCompare,
+      methodCompareResponses,
     };
     if (
       actualBasicSend.status !== 201 ||
@@ -10741,18 +10860,50 @@ async (page) => {
       compareSetup.pendingCount !== 1 ||
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
+      compareSetup.compareMethodsDisabled !== false ||
+      profileConfirmation.action !== "Create 4 files" ||
+      !profileConfirmation.message.includes("Multipart") ||
+      !profileConfirmation.message.includes("No filename") ||
       compareResponses.length !== 4 ||
       compareResponses.some((response) => (
         response.status !== 201 || response.sessionHeaderAbsent !== true
       )) ||
       actualBasicCompare.sessionActive !== true ||
       actualBasicCompare.sessionPhase !== "active" ||
+      actualBasicCompare.axis !== "profile" ||
       actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
       actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
-      actualBasicCompare.verdicts.join(",") !==
-        "delivered,metadata-changed,metadata-changed,metadata-changed" ||
+      actualBasicCompare.domAxes.some((axis) => axis !== "profile") ||
+      actualBasicCompare.title !== "Profile comparison" ||
+      actualBasicCompare.verdicts.some((verdict) => verdict !== "delivered") ||
       actualBasicCompare.requestTracesPresent !== true ||
-      actualBasicCompare.responseTracesPresent !== true
+      actualBasicCompare.responseTracesPresent !== true ||
+      methodCompareSetup.profile !== "raw-header" ||
+      methodCompareSetup.summaryMime !== "application/x-method-compare" ||
+      methodCompareSetup.compareMethodsDisabled !== false ||
+      methodConfirmation.action !== "Create 4 files" ||
+      !expectedMethods.every((method) => methodConfirmation.message.includes(method)) ||
+      methodCompareResponses.length !== 4 ||
+      methodCompareResponses.map((response) => response.method).join(",") !==
+        expectedMethods.join(",") ||
+      methodCompareResponses.some((response) => (
+        response.status !== 201 ||
+        response.path !== "/uploads" ||
+        response.sessionHeaderAbsent !== true
+      )) ||
+      actualMethodCompare.axis !== "method" ||
+      actualMethodCompare.methods.join(",") !== expectedMethods.join(",") ||
+      actualMethodCompare.profiles.some((profile) => profile !== "raw-header") ||
+      actualMethodCompare.verdicts.some((verdict) => verdict !== "delivered") ||
+      actualMethodCompare.domValues.join(",") !== expectedMethods.join(",") ||
+      actualMethodCompare.domAxes.some((axis) => axis !== "method") ||
+      actualMethodCompare.title !== "Method comparison" ||
+      actualMethodCompare.requestTraces.some((trace, index) => (
+        !trace.includes(`${expectedMethods[index]} /uploads HTTP/1.1`) ||
+        !trace.includes("Content-Type: application/x-method-compare") ||
+        !trace.includes("X-File-Name: basic-compare-coexists.txt")
+      )) ||
+      actualMethodCompare.responseTraces.some((trace) => !trace.includes("HTTP/1.1 201"))
     ) {
       throw new Error(
         `Real Basic/Advanced session coexistence failed: ${JSON.stringify(basicAdvancedCoexistence)}`

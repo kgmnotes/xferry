@@ -48,7 +48,10 @@ const uploadState = {
         blockedReason: '',
         sendBlockedReason: '',
         compareBlockedReason: '',
+        compareProfilesBlockedReason: '',
+        compareMethodsBlockedReason: '',
     },
+    compareAxis: 'profile',
     compareResults: [],
     status: {
         phase: 'idle',
@@ -61,6 +64,7 @@ const uploadState = {
 };
 let activeBasicUploadErrorFile = null;
 const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
+const basicUploadMethods = Object.freeze(['POST', 'NONE', 'PUT', 'PATCH']);
 const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
 const uploadCustomMimeMaxLength = 120;
 const uploadMimePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\\r\n]|\\.)*"))*$/;
@@ -490,7 +494,9 @@ const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
 const uploadBtn = document.getElementById('uploadBtn');
 const uploadCompareBtn = document.getElementById('uploadCompareBtn');
+const uploadCompareMethodsBtn = document.getElementById('uploadCompareMethodsBtn');
 const uploadCompareResults = document.getElementById('uploadCompareResults');
+const uploadCompareResultsTitle = document.getElementById('uploadCompareResultsTitle');
 const uploadRequestSummary = document.getElementById('uploadRequestSummary');
 const uploadSelectionState = document.getElementById('uploadSelectionState');
 const uploadMimeMode = document.getElementById('uploadMimeMode');
@@ -606,25 +612,50 @@ function refreshUploadLiveSummary(validation = getUploadMimeValidation(uploadSta
 }
 
 function hasSupportedUploadMethod() {
-    return uploadMethodButtons.some(button => (
-        typeof isServerMethodInGroup !== 'function'
-        || isServerMethodInGroup(button.dataset.uploadMethod || '', 'upload')
+    return getSupportedBasicUploadMethods().length > 0;
+}
+
+function getSupportedBasicUploadMethods() {
+    return basicUploadMethods.filter(method => (
+        uploadMethodButtons.some(button => button.dataset.uploadMethod === method)
+        && (
+            typeof isServerMethodInGroup !== 'function'
+            || isServerMethodInGroup(method, 'upload')
+        )
     ));
+}
+
+function getBasicUploadComparisonCases(axis, state = uploadState) {
+    const values = axis === 'method'
+        ? getSupportedBasicUploadMethods()
+        : basicUploadProfiles;
+    return values.map(value => {
+        const requestState = Object.freeze({
+            method: axis === 'method' ? value : state.method,
+            profile: axis === 'profile' ? value : state.profile,
+            mimeMode: state.mimeMode,
+            customMime: state.customMime,
+        });
+        return Object.freeze({
+            axis,
+            value,
+            method: requestState.method,
+            profile: requestState.profile,
+            requestState,
+        });
+    });
 }
 
 function getBasicActionPlans(action = 'send') {
     const pendingFiles = getUploadPendingFiles();
-    if (action === 'compare') {
+    if (action === 'compare' || action === 'compare-methods') {
         const file = pendingFiles[0]?.file;
         if (!file) {
             return [];
         }
-        return basicUploadProfiles.map(profile => compileBasicUploadRequest({
-            method: uploadState.method,
-            profile,
-            mimeMode: uploadState.mimeMode,
-            customMime: uploadState.customMime,
-        }, file));
+        const axis = action === 'compare-methods' ? 'method' : 'profile';
+        return getBasicUploadComparisonCases(axis)
+            .map(item => compileBasicUploadRequest(item.requestState, file));
     }
     return pendingFiles.map(fileData => compileBasicUploadRequest(uploadState, fileData.file));
 }
@@ -635,14 +666,19 @@ function getRoutingBlockReason(_plans, _snapshot = uploadState.routing.snapshot)
 
 function renderUploadRoutingGuard() {
     const sendBlockedReason = getRoutingBlockReason(getBasicActionPlans('send'));
-    const compareBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare'));
+    const compareProfilesBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare'));
+    const compareMethodsBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare-methods'));
+    const compareBlockedReason = compareProfilesBlockedReason || compareMethodsBlockedReason;
     const blockedReason = sendBlockedReason || compareBlockedReason;
     uploadState.routing.blockedReason = blockedReason;
     uploadState.routing.sendBlockedReason = sendBlockedReason;
     uploadState.routing.compareBlockedReason = compareBlockedReason;
+    uploadState.routing.compareProfilesBlockedReason = compareProfilesBlockedReason;
+    uploadState.routing.compareMethodsBlockedReason = compareMethodsBlockedReason;
     return {
         send: sendBlockedReason,
-        compare: compareBlockedReason,
+        compareProfiles: compareProfilesBlockedReason,
+        compareMethods: compareMethodsBlockedReason,
     };
 }
 
@@ -653,11 +689,13 @@ function refreshUploadActionState() {
     const mimeValidation = renderUploadMimeControls();
     const routingBlocks = mimeValidation.valid
         ? renderUploadRoutingGuard()
-        : { send: '', compare: '' };
+        : { send: '', compareProfiles: '', compareMethods: '' };
     if (!mimeValidation.valid) {
         uploadState.routing.blockedReason = '';
         uploadState.routing.sendBlockedReason = '';
         uploadState.routing.compareBlockedReason = '';
+        uploadState.routing.compareProfilesBlockedReason = '';
+        uploadState.routing.compareMethodsBlockedReason = '';
     }
 
     uploadMethodButtons.forEach(button => {
@@ -690,8 +728,18 @@ function refreshUploadActionState() {
         uploadCompareBtn.disabled = (
             busy
             || !mimeValidation.valid
-            || Boolean(routingBlocks.compare)
+            || Boolean(routingBlocks.compareProfiles)
             || !enabled
+            || pendingCount !== 1
+        );
+    }
+    if (uploadCompareMethodsBtn) {
+        uploadCompareMethodsBtn.disabled = (
+            busy
+            || !mimeValidation.valid
+            || Boolean(routingBlocks.compareMethods)
+            || !enabled
+            || getSupportedBasicUploadMethods().length === 0
             || pendingCount !== 1
         );
     }
@@ -988,6 +1036,11 @@ if (uploadBtn) {
 if (uploadCompareBtn) {
     uploadCompareBtn.addEventListener('click', () => {
         void compareBasicUploadProfiles();
+    });
+}
+if (uploadCompareMethodsBtn) {
+    uploadCompareMethodsBtn.addEventListener('click', () => {
+        void compareBasicUploadMethods();
     });
 }
 if (uploadStatusDetailsBtn) {
@@ -1695,10 +1748,25 @@ function getCompareVerdict(plan, file, localHash, response, payload) {
         return 'content-changed';
     }
 
+    const expectedServerProfile = {
+        multipart: 'multipart',
+        'raw-url': 'raw_url',
+        'raw-header': 'raw_header',
+        'raw-generated': 'raw_url',
+    }[plan.profile];
     const expectedCarrier = plan.profile === 'multipart' ? 'multipart' : 'body';
+    const normalizedNameMatches = (
+        payload.file.name === payload.upload.normalized_name
+        && (
+            plan.filenameSource === 'generated'
+            || payload.upload.normalized_name === file.name
+            || payload.upload.collision_renamed === true
+        )
+    );
     const metadataMatches = (
         payload.upload.kind === 'basic'
-        && payload.upload.profile === plan.profile
+        && expectedServerProfile
+        && payload.upload.profile === expectedServerProfile
         && payload.upload.carrier === expectedCarrier
         && payload.upload.filename_source === plan.filenameSource
         && payload.file.content_type === plan.mime
@@ -1707,10 +1775,7 @@ function getCompareVerdict(plan, file, localHash, response, payload) {
                 ? payload.upload.request_body_size >= file.size
                 : payload.upload.request_body_size === file.size
         )
-        && (
-            payload.upload.normalized_name === file.name
-            || payload.upload.collision_renamed === true
-        )
+        && normalizedNameMatches
     );
     return metadataMatches ? 'delivered' : 'metadata-changed';
 }
@@ -1727,25 +1792,67 @@ function getCompareVerdictLabel(verdict) {
     return t(labels[verdict] || labels['not-confirmed']);
 }
 
+function getBasicUploadComparisonValueLabel(result) {
+    return result.axis === 'method'
+        ? result.method
+        : getUploadProfileLabel(result.profile);
+}
+
+function getBasicUploadComparisonConfig(axis, cases) {
+    const methodAxis = axis === 'method';
+    const values = cases.map(item => (
+        methodAxis ? item.method : getUploadProfileLabel(item.profile)
+    ));
+    const format = key => t(key)
+        .replace('{0}', String(cases.length))
+        .replace('{1}', values.join(', '));
+    return {
+        title: format(methodAxis
+            ? 'uploadCompareMethodsConfirmTitle'
+            : 'uploadCompareConfirmTitle'),
+        message: format(methodAxis
+            ? 'uploadCompareMethodsConfirmBody'
+            : 'uploadCompareConfirmBody'),
+        confirmLabel: format(methodAxis
+            ? 'uploadCompareMethodsConfirmAction'
+            : 'uploadCompareConfirmAction'),
+        runningKey: methodAxis
+            ? 'uploadCompareMethodsRunning'
+            : 'uploadCompareRunning',
+        triggerEl: methodAxis ? uploadCompareMethodsBtn : uploadCompareBtn,
+        restoreFocusSelector: methodAxis ? '#uploadCompareMethodsBtn' : '#uploadCompareBtn',
+    };
+}
+
 function renderBasicUploadComparison() {
     const list = uploadCompareResults?.querySelector('[data-upload-compare-list]');
     if (!uploadCompareResults || !list) {
         return;
     }
     uploadCompareResults.hidden = uploadState.compareResults.length === 0;
+    const axis = uploadState.compareAxis === 'method' ? 'method' : 'profile';
+    if (uploadCompareResultsTitle) {
+        uploadCompareResultsTitle.textContent = t(axis === 'method'
+            ? 'uploadCompareMethodsResultsTitle'
+            : 'uploadCompareResultsTitle');
+    }
     const fragment = document.createDocumentFragment();
 
     uploadState.compareResults.forEach(result => {
+        const resultAxis = result.axis === 'method' ? 'method' : 'profile';
+        const resultValue = result.value || (resultAxis === 'method' ? result.method : result.profile);
         const row = document.createElement('article');
         row.className = 'upload-compare-result';
-        row.dataset.uploadCompareResult = result.profile;
+        row.dataset.uploadCompareResult = resultValue;
+        row.dataset.uploadCompareAxis = resultAxis;
+        row.dataset.uploadCompareValue = resultValue;
         row.dataset.uploadVerdict = result.verdict;
 
         const header = document.createElement('div');
         header.className = 'upload-compare-result__header';
-        const profile = document.createElement('strong');
-        profile.textContent = getUploadProfileLabel(result.profile);
-        header.appendChild(profile);
+        const value = document.createElement('strong');
+        value.textContent = getBasicUploadComparisonValueLabel(result);
+        header.appendChild(value);
         const verdict = document.createElement('span');
         verdict.className = 'upload-compare-result__verdict';
         verdict.dataset.uploadCompareVerdict = '';
@@ -1784,10 +1891,13 @@ function renderBasicUploadComparison() {
     list.replaceChildren(fragment);
 }
 
-async function compareBasicUploadProfiles() {
+async function compareBasicUploads(axis) {
     const pendingFiles = getUploadPendingFiles();
+    const mimeValidation = getUploadMimeValidation();
     if (
-        !hasSupportedUploadMethod()
+        !['profile', 'method'].includes(axis)
+        || !hasSupportedUploadMethod()
+        || !mimeValidation.valid
         || pendingFiles.length !== 1
         || uploadState.actionPhase !== 'idle'
     ) {
@@ -1795,12 +1905,13 @@ async function compareBasicUploadProfiles() {
     }
 
     const fileData = pendingFiles[0];
-    const previewPlans = basicUploadProfiles.map(profile => compileBasicUploadRequest({
-        method: uploadState.method,
-        profile,
-        mimeMode: uploadState.mimeMode,
-        customMime: uploadState.customMime,
-    }, fileData.file));
+    const cases = getBasicUploadComparisonCases(axis);
+    if (cases.length === 0) {
+        return false;
+    }
+    const previewPlans = cases.map(item => (
+        compileBasicUploadRequest(item.requestState, fileData.file)
+    ));
     uploadState.actionPhase = 'checking';
     refreshUploadActionState();
     if (!await ensureBasicUploadRoute(previewPlans)) {
@@ -1809,16 +1920,17 @@ async function compareBasicUploadProfiles() {
         return false;
     }
 
+    const config = getBasicUploadComparisonConfig(axis, cases);
     uploadState.actionPhase = 'confirming';
     refreshUploadActionState();
     const confirmed = await dialogs.confirm({
-        title: t('uploadCompareConfirmTitle'),
-        message: t('uploadCompareConfirmBody'),
-        confirmLabel: t('uploadCompareConfirmAction'),
+        title: config.title,
+        message: config.message,
+        confirmLabel: config.confirmLabel,
         cancelLabel: t('smuggleCancel'),
         confirmClassName: 'btn-info',
-        triggerEl: uploadCompareBtn,
-        restoreFocusSelector: '#uploadCompareBtn',
+        triggerEl: config.triggerEl,
+        restoreFocusSelector: config.restoreFocusSelector,
         initialFocus: 'cancel',
     });
     if (!confirmed) {
@@ -1828,8 +1940,12 @@ async function compareBasicUploadProfiles() {
     }
 
     uploadState.actionPhase = 'comparing';
-    uploadState.compareResults = basicUploadProfiles.map(profile => ({
-        profile,
+    uploadState.compareAxis = axis;
+    uploadState.compareResults = cases.map(item => ({
+        axis: item.axis,
+        value: item.value,
+        method: item.method,
+        profile: item.profile,
         verdict: 'not-run',
         collisionRenamed: false,
         requestTrace: '',
@@ -1837,7 +1953,7 @@ async function compareBasicUploadProfiles() {
     }));
     renderBasicUploadComparison();
     refreshUploadActionState();
-    announceLiveRegion('uploadResponseAreaLive', t('uploadCompareRunning'));
+    announceLiveRegion('uploadResponseAreaLive', t(config.runningKey));
 
     let arrayBuffer;
     let localHash;
@@ -1856,19 +1972,14 @@ async function compareBasicUploadProfiles() {
         return uploadState.compareResults.map(result => ({ ...result }));
     }
 
-    for (let index = 0; index < basicUploadProfiles.length; index += 1) {
-        const profile = basicUploadProfiles[index];
+    for (let index = 0; index < cases.length; index += 1) {
+        const item = cases[index];
         const result = uploadState.compareResults[index];
         let plan = null;
 
         try {
             const transport = await beginBasicUploadTransport(
-                {
-                    method: uploadState.method,
-                    profile,
-                    mimeMode: uploadState.mimeMode,
-                    customMime: uploadState.customMime,
-                },
+                item.requestState,
                 fileData.file,
                 arrayBuffer
             );
@@ -1912,10 +2023,18 @@ async function compareBasicUploadProfiles() {
     announceLiveRegion(
         'uploadResponseAreaLive',
         uploadState.compareResults
-            .map(result => `${getUploadProfileLabel(result.profile)}: ${getCompareVerdictLabel(result.verdict)}`)
+            .map(result => `${getBasicUploadComparisonValueLabel(result)}: ${getCompareVerdictLabel(result.verdict)}`)
             .join('. ')
     );
     return uploadState.compareResults.map(result => ({ ...result }));
+}
+
+function compareBasicUploadProfiles() {
+    return compareBasicUploads('profile');
+}
+
+function compareBasicUploadMethods() {
+    return compareBasicUploads('method');
 }
 
 refreshUploadSelectionLocale();
@@ -1937,6 +2056,7 @@ app.registerWorkflow('upload', {
     commands: {
         send: uploadAllFiles,
         compare: compareBasicUploadProfiles,
+        'compare-methods': compareBasicUploadMethods,
         'compile-request': compileBasicUploadRequest,
         'set-method': setUploadMethod,
         'set-profile': setUploadProfile,
@@ -1956,7 +2076,13 @@ app.registerWorkflow('upload', {
         routingBlockedReason: uploadState.routing.blockedReason,
         sendRoutingBlockedReason: uploadState.routing.sendBlockedReason,
         compareRoutingBlockedReason: uploadState.routing.compareBlockedReason,
+        compareProfilesRoutingBlockedReason: uploadState.routing.compareProfilesBlockedReason,
+        compareMethodsRoutingBlockedReason: uploadState.routing.compareMethodsBlockedReason,
+        compareAxis: uploadState.compareAxis,
         compareResults: uploadState.compareResults.map(result => ({
+            axis: result.axis,
+            value: result.value,
+            method: result.method,
             profile: result.profile,
             verdict: result.verdict,
             collisionRenamed: result.collisionRenamed,
