@@ -32,6 +32,8 @@ function sendCustomRequest(...args) {
 const uploadState = {
     method: 'POST',
     profile: 'multipart',
+    mimeMode: 'auto',
+    customMime: '',
     previewSequence: 0,
     files: [],
     renderFileListRAF: null,
@@ -55,7 +57,10 @@ const uploadState = {
     },
 };
 let activeBasicUploadErrorFile = null;
-const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header']);
+const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
+const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
+const uploadCustomMimeMaxLength = 120;
+const uploadMimePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\\r\n]|\\.)*"))*$/;
 const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'number'
     ? exchangeBinaryTextPreviewLimit
     : 512) + 1;
@@ -179,6 +184,63 @@ function openUploadTechnicalDetails() {
     focusElementWithoutScroll(uploadTechnicalDetailsSummary);
 }
 
+function getUploadMimeValidation(state = uploadState) {
+    const requestedMode = String(state?.mimeMode || 'auto');
+    const mode = uploadMimeModes.includes(requestedMode) ? requestedMode : 'auto';
+    if (mode !== 'custom') {
+        return {
+            mode,
+            valid: true,
+            mime: '',
+            errorKey: '',
+        };
+    }
+
+    const mime = String(state?.customMime || '').trim();
+    if (!mime) {
+        return {
+            mode,
+            valid: false,
+            mime: '',
+            errorKey: 'uploadMimeRequired',
+        };
+    }
+    if (mime.length > uploadCustomMimeMaxLength || !uploadMimePattern.test(mime)) {
+        return {
+            mode,
+            valid: false,
+            mime: '',
+            errorKey: 'uploadMimeInvalid',
+        };
+    }
+    return {
+        mode,
+        valid: true,
+        mime,
+        errorKey: '',
+    };
+}
+
+function resolveUploadDeclaredMime(state, file, profile) {
+    const validation = getUploadMimeValidation(state);
+    if (!validation.valid) {
+        throw new TypeError(validation.errorKey);
+    }
+    if (validation.mode === 'octet-stream') {
+        return 'application/octet-stream';
+    }
+    if (validation.mode === 'text-plain') {
+        return 'text/plain';
+    }
+    if (validation.mode === 'custom') {
+        return validation.mime;
+    }
+    if (profile === 'raw-header' || profile === 'raw-generated') {
+        return 'application/octet-stream';
+    }
+    return String(file?.type || '') || 'application/octet-stream';
+}
+
 function getUploadByteView(bodyBytes) {
     if (!bodyBytes) {
         return null;
@@ -202,7 +264,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
     const method = String(state?.method || 'POST').toUpperCase();
     const filename = String(file?.name || 'upload.bin');
     const encodedFilename = encodeURIComponent(filename);
-    const fileMime = String(file?.type || '') || 'application/octet-stream';
+    const fileMime = resolveUploadDeclaredMime(state, file, profile);
     const byteView = getUploadByteView(bodyBytes);
     const bodySize = byteView?.byteLength ?? Number(file?.size || 0);
 
@@ -213,6 +275,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
     let mime = fileMime;
     let bodyKind = 'raw';
     let filenameSource = 'url';
+    let previewFilename = filename;
 
     if (profile === 'multipart') {
         const form = new FormData();
@@ -240,12 +303,22 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             ...wireHeaders,
             'Content-Length': String(bodySize),
         };
-    } else {
-        mime = 'application/octet-stream';
+    } else if (profile === 'raw-header') {
         filenameSource = 'header';
         wireHeaders = withUiNoGzipHeader({
-            'Content-Type': 'application/octet-stream',
+            'Content-Type': fileMime,
             'X-File-Name': encodedFilename,
+        });
+        traceHeaders = {
+            ...wireHeaders,
+            'Content-Length': String(bodySize),
+        };
+    } else {
+        pathname = '/';
+        filenameSource = 'generated';
+        previewFilename = '';
+        wireHeaders = withUiNoGzipHeader({
+            'Content-Type': fileMime,
         });
         traceHeaders = {
             ...wireHeaders,
@@ -260,7 +333,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
         path: pathname,
         headers: traceHeaders,
         body: createExchangeBinaryBody({
-            filename,
+            filename: previewFilename,
             contentType: mime,
             size: bodySize,
             bytes: byteView,
@@ -342,6 +415,20 @@ function setUploadProfile(profile, btn, options = {}) {
     }
 }
 
+function setUploadMimeMode(mode) {
+    uploadState.mimeMode = uploadMimeModes.includes(mode) ? mode : 'auto';
+    renderUploadMimeControls();
+    refreshUploadRequestPreview();
+    refreshUploadActionState();
+}
+
+function setUploadCustomMime(value) {
+    uploadState.customMime = String(value || '');
+    renderUploadMimeControls();
+    refreshUploadRequestPreview();
+    refreshUploadActionState();
+}
+
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
@@ -350,6 +437,10 @@ const uploadCompareBtn = document.getElementById('uploadCompareBtn');
 const uploadCompareResults = document.getElementById('uploadCompareResults');
 const uploadRequestSummary = document.getElementById('uploadRequestSummary');
 const uploadSelectionState = document.getElementById('uploadSelectionState');
+const uploadMimeMode = document.getElementById('uploadMimeMode');
+const uploadCustomMimeField = document.getElementById('uploadCustomMimeField');
+const uploadCustomMime = document.getElementById('uploadCustomMime');
+const uploadMimeError = document.getElementById('uploadMimeError');
 const uploadSummaryFields = Object.freeze({
     requestLine: document.querySelector('[data-upload-summary="request-line"]'),
     bodyKind: document.querySelector('[data-upload-summary="body-kind"]'),
@@ -374,6 +465,7 @@ function getUploadProfileLabel(profile) {
         multipart: t('uploadProfileMultipart'),
         'raw-url': t('uploadProfileRawUrl'),
         'raw-header': t('uploadProfileRawHeader'),
+        'raw-generated': t('uploadProfileNoFilename'),
     };
     return labels[profile] || profile;
 }
@@ -387,11 +479,60 @@ function getUploadFilenameSourceLabel(source) {
         part: t('uploadFilenameSourcePart'),
         url: t('uploadFilenameSourceUrl'),
         header: t('uploadFilenameSourceHeader'),
+        generated: t('uploadFilenameSourceGenerated'),
     };
     return labels[source] || source;
 }
 
-function refreshUploadLiveSummary() {
+function renderUploadMimeControls() {
+    const validation = getUploadMimeValidation(uploadState);
+    if (uploadMimeMode) {
+        uploadMimeMode.value = validation.mode;
+        uploadMimeMode.setAttribute('aria-invalid', String(!validation.valid));
+    }
+    if (uploadCustomMimeField) {
+        uploadCustomMimeField.hidden = validation.mode !== 'custom';
+    }
+    if (uploadCustomMime) {
+        if (uploadCustomMime.value !== uploadState.customMime) {
+            uploadCustomMime.value = uploadState.customMime;
+        }
+        uploadCustomMime.setAttribute('aria-invalid', String(!validation.valid));
+    }
+    if (uploadMimeError) {
+        uploadMimeError.hidden = validation.valid;
+        uploadMimeError.textContent = validation.valid ? '' : t(validation.errorKey);
+    }
+    return validation;
+}
+
+function refreshUploadLiveSummary(validation = getUploadMimeValidation(uploadState)) {
+    if (!validation.valid) {
+        const sourceByProfile = {
+            multipart: 'part',
+            'raw-url': 'url',
+            'raw-header': 'header',
+            'raw-generated': 'generated',
+        };
+        if (uploadSummaryFields.requestLine) {
+            uploadSummaryFields.requestLine.textContent = `${uploadState.method} —`;
+        }
+        if (uploadSummaryFields.bodyKind) {
+            uploadSummaryFields.bodyKind.textContent = getUploadBodyKindLabel(
+                uploadState.profile === 'multipart' ? 'multipart' : 'raw'
+            );
+        }
+        if (uploadSummaryFields.mime) {
+            uploadSummaryFields.mime.textContent = t(validation.errorKey);
+        }
+        if (uploadSummaryFields.filenameSource) {
+            uploadSummaryFields.filenameSource.textContent = getUploadFilenameSourceLabel(
+                sourceByProfile[uploadState.profile] || 'url'
+            );
+        }
+        return false;
+    }
+
     const plan = compileBasicUploadRequest(uploadState, getUploadSummaryFile());
     if (uploadSummaryFields.requestLine) {
         uploadSummaryFields.requestLine.textContent = `${plan.method} ${plan.pathname}`;
@@ -405,6 +546,7 @@ function refreshUploadLiveSummary() {
     if (uploadSummaryFields.filenameSource) {
         uploadSummaryFields.filenameSource.textContent = getUploadFilenameSourceLabel(plan.filenameSource);
     }
+    return true;
 }
 
 function hasSupportedUploadMethod() {
@@ -424,6 +566,8 @@ function getBasicActionPlans(action = 'send') {
         return basicUploadProfiles.map(profile => compileBasicUploadRequest({
             method: uploadState.method,
             profile,
+            mimeMode: uploadState.mimeMode,
+            customMime: uploadState.customMime,
         }, file));
     }
     return pendingFiles.map(fileData => compileBasicUploadRequest(uploadState, fileData.file));
@@ -450,7 +594,15 @@ function refreshUploadActionState() {
     const enabled = hasSupportedUploadMethod();
     const pendingCount = getUploadPendingFiles().length;
     const busy = !['idle', 'confirming'].includes(uploadState.actionPhase);
-    const routingBlocks = renderUploadRoutingGuard();
+    const mimeValidation = renderUploadMimeControls();
+    const routingBlocks = mimeValidation.valid
+        ? renderUploadRoutingGuard()
+        : { send: '', compare: '' };
+    if (!mimeValidation.valid) {
+        uploadState.routing.blockedReason = '';
+        uploadState.routing.sendBlockedReason = '';
+        uploadState.routing.compareBlockedReason = '';
+    }
 
     uploadMethodButtons.forEach(button => {
         const method = button.dataset.uploadMethod || '';
@@ -461,6 +613,8 @@ function refreshUploadActionState() {
     uploadProfileButtons.forEach(button => {
         button.disabled = busy || !enabled;
     });
+    if (uploadMimeMode) uploadMimeMode.disabled = busy || !enabled;
+    if (uploadCustomMime) uploadCustomMime.disabled = busy || !enabled;
     if (fileInput) fileInput.disabled = busy || !enabled;
     if (dropZone) {
         dropZone.classList.toggle('is-disabled', busy || !enabled);
@@ -468,11 +622,18 @@ function refreshUploadActionState() {
         dropZone.setAttribute('tabindex', busy || !enabled ? '-1' : '0');
     }
     if (uploadBtn) {
-        uploadBtn.disabled = busy || Boolean(routingBlocks.send) || !enabled || pendingCount === 0;
+        uploadBtn.disabled = (
+            busy
+            || !mimeValidation.valid
+            || Boolean(routingBlocks.send)
+            || !enabled
+            || pendingCount === 0
+        );
     }
     if (uploadCompareBtn) {
         uploadCompareBtn.disabled = (
             busy
+            || !mimeValidation.valid
             || Boolean(routingBlocks.compare)
             || !enabled
             || pendingCount !== 1
@@ -632,7 +793,21 @@ async function refreshUploadRequestPreviewBodySamples(sequence, signature) {
 
 function refreshUploadRequestPreview() {
     const sequence = ++uploadState.previewSequence;
-    refreshUploadLiveSummary();
+    const mimeValidation = renderUploadMimeControls();
+    if (!refreshUploadLiveSummary(mimeValidation)) {
+        setExchangeInspector('upload', {
+            phase: 'empty',
+            request: {
+                phase: 'empty',
+                emptyText: t(mimeValidation.errorKey),
+            },
+            response: {
+                phase: 'empty',
+                emptyText: t('exchangeResponseEmpty'),
+            },
+        });
+        return;
+    }
     if (uploadState.files.length === 0) {
         setExchangeInspector('upload', {
             phase: 'empty',
@@ -734,6 +909,17 @@ uploadProfileButtons.forEach(button => {
             setUploadProfile(profile, nextButton, { focusButton: true });
         }
     });
+});
+
+uploadMimeMode?.addEventListener('change', () => {
+    setUploadMimeMode(uploadMimeMode.value);
+    if (uploadState.mimeMode === 'custom') {
+        focusElementWithoutScroll(uploadCustomMime);
+    }
+});
+
+uploadCustomMime?.addEventListener('input', () => {
+    setUploadCustomMime(uploadCustomMime.value);
 });
 
 if (uploadBtn) {
@@ -1547,6 +1733,8 @@ async function compareBasicUploadProfiles() {
     const previewPlans = basicUploadProfiles.map(profile => compileBasicUploadRequest({
         method: uploadState.method,
         profile,
+        mimeMode: uploadState.mimeMode,
+        customMime: uploadState.customMime,
     }, fileData.file));
     uploadState.actionPhase = 'checking';
     refreshUploadActionState();
@@ -1613,6 +1801,8 @@ async function compareBasicUploadProfiles() {
                 {
                     method: uploadState.method,
                     profile,
+                    mimeMode: uploadState.mimeMode,
+                    customMime: uploadState.customMime,
                 },
                 fileData.file,
                 arrayBuffer

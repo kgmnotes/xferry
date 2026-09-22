@@ -174,12 +174,36 @@
                                     <button type="button" class="upload-profile-btn active" data-upload-profile="multipart" role="radio" aria-checked="true" tabindex="0" data-i18n="uploadProfileMultipart">Multipart</button>
                                     <button type="button" class="upload-profile-btn" data-upload-profile="raw-url" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileRawUrl">Raw URL</button>
                                     <button type="button" class="upload-profile-btn" data-upload-profile="raw-header" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileRawHeader">Raw Header</button>
+                                    <button type="button" class="upload-profile-btn" data-upload-profile="raw-generated" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileNoFilename">No filename</button>
                                 </div>
                             </section>
 
                             <section class="response-options" id="responseOptions" aria-labelledby="responseOptionsTitle">
-                                <h3 id="responseOptionsTitle" data-i18n="responseOptionsTitle">Параметры ответа</h3>
+                                <h3 id="responseOptionsTitle" data-i18n="uploadOptionsTitle">Options</h3>
                                 <div class="response-options__controls">
+                                    <div class="upload-mime-control">
+                                        <label for="uploadMimeMode" data-i18n="uploadMimeModeLabel">Declared MIME</label>
+                                        <select id="uploadMimeMode" aria-describedby="uploadMimeHint uploadMimeError">
+                                            <option value="auto" selected data-i18n="uploadMimeModeAuto">Auto</option>
+                                            <option value="octet-stream">application/octet-stream</option>
+                                            <option value="text-plain">text/plain</option>
+                                            <option value="custom" data-i18n="uploadMimeModeCustom">Custom</option>
+                                        </select>
+                                        <span class="field-hint" id="uploadMimeHint" data-i18n="uploadMimeHint">Multipart changes the file-part MIME; raw profiles change Content-Type.</span>
+                                        <div class="upload-custom-mime" id="uploadCustomMimeField" hidden>
+                                            <label for="uploadCustomMime" data-i18n="uploadCustomMimeLabel">Custom MIME</label>
+                                            <input
+                                                type="text"
+                                                id="uploadCustomMime"
+                                                maxlength="120"
+                                                autocomplete="off"
+                                                spellcheck="false"
+                                                aria-describedby="uploadMimeError"
+                                                placeholder="application/x-example"
+                                            >
+                                        </div>
+                                        <span class="field-error" id="uploadMimeError" role="alert" hidden></span>
+                                    </div>
                                     <label class="checkbox-row" for="responseNoGzip">
                                         <input type="checkbox" id="responseNoGzip">
                                         <span data-i18n="responseOptionsNoGzipLabel">Не сжимать HTTP-ответ</span>
@@ -238,12 +262,12 @@
                                         class="btn-ghost"
                                         id="uploadCompareBtn"
                                         disabled
-                                        title="Сравнить 3 профиля"
-                                        aria-label="Сравнить 3 профиля"
+                                        title="Compare profiles"
+                                        aria-label="Compare profiles"
                                         data-i18n="uploadCompareBtn"
                                         data-i18n-title="uploadCompareBtn"
                                         data-i18n-aria-label="uploadCompareBtn"
-                                    >Сравнить 3 профиля</button>
+                                    >Compare profiles</button>
                                 </div>
                             </div>
 

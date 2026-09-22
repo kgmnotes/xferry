@@ -830,8 +830,16 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     assert re.findall(
         r'class="[^"]*upload-profile-btn[^"]*"\s+data-upload-profile="([^"]+)"',
         upload_tab,
-    ) == ["multipart", "raw-url", "raw-header"]
+    ) == ["multipart", "raw-url", "raw-header", "raw-generated"]
     assert 'data-upload-profile="multipart" role="radio" aria-checked="true"' in upload_tab
+    assert 'id="uploadMimeMode"' in upload_tab
+    assert re.findall(
+        r'<option value="(auto|octet-stream|text-plain|custom)"',
+        upload_tab,
+    ) == ["auto", "octet-stream", "text-plain", "custom"]
+    assert 'id="uploadCustomMime"' in upload_tab
+    assert 'id="uploadMimeError"' in upload_tab
+    assert 'aria-describedby="uploadMimeHint uploadMimeError"' in upload_tab
     assert 'id="uploadRequestSummary"' in upload_tab
     for field in ("request-line", "body-kind", "mime", "filename-source"):
         assert f'data-upload-summary="{field}"' in upload_tab
@@ -847,6 +855,17 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
         "uploadProfileMultipart",
         "uploadProfileRawUrl",
         "uploadProfileRawHeader",
+        "uploadProfileNoFilename",
+        "uploadOptionsTitle",
+        "uploadMimeModeLabel",
+        "uploadMimeModeAuto",
+        "uploadMimeModeOctetStream",
+        "uploadMimeModeTextPlain",
+        "uploadMimeModeCustom",
+        "uploadCustomMimeLabel",
+        "uploadMimeHint",
+        "uploadMimeRequired",
+        "uploadMimeInvalid",
         "uploadRequestSummaryTitle",
         "uploadSummaryRequestLine",
         "uploadSummaryBodyKind",
@@ -922,6 +941,155 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     assert upload_tab.index('id="uploadSelectionState"') > upload_tab.index(
         'class="upload-primary-action"'
     )
+
+
+def test_basic_upload_compiler_supports_no_filename_and_declared_mime_in_node() -> None:
+    """Exercise the real Basic compiler helpers against hand-derived wire contracts."""
+    script = r"""
+const fs = require('node:fs');
+
+function extractFunction(source, marker, nextMarker) {
+    const start = source.indexOf(marker);
+    const end = source.indexOf(nextMarker, start);
+    if (start < 0 || end < 0) throw new Error(`Could not extract ${marker}`);
+    return (0, eval)(`(${source.slice(start, end).trim()})`);
+}
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
+globalThis.uploadCustomMimeMaxLength = 120;
+globalThis.uploadMimePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\\r\n]|\\.)*"))*$/;
+globalThis.basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
+globalThis.SERVER_URL = 'https://xferry.test/';
+globalThis.location = { href: 'https://xferry.test/' };
+globalThis.withUiNoGzipHeader = headers => ({ ...headers });
+globalThis.createExchangeBinaryBody = options => ({ kind: 'binary', ...options });
+
+globalThis.getUploadMimeValidation = extractFunction(
+    source,
+    'function getUploadMimeValidation',
+    'function resolveUploadDeclaredMime'
+);
+globalThis.resolveUploadDeclaredMime = extractFunction(
+    source,
+    'function resolveUploadDeclaredMime',
+    'function getUploadByteView'
+);
+globalThis.getUploadByteView = extractFunction(
+    source,
+    'function getUploadByteView',
+    'function compileBasicUploadRequest'
+);
+globalThis.compileBasicUploadRequest = extractFunction(
+    source,
+    'function compileBasicUploadRequest',
+    'function setUploadMethod'
+);
+
+const bytes = new TextEncoder().encode('abc');
+const file = new File([bytes], 'sample.bin', { type: 'application/x-sample' });
+const summarize = (state) => {
+    const plan = globalThis.compileBasicUploadRequest(state, file, bytes.buffer);
+    const formFile = plan.body instanceof FormData ? plan.body.get('file') : null;
+    return {
+        profile: plan.profile,
+        pathname: plan.pathname,
+        wireHeaders: plan.wireHeaders,
+        mime: plan.mime,
+        filenameSource: plan.filenameSource,
+        previewFilename: plan.requestExchange.body.filename,
+        formFile: formFile instanceof File
+            ? { name: formFile.name, type: formFile.type, size: formFile.size }
+            : null,
+    };
+};
+
+const invalid = globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime: 'text/plain\r\nX-Evil: yes',
+});
+let invalidCompile = '';
+try {
+    summarize({ method: 'POST', profile: 'raw-url', mimeMode: 'custom', customMime: '' });
+} catch (error) {
+    invalidCompile = error.name;
+}
+
+process.stdout.write(JSON.stringify({
+    multipartAuto: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'auto' }),
+    rawUrlText: summarize({ method: 'PUT', profile: 'raw-url', mimeMode: 'text-plain' }),
+    rawHeaderCustom: summarize({
+        method: 'PATCH',
+        profile: 'raw-header',
+        mimeMode: 'custom',
+        customMime: 'application/x-xferry; version=1',
+    }),
+    noFilenameAuto: summarize({ method: 'NONE', profile: 'raw-generated', mimeMode: 'auto' }),
+    invalid,
+    invalidCompile,
+}));
+"""
+
+    completed = subprocess.run(
+        ["node", "-e", script, str(UI_ROOT / "upload.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "multipartAuto": {
+            "profile": "multipart",
+            "pathname": "/uploads",
+            "wireHeaders": {},
+            "mime": "application/x-sample",
+            "filenameSource": "part",
+            "previewFilename": "sample.bin",
+            "formFile": {
+                "name": "sample.bin",
+                "type": "application/x-sample",
+                "size": 3,
+            },
+        },
+        "rawUrlText": {
+            "profile": "raw-url",
+            "pathname": "/uploads/sample.bin",
+            "wireHeaders": {"Content-Type": "text/plain"},
+            "mime": "text/plain",
+            "filenameSource": "url",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "rawHeaderCustom": {
+            "profile": "raw-header",
+            "pathname": "/uploads",
+            "wireHeaders": {
+                "Content-Type": "application/x-xferry; version=1",
+                "X-File-Name": "sample.bin",
+            },
+            "mime": "application/x-xferry; version=1",
+            "filenameSource": "header",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "noFilenameAuto": {
+            "profile": "raw-generated",
+            "pathname": "/",
+            "wireHeaders": {"Content-Type": "application/octet-stream"},
+            "mime": "application/octet-stream",
+            "filenameSource": "generated",
+            "previewFilename": "",
+            "formFile": None,
+        },
+        "invalid": {
+            "mode": "custom",
+            "valid": False,
+            "mime": "",
+            "errorKey": "uploadMimeInvalid",
+        },
+        "invalidCompile": "TypeError",
+    }
 
 
 def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> None:

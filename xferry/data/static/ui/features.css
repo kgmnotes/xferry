@@ -768,9 +768,39 @@
 }
 
 .response-options__controls {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(220px, auto);
     gap: var(--space-3) var(--space-5);
+    align-items: end;
+}
+
+.upload-mime-control,
+.upload-custom-mime {
+    display: grid;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+.upload-mime-control > label,
+.upload-custom-mime > label {
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    font-weight: 650;
+}
+
+.upload-mime-control .field-hint {
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    line-height: 1.4;
+}
+
+.upload-mime-control [aria-invalid="true"] {
+    border-color: var(--accent-danger);
+    box-shadow: none;
+}
+
+.upload-mime-control + .checkbox-row {
+    min-height: 44px;
 }
 
 .advanced-routing-panel__revision {
@@ -2068,7 +2098,7 @@
 
 #upload-tab .upload-profile-group {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-2);
     width: min(100%, 560px);
 }
@@ -3498,6 +3528,10 @@
 
     #upload-tab .upload-primary-action__buttons {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    #upload-tab .response-options__controls {
         grid-template-columns: minmax(0, 1fr);
     }
 

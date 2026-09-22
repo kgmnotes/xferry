@@ -10203,24 +10203,84 @@ async (page) => {
           mime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
           filenameSource: document.querySelector('[data-upload-summary="filename-source"]')?.textContent,
         },
+        mime: {
+          mode: document.getElementById("uploadMimeMode")?.value,
+          customHidden: document.getElementById("uploadCustomMimeField")?.hidden,
+          errorHidden: document.getElementById("uploadMimeError")?.hidden,
+        },
       };
     });
     if (
-      initialContract.profiles.join(",") !== "multipart,raw-url,raw-header" ||
+      initialContract.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
       initialContract.checked.join(",") !== "multipart" ||
-      initialContract.tabbable.join(",") !== "multipart"
+      initialContract.tabbable.join(",") !== "multipart" ||
+      initialContract.mime.mode !== "auto" ||
+      initialContract.mime.customHidden !== true ||
+      initialContract.mime.errorHidden !== true
     ) {
       throw new Error(`Basic profile radio contract failed: ${JSON.stringify(initialContract)}`);
     }
     const primaryActionGeometry =
       await assertUploadPrimaryActionDoesNotShiftAfterSelection();
 
+    const mimeValidation = await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "handle-files", [
+        new File([new TextEncoder().encode("mime")], "mime-check.txt", {
+          type: "text/plain",
+        }),
+      ]);
+      const mode = document.getElementById("uploadMimeMode");
+      const custom = document.getElementById("uploadCustomMime");
+      if (!mode || !custom) throw new Error("Upload MIME controls are missing");
+      mode.value = "custom";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+      custom.value = "not a mime";
+      custom.dispatchEvent(new Event("input", { bubbles: true }));
+      const invalid = {
+        sendDisabled: document.getElementById("uploadBtn")?.disabled,
+        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        modeInvalid: mode.getAttribute("aria-invalid"),
+        customInvalid: custom.getAttribute("aria-invalid"),
+        errorHidden: document.getElementById("uploadMimeError")?.hidden,
+      };
+      custom.value = "application/x-browser-smoke; version=1";
+      custom.dispatchEvent(new Event("input", { bubbles: true }));
+      const valid = {
+        sendDisabled: document.getElementById("uploadBtn")?.disabled,
+        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        modeInvalid: mode.getAttribute("aria-invalid"),
+        customInvalid: custom.getAttribute("aria-invalid"),
+        errorHidden: document.getElementById("uploadMimeError")?.hidden,
+        summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
+      };
+      mode.value = "auto";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+      return { invalid, valid };
+    });
+    if (
+      mimeValidation.invalid.sendDisabled !== true ||
+      mimeValidation.invalid.compareDisabled !== true ||
+      mimeValidation.invalid.modeInvalid !== "true" ||
+      mimeValidation.invalid.customInvalid !== "true" ||
+      mimeValidation.invalid.errorHidden !== false ||
+      mimeValidation.valid.sendDisabled !== false ||
+      mimeValidation.valid.compareDisabled !== false ||
+      mimeValidation.valid.modeInvalid !== "false" ||
+      mimeValidation.valid.customInvalid !== "false" ||
+      mimeValidation.valid.errorHidden !== true ||
+      mimeValidation.valid.summaryMime !== "application/x-browser-smoke; version=1"
+    ) {
+      throw new Error(`Upload MIME validation failed: ${JSON.stringify(mimeValidation)}`);
+    }
+    await page.locator('#fileList [data-remove-index="0"]').click();
+
     await page.locator('[data-upload-profile="multipart"]').focus();
     await page.keyboard.press("End");
     await waitForPageCondition(
-      "profile End key selects raw-header",
+      "profile End key selects raw-generated",
       () => (
-        document.activeElement?.getAttribute("data-upload-profile") === "raw-header" &&
+        document.activeElement?.getAttribute("data-upload-profile") === "raw-generated" &&
         document.activeElement?.getAttribute("aria-checked") === "true"
       )
     );
@@ -10239,11 +10299,11 @@ async (page) => {
       const file = new File([bytes], "кириллица #1.bin", {
         type: "application/x-profile-test",
       });
-      const serialize = (profile) => {
+      const serialize = (profile, mimeMode = "auto", customMime = "") => {
         const plan = app.invoke(
           "upload",
           "compile-request",
-          { method: "PATCH", profile },
+          { method: "PATCH", profile, mimeMode, customMime },
           file,
           bytes.buffer
         );
@@ -10265,9 +10325,14 @@ async (page) => {
           requestLine: `${plan.requestExchange.method} ${plan.requestExchange.path}`,
         };
       };
-      return ["multipart", "raw-url", "raw-header"].map(serialize);
+      return [
+        serialize("multipart"),
+        serialize("raw-url", "text-plain"),
+        serialize("raw-header", "custom", "application/x-profile-custom; version=1"),
+        serialize("raw-generated"),
+      ];
     });
-    const [multipart, rawUrl, rawHeader] = compiler;
+    const [multipart, rawUrl, rawHeader, rawGenerated] = compiler;
     if (
       multipart.pathname !== "/uploads" ||
       multipart.bodyType !== "FormData" ||
@@ -10283,7 +10348,7 @@ async (page) => {
     }
     if (
       rawUrl.pathname !== "/uploads/%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
-      rawUrl.wireHeaders["Content-Type"] !== "application/x-profile-test" ||
+      rawUrl.wireHeaders["Content-Type"] !== "text/plain" ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "x-file-name") ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "content-length")
     ) {
@@ -10291,7 +10356,7 @@ async (page) => {
     }
     if (
       rawHeader.pathname !== "/uploads" ||
-      rawHeader.wireHeaders["Content-Type"] !== "application/octet-stream" ||
+      rawHeader.wireHeaders["Content-Type"] !== "application/x-profile-custom; version=1" ||
       rawHeader.wireHeaders["X-File-Name"] !==
         "%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
       Object.keys(rawHeader.wireHeaders)
@@ -10299,6 +10364,17 @@ async (page) => {
       rawHeader.wireHeaders["X-File-Name"].includes("%25")
     ) {
       throw new Error(`Raw Header compiler wire mismatch: ${JSON.stringify(rawHeader)}`);
+    }
+    if (
+      rawGenerated.pathname !== "/" ||
+      rawGenerated.wireHeaders["Content-Type"] !== "application/octet-stream" ||
+      rawGenerated.filenameSource !== "generated" ||
+      rawGenerated.requestLine !== "PATCH /" ||
+      Object.keys(rawGenerated.wireHeaders).some((name) => (
+        name.toLowerCase() === "x-file-name"
+      ))
+    ) {
+      throw new Error(`No filename compiler wire mismatch: ${JSON.stringify(rawGenerated)}`);
     }
     const multipartFallbackMime = await page.evaluate(() => {
       const file = new File([new Uint8Array([1])], "untyped.bin");
@@ -10346,7 +10422,7 @@ async (page) => {
           ? "multipart"
           : (Object.keys(headers).some((name) => name.toLowerCase() === "x-file-name")
             ? "raw-header"
-            : "raw-url");
+            : (pathname === "/" ? "raw-generated" : "raw-url"));
         const formFile = body instanceof FormData ? body.get("file") : null;
         calls.push({
           method,
@@ -10358,11 +10434,14 @@ async (page) => {
         });
         await Promise.resolve();
         active -= 1;
-        const name = formFile instanceof File
+        const name = profile === "raw-generated"
+          ? "upload_generated.txt"
+          : (formFile instanceof File
           ? formFile.name
           : decodeURIComponent(
             headers["X-File-Name"] || pathname.split("/").pop() || "queued.bin"
-          );
+          ));
+        const serverProfile = profile === "raw-generated" ? "raw_url" : profile.replace("-", "_");
         return response({
           file: {
             name,
@@ -10375,9 +10454,11 @@ async (page) => {
           },
           upload: {
             kind: "basic",
-            profile,
+            profile: serverProfile,
             carrier: profile === "multipart" ? "multipart" : "body",
-            filename_source: profile === "multipart" ? "part" : (profile === "raw-header" ? "header" : "url"),
+            filename_source: profile === "multipart"
+              ? "part"
+              : (profile === "raw-header" ? "header" : (profile === "raw-generated" ? "generated" : "url")),
             normalized_name: name,
             collision_renamed: false,
             request_body_size: 1,
@@ -10390,6 +10471,7 @@ async (page) => {
         ["multipart", "POST"],
         ["raw-url", "PUT"],
         ["raw-header", "NONE"],
+        ["raw-generated", "PATCH"],
       ];
       for (const [profile, method] of scenarios) {
         app.invoke("upload", "set-profile", profile);
@@ -10410,12 +10492,12 @@ async (page) => {
       };
     });
     if (
-      queuedSend.calls.length !== 6 ||
+      queuedSend.calls.length !== 8 ||
       queuedSend.maxActive !== 1 ||
       queuedSend.calls.map((call) => call.profile).join(",") !==
-        "multipart,multipart,raw-url,raw-url,raw-header,raw-header" ||
+        "multipart,multipart,raw-url,raw-url,raw-header,raw-header,raw-generated,raw-generated" ||
       queuedSend.calls.map((call) => call.method).join(",") !==
-        "POST,POST,PUT,PUT,NONE,NONE" ||
+        "POST,POST,PUT,PUT,NONE,NONE,PATCH,PATCH" ||
       queuedSend.calls.slice(0, 2).some((call) => (
         call.pathname !== "/uploads" ||
         call.bodyType !== "FormData" ||
@@ -10426,10 +10508,17 @@ async (page) => {
         Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
       )) ||
       queuedSend.calls.slice(4).some((call) => (
-        call.pathname !== "/uploads" ||
+        call.profile === "raw-header" && (
+          call.pathname !== "/uploads" ||
+          call.headers["Content-Type"] !== "application/octet-stream" ||
+          Object.keys(call.headers)
+            .filter((name) => name.toLowerCase() === "x-file-name").length !== 1
+        )
+      )) ||
+      queuedSend.calls.slice(6).some((call) => (
+        call.pathname !== "/" ||
         call.headers["Content-Type"] !== "application/octet-stream" ||
-        Object.keys(call.headers)
-          .filter((name) => name.toLowerCase() === "x-file-name").length !== 1
+        Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
       )) ||
       queuedSend.state.pendingCount !== 0
     ) {
@@ -10514,7 +10603,10 @@ async (page) => {
       const request = response.request();
       if (
         request.method() === "POST" &&
-        requestPathname(request).startsWith("/uploads")
+        (
+          requestPathname(request).startsWith("/uploads") ||
+          requestPathname(request) === "/"
+        )
       ) {
         compareResponses.push({
           status: response.status(),
@@ -10533,7 +10625,7 @@ async (page) => {
         const app = window.XferryApp;
         const state = app.getState("upload");
         return state.actionPhase === "idle" &&
-          state.compareResults.length === 3 &&
+          state.compareResults.length === 4 &&
           state.compareResults.every((result) => result.verdict !== "not-run") &&
           app.service("advanced-session").getSnapshot().active === true;
       },
@@ -10576,16 +10668,16 @@ async (page) => {
       compareSetup.pendingCount !== 1 ||
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
-      compareResponses.length !== 3 ||
+      compareResponses.length !== 4 ||
       compareResponses.some((response) => (
         response.status !== 201 || response.sessionHeaderAbsent !== true
       )) ||
       actualBasicCompare.sessionActive !== true ||
       actualBasicCompare.sessionPhase !== "active" ||
-      actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header" ||
-      actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header" ||
+      actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
+      actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
       actualBasicCompare.verdicts.join(",") !==
-        "delivered,metadata-changed,metadata-changed" ||
+        "delivered,metadata-changed,metadata-changed,metadata-changed" ||
       actualBasicCompare.requestTracesPresent !== true ||
       actualBasicCompare.responseTracesPresent !== true
     ) {
@@ -10631,6 +10723,7 @@ async (page) => {
       compiler,
       responsiveUpload,
       multipartFallbackMime,
+      mimeValidation,
       primaryActionGeometry,
       queuedSend,
       basicAdvancedCoexistence,
