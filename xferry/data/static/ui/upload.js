@@ -68,7 +68,7 @@ const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header',
 const basicUploadMethods = Object.freeze(['POST', 'NONE', 'PUT', 'PATCH']);
 const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'custom']);
 const uploadCustomMimeMaxLength = 120;
-const uploadMimePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\\r\n]|\\.)*"))*$/;
+const uploadMimePattern = /^(?=[\x20-\x7E]+$)[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?: *; *[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\]|\\.)*"))*$/;
 const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'number'
     ? exchangeBinaryTextPreviewLimit
     : 512) + 1;
@@ -339,7 +339,7 @@ function getUploadByteView(bodyBytes) {
     throw new TypeError('Basic upload body bytes must be an ArrayBuffer or typed array');
 }
 
-function compileBasicUploadRequest(state, file, bodyBytes = null) {
+function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes = bodyBytes) {
     const profile = basicUploadProfiles.includes(state?.profile)
         ? state.profile
         : 'multipart';
@@ -347,8 +347,9 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
     const filename = String(file?.name || 'upload.bin');
     const encodedFilename = encodeURIComponent(filename);
     const fileMime = resolveUploadDeclaredMime(state, file, profile);
-    const byteView = getUploadByteView(bodyBytes);
-    const bodySize = byteView?.byteLength ?? Number(file?.size || 0);
+    const bodyByteView = getUploadByteView(bodyBytes);
+    const previewByteView = getUploadByteView(previewBytes);
+    const bodySize = bodyByteView?.byteLength ?? Number(file?.size || 0);
 
     let pathname = '/uploads';
     let body = bodyBytes || file;
@@ -368,6 +369,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
                 type: fileMime,
                 lastModified: Number(file?.lastModified || Date.now()),
             });
+        mime = String(multipartFile.type || '') || 'application/octet-stream';
         form.append('file', multipartFile, filename);
         body = form;
         bodyKind = 'multipart';
@@ -420,7 +422,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             filename: previewFilename,
             contentType: mime,
             size: bodySize,
-            bytes: byteView,
+            bytes: previewByteView,
             label: bodyKind,
             ...multipartPreview,
         }),
@@ -602,7 +604,7 @@ function refreshUploadLiveSummary(validation = getUploadMimeValidation(uploadSta
             'raw-generated': 'generated',
         };
         if (uploadSummaryFields.requestLine) {
-            uploadSummaryFields.requestLine.textContent = `${uploadState.method} —`;
+            uploadSummaryFields.requestLine.textContent = `${uploadState.method} -`;
         }
         if (uploadSummaryFields.bodyKind) {
             uploadSummaryFields.bodyKind.textContent = getUploadBodyKindLabel(
@@ -898,6 +900,7 @@ async function refreshUploadRequestPreviewBodySamples(sequence, signature) {
             const request = compileBasicUploadRequest(
                 uploadState,
                 fileData.file,
+                null,
                 previewBuffer
             ).requestExchange;
             return { fileData, request };
@@ -1331,6 +1334,8 @@ function createBasicUploadRetryContext(fileData, requestState = uploadState) {
         requestState: Object.freeze({
             method: requestState.method,
             profile: requestState.profile,
+            mimeMode: requestState.mimeMode,
+            customMime: requestState.customMime,
         }),
     });
 }
@@ -1531,15 +1536,21 @@ async function uploadFiles(fileDataList, options = {}) {
         retrying = false,
     } = options;
     const pendingFiles = Array.from(fileDataList || []).filter(Boolean);
-    if (!hasSupportedUploadMethod() || pendingFiles.length === 0 || uploadState.actionPhase !== 'idle') {
+    const mimeValidation = getUploadMimeValidation(requestState);
+    if (
+        !hasSupportedUploadMethod()
+        || !mimeValidation.valid
+        || pendingFiles.length === 0
+        || uploadState.actionPhase !== 'idle'
+    ) {
         return false;
     }
 
-    uploadState.actionPhase = 'checking';
-    refreshUploadActionState();
     const previewPlans = pendingFiles.map(fileData => (
         compileBasicUploadRequest(requestState, fileData.file)
     ));
+    uploadState.actionPhase = 'checking';
+    refreshUploadActionState();
     if (!await ensureBasicUploadRoute(previewPlans)) {
         uploadState.actionPhase = 'idle';
         refreshUploadActionState();

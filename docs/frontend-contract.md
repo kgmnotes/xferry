@@ -53,6 +53,9 @@ a semantic key and a static contract test.
 The Upload tab keeps **Technical details** at the bottom of the main content
 flow. It remains discoverable before a file is selected and updates the raw
 request preview as the method, request profile, declared MIME, or file changes.
+Bounded body samples do not replace the file's full size in `Content-Length`
+or omitted-byte reporting, and Multipart previews use the effective MIME that
+the browser serializes for the file part.
 On desktop it may open once for the first ready request without moving focus or
 scroll position; mobile starts collapsed, and a user's explicit open/closed
 choice wins over later live updates.

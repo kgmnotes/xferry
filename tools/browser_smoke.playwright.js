@@ -10252,7 +10252,7 @@ async (page) => {
     const primaryActionGeometry =
       await assertUploadPrimaryActionDoesNotShiftAfterSelection();
 
-    const mimeValidation = await page.evaluate(() => {
+    const invalidMimeValidation = await page.evaluate(() => {
       const app = window.XferryApp;
       app.invoke("upload", "handle-files", [
         new File([new TextEncoder().encode("mime")], "mime-check.txt", {
@@ -10264,16 +10264,59 @@ async (page) => {
       if (!mode || !custom) throw new Error("Upload MIME controls are missing");
       mode.value = "custom";
       mode.dispatchEvent(new Event("change", { bubbles: true }));
-      custom.value = "not a mime";
-      custom.dispatchEvent(new Event("input", { bubbles: true }));
-      const invalid = {
+      const captureValidation = () => ({
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
         compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
         modeInvalid: mode.getAttribute("aria-invalid"),
         customInvalid: custom.getAttribute("aria-invalid"),
         errorHidden: document.getElementById("uploadMimeError")?.hidden,
+      });
+      const unsupported = [
+        `text/plain;${String.fromCharCode(9)}charset=utf-8`,
+        'text/plain; note="☃"',
+        `text/plain; note="${String.fromCharCode(1)}"`,
+      ].map(value => {
+        custom.value = value;
+        custom.dispatchEvent(new Event("input", { bubbles: true }));
+        return captureValidation();
+      });
+      custom.value = "not a mime";
+      custom.dispatchEvent(new Event("input", { bubbles: true }));
+      const invalid = captureValidation();
+      const http = app.service("http");
+      window.__xferryInvalidMimeSendCalls = 0;
+      window.__xferryInvalidMimeOriginalAdapter = http["set-adapter"](() => {
+        window.__xferryInvalidMimeSendCalls += 1;
+        return Promise.resolve(new Response(JSON.stringify({ error: {
+          code: "invalid_mime_shortcut",
+          message: "invalid MIME shortcut must not send",
+        } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }));
+      });
+      return { invalid, unsupported };
+    });
+    await page.keyboard.press("Control+Enter");
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
+    const shortcutAndValidMime = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const mode = document.getElementById("uploadMimeMode");
+      const custom = document.getElementById("uploadCustomMime");
+      const shortcut = {
+        sendCalls: window.__xferryInvalidMimeSendCalls,
+        actionPhase: app.getState("upload").actionPhase,
+        sendDisabled: document.getElementById("uploadBtn")?.disabled,
+        modeDisabled: mode?.disabled,
+        customDisabled: custom?.disabled,
+        fileDisabled: document.getElementById("fileInput")?.disabled,
+        profilesDisabled: Array.from(document.querySelectorAll("[data-upload-profile]"))
+          .some(button => button.disabled),
       };
+      app.service("http")["set-adapter"](window.__xferryInvalidMimeOriginalAdapter);
+      delete window.__xferryInvalidMimeOriginalAdapter;
+      delete window.__xferryInvalidMimeSendCalls;
       custom.value = "application/x-browser-smoke; version=1";
       custom.dispatchEvent(new Event("input", { bubbles: true }));
       const valid = {
@@ -10287,8 +10330,12 @@ async (page) => {
         technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
         requestText: document.getElementById("uploadRequestArea")?.textContent,
       };
-      return { invalid, valid };
+      return { shortcut, valid };
     });
+    const mimeValidation = {
+      ...invalidMimeValidation,
+      ...shortcutAndValidMime,
+    };
     if (
       mimeValidation.invalid.sendDisabled !== true ||
       mimeValidation.invalid.compareDisabled !== true ||
@@ -10296,6 +10343,21 @@ async (page) => {
       mimeValidation.invalid.modeInvalid !== "true" ||
       mimeValidation.invalid.customInvalid !== "true" ||
       mimeValidation.invalid.errorHidden !== false ||
+      mimeValidation.unsupported.some(validation => (
+        validation.sendDisabled !== true ||
+        validation.compareDisabled !== true ||
+        validation.compareMethodsDisabled !== true ||
+        validation.modeInvalid !== "true" ||
+        validation.customInvalid !== "true" ||
+        validation.errorHidden !== false
+      )) ||
+      mimeValidation.shortcut.sendCalls !== 0 ||
+      mimeValidation.shortcut.actionPhase !== "idle" ||
+      mimeValidation.shortcut.sendDisabled !== true ||
+      mimeValidation.shortcut.modeDisabled !== false ||
+      mimeValidation.shortcut.customDisabled !== false ||
+      mimeValidation.shortcut.fileDisabled !== false ||
+      mimeValidation.shortcut.profilesDisabled !== false ||
       mimeValidation.valid.sendDisabled !== false ||
       mimeValidation.valid.compareDisabled !== false ||
       mimeValidation.valid.compareMethodsDisabled !== false ||
@@ -10360,6 +10422,42 @@ async (page) => {
     }
     await page.locator("#uploadMimeMode").selectOption("auto");
     await page.locator('#fileList [data-remove-index="0"]').click();
+
+    await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "set-profile", "raw-generated");
+      app.invoke("upload", "handle-files", [
+        new File([new Uint8Array(1043).fill(65)], "large-preview.bin", {
+          type: "application/octet-stream",
+        }),
+      ]);
+    });
+    await waitForPageCondition(
+      "large Basic upload preview sample loads",
+      () => {
+        const request = window.XferryApp.service("inspector").getInspectorState("upload")?.request;
+        return request?.path === "/" && Object.keys(request.body?.bytes || {}).length === 513;
+      }
+    );
+    const largePreview = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const request = app.service("inspector").getInspectorState("upload")?.request;
+      return {
+        bodySize: request?.body?.size,
+        previewBytes: Object.keys(request?.body?.bytes || {}).length,
+        rawText: app.service("inspector").getAreaRawText("uploadRequestArea"),
+      };
+    });
+    if (
+      largePreview.bodySize !== 1043 ||
+      largePreview.previewBytes !== 513 ||
+      !largePreview.rawText.includes("Content-Length: 1043") ||
+      !largePreview.rawText.includes("truncated, remaining chars/bytes (531)")
+    ) {
+      throw new Error(`Large Basic preview size mismatch: ${JSON.stringify(largePreview)}`);
+    }
+    await page.locator('#fileList [data-remove-index="0"]').click();
+    await page.evaluate(() => window.XferryApp.invoke("upload", "set-profile", "multipart"));
 
     await page.locator('[data-upload-profile="multipart"]').focus();
     await page.keyboard.press("End");
@@ -10482,6 +10580,54 @@ async (page) => {
     ) {
       throw new Error(
         `Multipart MIME fallback mismatch: ${JSON.stringify(multipartFallbackMime)}`
+      );
+    }
+    const normalizedMultipartMime = await page.evaluate(async () => {
+      const bytes = new TextEncoder().encode("normalized multipart MIME");
+      const file = new File([bytes], "normalized-mime.txt", { type: "text/plain" });
+      const plan = window.XferryApp.invoke(
+        "upload",
+        "compile-request",
+        {
+          method: "POST",
+          profile: "multipart",
+          mimeMode: "custom",
+          customMime: "Text/Plain; Boundary=ABCD",
+        },
+        file,
+        bytes.buffer
+      );
+      const part = plan.body.get("file");
+      const request = new Request("https://xferry.test/uploads", {
+        method: "POST",
+        body: plan.body,
+      });
+      return {
+        planMime: plan.mime,
+        partMime: part instanceof File ? part.type : "",
+        exchangeMime: plan.requestExchange.body.contentType,
+        previewPrefix: plan.requestExchange.body.rawPrefix,
+        outerContentType: request.headers.get("content-type") || "",
+        wireBody: await request.text(),
+      };
+    });
+    if (
+      normalizedMultipartMime.planMime !== "text/plain; boundary=abcd" ||
+      normalizedMultipartMime.partMime !== "text/plain; boundary=abcd" ||
+      normalizedMultipartMime.exchangeMime !== "text/plain; boundary=abcd" ||
+      !normalizedMultipartMime.previewPrefix.includes(
+        "Content-Type: text/plain; boundary=abcd"
+      ) ||
+      !normalizedMultipartMime.outerContentType.startsWith(
+        "multipart/form-data; boundary="
+      ) ||
+      normalizedMultipartMime.outerContentType.includes("text/plain") ||
+      !normalizedMultipartMime.wireBody.includes(
+        "Content-Type: text/plain; boundary=abcd"
+      )
+    ) {
+      throw new Error(
+        `Multipart MIME normalization mismatch: ${JSON.stringify(normalizedMultipartMime)}`
       );
     }
 
@@ -10637,6 +10783,121 @@ async (page) => {
       queuedSend.state.pendingCount !== 0
     ) {
       throw new Error(`Queued send/compiler reuse failed: ${JSON.stringify(queuedSend)}`);
+    }
+
+    const retryMimeSetup = await page.evaluate(async () => {
+      const app = window.XferryApp;
+      const http = app.service("http");
+      const mode = document.getElementById("uploadMimeMode");
+      const custom = document.getElementById("uploadCustomMime");
+      app.invoke("upload", "set-method", "POST");
+      app.invoke("upload", "set-profile", "raw-header");
+      mode.value = "custom";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+      custom.value = "application/x-retry; version=1";
+      custom.dispatchEvent(new Event("input", { bubbles: true }));
+
+      window.__xferryRetryMimeCalls = [];
+      window.__xferryRetryMimeOriginalAdapter = http["set-adapter"](
+        async (method, url, body, headers = {}) => {
+          window.__xferryRetryMimeCalls.push({
+            method,
+            pathname: new URL(url, location.href).pathname,
+            contentType: headers["Content-Type"] || "",
+          });
+          if (window.__xferryRetryMimeCalls.length === 1) {
+            return new Response(JSON.stringify({ error: {
+              code: "retry_probe",
+              message: "retry MIME probe",
+            } }), {
+              status: 415,
+              statusText: "Unsupported Media Type",
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify({
+            file: {
+              name: "retry-mime.bin",
+              path: "/uploads/retry-mime.bin",
+              size_bytes: 1,
+              size_human: "1 B",
+              content_type: headers["Content-Type"] || "",
+              uploaded_at: "2026-08-14T00:00:00+00:00",
+              sha256: "b".repeat(64),
+            },
+            upload: {
+              kind: "basic",
+              profile: "raw_header",
+              carrier: "body",
+              filename_source: "header",
+              normalized_name: "retry-mime.bin",
+              collision_renamed: false,
+              request_body_size: 1,
+              payload_size: 1,
+            },
+          }), {
+            status: 201,
+            statusText: "Created",
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      );
+      app.invoke("upload", "handle-files", [
+        new File([new Uint8Array([7])], "retry-mime.bin", {
+          type: "application/octet-stream",
+        }),
+      ]);
+      await app.invoke("upload", "send");
+      return {
+        actionPhase: app.getState("upload").actionPhase,
+        retryPresent: Boolean(document.querySelector("[data-upload-retry-index]")),
+        calls: [...window.__xferryRetryMimeCalls],
+      };
+    });
+    if (
+      retryMimeSetup.actionPhase !== "idle" ||
+      retryMimeSetup.retryPresent !== true ||
+      retryMimeSetup.calls.length !== 1 ||
+      retryMimeSetup.calls[0].contentType !== "application/x-retry; version=1"
+    ) {
+      throw new Error(`Basic retry MIME setup failed: ${JSON.stringify(retryMimeSetup)}`);
+    }
+    await page.locator("[data-upload-retry-index]").click();
+    await waitForPageCondition(
+      "Basic retry preserves declared MIME",
+      () => (
+        window.__xferryRetryMimeCalls?.length === 2 &&
+        window.XferryApp.getState("upload").actionPhase === "idle"
+      )
+    );
+    const retryMime = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const calls = [...window.__xferryRetryMimeCalls];
+      app.service("http")["set-adapter"](window.__xferryRetryMimeOriginalAdapter);
+      delete window.__xferryRetryMimeOriginalAdapter;
+      delete window.__xferryRetryMimeCalls;
+      document.getElementById("uploadMimeMode").value = "auto";
+      document.getElementById("uploadMimeMode").dispatchEvent(
+        new Event("change", { bubbles: true })
+      );
+      app.invoke("upload", "set-profile", "multipart");
+      return {
+        calls,
+        pendingCount: app.getState("upload").pendingCount,
+        fileCount: app.getState("upload").fileCount,
+      };
+    });
+    if (
+      retryMime.calls.length !== 2 ||
+      retryMime.calls.some(call => (
+        call.method !== "POST" ||
+        call.pathname !== "/uploads" ||
+        call.contentType !== "application/x-retry; version=1"
+      )) ||
+      retryMime.pendingCount !== 0 ||
+      retryMime.fileCount !== 0
+    ) {
+      throw new Error(`Basic retry changed declared MIME: ${JSON.stringify(retryMime)}`);
     }
 
     const coexistenceSetup = await page.evaluate(async () => {
@@ -11021,9 +11282,12 @@ async (page) => {
       compiler,
       responsiveUpload,
       multipartFallbackMime,
+      normalizedMultipartMime,
+      largePreview,
       mimeValidation,
       primaryActionGeometry,
       queuedSend,
+      retryMime,
       basicAdvancedCoexistence,
       mobile,
       screenshots: [

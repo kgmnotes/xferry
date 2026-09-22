@@ -228,7 +228,7 @@ const translations = {
         uploadMimeModeTextPlain: "text/plain",
         uploadMimeModeCustom: "Другой",
         uploadCustomMimeLabel: "Другой MIME",
-        uploadMimeHint: "Для Multipart меняется MIME части файла, для raw-профилей — Content-Type.",
+        uploadMimeHint: "Для Multipart меняется MIME части файла, для raw-профилей - Content-Type.",
         uploadMimeRequired: "Введите MIME-тип.",
         uploadMimeInvalid: "Введите корректный MIME-тип длиной не более 120 символов.",
         uploadTechnicalDetailsEmpty: "Выберите файл, чтобы собрать точный HTTP-запрос.",

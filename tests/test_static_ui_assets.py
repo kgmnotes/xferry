@@ -1038,6 +1038,36 @@ try {
     invalidCompile = error.name;
 }
 
+const invalidCustomMimes = [
+    'text/plain;\ncharset=utf-8',
+    'text/plain; note="☃"',
+    'text/plain; note="\u0001"',
+].map(customMime => globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime,
+}));
+const validCustomMime = globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime: 'Application/X-ASCII; Note="visible value"',
+});
+const mixedCaseMultipartPlan = globalThis.compileBasicUploadRequest({
+    method: 'POST',
+    profile: 'multipart',
+    mimeMode: 'custom',
+    customMime: 'Text/Plain; Boundary=ABCD',
+}, file, bytes.buffer);
+const mixedCaseMultipartFile = mixedCaseMultipartPlan.body.get('file');
+const sampledBytes = new Uint8Array(1043).fill(65);
+const sampledFile = new File([sampledBytes], 'sampled.bin', {
+    type: 'application/octet-stream',
+});
+const sampledPlan = globalThis.compileBasicUploadRequest(
+    { method: 'POST', profile: 'raw-generated', mimeMode: 'auto' },
+    sampledFile,
+    null,
+    sampledBytes.slice(0, 513).buffer
+);
+
 process.stdout.write(JSON.stringify({
     multipartAuto: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'auto' }),
     rawUrlText: summarize({ method: 'PUT', profile: 'raw-url', mimeMode: 'text-plain' }),
@@ -1050,6 +1080,20 @@ process.stdout.write(JSON.stringify({
     noFilenameAuto: summarize({ method: 'NONE', profile: 'raw-generated', mimeMode: 'auto' }),
     invalid,
     invalidCompile,
+    invalidCustomMimes,
+    validCustomMime,
+    mixedCaseMultipart: {
+        planMime: mixedCaseMultipartPlan.mime,
+        partMime: mixedCaseMultipartFile.type,
+        exchangeMime: mixedCaseMultipartPlan.requestExchange.body.contentType,
+        rawPrefix: mixedCaseMultipartPlan.requestExchange.body.rawPrefix,
+    },
+    sampledRawPreview: {
+        contentLength: sampledPlan.traceHeaders['Content-Length'],
+        size: sampledPlan.requestExchange.body.size,
+        previewBytes: sampledPlan.requestExchange.body.bytes?.byteLength ?? -1,
+        transportBodyType: sampledPlan.body?.constructor?.name || '',
+    },
 }));
 """
 
@@ -1112,6 +1156,48 @@ process.stdout.write(JSON.stringify({
             "errorKey": "uploadMimeInvalid",
         },
         "invalidCompile": "TypeError",
+        "invalidCustomMimes": [
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+        ],
+        "validCustomMime": {
+            "mode": "custom",
+            "valid": True,
+            "mime": 'Application/X-ASCII; Note="visible value"',
+            "errorKey": "",
+        },
+        "mixedCaseMultipart": {
+            "planMime": "text/plain; boundary=abcd",
+            "partMime": "text/plain; boundary=abcd",
+            "exchangeMime": "text/plain; boundary=abcd",
+            "rawPrefix": (
+                "--<browser-generated>\r\n"
+                'Content-Disposition: form-data; name="file"; filename="sample.bin"\r\n'
+                "Content-Type: text/plain; boundary=abcd\r\n\r\n"
+            ),
+        },
+        "sampledRawPreview": {
+            "contentLength": "1043",
+            "size": 1043,
+            "previewBytes": 513,
+            "transportBodyType": "File",
+        },
     }
 
 
@@ -1366,7 +1452,10 @@ def test_upload_request_previews_are_built_before_send() -> None:
     )
 
     assert "function refreshUploadRequestPreview" in upload_js
-    assert "function compileBasicUploadRequest(state, file, bodyBytes = null)" in upload_js
+    assert (
+        "function compileBasicUploadRequest(state, file, bodyBytes = null, "
+        "previewBytes = bodyBytes)" in upload_js
+    )
     assert "function buildUploadExchangeLog(entries, side = 'request', options = {})" in upload_js
     assert "message.rawText || buildExchangeRawMessage(message, side)" in upload_js
     assert "requestExportLog" in upload_js
