@@ -35,6 +35,9 @@ const uploadState = {
     mimeMode: 'auto',
     customMime: '',
     previewSequence: 0,
+    technicalDetailsUserToggled: false,
+    technicalDetailsAutoOpened: false,
+    ignoreNextTechnicalDetailsToggle: false,
     files: [],
     renderFileListRAF: null,
     actionPhase: 'idle',
@@ -184,6 +187,56 @@ function openUploadTechnicalDetails() {
     focusElementWithoutScroll(uploadTechnicalDetailsSummary);
 }
 
+function maybeAutoOpenUploadTechnicalDetails() {
+    if (
+        !uploadTechnicalDetails
+        || uploadState.technicalDetailsUserToggled
+        || uploadState.technicalDetailsAutoOpened
+        || window.matchMedia('(max-width: 640px)').matches
+    ) {
+        return false;
+    }
+    uploadState.technicalDetailsAutoOpened = true;
+    if (!uploadTechnicalDetails.open) {
+        uploadState.ignoreNextTechnicalDetailsToggle = true;
+        uploadTechnicalDetails.open = true;
+    }
+    syncUploadStatusDetailsExpanded();
+    return true;
+}
+
+function collapseAutoOpenedUploadTechnicalDetailsForEmptyState() {
+    if (
+        !uploadTechnicalDetails
+        || uploadState.technicalDetailsUserToggled
+        || !uploadState.technicalDetailsAutoOpened
+        || !uploadTechnicalDetails.open
+    ) {
+        return false;
+    }
+    uploadState.ignoreNextTechnicalDetailsToggle = true;
+    uploadTechnicalDetails.open = false;
+    syncUploadStatusDetailsExpanded();
+    return true;
+}
+
+function buildUploadMultipartPreviewEnvelope(filename, mime) {
+    const safeFilename = String(filename || 'upload.bin')
+        .replace(/[\r\n]/g, '')
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"');
+    return {
+        rawPrefix: [
+            '--<browser-generated>',
+            `Content-Disposition: form-data; name="file"; filename="${safeFilename}"`,
+            `Content-Type: ${mime}`,
+            '',
+            '',
+        ].join('\r\n'),
+        rawSuffix: '\r\n--<browser-generated>--',
+    };
+}
+
 function getUploadMimeValidation(state = uploadState) {
     const requestedMode = String(state?.mimeMode || 'auto');
     const mode = uploadMimeModes.includes(requestedMode) ? requestedMode : 'auto';
@@ -276,6 +329,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
     let bodyKind = 'raw';
     let filenameSource = 'url';
     let previewFilename = filename;
+    let multipartPreview = {};
 
     if (profile === 'multipart') {
         const form = new FormData();
@@ -294,6 +348,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             'Content-Type': 'multipart/form-data; boundary=<browser-generated>',
             'Content-Length': '<browser-generated>',
         });
+        multipartPreview = buildUploadMultipartPreviewEnvelope(filename, mime);
     } else if (profile === 'raw-url') {
         pathname = `/uploads/${encodedFilename}`;
         wireHeaders = withUiNoGzipHeader({
@@ -338,6 +393,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             size: bodySize,
             bytes: byteView,
             label: bodyKind,
+            ...multipartPreview,
         }),
         exportFilenameBase: 'xferry-upload-request',
         sensitive: true,
@@ -813,13 +869,14 @@ function refreshUploadRequestPreview() {
             phase: 'empty',
             request: {
                 phase: 'empty',
-                emptyText: t('exchangeRequestEmpty'),
+                emptyText: t('uploadTechnicalDetailsEmpty'),
             },
             response: {
                 phase: 'empty',
                 emptyText: t('exchangeResponseEmpty'),
             },
         });
+        collapseAutoOpenedUploadTechnicalDetailsForEmptyState();
         return;
     }
 
@@ -836,6 +893,7 @@ function refreshUploadRequestPreview() {
             emptyText: t('exchangeResponseEmpty'),
         },
     });
+    maybeAutoOpenUploadTechnicalDetails();
     void refreshUploadRequestPreviewBodySamples(sequence, getUploadPendingSignature());
 }
 
@@ -936,7 +994,14 @@ if (uploadStatusDetailsBtn) {
     uploadStatusDetailsBtn.addEventListener('click', openUploadTechnicalDetails);
 }
 if (uploadTechnicalDetails) {
-    uploadTechnicalDetails.addEventListener('toggle', syncUploadStatusDetailsExpanded);
+    uploadTechnicalDetails.addEventListener('toggle', () => {
+        if (uploadState.ignoreNextTechnicalDetailsToggle) {
+            uploadState.ignoreNextTechnicalDetailsToggle = false;
+        } else {
+            uploadState.technicalDetailsUserToggled = true;
+        }
+        syncUploadStatusDetailsExpanded();
+    });
 }
 
 if (fileList) {
@@ -1884,6 +1949,8 @@ app.registerWorkflow('upload', {
         fileCount: uploadState.files.length,
         pendingCount: uploadState.files.filter(file => file.status === 'pending').length,
         previewSequence: uploadState.previewSequence,
+        technicalDetailsUserToggled: uploadState.technicalDetailsUserToggled,
+        technicalDetailsAutoOpened: uploadState.technicalDetailsAutoOpened,
         actionPhase: uploadState.actionPhase,
         routingPhase: uploadState.routing.phase,
         routingBlockedReason: uploadState.routing.blockedReason,

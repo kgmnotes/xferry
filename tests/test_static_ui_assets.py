@@ -965,6 +965,11 @@ globalThis.location = { href: 'https://xferry.test/' };
 globalThis.withUiNoGzipHeader = headers => ({ ...headers });
 globalThis.createExchangeBinaryBody = options => ({ kind: 'binary', ...options });
 
+globalThis.buildUploadMultipartPreviewEnvelope = extractFunction(
+    source,
+    'function buildUploadMultipartPreviewEnvelope',
+    'function getUploadMimeValidation'
+);
 globalThis.getUploadMimeValidation = extractFunction(
     source,
     'function getUploadMimeValidation',
@@ -1122,6 +1127,7 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     assert 'aria-expanded="false"' in details_button_tag.group(0)
     assert details_tag is not None
     assert 'data-tool-trace-scope="upload"' in details_tag.group(0)
+    assert 'data-tool-trace-visible-when-empty="true"' in details_tag.group(0)
     assert re.search(
         r'<div\b(?=[^>]*\bid="uploadStatus")(?=[^>]*\bhidden\b)[^>]*>'
         r'.*?</div>\s*'
@@ -1133,11 +1139,14 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
 
     for locale in ("ru", "en"):
         assert "uploadStatusDetails" in extract_locale_keys(core_js, locale)
+        assert "uploadTechnicalDetailsEmpty" in extract_locale_keys(core_js, locale)
 
     assert "app.service('notifications')" not in upload_js
     assert "uploadNotificationId" not in upload_js
     assert "timeoutMs" not in upload_js
     assert "renderUploadStatus({ announce: false });" in upload_js
+    assert "function maybeAutoOpenUploadTechnicalDetails()" in upload_js
+    assert "technicalDetailsUserToggled" in upload_js
 
     for files_notification_contract in (
         "const notifications = app.service('notifications');",
@@ -1154,6 +1163,24 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     )
     assert status_rule is not None
     assert "position: fixed" not in status_rule.group("body")
+    assert (
+        '.tool-trace[data-tool-trace-visible-when-empty="true"][data-phase="empty"]'
+        in features_css
+    )
+
+
+def test_upload_multipart_raw_preview_models_browser_managed_part_headers() -> None:
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
+    inspector_js = (UI_ROOT / "inspector.js").read_text(encoding="utf-8")
+
+    assert "function buildUploadMultipartPreviewEnvelope" in upload_js
+    assert "Content-Disposition: form-data; name=\"file\"; filename=\"${safeFilename}\"" in upload_js
+    assert "Content-Type: ${mime}" in upload_js
+    assert "rawPrefix" in upload_js
+    assert "rawSuffix" in upload_js
+    assert "rawPrefix: options.rawPrefix" in inspector_js
+    assert "body.rawPrefix" in inspector_js
+    assert "body.rawSuffix" in inspector_js
 
 
 def test_upload_exchange_logs_have_download_controls() -> None:

@@ -1374,6 +1374,10 @@
     display: grid;
 }
 
+.tool-card--workflow .tool-trace[data-tool-trace-visible-when-empty="true"][data-phase="empty"] {
+    display: grid;
+}
+
 .tool-result__header {
     display: flex;
     align-items: flex-start;

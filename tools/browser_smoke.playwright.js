@@ -4542,6 +4542,8 @@ async (page) => {
         containerRight: containerRect.right,
         buttonsLeft: buttonsRect.left,
         buttonsRight: buttonsRect.right,
+        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+        uploadState: window.XferryApp?.getState("upload"),
       };
     });
 
@@ -4552,7 +4554,10 @@ async (page) => {
       Math.abs(empty.containerRight - empty.buttonsRight) > tolerance ||
       Math.abs(selected.containerRight - selected.buttonsRight) > tolerance ||
       Math.abs(empty.buttonsLeft - selected.buttonsLeft) > tolerance ||
-      Math.abs(empty.buttonsRight - selected.buttonsRight) > tolerance
+      Math.abs(empty.buttonsRight - selected.buttonsRight) > tolerance ||
+      selected.technicalOpen !== true ||
+      selected.uploadState?.technicalDetailsAutoOpened !== true ||
+      selected.uploadState?.technicalDetailsUserToggled !== false
     ) {
       throw new Error(
         `Upload primary action shifted after file selection: ${JSON.stringify({
@@ -4574,11 +4579,14 @@ async (page) => {
     await waitForAdvancedUploadReady();
     const desktop = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
+      const technical = document.getElementById("uploadTechnicalDetails");
       const action = document.querySelector("#upload-tab .upload-primary-action");
       const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
+        technicalVisible: Boolean(technical && getComputedStyle(technical).display !== "none"),
+        technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
         actionDirection: action ? getComputedStyle(action).flexDirection : "",
@@ -4594,14 +4602,22 @@ async (page) => {
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForAdvancedUploadReady();
+    await page.locator("#fileInput").setInputFiles(uploadFilePath);
+    await waitForPageCondition(
+      "mobile request preview becomes ready without auto-opening details",
+      () => document.getElementById("uploadRequestArea")?.dataset.exchangePhase === "ready"
+    );
     const mobile = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
+      const technical = document.getElementById("uploadTechnicalDetails");
       const action = document.querySelector("#upload-tab .upload-primary-action");
       const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
       const panel = document.querySelector("#upload-tab .tool-card--workflow");
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
+        technicalVisible: Boolean(technical && getComputedStyle(technical).display !== "none"),
+        technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
         actionDirection: action ? getComputedStyle(action).flexDirection : "",
@@ -4621,9 +4637,13 @@ async (page) => {
     if (
       !desktop.summaryIsDetails ||
       !desktop.summaryOpen ||
+      !desktop.technicalVisible ||
+      desktop.technicalOpen ||
       desktop.documentWidth > desktop.viewportWidth + 1 ||
       !mobile.summaryIsDetails ||
       mobile.summaryOpen ||
+      !mobile.technicalVisible ||
+      mobile.technicalOpen ||
       mobile.actionDirection !== "column" ||
       mobile.buttonsColumns.split(/\s+/).length !== 1 ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
@@ -10253,9 +10273,9 @@ async (page) => {
         customInvalid: custom.getAttribute("aria-invalid"),
         errorHidden: document.getElementById("uploadMimeError")?.hidden,
         summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
+        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+        requestText: document.getElementById("uploadRequestArea")?.textContent,
       };
-      mode.value = "auto";
-      mode.dispatchEvent(new Event("change", { bubbles: true }));
       return { invalid, valid };
     });
     if (
@@ -10269,10 +10289,63 @@ async (page) => {
       mimeValidation.valid.modeInvalid !== "false" ||
       mimeValidation.valid.customInvalid !== "false" ||
       mimeValidation.valid.errorHidden !== true ||
-      mimeValidation.valid.summaryMime !== "application/x-browser-smoke; version=1"
+      mimeValidation.valid.summaryMime !== "application/x-browser-smoke; version=1" ||
+      mimeValidation.valid.technicalOpen !== false ||
+      !mimeValidation.valid.requestText.includes(
+        "Content-Type: multipart/form-data; boundary=<browser-generated>"
+      ) ||
+      !mimeValidation.valid.requestText.includes(
+        'Content-Disposition: form-data; name="file"; filename="mime-check.txt"'
+      ) ||
+      !mimeValidation.valid.requestText.includes(
+        "Content-Type: application/x-browser-smoke; version=1"
+      )
     ) {
       throw new Error(`Upload MIME validation failed: ${JSON.stringify(mimeValidation)}`);
     }
+    await page.locator("#uploadTechnicalDetails > summary").click();
+    await page.locator("#uploadMimeMode").selectOption("text-plain");
+    const openPreview = await page.evaluate(() => ({
+      technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+      requestText: document.getElementById("uploadRequestArea")?.textContent || "",
+    }));
+    if (
+      openPreview.technicalOpen !== true ||
+      !openPreview.requestText.includes("Content-Type: text/plain")
+    ) {
+      throw new Error(
+        `Upload technical disclosure ignored open user state: ${JSON.stringify(openPreview)}`
+      );
+    }
+    const multipartPreviewTokens = [
+      "POST /uploads HTTP/1.1",
+      "Content-Type: multipart/form-data; boundary=<browser-generated>",
+      "--<browser-generated>",
+      'Content-Disposition: form-data; name="file"; filename="mime-check.txt"',
+      "Content-Type: text/plain",
+    ];
+    await page.locator('[data-exchange-copy-area="uploadRequestArea"]').click();
+    await assertClipboardSnapshot("live multipart upload preview", multipartPreviewTokens);
+    await assertExchangeDownload(
+      "uploadRequestArea",
+      multipartPreviewTokens,
+      /^xferry-upload-request-.*\.http$/
+    );
+    await page.locator("#uploadTechnicalDetails > summary").click();
+    await page.locator("#uploadMimeMode").selectOption("octet-stream");
+    const closedPreview = await page.evaluate(() => ({
+      technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+      requestText: document.getElementById("uploadRequestArea")?.textContent || "",
+    }));
+    if (
+      closedPreview.technicalOpen !== false ||
+      !closedPreview.requestText.includes("Content-Type: application/octet-stream")
+    ) {
+      throw new Error(
+        `Upload technical disclosure ignored closed user state: ${JSON.stringify(closedPreview)}`
+      );
+    }
+    await page.locator("#uploadMimeMode").selectOption("auto");
     await page.locator('#fileList [data-remove-index="0"]').click();
 
     await page.locator('[data-upload-profile="multipart"]').focus();

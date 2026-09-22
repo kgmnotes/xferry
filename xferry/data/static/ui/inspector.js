@@ -347,6 +347,8 @@ function createExchangeBinaryBody(options = {}) {
         size: Number(options.size || 0),
         bytes: options.bytes || null,
         label: options.label || '',
+        rawPrefix: options.rawPrefix || '',
+        rawSuffix: options.rawSuffix || '',
     };
 }
 
@@ -375,7 +377,7 @@ function formatExchangeBody(body, options = {}) {
     if (body.kind === 'binary') {
         const previewText = formatExchangeBinaryBodyPreview(body, options);
         if (options.raw) {
-            return previewText;
+            return `${body.rawPrefix || ''}${previewText}${body.rawSuffix || ''}`;
         }
 
         const lines = [
@@ -513,6 +515,9 @@ function formatExchangeBodyForExport(body) {
     }
 
     if (body.kind === 'binary') {
+        if (body.rawPrefix || body.rawSuffix) {
+            return `${body.rawPrefix || ''}${formatExchangeBinaryBodyPreview(body, { raw: true })}${body.rawSuffix || ''}`;
+        }
         const lines = [
             `${t('exchangeBodyKind')}: ${t('exchangeBinaryBody')}`,
         ];
