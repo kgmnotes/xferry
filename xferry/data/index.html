@@ -39,8 +39,8 @@
         <main class="page-content">
             <section class="workspace-shell">
                 <div class="tabs mode-tabs" role="tablist" aria-label="Режимы сервера" data-i18n-aria-label="serverModesLabel">
-                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="tabUpload">Отправить</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="tabFiles">Файлы</button>
+                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="topTabUpload">Отправить</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="topTabFiles">Получить</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Запросы</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Расширенные</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="notepad-tab" tabindex="-1" id="tab-notepad" data-tool-entry="notepad" data-tab-target="notepad" data-i18n="tabNotepad">Блокнот</button>
@@ -150,9 +150,6 @@
                     </section>
 
                     <section id="upload-tab" class="tab-content active workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-upload">
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabUpload">Отправить</h2>
-                    </div>
                     <div class="tool-stack tool-stack--upload">
                         <div class="tool-card tool-card--workflow">
                             <section class="upload-method-section" aria-labelledby="uploadMethodTitle">
@@ -311,9 +308,6 @@
                     </section>
 
                     <section id="opsec-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-opsec" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabOpsec">Продвинутая загрузка</h2>
-                    </div>
                     <div class="tool-stack tool-stack--opsec">
                         <section
                             class="tool-card advanced-routing-panel"
@@ -667,9 +661,6 @@
                     </section>
 
                     <section id="files-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-files" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabFiles">Файлы</h2>
-                    </div>
                     <div class="tool-stack tool-stack--files">
                         <div class="tool-card tool-card--workflow">
                             <div class="file-browser__toolbar input-group">
@@ -812,9 +803,6 @@
                     </section>
 
                     <section id="notepad-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-notepad" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabNotepad">Блокнот</h2>
-                    </div>
                     <div class="tool-card note-shell">
                         <div class="notepad-toolbar">
                             <div class="notepad-title-field">

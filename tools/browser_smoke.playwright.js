@@ -13,15 +13,15 @@ async (page) => {
   const browserIssues = [];
   const rootUrl = String(baseUrl || "").replace(/#.*$/, "");
   const topTabContract = [
-    { id: "tab-upload", target: "upload", key: "tabUpload" },
-    { id: "tab-files", target: "files", key: "tabFiles" },
+    { id: "tab-upload", target: "upload", key: "topTabUpload" },
+    { id: "tab-files", target: "files", key: "topTabFiles" },
     { id: "tab-request", target: "request", key: "tabRequests" },
     { id: "tab-opsec", target: "opsec", key: "tabOpsec" },
     { id: "tab-notepad", target: "notepad", key: "tabNotepad" },
   ];
   const topTabLabels = {
-    ru: ["Отправить", "Файлы", "Запросы", "Расширенные", "Блокнот"],
-    en: ["Send", "Files", "Requests", "Advanced", "Notepad"],
+    ru: ["Отправить", "Получить", "Запросы", "Расширенные", "Блокнот"],
+    en: ["Upload", "Download", "Requests", "Advanced", "Notepad"],
   };
 
   function requestPathname(request) {
@@ -484,7 +484,8 @@ async (page) => {
           ruButton?.classList.contains("active") &&
           ruButton?.getAttribute("aria-pressed") === "true" &&
           enButton?.getAttribute("aria-pressed") === "false" &&
-          document.getElementById("tab-upload")?.textContent?.trim() === "Отправить"
+          document.getElementById("tab-upload")?.textContent?.trim() === "Отправить" &&
+          document.getElementById("tab-files")?.textContent?.trim() === "Получить"
         );
       },
       null,
@@ -4096,6 +4097,9 @@ async (page) => {
           .map((item) => item.id);
         const expectedIds = expectedTabs.map((tab) => tab.id);
         const visibleOk = rects.every((rect) => rect.width > 0 && rect.height > 0);
+        const redundantHeadingsAbsent = ["upload", "files", "opsec", "notepad"].every(
+          (target) => !document.querySelector(`#${target}-tab > .workspace-view__header`)
+        );
         const activeOk = Boolean(
           activeTab &&
           activePanel &&
@@ -4105,7 +4109,13 @@ async (page) => {
           activePanel.classList.contains("active") &&
           activePanel.hidden === false
         );
-        return domOrderOk && visibleOk && visualOrder.join(",") === expectedIds.join(",") && activeOk;
+        return (
+          domOrderOk &&
+          visibleOk &&
+          redundantHeadingsAbsent &&
+          visualOrder.join(",") === expectedIds.join(",") &&
+          activeOk
+        );
       },
       [topTabContract, topTabLabels[lang], expectedActive],
       timeout
@@ -13065,7 +13075,7 @@ async (page) => {
     await switchLanguage("ru");
     await assertLocaleSnapshot({
       uploadTabText: "Отправить",
-      filesTabText: "Файлы",
+      filesTabText: "Получить",
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",
@@ -13098,8 +13108,8 @@ async (page) => {
     });
     await switchLanguage("en");
     await assertLocaleSnapshot({
-      uploadTabText: "Send",
-      filesTabText: "Files",
+      uploadTabText: "Upload",
+      filesTabText: "Download",
       requestTabText: "Requests",
       opsecTabText: "Advanced",
       notepadTabText: "Notepad",
@@ -13134,7 +13144,7 @@ async (page) => {
     await switchLanguage("ru");
     await assertLocaleSnapshot({
       uploadTabText: "Отправить",
-      filesTabText: "Файлы",
+      filesTabText: "Получить",
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",

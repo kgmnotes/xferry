@@ -581,14 +581,14 @@ def test_russian_locale_uses_russian_swg_tool_copy() -> None:
     assert "HTTP-инструмент для Secure Web Gateway проверок" not in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
+        ("tab-upload", "topTabUpload", "Отправить"),
+        ("tab-files", "topTabFiles", "Получить"),
         ("tab-request", "tabRequests", "Запросы"),
         ("tab-opsec", "tabOpsec", "Расширенные"),
         ("tab-notepad", "tabNotepad", "Блокнот"),
     ]
-    assert 'tabUpload: "Отправить"' in core_js
-    assert 'tabFiles: "Файлы"' in core_js
+    assert 'topTabUpload: "Отправить"' in core_js
+    assert 'topTabFiles: "Получить"' in core_js
     assert 'tabRequests: "Запросы"' in core_js
     assert 'tabOpsec: "Расширенные"' in core_js
     assert 'tabNotepad: "Блокнот"' in core_js
@@ -689,15 +689,15 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
     )
 
     expected_ru_labels = {
-        "tabUpload": "Отправить",
-        "tabFiles": "Файлы",
+        "topTabUpload": "Отправить",
+        "topTabFiles": "Получить",
         "tabRequests": "Запросы",
         "tabOpsec": "Расширенные",
         "tabNotepad": "Блокнот",
     }
     expected_en_labels = {
-        "tabUpload": "Send",
-        "tabFiles": "Files",
+        "topTabUpload": "Upload",
+        "topTabFiles": "Download",
         "tabRequests": "Requests",
         "tabOpsec": "Advanced",
         "tabNotepad": "Notepad",
@@ -708,8 +708,8 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
         assert f'{key}: "{label}"' in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
+        ("tab-upload", "topTabUpload", "Отправить"),
+        ("tab-files", "topTabFiles", "Получить"),
         ("tab-request", "tabRequests", "Запросы"),
         ("tab-opsec", "tabOpsec", "Расширенные"),
         ("tab-notepad", "tabNotepad", "Блокнот"),
@@ -717,6 +717,27 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
     assert 'tabUpload: "Upload (regular)"' not in core_js
     assert 'tabOpsec: "Upload (advanced)"' not in core_js
     assert 'tabFiles: "Download"' not in core_js
+
+
+def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_headings() -> None:
+    """Catches transfer labels being repeated between navigation and tool content."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+    core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert extract_top_tab_buttons(html)[:2] == [
+        ("tab-upload", "topTabUpload", "Отправить"),
+        ("tab-files", "topTabFiles", "Получить"),
+    ]
+    assert 'topTabUpload: "Отправить"' in core_js
+    assert 'topTabFiles: "Получить"' in core_js
+    assert 'topTabUpload: "Upload"' in core_js
+    assert 'topTabFiles: "Download"' in core_js
+
+    for panel_id in ("upload-tab", "files-tab", "opsec-tab", "notepad-tab"):
+        panel = extract_workspace_panel(html, panel_id)
+        assert 'class="workspace-view__header"' not in panel
 
 
 def test_advanced_upload_constructor_is_profile_first() -> None:
@@ -1163,8 +1184,8 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
 
     top_tabs = extract_top_tab_buttons(html)
     assert top_tabs == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
+        ("tab-upload", "topTabUpload", "Отправить"),
+        ("tab-files", "topTabFiles", "Получить"),
         ("tab-request", "tabRequests", "Запросы"),
         ("tab-opsec", "tabOpsec", "Расширенные"),
         ("tab-notepad", "tabNotepad", "Блокнот"),
@@ -1185,13 +1206,13 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
     )
 
     for expected in (
-        'tabUpload: "Отправить"',
-        'tabFiles: "Файлы"',
+        'topTabUpload: "Отправить"',
+        'topTabFiles: "Получить"',
         'tabRequests: "Запросы"',
         'tabOpsec: "Расширенные"',
         'tabNotepad: "Блокнот"',
-        'tabUpload: "Send"',
-        'tabFiles: "Files"',
+        'topTabUpload: "Upload"',
+        'topTabFiles: "Download"',
         'tabRequests: "Requests"',
         'tabOpsec: "Advanced"',
         'tabNotepad: "Notepad"',
