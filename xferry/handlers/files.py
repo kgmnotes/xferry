@@ -60,6 +60,7 @@ DELETE_ERROR_PATH_DETAIL_MAX_CHARS = 1024
 FETCH_ERROR_PATH_DETAIL_MAX_CHARS = 1024
 CLEAR_QUERY_ALLOWED_VALUES = ("true", "false")
 DELETE_QUERY_ALLOWED_FIELDS = frozenset({"clear"})
+BASIC_UPLOAD_COLLECTION_PATHS = frozenset({"/", "/upload", "/api", "/file"})
 
 
 class FileHandlersMixin(BaseHandler):
@@ -863,7 +864,9 @@ class FileHandlersMixin(BaseHandler):
 
     @staticmethod
     def _basic_url_filename(path: str, *, multipart: bool) -> str | None:
-        """Resolve a URL filename, treating multipart `/uploads` as a collection."""
+        """Resolve a URL filename while preserving explicit collection paths."""
+        if path in BASIC_UPLOAD_COLLECTION_PATHS:
+            return None
         normalized = path.rstrip("/") or "/"
         if multipart and normalized == "/uploads":
             return None

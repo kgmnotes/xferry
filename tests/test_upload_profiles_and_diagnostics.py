@@ -1313,6 +1313,11 @@ def test_advanced_upload_diagnostics_preserves_canonical_body_and_adds_only_hand
 @pytest.mark.parametrize(
     ("path", "headers", "expected_name", "expected_source", "expected_profile"),
     [
+        ("/upload", {}, None, "generated", "raw_url"),
+        ("/api", {}, None, "generated", "raw_url"),
+        ("/file", {}, None, "generated", "raw_url"),
+        ("/api/report.pdf", {}, "report.pdf", "url", "raw_url"),
+        ("/api/", {}, "api", "url", "raw_url"),
         ("/uploads", {}, "uploads", "url", "raw_url"),
         (
             "/uploads",
@@ -1332,7 +1337,7 @@ def test_advanced_upload_diagnostics_preserves_canonical_body_and_adds_only_hand
         ("/", {}, None, "generated", "raw_url"),
     ],
 )
-def test_basic_raw_filename_precedence_and_legacy_uploads_name(
+def test_basic_raw_filename_precedence_and_collection_paths(
     upload_server: UploadServer,
     upload_dir: Path,
     path: str,
@@ -1341,7 +1346,7 @@ def test_basic_raw_filename_precedence_and_legacy_uploads_name(
     expected_source: str,
     expected_profile: str,
 ) -> None:
-    """Catches `/uploads` being treated as an unconditional collection."""
+    """Catches preset targets becoming filenames or legacy paths changing."""
     payload = b"raw bytes"
     response = upload_server._dispatch_handler(
         make_request("PUT", path, headers=headers, body=payload)
