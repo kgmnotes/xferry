@@ -2144,26 +2144,30 @@
     width: min(100%, 560px);
 }
 
-#upload-tab .upload-profile-section {
+#upload-tab .upload-profile-section,
+#upload-tab .upload-target-path-section {
     display: grid;
     gap: var(--space-2);
     width: min(100%, 560px);
 }
 
 #upload-tab .upload-profile-section > h3,
+#upload-tab .upload-target-path-section > h3,
 .upload-request-summary > summary,
 .upload-compare-results > h3 {
     margin: 0;
 }
 
-#upload-tab .upload-profile-group {
+#upload-tab .upload-profile-group,
+#upload-tab .upload-target-path-group {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-2);
     width: min(100%, 560px);
 }
 
-#upload-tab .upload-profile-btn {
+#upload-tab .upload-profile-btn,
+#upload-tab .upload-target-path-btn {
     min-width: 0;
     min-height: 44px;
     padding: 0 var(--space-3);
@@ -2177,15 +2181,22 @@
 }
 
 #upload-tab .upload-profile-btn:hover,
-#upload-tab .upload-profile-btn:focus-visible {
+#upload-tab .upload-profile-btn:focus-visible,
+#upload-tab .upload-target-path-btn:hover,
+#upload-tab .upload-target-path-btn:focus-visible {
     border-color: color-mix(in srgb, var(--accent-secondary) 58%, var(--border-subtle));
     color: var(--text-primary);
 }
 
-#upload-tab .upload-profile-btn.active {
+#upload-tab .upload-profile-btn.active,
+#upload-tab .upload-target-path-btn.active {
     border: 2px solid var(--accent-secondary);
     background: color-mix(in srgb, var(--accent-secondary) 16%, var(--bg-elevated));
     color: var(--text-primary);
+}
+
+#upload-tab .upload-target-path-btn {
+    font-family: var(--font-mono);
 }
 
 .upload-request-summary,

@@ -827,6 +827,12 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
 
+    assert 'id="uploadTargetPathGroup"' in upload_tab
+    assert re.findall(
+        r'class="[^"]*upload-target-path-btn[^"]*"\s+data-upload-target-path="([^"]+)"',
+        upload_tab,
+    ) == ["/", "/upload", "/api", "/file"]
+    assert 'data-upload-target-path="/upload" role="radio" aria-checked="true"' in upload_tab
     assert 'id="uploadProfileGroup"' in upload_tab
     assert re.findall(
         r'class="[^"]*upload-profile-btn[^"]*"\s+data-upload-profile="([^"]+)"',
@@ -854,12 +860,14 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     assert 'id="uploadCompareResults"' in upload_tab
     assert "compare: compareBasicUploadProfiles" in upload_js
     assert "'compare-methods': compareBasicUploadMethods" in upload_js
+    assert "'set-target-path': setUploadTargetPath" in upload_js
     assert 'id="basicAdvancedRoutingWarning"' not in upload_tab
     assert 'id="basicAdvancedRoutingDisableBtn"' not in upload_tab
     assert 'id="uploadHelpDetails"' not in upload_tab
     assert 'class="upload-flow-strip"' not in upload_tab
 
     locale_keys = {
+        "uploadTargetPathLabel",
         "uploadProfileLabel",
         "uploadProfileMultipart",
         "uploadProfileRawUrl",
@@ -919,7 +927,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
     assert upload_tab.count('class="upload-method-section"') == 1
     assert upload_tab.count('class="upload-method-group"') == 1
-    assert upload_tab.count('role="radiogroup"') == 2
+    assert upload_tab.count('role="radiogroup"') == 3
     assert re.findall(
         r'class="[^"]*upload-method-btn[^"]*"\s+data-upload-method="([A-Z]+)"',
         upload_tab,
@@ -941,6 +949,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
 
     source_order = (
         'class="upload-method-section"',
+        'id="uploadTargetPathGroup"',
         'id="uploadProfileGroup"',
         'id="uploadPickerActions"',
         'id="dropZone"',
@@ -987,6 +996,7 @@ globalThis.basicUploadProfiles = Object.freeze([
     'raw-header',
     'raw-generated',
 ]);
+globalThis.basicUploadTargetPaths = Object.freeze(['/', '/upload', '/api', '/file']);
 globalThis.SERVER_URL = 'https://xferry.test/';
 globalThis.location = { href: 'https://xferry.test/' };
 globalThis.withUiNoGzipHeader = headers => ({ ...headers });
@@ -1089,6 +1099,24 @@ process.stdout.write(JSON.stringify({
         customMime: 'application/x-xferry; version=1',
     }),
     noFilenameAuto: summarize({ method: 'NONE', profile: 'raw-generated', mimeMode: 'auto' }),
+    apiTargets: globalThis.basicUploadProfiles.map(profile => summarize({
+        method: 'POST',
+        profile,
+        mimeMode: 'auto',
+        targetPath: '/api',
+    }).pathname),
+    rootRawUrl: summarize({
+        method: 'POST',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/',
+    }).pathname,
+    invalidTargetFallback: summarize({
+        method: 'POST',
+        profile: 'raw-generated',
+        mimeMode: 'auto',
+        targetPath: '/unknown',
+    }).pathname,
     invalid,
     invalidCompile,
     invalidCustomMimes,
@@ -1119,7 +1147,7 @@ process.stdout.write(JSON.stringify({
     assert json.loads(completed.stdout) == {
         "multipartAuto": {
             "profile": "multipart",
-            "pathname": "/uploads",
+            "pathname": "/upload",
             "wireHeaders": {},
             "mime": "application/x-sample",
             "filenameSource": "part",
@@ -1132,7 +1160,7 @@ process.stdout.write(JSON.stringify({
         },
         "multipartPdf": {
             "profile": "multipart",
-            "pathname": "/uploads",
+            "pathname": "/upload",
             "wireHeaders": {},
             "mime": "application/pdf",
             "filenameSource": "part",
@@ -1145,7 +1173,7 @@ process.stdout.write(JSON.stringify({
         },
         "rawUrlText": {
             "profile": "raw-url",
-            "pathname": "/uploads/sample.bin",
+            "pathname": "/upload/sample.bin",
             "wireHeaders": {"Content-Type": "text/plain"},
             "mime": "text/plain",
             "filenameSource": "url",
@@ -1154,7 +1182,7 @@ process.stdout.write(JSON.stringify({
         },
         "rawHeaderPdf": {
             "profile": "raw-header",
-            "pathname": "/uploads",
+            "pathname": "/upload",
             "wireHeaders": {
                 "Content-Type": "application/pdf",
                 "X-File-Name": "sample.bin",
@@ -1166,7 +1194,7 @@ process.stdout.write(JSON.stringify({
         },
         "rawHeaderCustom": {
             "profile": "raw-header",
-            "pathname": "/uploads",
+            "pathname": "/upload",
             "wireHeaders": {
                 "Content-Type": "application/x-xferry; version=1",
                 "X-File-Name": "sample.bin",
@@ -1178,13 +1206,16 @@ process.stdout.write(JSON.stringify({
         },
         "noFilenameAuto": {
             "profile": "raw-generated",
-            "pathname": "/",
+            "pathname": "/upload",
             "wireHeaders": {"Content-Type": "application/octet-stream"},
             "mime": "application/octet-stream",
             "filenameSource": "generated",
             "previewFilename": "",
             "formFile": None,
         },
+        "apiTargets": ["/api", "/api/sample.bin", "/api", "/api"],
+        "rootRawUrl": "/sample.bin",
+        "invalidTargetFallback": "/upload",
         "invalid": {
             "mode": "custom",
             "valid": False,

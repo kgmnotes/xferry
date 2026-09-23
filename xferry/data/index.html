@@ -162,6 +162,21 @@
                                 </div>
                             </section>
 
+                            <section class="upload-target-path-section" aria-labelledby="uploadTargetPathTitle">
+                                <h3 id="uploadTargetPathTitle" data-i18n="uploadTargetPathLabel">Путь запроса</h3>
+                                <div
+                                    class="upload-target-path-group"
+                                    id="uploadTargetPathGroup"
+                                    role="radiogroup"
+                                    aria-labelledby="uploadTargetPathTitle"
+                                >
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/" role="radio" aria-checked="false" tabindex="-1">/</button>
+                                    <button type="button" class="upload-target-path-btn active" data-upload-target-path="/upload" role="radio" aria-checked="true" tabindex="0">/upload</button>
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/api" role="radio" aria-checked="false" tabindex="-1">/api</button>
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/file" role="radio" aria-checked="false" tabindex="-1">/file</button>
+                                </div>
+                            </section>
+
                             <section class="upload-profile-section" aria-labelledby="uploadProfileTitle">
                                 <h3 id="uploadProfileTitle" data-i18n="uploadProfileLabel">Профиль запроса</h3>
                                 <div
@@ -229,7 +244,7 @@
                                 <dl class="upload-request-summary__grid">
                                     <div>
                                         <dt data-i18n="uploadSummaryRequestLine">Строка запроса</dt>
-                                        <dd data-upload-summary="request-line">POST /uploads</dd>
+                                        <dd data-upload-summary="request-line">POST /upload</dd>
                                     </div>
                                     <div>
                                         <dt data-i18n="uploadSummaryBodyKind">Тело</dt>

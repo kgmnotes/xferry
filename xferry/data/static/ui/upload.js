@@ -31,6 +31,7 @@ function sendCustomRequest(...args) {
 // ===== Загрузка файлов =====
 const uploadState = {
     method: 'POST',
+    targetPath: '/upload',
     profile: 'multipart',
     mimeMode: 'auto',
     customMime: '',
@@ -66,6 +67,7 @@ const uploadState = {
 let activeBasicUploadErrorFile = null;
 const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
 const basicUploadMethods = Object.freeze(['POST', 'NONE', 'PUT', 'PATCH']);
+const basicUploadTargetPaths = Object.freeze(['/', '/upload', '/api', '/file']);
 const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'pdf', 'custom']);
 const uploadCustomMimeMaxLength = 120;
 const uploadMimePattern = /^(?=[\x20-\x7E]+$)[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?: *; *[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\]|\\.)*"))*$/;
@@ -73,6 +75,9 @@ const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'n
     ? exchangeBinaryTextPreviewLimit
     : 512) + 1;
 const uploadMethodButtons = Array.from(document.querySelectorAll('.upload-method-btn[data-upload-method]'));
+const uploadTargetPathButtons = Array.from(document.querySelectorAll(
+    '.upload-target-path-btn[data-upload-target-path]'
+));
 const uploadProfileButtons = Array.from(document.querySelectorAll('.upload-profile-btn[data-upload-profile]'));
 const uploadStatus = document.getElementById('uploadStatus');
 const uploadStatusIcon = uploadStatus?.querySelector('.upload-status__icon') || null;
@@ -347,6 +352,9 @@ function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes =
         ? state.profile
         : 'multipart';
     const method = String(state?.method || 'POST').toUpperCase();
+    const targetPath = basicUploadTargetPaths.includes(state?.targetPath)
+        ? state.targetPath
+        : '/upload';
     const filename = String(file?.name || 'upload.bin');
     const encodedFilename = encodeURIComponent(filename);
     const fileMime = resolveUploadDeclaredMime(state, file, profile);
@@ -354,7 +362,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes =
     const previewByteView = getUploadByteView(previewBytes);
     const bodySize = bodyByteView?.byteLength ?? Number(file?.size || 0);
 
-    let pathname = '/uploads';
+    let pathname = targetPath;
     let body = bodyBytes || file;
     let wireHeaders = {};
     let traceHeaders = {};
@@ -384,7 +392,9 @@ function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes =
         });
         multipartPreview = buildUploadMultipartPreviewEnvelope(filename, mime);
     } else if (profile === 'raw-url') {
-        pathname = `/uploads/${encodedFilename}`;
+        pathname = targetPath === '/'
+            ? `/${encodedFilename}`
+            : `${targetPath}/${encodedFilename}`;
         wireHeaders = withUiNoGzipHeader({
             'Content-Type': fileMime,
         });
@@ -403,7 +413,6 @@ function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes =
             'Content-Length': String(bodySize),
         };
     } else {
-        pathname = '/';
         filenameSource = 'generated';
         previewFilename = '';
         wireHeaders = withUiNoGzipHeader({
@@ -490,6 +499,31 @@ function setUploadProfile(profile, btn, options = {}) {
     let activeButton = btn || null;
     uploadProfileButtons.forEach(button => {
         const isActive = button.dataset.uploadProfile === profile;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-checked', String(isActive));
+        button.setAttribute('tabindex', isActive ? '0' : '-1');
+        if (isActive) {
+            activeButton = button;
+        }
+    });
+
+    refreshUploadRequestPreview();
+    refreshUploadActionState();
+    if (focusButton) {
+        focusElementWithoutScroll(activeButton);
+    }
+}
+
+function setUploadTargetPath(targetPath, btn, options = {}) {
+    const { focusButton = false } = options;
+    if (!basicUploadTargetPaths.includes(targetPath)) {
+        return;
+    }
+    uploadState.targetPath = targetPath;
+
+    let activeButton = btn || null;
+    uploadTargetPathButtons.forEach(button => {
+        const isActive = button.dataset.uploadTargetPath === targetPath;
         button.classList.toggle('active', isActive);
         button.setAttribute('aria-checked', String(isActive));
         button.setAttribute('tabindex', isActive ? '0' : '-1');
@@ -639,6 +673,7 @@ function getBasicUploadComparisonCases(axis, state = uploadState) {
     return values.map(value => {
         const requestState = Object.freeze({
             method: axis === 'method' ? value : state.method,
+            targetPath: state.targetPath,
             profile: axis === 'profile' ? value : state.profile,
             mimeMode: state.mimeMode,
             customMime: state.customMime,
@@ -712,6 +747,9 @@ function refreshUploadActionState() {
         button.disabled = busy || !enabled || !methodSupported;
     });
     uploadProfileButtons.forEach(button => {
+        button.disabled = busy || !enabled;
+    });
+    uploadTargetPathButtons.forEach(button => {
         button.disabled = busy || !enabled;
     });
     if (uploadMimeMode) uploadMimeMode.disabled = busy || !enabled;
@@ -1024,6 +1062,44 @@ uploadProfileButtons.forEach(button => {
     });
 });
 
+uploadTargetPathButtons.forEach(button => {
+    button.addEventListener('click', () => {
+        const targetPath = button.dataset.uploadTargetPath;
+        if (targetPath) {
+            setUploadTargetPath(targetPath, button);
+        }
+    });
+
+    button.addEventListener('keydown', (event) => {
+        const currentIndex = uploadTargetPathButtons.indexOf(button);
+        if (currentIndex === -1) {
+            return;
+        }
+
+        let nextIndex;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+            nextIndex = (currentIndex + 1) % uploadTargetPathButtons.length;
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+            nextIndex = (
+                currentIndex - 1 + uploadTargetPathButtons.length
+            ) % uploadTargetPathButtons.length;
+        } else if (event.key === 'Home') {
+            nextIndex = 0;
+        } else if (event.key === 'End') {
+            nextIndex = uploadTargetPathButtons.length - 1;
+        } else {
+            return;
+        }
+
+        event.preventDefault();
+        const nextButton = uploadTargetPathButtons[nextIndex];
+        const targetPath = nextButton?.dataset.uploadTargetPath;
+        if (targetPath) {
+            setUploadTargetPath(targetPath, nextButton, { focusButton: true });
+        }
+    });
+});
+
 uploadMimeMode?.addEventListener('change', () => {
     setUploadMimeMode(uploadMimeMode.value);
 });
@@ -1305,6 +1381,7 @@ function createBasicUploadRetryContext(fileData, requestState = uploadState) {
         size: fileData.size,
         requestState: Object.freeze({
             method: requestState.method,
+            targetPath: requestState.targetPath,
             profile: requestState.profile,
             mimeMode: requestState.mimeMode,
             customMime: requestState.customMime,
@@ -2077,12 +2154,14 @@ app.registerWorkflow('upload', {
         'compare-methods': compareBasicUploadMethods,
         'compile-request': compileBasicUploadRequest,
         'set-method': setUploadMethod,
+        'set-target-path': setUploadTargetPath,
         'set-profile': setUploadProfile,
         'handle-files': handleFiles,
         'refresh-methods': refreshUploadMethodAvailability,
     },
     getState: () => ({
         method: uploadState.method,
+        targetPath: uploadState.targetPath,
         profile: uploadState.profile,
         fileCount: uploadState.files.length,
         pendingCount: uploadState.files.filter(file => file.status === 'pending').length,

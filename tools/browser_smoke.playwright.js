@@ -10064,13 +10064,18 @@ async (page) => {
     await waitForPageCondition(
       "mobile upload profile summary fits viewport",
       () => {
+        const targetPath = document.getElementById("uploadTargetPathGroup")
+          ?.getBoundingClientRect();
         const profile = document.getElementById("uploadProfileGroup")?.getBoundingClientRect();
         const summary = document.getElementById("uploadRequestSummary")?.getBoundingClientRect();
         return Boolean(
+          targetPath &&
           profile &&
           summary &&
+          targetPath.left >= 0 &&
           profile.left >= 0 &&
           summary.left >= 0 &&
+          targetPath.right <= innerWidth &&
           profile.right <= innerWidth &&
           summary.right <= innerWidth
         );
@@ -10280,7 +10285,19 @@ async (page) => {
       const buttons = Array.from(
         document.querySelectorAll("#uploadProfileGroup [data-upload-profile]")
       );
+      const targetPathButtons = Array.from(
+        document.querySelectorAll("#uploadTargetPathGroup [data-upload-target-path]")
+      );
       return {
+        targetPaths: targetPathButtons.map((button) => button.dataset.uploadTargetPath),
+        targetPathChecked: targetPathButtons
+          .filter((button) => button.getAttribute("aria-checked") === "true")
+          .map((button) => button.dataset.uploadTargetPath),
+        targetPathTabbable: targetPathButtons
+          .filter((button) => button.tabIndex === 0)
+          .map((button) => button.dataset.uploadTargetPath),
+        targetPathLabel: document.getElementById("uploadTargetPathTitle")?.textContent?.trim(),
+        stateTargetPath: window.XferryApp.getState("upload").targetPath,
         profiles: buttons.map((button) => button.dataset.uploadProfile),
         checked: buttons.filter((button) => button.getAttribute("aria-checked") === "true")
           .map((button) => button.dataset.uploadProfile),
@@ -10305,6 +10322,12 @@ async (page) => {
       };
     });
     if (
+      initialContract.targetPaths.join(",") !== "/,/upload,/api,/file" ||
+      initialContract.targetPathChecked.join(",") !== "/upload" ||
+      initialContract.targetPathTabbable.join(",") !== "/upload" ||
+      initialContract.targetPathLabel !== "Request path" ||
+      initialContract.stateTargetPath !== "/upload" ||
+      initialContract.summary.requestLine !== "POST /upload" ||
       initialContract.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
       initialContract.checked.join(",") !== "multipart" ||
       initialContract.tabbable.join(",") !== "multipart" ||
@@ -10329,6 +10352,21 @@ async (page) => {
       ]);
     });
     await page.locator("#uploadMimeMode").selectOption("pdf");
+    await page.locator('[data-upload-target-path="/api"]').click();
+    await waitForPageCondition(
+      "Basic target path updates the live request preview",
+      () => {
+        const app = window.XferryApp;
+        return app.getState("upload").targetPath === "/api" &&
+          app.getState("upload").pendingCount === 1 &&
+          document.querySelector('[data-upload-summary="request-line"]')?.textContent ===
+            "POST /api" &&
+          app.service("inspector").getAreaRawText("uploadRequestArea").includes(
+            "POST /api HTTP/1.1"
+          );
+      }
+    );
+    await page.locator('[data-upload-target-path="/upload"]').click();
     const mimePreset = await page.evaluate(() => {
       const mode = document.getElementById("uploadMimeMode");
       return {
@@ -10379,7 +10417,7 @@ async (page) => {
       );
     }
     const multipartPreviewTokens = [
-      "POST /uploads HTTP/1.1",
+      "POST /upload HTTP/1.1",
       "Content-Type: multipart/form-data; boundary=<browser-generated>",
       "--<browser-generated>",
       'Content-Disposition: form-data; name="file"; filename="mime-check.txt"',
@@ -10422,7 +10460,7 @@ async (page) => {
       "large Basic upload preview sample loads",
       () => {
         const request = window.XferryApp.service("inspector").getInspectorState("upload")?.request;
-        return request?.path === "/" && Object.keys(request.body?.bytes || {}).length === 513;
+        return request?.path === "/upload" && Object.keys(request.body?.bytes || {}).length === 513;
       }
     );
     const largePreview = await page.evaluate(() => {
@@ -10463,17 +10501,51 @@ async (page) => {
       )
     );
 
+    await page.locator('[data-upload-target-path="/upload"]').focus();
+    await page.keyboard.press("End");
+    await waitForPageCondition(
+      "target path End key selects /file",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/file" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/file"
+      )
+    );
+    await page.keyboard.press("Home");
+    await waitForPageCondition(
+      "target path Home key selects root",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/"
+      )
+    );
+    await page.keyboard.press("ArrowRight");
+    await waitForPageCondition(
+      "target path ArrowRight returns to /upload",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/upload" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/upload"
+      )
+    );
+
     const compiler = await page.evaluate(() => {
       const app = window.XferryApp;
       const bytes = new TextEncoder().encode("abc");
       const file = new File([bytes], "кириллица #1.bin", {
         type: "application/x-profile-test",
       });
-      const serialize = (profile, mimeMode = "auto", customMime = "") => {
+      const serialize = (
+        profile,
+        mimeMode = "auto",
+        customMime = "",
+        targetPath = "/upload"
+      ) => {
         const plan = app.invoke(
           "upload",
           "compile-request",
-          { method: "PATCH", profile, mimeMode, customMime },
+          { method: "PATCH", targetPath, profile, mimeMode, customMime },
           file,
           bytes.buffer
         );
@@ -10504,7 +10576,7 @@ async (page) => {
     });
     const [multipart, rawUrl, rawHeader, rawGenerated] = compiler;
     if (
-      multipart.pathname !== "/uploads" ||
+      multipart.pathname !== "/upload" ||
       multipart.bodyType !== "FormData" ||
       multipart.formFile?.name !== "кириллица #1.bin" ||
       multipart.formFile?.type !== "application/x-profile-test" ||
@@ -10517,7 +10589,7 @@ async (page) => {
       throw new Error(`Multipart compiler wire mismatch: ${JSON.stringify(multipart)}`);
     }
     if (
-      rawUrl.pathname !== "/uploads/%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
+      rawUrl.pathname !== "/upload/%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
       rawUrl.wireHeaders["Content-Type"] !== "text/plain" ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "x-file-name") ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "content-length")
@@ -10525,7 +10597,7 @@ async (page) => {
       throw new Error(`Raw URL compiler wire mismatch: ${JSON.stringify(rawUrl)}`);
     }
     if (
-      rawHeader.pathname !== "/uploads" ||
+      rawHeader.pathname !== "/upload" ||
       rawHeader.wireHeaders["Content-Type"] !== "application/pdf" ||
       rawHeader.wireHeaders["X-File-Name"] !==
         "%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
@@ -10536,10 +10608,10 @@ async (page) => {
       throw new Error(`Raw Header compiler wire mismatch: ${JSON.stringify(rawHeader)}`);
     }
     if (
-      rawGenerated.pathname !== "/" ||
+      rawGenerated.pathname !== "/upload" ||
       rawGenerated.wireHeaders["Content-Type"] !== "application/octet-stream" ||
       rawGenerated.filenameSource !== "generated" ||
-      rawGenerated.requestLine !== "PATCH /" ||
+      rawGenerated.requestLine !== "PATCH /upload" ||
       Object.keys(rawGenerated.wireHeaders).some((name) => (
         name.toLowerCase() === "x-file-name"
       ))
@@ -10584,7 +10656,7 @@ async (page) => {
         bytes.buffer
       );
       const part = plan.body.get("file");
-      const request = new Request("https://xferry.test/uploads", {
+      const request = new Request("https://xferry.test/upload", {
         method: "POST",
         body: plan.body,
       });
@@ -10642,7 +10714,7 @@ async (page) => {
           ? "multipart"
           : (Object.keys(headers).some((name) => name.toLowerCase() === "x-file-name")
             ? "raw-header"
-            : (pathname === "/" ? "raw-generated" : "raw-url"));
+            : (pathname === "/api" ? "raw-generated" : "raw-url"));
         const formFile = body instanceof FormData ? body.get("file") : null;
         calls.push({
           method,
@@ -10651,6 +10723,9 @@ async (page) => {
           headers: { ...headers },
           bodyType: body?.constructor?.name || "",
           formName: formFile instanceof File ? formFile.name : "",
+          targetButtonsDisabled: Array.from(
+            document.querySelectorAll("[data-upload-target-path]")
+          ).every((button) => button.disabled),
         });
         await Promise.resolve();
         active -= 1;
@@ -10687,6 +10762,7 @@ async (page) => {
         });
       });
 
+      app.invoke("upload", "set-target-path", "/api");
       const scenarios = [
         ["multipart", "POST"],
         ["raw-url", "PUT"],
@@ -10723,6 +10799,9 @@ async (page) => {
         batchStatusSnapshots,
         maxActive,
         state: app.getState("upload"),
+        targetButtonsEnabled: Array.from(
+          document.querySelectorAll("[data-upload-target-path]")
+        ).every((button) => !button.disabled),
       };
     });
     if (
@@ -10744,29 +10823,32 @@ async (page) => {
         "multipart,multipart,raw-url,raw-url,raw-header,raw-header,raw-generated,raw-generated" ||
       queuedSend.calls.map((call) => call.method).join(",") !==
         "POST,POST,PUT,PUT,NONE,NONE,PATCH,PATCH" ||
+      queuedSend.calls.some((call) => call.targetButtonsDisabled !== true) ||
       queuedSend.calls.slice(0, 2).some((call) => (
-        call.pathname !== "/uploads" ||
+        call.pathname !== "/api" ||
         call.bodyType !== "FormData" ||
         Object.keys(call.headers).some((name) => name.toLowerCase() === "content-type")
       )) ||
       queuedSend.calls.slice(2, 4).some((call) => (
-        !call.pathname.startsWith("/uploads/raw-url-") ||
+        !call.pathname.startsWith("/api/raw-url-") ||
         Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
       )) ||
       queuedSend.calls.slice(4).some((call) => (
         call.profile === "raw-header" && (
-          call.pathname !== "/uploads" ||
+          call.pathname !== "/api" ||
           call.headers["Content-Type"] !== "application/octet-stream" ||
           Object.keys(call.headers)
             .filter((name) => name.toLowerCase() === "x-file-name").length !== 1
         )
       )) ||
       queuedSend.calls.slice(6).some((call) => (
-        call.pathname !== "/" ||
+        call.pathname !== "/api" ||
         call.headers["Content-Type"] !== "application/octet-stream" ||
         Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
       )) ||
-      queuedSend.state.pendingCount !== 0
+      queuedSend.state.pendingCount !== 0 ||
+      queuedSend.state.targetPath !== "/api" ||
+      queuedSend.targetButtonsEnabled !== true
     ) {
       throw new Error(`Queued send/compiler reuse failed: ${JSON.stringify(queuedSend)}`);
     }
@@ -10776,6 +10858,7 @@ async (page) => {
       const http = app.service("http");
       const mode = document.getElementById("uploadMimeMode");
       app.invoke("upload", "set-method", "POST");
+      app.invoke("upload", "set-target-path", "/file");
       app.invoke("upload", "set-profile", "raw-header");
       mode.value = "pdf";
       mode.dispatchEvent(new Event("change", { bubbles: true }));
@@ -10831,8 +10914,10 @@ async (page) => {
         }),
       ]);
       await app.invoke("upload", "send");
+      app.invoke("upload", "set-target-path", "/api");
       return {
         actionPhase: app.getState("upload").actionPhase,
+        currentTargetPath: app.getState("upload").targetPath,
         retryPresent: Boolean(document.querySelector("[data-upload-retry-index]")),
         calls: [...window.__xferryRetryMimeCalls],
       };
@@ -10840,8 +10925,10 @@ async (page) => {
     if (
       retryMimeSetup.actionPhase !== "idle" ||
       retryMimeSetup.retryPresent !== true ||
+      retryMimeSetup.currentTargetPath !== "/api" ||
       retryMimeSetup.calls.length !== 1 ||
-      retryMimeSetup.calls[0].contentType !== "application/pdf"
+      retryMimeSetup.calls[0].contentType !== "application/pdf" ||
+      retryMimeSetup.calls[0].pathname !== "/file"
     ) {
       throw new Error(`Basic retry MIME setup failed: ${JSON.stringify(retryMimeSetup)}`);
     }
@@ -10856,6 +10943,7 @@ async (page) => {
     const retryMime = await page.evaluate(() => {
       const app = window.XferryApp;
       const calls = [...window.__xferryRetryMimeCalls];
+      const currentTargetPath = app.getState("upload").targetPath;
       app.service("http")["set-adapter"](window.__xferryRetryMimeOriginalAdapter);
       delete window.__xferryRetryMimeOriginalAdapter;
       delete window.__xferryRetryMimeCalls;
@@ -10864,8 +10952,10 @@ async (page) => {
         new Event("change", { bubbles: true })
       );
       app.invoke("upload", "set-profile", "multipart");
+      app.invoke("upload", "set-target-path", "/upload");
       return {
         calls,
+        currentTargetPath,
         pendingCount: app.getState("upload").pendingCount,
         fileCount: app.getState("upload").fileCount,
       };
@@ -10874,9 +10964,10 @@ async (page) => {
       retryMime.calls.length !== 2 ||
       retryMime.calls.some(call => (
         call.method !== "POST" ||
-        call.pathname !== "/uploads" ||
+        call.pathname !== "/file" ||
         call.contentType !== "application/pdf"
       )) ||
+      retryMime.currentTargetPath !== "/api" ||
       retryMime.pendingCount !== 0 ||
       retryMime.fileCount !== 0
     ) {
@@ -10888,6 +10979,7 @@ async (page) => {
       const session = app.service("advanced-session");
       await session.ensureActive();
       app.invoke("upload", "set-method", "POST");
+      app.invoke("upload", "set-target-path", "/api");
       app.invoke("upload", "set-profile", "multipart");
       app.invoke("upload", "handle-files", [
         new File([new TextEncoder().encode("basic")], "basic-coexists.txt", {
@@ -10896,6 +10988,7 @@ async (page) => {
       ]);
       return {
         sessionActive: session.getSnapshot().active,
+        targetPath: app.getState("upload").targetPath,
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
         compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
@@ -10903,6 +10996,7 @@ async (page) => {
     });
     if (
       coexistenceSetup.sessionActive !== true ||
+      coexistenceSetup.targetPath !== "/api" ||
       coexistenceSetup.sendDisabled !== false ||
       coexistenceSetup.compareDisabled !== false ||
       coexistenceSetup.compareMethodsDisabled !== false
@@ -10914,7 +11008,7 @@ async (page) => {
 
     const basicSendResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST" &&
-      requestPathname(response.request()) === "/uploads"
+      requestPathname(response.request()) === "/api"
     ), { timeout: 15000 });
     await page.locator("#uploadBtn").click();
     const basicSendResponse = await basicSendResponsePromise;
@@ -10975,6 +11069,7 @@ async (page) => {
     await page.setViewportSize({ width: 1440, height: 1024 });
     await switchLanguage("ru");
     const singleStatusRu = await readUploadStatusSnapshot();
+    const targetPathLabelRu = await page.locator("#uploadTargetPathTitle").textContent();
     await switchLanguage("en");
 
     const compareSetup = await page.evaluate(() => {
@@ -10990,6 +11085,7 @@ async (page) => {
       ]);
       return {
         pendingCount: app.getState("upload").pendingCount,
+        targetPath: app.getState("upload").targetPath,
         sessionActive: app.service("advanced-session").getSnapshot().active,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
         compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
@@ -11002,8 +11098,8 @@ async (page) => {
       if (
         request.method() === "POST" &&
         (
-          requestPathname(request).startsWith("/uploads") ||
-          requestPathname(request) === "/"
+          requestPathname(request).startsWith("/api/") ||
+          requestPathname(request) === "/api"
         )
       ) {
         compareResponses.push({
@@ -11054,6 +11150,9 @@ async (page) => {
         domProfiles: rows.map((row) => row.dataset.uploadCompareResult),
         domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
         title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
+        requestTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-request]")?.textContent || ""
+        )),
         requestTracesPresent: rows.every((row) => Boolean(
           row.querySelector("[data-upload-compare-request]")?.textContent
         )),
@@ -11082,7 +11181,7 @@ async (page) => {
       const request = response.request();
       if (
         expectedMethods.includes(request.method()) &&
-        requestPathname(request) === "/uploads"
+        requestPathname(request) === "/api"
       ) {
         methodCompareResponses.push({
           method: request.method(),
@@ -11142,6 +11241,7 @@ async (page) => {
       actualBasicSend,
       singleStatusEn,
       singleStatusRu,
+      targetPathLabelRu,
       singleStatusMobile,
       compareSetup,
       profileConfirmation,
@@ -11172,11 +11272,13 @@ async (page) => {
       singleStatusRu.path.value !== "/uploads/basic-coexists.txt" ||
       singleStatusRu.size.label !== "Размер" ||
       singleStatusRu.size.value !== "5 B" ||
+      targetPathLabelRu?.trim() !== "Путь запроса" ||
       singleStatusMobile.statusVisible !== true ||
       singleStatusMobile.documentWidth > singleStatusMobile.viewportWidth + 1 ||
       singleStatusMobile.statusRight > singleStatusMobile.viewportWidth + 1 ||
       singleStatusMobile.metaRight > singleStatusMobile.viewportWidth + 1 ||
       compareSetup.pendingCount !== 1 ||
+      compareSetup.targetPath !== "/api" ||
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
       compareSetup.compareMethodsDisabled !== false ||
@@ -11198,6 +11300,15 @@ async (page) => {
       actualBasicCompare.verdicts.some((verdict) => verdict !== "delivered") ||
       actualBasicCompare.requestTracesPresent !== true ||
       actualBasicCompare.responseTracesPresent !== true ||
+      actualBasicCompare.requestTraces.some((trace, index) => {
+        const expectedPaths = [
+          "/api",
+          "/api/basic-compare-coexists.txt",
+          "/api",
+          "/api",
+        ];
+        return !trace.includes(`POST ${expectedPaths[index]} HTTP/1.1`);
+      }) ||
       methodCompareSetup.profile !== "raw-header" ||
       methodCompareSetup.summaryMime !== "application/pdf" ||
       methodCompareSetup.compareMethodsDisabled !== false ||
@@ -11208,7 +11319,7 @@ async (page) => {
         expectedMethods.join(",") ||
       methodCompareResponses.some((response) => (
         response.status !== 201 ||
-        response.path !== "/uploads" ||
+        response.path !== "/api" ||
         response.sessionHeaderAbsent !== true
       )) ||
       actualMethodCompare.axis !== "method" ||
@@ -11219,7 +11330,7 @@ async (page) => {
       actualMethodCompare.domAxes.some((axis) => axis !== "method") ||
       actualMethodCompare.title !== "Method comparison" ||
       actualMethodCompare.requestTraces.some((trace, index) => (
-        !trace.includes(`${expectedMethods[index]} /uploads HTTP/1.1`) ||
+        !trace.includes(`${expectedMethods[index]} /api HTTP/1.1`) ||
         !trace.includes("Content-Type: application/pdf") ||
         !trace.includes("X-File-Name: basic-compare-coexists.txt")
       )) ||
@@ -11248,11 +11359,13 @@ async (page) => {
     });
     const mobile = await page.evaluate(() => {
       const group = document.getElementById("uploadProfileGroup");
+      const targetPathGroup = document.getElementById("uploadTargetPathGroup");
       const results = document.getElementById("uploadCompareResults");
       return {
         viewportWidth: innerWidth,
         documentWidth: document.documentElement.scrollWidth,
         groupWidth: group?.getBoundingClientRect().width || 0,
+        targetPathGroupWidth: targetPathGroup?.getBoundingClientRect().width || 0,
         resultsWidth: results?.getBoundingClientRect().width || 0,
       };
     });
@@ -11260,6 +11373,7 @@ async (page) => {
     if (
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.groupWidth > mobile.viewportWidth ||
+      mobile.targetPathGroupWidth > mobile.viewportWidth ||
       mobile.resultsWidth > mobile.viewportWidth
     ) {
       throw new Error(`Basic upload mobile layout overflowed: ${JSON.stringify(mobile)}`);
