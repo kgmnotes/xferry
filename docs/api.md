@@ -259,14 +259,22 @@ All four methods use the same Basic handler unless an authorized matching
 `X-XFerry-Advanced-Session` selects Advanced dispatch. Basic has three exact
 wire profiles: `multipart`, `raw_url`, and `raw_header`. The bundled UI exposes
 four request-building scenarios; **No filename** is an intentional UI-only
-variant of the canonical `raw_url` profile:
+variant of the canonical `raw_url` profile. A separate request-path selector
+offers `/`, `/upload`, `/api`, and `/file`, with `/upload` selected by default.
+Choosing one of these paths does not create, inspect, or attach an Advanced
+Session; the Upload tab continues to send Basic requests without the Advanced
+session header.
 
 | UI choice | Request target | Body/headers | Filename source | Canonical response profile |
 |-----------|----------------|--------------|-----------------|----------------------------|
-| **Multipart (default)** | `/uploads` | One `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the outer multipart boundary and `Content-Length`. | part `filename` | `multipart` |
-| **Raw URL** | `/uploads/<encoded-name>` | Original file bytes, no `X-File-Name` | URL | `raw_url` |
-| **Raw Header** | `/uploads` | Original file bytes and a URL-encoded `X-File-Name` | header | `raw_header` |
-| **No filename** | `/` (never raw `/uploads`) | Original file bytes, no `X-File-Name` | generated | `raw_url` |
+| **Multipart (default)** | selected path | One `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the outer multipart boundary and `Content-Length`. | part `filename` | `multipart` |
+| **Raw URL** | selected path plus `/<encoded-name>`; root becomes `/<encoded-name>` | Original file bytes, no `X-File-Name` | URL | `raw_url` |
+| **Raw Header** | selected path | Original file bytes and a URL-encoded `X-File-Name` | header | `raw_header` |
+| **No filename** | selected path | Original file bytes, no `X-File-Name` | generated | `raw_url` |
+
+The selected request target is independent of the publication path. A
+successful upload is still stored in `uploads/` and returned as
+`/uploads/<normalized-name>`.
 
 The UI's **Declared MIME** selector offers Auto, `application/octet-stream`,
 `text/plain`, and `application/pdf`. In Auto mode, Multipart and Raw URL use
@@ -281,7 +289,7 @@ declared value is the request `Content-Type`.
 Example Raw Header request:
 
 ```http
-POST /uploads HTTP/1.1
+POST /upload HTTP/1.1
 Content-Type: application/octet-stream
 X-File-Name: myfile.txt
 Content-Length: 1234
@@ -290,13 +298,14 @@ Content-Length: 1234
 ```
 
 Filename precedence is `X-File-Name` > multipart file-part `filename` > URL
-path > generated timestamp name. The `/uploads` collection special case
-applies only to multipart: a raw request to `/uploads` without
-`X-File-Name` saves a literal filename `uploads`. `X-File-Name` values are
-URL-decoded and sanitized before publication. A multipart part `filename` is
-parsed and sanitized but is not URL-decoded by XFerry. Collisions receive a
-safe suffix. The UI's No filename scenario deliberately targets `/`, so it
-reaches the generated-name branch rather than the literal `uploads` case.
+path > generated timestamp name. When no higher-precedence source exists, the
+exact Basic collection paths `/`, `/upload`, `/api`, and `/file` reach the
+generated-name branch. Other raw paths continue to use their final segment as
+the filename. For compatibility, `/uploads` is a collection only for
+multipart: a raw request to `/uploads` without `X-File-Name` saves a literal
+filename `uploads`. `X-File-Name` values are URL-decoded and sanitized before
+publication. A multipart part `filename` is parsed and sanitized but is not
+URL-decoded by XFerry. Collisions receive a safe suffix.
 
 For Basic multipart, scalar form fields are ignored. The request must contain
 exactly one top-level file part with a non-empty payload. Zero or multiple file
