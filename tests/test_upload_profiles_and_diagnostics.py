@@ -1318,6 +1318,8 @@ def test_advanced_upload_diagnostics_preserves_canonical_body_and_adds_only_hand
         ("/file", {}, None, "generated", "raw_url"),
         ("/api/report.pdf", {}, "report.pdf", "url", "raw_url"),
         ("/api/", {}, "api", "url", "raw_url"),
+        ("/file/", {}, "file", "url", "raw_url"),
+        ("/upload/", {}, "upload", "url", "raw_url"),
         ("/uploads", {}, "uploads", "url", "raw_url"),
         (
             "/uploads",

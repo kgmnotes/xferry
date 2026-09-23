@@ -1086,6 +1086,30 @@ const sampledPlan = globalThis.compileBasicUploadRequest(
     null,
     sampledBytes.slice(0, 513).buffer
 );
+const reservedRawUrlNames = ['api', 'file', 'upload'];
+const rootReservedRawUrls = reservedRawUrlNames.map(name => {
+    const reservedFile = new File([bytes], name, { type: 'application/octet-stream' });
+    const plan = globalThis.compileBasicUploadRequest({
+        method: 'PUT',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/',
+    }, reservedFile, bytes.buffer);
+    return {
+        name,
+        pathname: plan.pathname,
+        filenameSource: plan.filenameSource,
+    };
+});
+const nestedReservedRawUrls = reservedRawUrlNames.map(name => {
+    const reservedFile = new File([bytes], name, { type: 'application/octet-stream' });
+    return globalThis.compileBasicUploadRequest({
+        method: 'PUT',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/upload',
+    }, reservedFile, bytes.buffer).pathname;
+});
 
 process.stdout.write(JSON.stringify({
     multipartAuto: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'auto' }),
@@ -1111,6 +1135,8 @@ process.stdout.write(JSON.stringify({
         mimeMode: 'auto',
         targetPath: '/',
     }).pathname,
+    rootReservedRawUrls,
+    nestedReservedRawUrls,
     invalidTargetFallback: summarize({
         method: 'POST',
         profile: 'raw-generated',
@@ -1215,6 +1241,16 @@ process.stdout.write(JSON.stringify({
         },
         "apiTargets": ["/api", "/api/sample.bin", "/api", "/api"],
         "rootRawUrl": "/sample.bin",
+        "rootReservedRawUrls": [
+            {"name": "api", "pathname": "/api/", "filenameSource": "url"},
+            {"name": "file", "pathname": "/file/", "filenameSource": "url"},
+            {"name": "upload", "pathname": "/upload/", "filenameSource": "url"},
+        ],
+        "nestedReservedRawUrls": [
+            "/upload/api",
+            "/upload/file",
+            "/upload/upload",
+        ],
         "invalidTargetFallback": "/upload",
         "invalid": {
             "mode": "custom",

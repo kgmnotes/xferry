@@ -3626,6 +3626,10 @@
         grid-template-columns: minmax(0, 1fr);
     }
 
+    #upload-tab .upload-target-path-group {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .tool-workflow__header--opsec {
         align-items: stretch;
     }

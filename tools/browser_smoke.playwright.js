@@ -4660,8 +4660,15 @@ async (page) => {
       const dropZone = document.getElementById("dropZone");
       const button = document.getElementById("uploadBtn");
       const panel = document.querySelector("#upload-tab .tool-card--workflow");
+      const targetPathGroup = document.getElementById("uploadTargetPathGroup");
+      const targetPathButtons = Array.from(
+        targetPathGroup?.querySelectorAll("[data-upload-target-path]") || []
+      );
       const dropRect = dropZone?.getBoundingClientRect();
       const buttonRect = button?.getBoundingClientRect();
+      const targetPathColumns = targetPathGroup
+        ? getComputedStyle(targetPathGroup).gridTemplateColumns.trim().split(/\s+/).length
+        : 0;
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
@@ -4685,6 +4692,10 @@ async (page) => {
           height: buttonRect.height,
         } : null,
         panelRight: panel?.getBoundingClientRect().right || 0,
+        targetPathColumns,
+        targetPathLabelsFit: targetPathButtons.length === 4 && targetPathButtons.every(
+          (targetButton) => targetButton.scrollWidth <= targetButton.clientWidth + 1
+        ),
       };
     });
     await page.screenshot({
@@ -4716,7 +4727,9 @@ async (page) => {
       mobile.buttonRect.height < 44 ||
       mobile.buttonRect.height >= mobile.dropRect.height ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
-      mobile.panelRight > mobile.viewportWidth + 1
+      mobile.panelRight > mobile.viewportWidth + 1 ||
+      mobile.targetPathColumns !== 2 ||
+      !mobile.targetPathLabelsFit
     ) {
       throw new Error(
         `Responsive upload summary/action contract failed: ${JSON.stringify({ desktop, mobile })}`

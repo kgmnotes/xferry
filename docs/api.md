@@ -272,6 +272,11 @@ session header.
 | **Raw Header** | selected path | Original file bytes and a URL-encoded `X-File-Name` | header | `raw_header` |
 | **No filename** | selected path | Original file bytes, no `X-File-Name` | generated | `raw_url` |
 
+For the root Raw URL target, the literal filenames `api`, `file`, and `upload`
+would otherwise be indistinguishable from the exact Basic collection paths.
+The bundled UI therefore sends them as `/api/`, `/file/`, and `/upload/`;
+these compatibility forms still resolve the final segment as the URL filename.
+
 The selected request target is independent of the publication path. A
 successful upload is still stored in `uploads/` and returned as
 `/uploads/<normalized-name>`.

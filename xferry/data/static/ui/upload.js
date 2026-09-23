@@ -392,8 +392,9 @@ function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes =
         });
         multipartPreview = buildUploadMultipartPreviewEnvelope(filename, mime);
     } else if (profile === 'raw-url') {
+        const filenamePath = `/${encodedFilename}`;
         pathname = targetPath === '/'
-            ? `/${encodedFilename}`
+            ? (basicUploadTargetPaths.includes(filenamePath) ? `${filenamePath}/` : filenamePath)
             : `${targetPath}/${encodedFilename}`;
         wireHeaders = withUiNoGzipHeader({
             'Content-Type': fileMime,
