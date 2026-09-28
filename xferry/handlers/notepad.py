@@ -280,7 +280,7 @@ class NotepadHandlersMixin(BaseHandler):
 
     def _get_notepad_service(self) -> NotepadService:
         """Return the lazily created note-domain service."""
-        service = getattr(self, "_notepad_service", None)
+        service: NotepadService | None = getattr(self, "_notepad_service", None)
         if service is not None:
             return service
 

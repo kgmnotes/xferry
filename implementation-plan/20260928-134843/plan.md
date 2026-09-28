@@ -16,7 +16,7 @@ STAGE-010, STAGE-011, and STAGE-012 are parallelizable after STAGE-009. All othe
 
 | Stage | Priority | Status | Title | Depends on | Main verification | Expected files |
 |---|---|---|---|---|---|---|
-| STAGE-001 | MEDIUM | OPEN | Restore strict typing baseline | None | `mypy xferry`; focused handler tests | `xferry/handlers/notepad.py`, tests if needed |
+| STAGE-001 | MEDIUM | CLOSED | Restore strict typing baseline | None | `mypy xferry`; focused handler tests | `xferry/handlers/notepad.py`, tests if needed |
 | STAGE-002 | MEDIUM | OPEN | Patch audited CI toolchain pins | None | pip-audit, docs build, toolchain checks | `constraints/ci.txt`, dependency metadata/tests |
 | STAGE-003 | HIGH | OPEN | Adopt controlled distribution policy and guards | 001, 002 | ADR/docs guard/deployment policy tests | ADR, SECURITY/threat model, guard tools/tests |
 | STAGE-004 | HIGH | OPEN | Centralize release platform and manifest contracts | 003 | model/parser/state compatibility tests | management release modules, builder contract, tests |

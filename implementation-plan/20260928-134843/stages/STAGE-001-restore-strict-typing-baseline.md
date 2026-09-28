@@ -1,7 +1,7 @@
 # STAGE-001 - Restore strict typing baseline
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 MEDIUM
@@ -67,4 +67,8 @@ Make `mypy xferry` pass under the pinned strict configuration without changing l
 - Rollback: revert the local accessor/test change; no state or data migration is involved.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Closed: 2026-09-28 14:43:22 +0300.
+- Added an explicit `NotepadService | None` annotation to the existing lazy-service local without changing attribute lookup, double-checked locking, construction, or assignment order.
+- Pinned strict mypy, 130 focused tests, scoped Ruff checks, and the 3,171-test full suite pass.
+- Independent read-only Python review confirmed the one-line change introduces no typing suppression or behavioral drift.
+- Report: `../stage-reports/STAGE-001-20260928-143829.md`.
