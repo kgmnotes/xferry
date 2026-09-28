@@ -1,0 +1,14 @@
+# Risks and Blockers
+
+| Risk | Affected stages | Mitigation |
+|---|---|---|
+| Current GitHub credentials cannot prove branch rules, Actions policy, or protected-environment reviewers | STAGE-009 through STAGE-015 | Repository owner validates settings and records evidence before production activation |
+| PyPI Trusted Publisher, package ownership, and GHCR visibility require external owner actions | STAGE-010, STAGE-011, STAGE-015 | Reserve namespace early; use TestPyPI first; keep production jobs disabled until ownership is confirmed |
+| Ed25519 private-key custody, generation, rotation, and revocation owner are not yet assigned | STAGE-007, STAGE-012, STAGE-013, STAGE-015 | Approve a key-management runbook; store private material only in protected external/GitHub secret storage; commit public keys only |
+| Real arm64/systemd validation infrastructure may be unavailable or QEMU may be insufficient | STAGE-005, STAGE-006, STAGE-011, STAGE-015 | Use native arm64 runners for final managed-host acceptance; treat QEMU as preflight only if systemd cannot be exercised faithfully |
+| Local `main` is 29 commits ahead of `origin/main` and has no remote CI evidence for those commits | All stages | Push/reconcile through the normal reviewed branch process before release-environment activation |
+| PyPI versions and public release assets are effectively immutable and partial publication cannot be rolled back atomically | STAGE-010 through STAGE-015 | Rehearse on TestPyPI/draft or staging assets, publish only exact candidates, never reuse a version, and define partial-release response |
+| Manifest v2/state changes could strand existing managed installations | STAGE-004, STAGE-006, STAGE-007, STAGE-013 | Parse v1 read-only for migration/rollback, write v2 for new releases, and add upgrade/rollback fixtures from current state |
+| A compromised publishing identity could sign malicious root-run updates | STAGE-007, STAGE-012, STAGE-013 | Required-reviewer environment, least privilege, key isolation, public key IDs, rotation/revocation, immutable artifacts, incident runbook |
+| Documentation may get ahead of publicly available artifacts | STAGE-014 | Keep public commands guarded until post-publish acceptance passes; docs tests verify real names/commands and current channel state |
+| Audit evidence can become stale as source changes | All stages | Each stage re-reads its source findings and runs targeted plus full verification before closure |
