@@ -202,6 +202,49 @@ def test_expiry_removes_only_inactive_partial_uploads(tmp_path: Path) -> None:
     assert service.get(SECOND_FILE_ID).status == "complete"
 
 
+def test_expired_partial_is_removed_lazily_when_it_is_accessed(tmp_path: Path) -> None:
+    now = [1000.0]
+    service = _service(tmp_path, ttl=60, clock=lambda: now[0])
+    service.create(_manifest())
+
+    now[0] += 61
+
+    assert service.get(FILE_ID) is None
+    assert not (service.data_dir / f"{FILE_ID}.part").exists()
+    assert not (service.state_dir / f"{FILE_ID}.json").exists()
+
+
+def test_list_files_lazily_removes_expired_partials(tmp_path: Path) -> None:
+    now = [1000.0]
+    service = _service(tmp_path, ttl=60, clock=lambda: now[0])
+    service.create(_manifest())
+
+    now[0] += 61
+
+    assert service.list_files() == ()
+    assert not (service.data_dir / f"{FILE_ID}.part").exists()
+    assert not (service.state_dir / f"{FILE_ID}.json").exists()
+
+
+def test_create_reclaims_other_expired_partial_before_quota_admission(tmp_path: Path) -> None:
+    now = [1000.0]
+    ciphertext_size = _manifest().ciphertext_size
+    service = _service(
+        tmp_path,
+        policy=UploadStoragePolicy(max_total_bytes=ciphertext_size),
+        ttl=60,
+        clock=lambda: now[0],
+    )
+    service.create(_manifest())
+
+    now[0] += 61
+    replacement = service.create(_manifest(file_id=SECOND_FILE_ID))
+
+    assert replacement.created is True
+    assert service.get(FILE_ID) is None
+    assert service.upload_storage.current_usage().total_bytes == ciphertext_size
+
+
 def test_restart_reconciles_rename_completed_before_final_state_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

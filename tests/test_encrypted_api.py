@@ -570,6 +570,100 @@ class _HeaderOnlySocket:
         self.timeout = timeout
 
 
+class _BufferedSocket:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.timeout = None
+
+    def recv(self, size: int) -> bytes:
+        if not self.data:
+            return b""
+        chunk, self.data = self.data[:size], self.data[size:]
+        return chunk
+
+    def settimeout(self, timeout) -> None:
+        self.timeout = timeout
+
+
+def test_encrypted_body_cap_is_independent_from_smaller_basic_upload_cap(
+    tmp_path: Path,
+) -> None:
+    server = make_server(
+        root_dir=str(tmp_path),
+        quiet=True,
+        encrypted_uploads=True,
+        max_upload_size=1,
+        body_memory_budget=32 * 1024 * 1024,
+    )
+    body = b"{}"
+    encrypted_request = (
+        f"PUT /_xferry/encrypted-uploads/{FILE_ID} HTTP/1.1\r\n"
+        "Host: 127.0.0.1:8080\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode("ascii") + body
+    ordinary_request = (
+        f"POST / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Length: {len(body)}\r\n\r\n"
+    ).encode("ascii") + body
+
+    encrypted = server._receive_request_result(_BufferedSocket(encrypted_request))
+    ordinary = server._receive_request_result(_BufferedSocket(ordinary_request))
+
+    try:
+        assert encrypted.data == encrypted_request
+        assert encrypted.rejection_reason is None
+        assert (
+            server._check_payload_size(
+                make_request(
+                    "PUT",
+                    f"/_xferry/encrypted-uploads/{FILE_ID}",
+                    headers={"Content-Type": "application/json"},
+                    body=body,
+                )
+            )
+            is None
+        )
+        assert ordinary.data == b""
+        assert ordinary.rejection_reason == "body_too_large"
+    finally:
+        encrypted.release_body_reservation()
+        ordinary.release_body_reservation()
+
+
+def test_disabled_encrypted_routes_keep_the_basic_upload_cap(tmp_path: Path) -> None:
+    server = make_server(
+        root_dir=str(tmp_path),
+        quiet=True,
+        encrypted_uploads=False,
+        max_upload_size=1,
+    )
+    body = b"{}"
+    request_data = (
+        f"PUT /_xferry/encrypted-uploads/{FILE_ID} HTTP/1.1\r\n"
+        "Host: 127.0.0.1:8080\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode("ascii") + body
+
+    received = server._receive_request_result(_BufferedSocket(request_data))
+
+    try:
+        assert received.data == b""
+        assert received.rejection_reason == "body_too_large"
+        size_error = server._check_payload_size(
+            make_request(
+                "PUT",
+                f"/_xferry/encrypted-uploads/{FILE_ID}",
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+        )
+        assert size_error is not None
+        assert size_error.status_code == 413
+    finally:
+        received.release_body_reservation()
+
+
 def test_chunk_route_rejects_oversize_content_length_before_body_allocation(
     tmp_path: Path,
 ) -> None:

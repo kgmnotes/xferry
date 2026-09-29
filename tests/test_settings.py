@@ -817,6 +817,22 @@ def test_runtime_posture_derives_effective_limits_paths_and_security(
     assert "auth" not in rendered
 
 
+def test_runtime_posture_accounts_for_encrypted_parallel_chunk_budget() -> None:
+    settings = resolve_settings(
+        cli_values={
+            "encrypted_uploads": True,
+            "max_size_mb": 1,
+            "workers": 2,
+        }
+    )
+
+    config = settings.to_server_config()
+
+    assert config.limits.body_memory_budget == 16_777_248
+    assert config.runtime_posture is not None
+    assert config.runtime_posture.body_admission_budget_mb == 17
+
+
 def test_runtime_posture_warns_on_non_loopback_without_breaking_validation() -> None:
     settings = resolve_settings(cli_values={"host": "0.0.0.0"})
     posture = derive_runtime_posture(settings)

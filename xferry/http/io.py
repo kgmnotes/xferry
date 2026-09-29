@@ -373,7 +373,7 @@ def receive_request_result(
                                     raise ValueError(
                                         "body_limit_resolver must return a non-negative limit"
                                     )
-                                effective_body_limit = min(max_upload_size, resolved_limit)
+                                effective_body_limit = resolved_limit
                         if content_length > effective_body_limit:
                             logger.warning(
                                 "Declared Content-Length too large (%d bytes > %d bytes), dropping",

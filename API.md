@@ -136,8 +136,9 @@ The receive layer enforces protocol framing before handler dispatch:
 
 - Request headers are capped by `--max-header-size KB` (`64` KiB by default)
   before the terminating blank line.
-- Request bodies are capped by `--max-size MB` (`100` MiB by default) using the
-  declared `Content-Length` and the bytes actually read.
+- Ordinary request bodies are capped by `--max-size MB` (`100` MiB by default)
+  using the declared `Content-Length` and the bytes actually read. Enabled
+  encrypted-transfer routes use their exact route-specific caps instead.
 - Concurrent in-flight request bodies are reserved against
   `--body-memory-budget MB`. The default budget is `--workers * --max-size`.
   Aggregate budget exhaustion returns `503` before the remaining body bytes are
@@ -965,7 +966,13 @@ Bodies](#error-response-bodies). `field` is present when shown below.
 Normal authentication, authority, origin, framing, and rate-limit errors can
 occur before route dispatch. Create JSON is capped at 16 KiB, decrypt JSON at
 512 bytes, and each chunk request at 8 MiB plus the 16-byte GCM tag. These caps
+replace the ordinary `--max-size` cap for enabled encrypted-transfer routes and
 are applied before the general request receiver allocates a large body.
+
+Enabling encrypted uploads requires at least two workers. The body admission
+budget must hold two maximum ciphertext chunks (`16 MiB + 32 bytes`); an
+omitted budget is raised to that floor automatically. Because the CLI accepts
+whole MiB, an explicit `--body-memory-budget` must be at least `17`.
 
 See [ADR-011](docs/ADR/ADR-011-encrypted-streaming-transfers.md) for the key
 custody and persistence decision.

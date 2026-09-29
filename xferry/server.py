@@ -1049,6 +1049,8 @@ class XFerryServer(HandlerMixin):
 
     def _check_payload_size(self, request: HTTPRequest) -> HTTPResponse | None:
         """Reject requests whose Content-Length exceeds the configured cap."""
+        if self.encrypted_uploads and self._is_encrypted_transfer_route(request):
+            return None
         try:
             content_length = int(request.headers.get("content-length", 0))
         except ValueError:
@@ -1468,7 +1470,7 @@ class XFerryServer(HandlerMixin):
             body_min_rate_bytes_per_second=self.body_min_rate,
             on_reject=self._record_receive_rejection,
             body_memory_budget=self._body_memory_budget,
-            body_limit_resolver=encrypted_request_body_limit,
+            body_limit_resolver=(encrypted_request_body_limit if self.encrypted_uploads else None),
         )
 
     def _handle_notepad_ws(

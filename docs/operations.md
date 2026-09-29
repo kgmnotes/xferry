@@ -59,11 +59,18 @@ against the ordinary upload byte and file quotas, including the free-space
 reserve. Plan filesystem capacity for the largest concurrent partial files,
 completed ciphertext, backups, and temporary operational headroom.
 
+Encrypted uploads require at least two workers and a body admission budget for
+two maximum ciphertext chunks (`16 MiB + 32 bytes`). When the budget is
+omitted, XFerry derives at least that floor. When it is configured through the
+whole-MiB CLI or settings option, use at least `17` MiB. The encrypted route
+caps are independent of the smaller ordinary `--max-size` limit.
+
 State advances `partial -> committing -> complete`. A chunk is acknowledged
 only after its ciphertext and atomic sidecar state are durable. Startup
 reconciles an interrupted commit without exposing the hidden files through
 ordinary uploads. Incomplete records older than
-`encrypted_upload_incomplete_ttl_seconds` are removed during reconciliation;
+`encrypted_upload_incomplete_ttl_seconds` are removed during startup and
+lazily on encrypted-store access, listing, or new-upload quota admission;
 completed files remain until their encrypted-file DELETE route is called.
 Back up the ciphertext and `.xferry/encrypted-uploads/` sidecars together.
 

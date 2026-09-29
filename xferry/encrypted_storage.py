@@ -479,7 +479,11 @@ class EncryptedStorageService:
         with self._lock:
             if not path.exists() and not path.is_symlink():
                 return None
-            return self._read_state_path(path)
+            record = self._read_state_path(path)
+            if record.status == "partial" and self._now() - record.updated_at > self.incomplete_ttl:
+                self._delete_locked(record.file_id)
+                return None
+            return record
 
     def _require_file(self, file_id: str) -> EncryptedStoredFile:
         record = self.get(file_id)
@@ -491,6 +495,7 @@ class EncryptedStorageService:
         """Create a pre-sized partial file, or validate an identical retry."""
         self._validate_manifest(manifest)
         with self._lock:
+            self._expire_incomplete_locked(self._now())
             existing = self.get(manifest.file_id)
             if existing is not None:
                 if existing.manifest != manifest:
@@ -695,42 +700,55 @@ class EncryptedStorageService:
         if status not in {None, "partial", "committing", "complete"}:
             raise ValueError("invalid encrypted storage status")
         with self._lock:
-            records: list[EncryptedStoredFile] = []
-            for path in sorted(self.state_dir.glob("*.json"), key=lambda item: item.name):
-                record = self._read_state_path(path)
-                if status is None or record.status == status:
-                    records.append(record)
-            return tuple(records)
+            self._expire_incomplete_locked(self._now())
+            return self._list_files_locked(status=status)
+
+    def _list_files_locked(
+        self,
+        *,
+        status: EncryptedStorageStatus | None = None,
+    ) -> tuple[EncryptedStoredFile, ...]:
+        records: list[EncryptedStoredFile] = []
+        for path in sorted(self.state_dir.glob("*.json"), key=lambda item: item.name):
+            record = self._read_state_path(path)
+            if status is None or record.status == status:
+                records.append(record)
+        return tuple(records)
 
     def delete(self, file_id: str) -> bool:
         """Durably remove one encrypted file and its sidecar."""
+        with self._lock:
+            return self._delete_locked(file_id)
+
+    def _delete_locked(self, file_id: str) -> bool:
         state_path = self._state_path(file_id)
         part_path = self._part_path(file_id)
         complete_path = self._complete_path(file_id)
-        with self._lock:
-            existed = any(
-                path.exists() or path.is_symlink()
-                for path in (state_path, part_path, complete_path)
-            )
-            for path in (part_path, complete_path, state_path):
-                path.unlink(missing_ok=True)
-            if existed:
-                self._fsync_directory(self.data_dir)
-                self._fsync_directory(self.state_dir)
-            return existed
+        existed = any(
+            path.exists() or path.is_symlink() for path in (state_path, part_path, complete_path)
+        )
+        for path in (part_path, complete_path, state_path):
+            path.unlink(missing_ok=True)
+        if existed:
+            self._fsync_directory(self.data_dir)
+            self._fsync_directory(self.state_dir)
+        return existed
+
+    def _expire_incomplete_locked(self, current: float) -> tuple[str, ...]:
+        expired: list[str] = []
+        for record in self._list_files_locked(status="partial"):
+            if current - record.updated_at > self.incomplete_ttl:
+                self._delete_locked(record.file_id)
+                expired.append(record.file_id)
+        return tuple(expired)
 
     def expire_incomplete(self, *, now: float | None = None) -> tuple[str, ...]:
         """Delete partial uploads whose last durable activity exceeded the TTL."""
         current = self._now() if now is None else float(now)
         if current < 0 or not math.isfinite(current):
             raise ValueError("now must be a non-negative finite timestamp")
-        expired: list[str] = []
         with self._lock:
-            for record in self.list_files(status="partial"):
-                if current - record.updated_at > self.incomplete_ttl:
-                    self.delete(record.file_id)
-                    expired.append(record.file_id)
-        return tuple(expired)
+            return self._expire_incomplete_locked(current)
 
     def _remove_record_artifacts(self, file_id: str) -> None:
         for path in (

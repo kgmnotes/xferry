@@ -235,7 +235,8 @@
             }
         }
         if (startButton) {
-            startButton.disabled = busy || !transferState.enabled;
+            startButton.disabled = busy || Boolean(transferState.activeSession)
+                || !transferState.enabled;
         }
         if (pauseButton) {
             pauseButton.disabled = phase !== 'uploading';
@@ -482,10 +483,17 @@
         }
     }
 
+    function requireNoActiveUpload() {
+        if (transferState.activeSession) {
+            throw new Error('An encrypted upload is already active');
+        }
+    }
+
     async function startUpload(options = {}) {
         if (!transferState.enabled || !transferState.capability) {
             throw new Error('Encrypted uploads are not available');
         }
+        requireNoActiveUpload();
         const file = options.file;
         if (!file || !Number.isSafeInteger(file.size) || file.size < 0) {
             throw new TypeError('A browser File is required');
@@ -950,6 +958,7 @@
         if (!transferState.enabled || !transferState.capability) {
             throw new Error('Encrypted uploads are not available');
         }
+        requireNoActiveUpload();
         const file = options?.file;
         const { manifest, received } = manifestFromRecord(options?.record);
         if (!file || file.size !== manifest.plaintextSize) {

@@ -697,6 +697,7 @@ const codec = {
     return new Uint8Array(length).fill(randomSeed);
   },
   encodeBase64Url: value => Buffer.from(value).toString('base64url'),
+  decodeBase64Url: value => new Uint8Array(Buffer.from(value, 'base64url')),
   deriveKeys: async () => ({
     contentKey: new Uint8Array(32).fill(1),
     resumeKey: new Uint8Array(32).fill(2),
@@ -727,8 +728,12 @@ const app = {
   invoke(name, command, ...args) { return workflows.get(name).commands[command](...args); },
   getState(name) { return workflows.get(name).getState(); },
 };
+const startButton = { disabled: false };
 globalThis.window = { XferryApp: app };
-globalThis.document = { getElementById: () => null, querySelectorAll: () => [] };
+globalThis.document = {
+  getElementById: id => id === 'encryptedUploadStartBtn' ? startButton : null,
+  querySelectorAll: () => [],
+};
 globalThis.indexedDB = undefined;
 
 function response(payload, status = 200) {
@@ -782,6 +787,21 @@ function file(name, chunks) {
     slice: () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }),
   };
 }
+const overlappingRecord = {
+  id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  version: 1,
+  plaintext_size: 0,
+  ciphertext_size: 0,
+  chunk_size: CHUNK_SIZE,
+  chunk_count: 0,
+  salt: Buffer.alloc(16, 4).toString('base64url'),
+  nonce_prefix: Buffer.alloc(8, 5).toString('base64url'),
+  encrypted_metadata: Buffer.alloc(16, 3).toString('base64url'),
+  status: 'partial',
+  received_chunks: [],
+  created_at: 1,
+  updated_at: 1,
+};
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
@@ -800,8 +820,29 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
   await app.invoke('encrypted-transfer', 'pause');
   const pausedResult = await firstRun;
   const pausedState = app.getState('encrypted-transfer');
+  const startDisabledWhilePaused = startButton.disabled;
 
   immediateChunks = true;
+  let overlappingResumeError = '';
+  try {
+    await app.invoke('encrypted-transfer', 'resume', {
+      record: overlappingRecord,
+      file: file('remote-overlap.bin', 0),
+      password: 'correct horse battery staple',
+    });
+  } catch (error) {
+    overlappingResumeError = String(error?.message || error || '');
+  }
+  const stateAfterOverlappingResume = app.getState('encrypted-transfer');
+  let overlappingStartError = '';
+  try {
+    await app.invoke('encrypted-transfer', 'start', {
+      file: file('overlap.bin', 1), password: 'correct horse battery staple',
+    });
+  } catch (error) {
+    overlappingStartError = String(error?.message || error || '');
+  }
+  const stateAfterOverlappingStart = app.getState('encrypted-transfer');
   const resumedResult = await app.invoke('encrypted-transfer', 'resume');
   const resumedState = app.getState('encrypted-transfer');
 
@@ -818,6 +859,11 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
   process.stdout.write(JSON.stringify({
     pausedResult,
     pausedState,
+    startDisabledWhilePaused,
+    overlappingResumeError,
+    stateAfterOverlappingResume,
+    overlappingStartError,
+    stateAfterOverlappingStart,
     resumedResult,
     resumedState,
     activeId,
@@ -839,6 +885,15 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
     assert observed["pausedResult"]["status"] == "paused"
     assert observed["pausedState"]["phase"] == "paused"
     assert observed["pausedState"]["activeId"]
+    assert observed["startDisabledWhilePaused"] is True
+    assert "already active" in observed["overlappingResumeError"]
+    assert observed["stateAfterOverlappingResume"]["phase"] == "paused"
+    assert (
+        observed["stateAfterOverlappingResume"]["activeId"] == observed["pausedState"]["activeId"]
+    )
+    assert "already active" in observed["overlappingStartError"]
+    assert observed["stateAfterOverlappingStart"]["phase"] == "paused"
+    assert observed["stateAfterOverlappingStart"]["activeId"] == observed["pausedState"]["activeId"]
     assert observed["resumedResult"]["status"] == "complete"
     assert observed["resumedState"]["phase"] == "complete"
     assert observed["cancelResult"] == {"id": observed["activeId"], "status": "canceled"}

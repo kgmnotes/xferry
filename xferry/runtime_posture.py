@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE
+
 if TYPE_CHECKING:
     from .settings import ServerSettings
 
@@ -17,6 +19,10 @@ BODY_ADMISSION_BUDGET_NOTE = (
     "ceiling; decoded, parsed, TLS, and Python overhead can coexist."
 )
 WEBSOCKET_WORKER_NOTE = "Each active WebSocket occupies one worker while connected."
+_MIB = 1024 * 1024
+_ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR_MB = (
+    2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE) + _MIB - 1
+) // _MIB
 
 
 class LaunchPreset(str, Enum):
@@ -221,6 +227,16 @@ def derive_runtime_posture(
     from .request_admission import normalize_allowed_hosts
 
     allowed_hosts = normalize_allowed_hosts(tuple(settings.allowed_hosts))
+    body_admission_budget_mb = (
+        settings.body_memory_budget_mb
+        if settings.body_memory_budget_mb is not None
+        else settings.max_size_mb * settings.workers
+    )
+    if settings.encrypted_uploads and settings.body_memory_budget_mb is None:
+        body_admission_budget_mb = max(
+            body_admission_budget_mb,
+            _ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR_MB,
+        )
     return RuntimePosture(
         preset=settings.preset,
         effective_url=effective_url,
@@ -239,11 +255,7 @@ def derive_runtime_posture(
         encrypted_uploads=settings.encrypted_uploads,
         encrypted_upload_max_size_mb=settings.encrypted_upload_max_size_mb,
         encrypted_upload_incomplete_ttl_seconds=(settings.encrypted_upload_incomplete_ttl_seconds),
-        body_admission_budget_mb=(
-            settings.body_memory_budget_mb
-            if settings.body_memory_budget_mb is not None
-            else settings.max_size_mb * settings.workers
-        ),
+        body_admission_budget_mb=body_admission_budget_mb,
         workers=settings.workers,
         max_websocket_connections=(
             settings.max_websocket_connections
