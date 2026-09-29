@@ -39,6 +39,7 @@ from .features import (
 )
 from .handlers import HandlerMixin
 from .handlers.context import HandlerRuntimeContext, SmuggleTempCoordinator
+from .handlers.encrypted_files import encrypted_request_body_limit
 from .handlers.registry import Handler
 from .http import HTTPRequest, HTTPResponse, error_response
 from .http.io import BodyMemoryBudget, RequestReceiveResult
@@ -672,7 +673,7 @@ class XFerryServer(HandlerMixin):
 
         # Keep streamed files streamed; gzip here would require buffering the
         # entire file before sending it.
-        if response.stream_path is not None:
+        if response.is_streaming:
             return
 
         # For body responses
@@ -968,7 +969,7 @@ class XFerryServer(HandlerMixin):
         except AttributeError:
             previous_timeout = None
         try:
-            if response.stream_path is not None:
+            if response.is_streaming:
                 _bld_close: ResponseBuildArgs = {**_bld, "keep_alive": False}
                 bytes_sent = 0
                 header_bytes = response.build_headers(**_bld_close)
@@ -980,11 +981,27 @@ class XFerryServer(HandlerMixin):
                     logger.warning("Streamed response aborted before headers were sent")
                     return bytes_sent
                 bytes_sent = len(header_bytes)
-                with response.stream_path.open("rb") as f:
+                if response.stream_path is not None:
+                    stream = response.stream_path.open("rb")
+                    chunks = iter(lambda: stream.read(65536), b"")
+                else:
+                    stream = None
+                    assert response.stream_iterator is not None
+                    chunks = response.stream_iterator
+                content_bytes_sent = 0
+                expected_content_length = int(response.headers["Content-Length"])
+                try:
                     while True:
-                        chunk = f.read(65536)
-                        if not chunk:
+                        try:
+                            chunk = next(chunks)
+                        except StopIteration:
                             break
+                        if not isinstance(chunk, bytes):
+                            raise TypeError("stream iterator chunks must be bytes")
+                        if not chunk:
+                            continue
+                        if content_bytes_sent + len(chunk) > expected_content_length:
+                            raise ValueError("stream iterator exceeded Content-Length")
                         try:
                             sendall_with_stream_deadline(chunk)
                         except TimeoutError:
@@ -996,7 +1013,22 @@ class XFerryServer(HandlerMixin):
                             )
                             return bytes_sent
                         bytes_sent += len(chunk)
-                return bytes_sent
+                        content_bytes_sent += len(chunk)
+                    if content_bytes_sent != expected_content_length:
+                        self._record_response_stream_abort("length_mismatch")
+                        logger.warning(
+                            "Streamed response ended after %d of %d content bytes",
+                            content_bytes_sent,
+                            expected_content_length,
+                        )
+                    return bytes_sent
+                except Exception:
+                    self._record_response_stream_abort("iterator_error")
+                    logger.warning("Iterator response aborted during transformation")
+                    return bytes_sent
+                finally:
+                    if stream is not None:
+                        stream.close()
 
             response_bytes = response.build(**_bld)
             client_socket.sendall(response_bytes)
@@ -1006,6 +1038,11 @@ class XFerryServer(HandlerMixin):
                 client_socket.settimeout(previous_timeout)
             except AttributeError:
                 pass
+            if response.stream_iterator is not None:
+                close_iterator = getattr(response.stream_iterator, "close", None)
+                if callable(close_iterator):
+                    close_iterator()
+                response.stream_iterator = None
             if response.stream_cleanup is not None:
                 response.stream_cleanup()
                 response.stream_cleanup = None
@@ -1131,6 +1168,41 @@ class XFerryServer(HandlerMixin):
     def _is_advanced_session_control_route(self, request: HTTPRequest) -> bool:
         """Return True for exact 7C advanced-session control request targets."""
         return request.raw_target in _ADVANCED_SESSION_CONTROL_TARGETS
+
+    def _authorize_encrypted_transfer_request(
+        self,
+        request: HTTPRequest,
+        _client_address: tuple[str, int],
+    ) -> HTTPResponse | None:
+        """Require same-origin browser context for the enabled reserved API."""
+        if not self.encrypted_uploads or not self._is_encrypted_transfer_route(request):
+            return None
+
+        admission = request.admission_context
+        origin = admission.origin
+        if origin is not None and not self.request_admission_policy.is_same_origin(
+            admission,
+            origin,
+        ):
+            return self._control_error(
+                403,
+                "forbidden_origin",
+                "Forbidden origin",
+                field="Origin",
+            )
+
+        fetch_site = admission.sec_fetch_site
+        if (
+            fetch_site is not None
+            and fetch_site.strip().lower() not in _FETCH_METADATA_SAME_ORIGIN_VALUES
+        ):
+            return self._control_error(
+                403,
+                "forbidden_origin",
+                "Forbidden origin",
+                field="Sec-Fetch-Site",
+            )
+        return None
 
     def _authorize_advanced_session_control(
         self,
@@ -1396,6 +1468,7 @@ class XFerryServer(HandlerMixin):
             body_min_rate_bytes_per_second=self.body_min_rate,
             on_reject=self._record_receive_rejection,
             body_memory_budget=self._body_memory_budget,
+            body_limit_resolver=encrypted_request_body_limit,
         )
 
     def _handle_notepad_ws(

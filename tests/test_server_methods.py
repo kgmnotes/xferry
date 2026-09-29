@@ -2694,6 +2694,55 @@ class TestServerHelpers:
         assert sock.sent[1] == b"stream payload"
         assert bytes_sent == len(sock.sent[0]) + len(sock.sent[1])
 
+    def test_send_response_streams_iterator_incrementally_and_closes_it(self, temp_dir):
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        closed: list[bool] = []
+
+        def chunks():
+            try:
+                yield b"first"
+                yield b"second"
+            finally:
+                closed.append(True)
+
+        response = HTTPResponse(200)
+        response.set_iterator(
+            chunks(),
+            "application/octet-stream",
+            content_length=11,
+        )
+        sock = _SendSocketStub()
+
+        bytes_sent = server._send_response(response, sock, {"keep_alive": True})
+
+        assert b"Connection: close" in sock.sent[0]
+        assert sock.sent[1:] == [b"first", b"second"]
+        assert bytes_sent == sum(len(payload) for payload in sock.sent)
+        assert closed == [True]
+
+    def test_send_response_aborts_iterator_on_failure_and_runs_cleanup(self, temp_dir):
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        cleaned: list[bool] = []
+
+        def chunks():
+            yield b"first"
+            raise RuntimeError("authenticated chunk failed")
+
+        response = HTTPResponse(200)
+        response.set_iterator(
+            chunks(),
+            "application/octet-stream",
+            content_length=11,
+            stream_cleanup=lambda: cleaned.append(True),
+        )
+        sock = _SendSocketStub()
+
+        bytes_sent = server._send_response(response, sock, {"keep_alive": True})
+
+        assert bytes_sent == len(sock.sent[0]) + len(b"first")
+        assert cleaned == [True]
+        assert server.get_metrics()["response"]["stream_abort_reasons"] == {"iterator_error": 1}
+
     def test_handle_client_closes_socket_when_tls_handshake_fails(self, temp_dir, monkeypatch):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(root_dir=str(temp_dir), quiet=True, tls=True)

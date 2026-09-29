@@ -59,11 +59,11 @@
 - Modify: handler composition/routing, `xferry/http/response.py`, `xferry/server.py`, `xferry/request_pipeline.py`
 - Test: `tests/test_encrypted_api.py`, HTTP response/pipeline/live tests
 
-- [ ] Write failing contract tests for every route, status, stable error, auth/origin rule, and disabled 404 behavior.
-- [ ] Add handlers and strict schemas, including idempotent create/chunk/complete and final deletion.
-- [ ] Write failing iterator-response tests, then add bounded transformed streaming for one-shot decrypt.
-- [ ] Add route-specific chunk size/admission checks before large body allocation.
-- [ ] Run focused and neighboring server suites; commit the task.
+- [x] Write failing contract tests for every route, status, stable error, auth/origin rule, and disabled 404 behavior.
+- [x] Add handlers and strict schemas, including idempotent create/chunk/complete and final deletion.
+- [x] Write failing iterator-response tests, then add bounded transformed streaming for one-shot decrypt.
+- [x] Add route-specific chunk size/admission checks before large body allocation.
+- [x] Run focused and neighboring server suites; commit the task.
 
 ### Task 4: Browser crypto and large-file workflow
 

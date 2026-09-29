@@ -39,6 +39,7 @@ ReceiveRejectionReason = Literal[
     "body_memory_budget_exceeded",
 ]
 ReceiveRejectCallback = Callable[[ReceiveRejectionReason], None]
+BodyLimitResolver = Callable[[str], int | None]
 
 
 class BodyMemoryBudget:
@@ -166,6 +167,7 @@ def receive_request(
     body_timeout: float | None = BODY_TIMEOUT,
     body_min_rate_bytes_per_second: float = DEFAULT_BODY_MIN_RATE_BYTES_PER_SECOND,
     on_reject: ReceiveRejectCallback | None = None,
+    body_limit_resolver: BodyLimitResolver | None = None,
 ) -> bytes:
     """Read one complete HTTP request from ``client_socket``.
 
@@ -196,6 +198,7 @@ def receive_request(
         body_timeout=body_timeout,
         body_min_rate_bytes_per_second=body_min_rate_bytes_per_second,
         on_reject=on_reject,
+        body_limit_resolver=body_limit_resolver,
     ).data
 
 
@@ -210,6 +213,7 @@ def receive_request_result(
     body_min_rate_bytes_per_second: float = DEFAULT_BODY_MIN_RATE_BYTES_PER_SECOND,
     on_reject: ReceiveRejectCallback | None = None,
     body_memory_budget: BodyMemoryBudget | None = None,
+    body_limit_resolver: BodyLimitResolver | None = None,
 ) -> RequestReceiveResult:
     """Read one complete HTTP request and hold any body-memory reservation.
 
@@ -238,6 +242,7 @@ def receive_request_result(
 
     headers_received = False
     content_length = 0
+    effective_body_limit = max_upload_size
     header_end_pos = 0
     first_recv = True
     body_reservation: BodyMemoryReservation | None = None
@@ -361,11 +366,19 @@ def receive_request_result(
                         if parsed is None:
                             return reject("invalid_content_length")
                         content_length = parsed
-                        if content_length > max_upload_size:
+                        if body_limit_resolver is not None:
+                            resolved_limit = body_limit_resolver(headers_part)
+                            if resolved_limit is not None:
+                                if resolved_limit < 0:
+                                    raise ValueError(
+                                        "body_limit_resolver must return a non-negative limit"
+                                    )
+                                effective_body_limit = min(max_upload_size, resolved_limit)
+                        if content_length > effective_body_limit:
                             logger.warning(
                                 "Declared Content-Length too large (%d bytes > %d bytes), dropping",
                                 content_length,
-                                max_upload_size,
+                                effective_body_limit,
                             )
                             return reject("body_too_large")
                         if content_length > 0 and body_memory_budget is not None:
@@ -382,7 +395,7 @@ def receive_request_result(
                         if content_length > 0:
                             body_start_time = time.monotonic()
                         body_received = total_size - header_end_pos - len(HEADER_TERMINATOR)
-                        if body_received > max_upload_size:
+                        if body_received > effective_body_limit:
                             logger.warning(
                                 "Request body too large (%d bytes), dropping",
                                 body_received,
@@ -398,7 +411,7 @@ def receive_request_result(
                         return reject("header_too_large")
                 else:
                     body_received = total_size - header_end_pos - len(HEADER_TERMINATOR)
-                    if body_received > max_upload_size:
+                    if body_received > effective_body_limit:
                         logger.warning("Request body too large (%d bytes), dropping", body_received)
                         return reject("body_too_large")
                     if body_received >= content_length:
