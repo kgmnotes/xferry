@@ -8,6 +8,8 @@ import secrets
 import shutil
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -172,6 +174,15 @@ class UploadStorageService:
                 self._release(size)
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+
+    @contextmanager
+    def reservation(self, size: int) -> Iterator[None]:
+        """Reserve one file and its declared bytes across a multi-step write."""
+        self._reserve(size)
+        try:
+            yield
+        finally:
+            self._release(size)
 
     def _reserve(self, size: int) -> None:
         with self._lock:

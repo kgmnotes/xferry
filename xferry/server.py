@@ -22,6 +22,7 @@ from typing import Any
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
+from .encrypted_storage import EncryptedStorageService
 from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_VERSION
 from .extensions import (
     HandlerContext,
@@ -281,9 +282,20 @@ class XFerryServer(HandlerMixin):
             self.upload_storage_policy,
             metrics=self._metrics,
         )
+        self.encrypted_storage = (
+            EncryptedStorageService(
+                self.root_dir,
+                self.upload_storage,
+                max_plaintext_size=self.encrypted_upload_max_size,
+                incomplete_ttl=self.encrypted_upload_incomplete_ttl,
+            )
+            if self.encrypted_uploads
+            else None
+        )
         self.handler_context = HandlerRuntimeContext(
             upload_dir=self.upload_dir,
             upload_storage=self.upload_storage,
+            encrypted_storage=self.encrypted_storage,
             metrics=self._metrics,
             smuggle_temp=SmuggleTempCoordinator(
                 lock=self._smuggle_lock,

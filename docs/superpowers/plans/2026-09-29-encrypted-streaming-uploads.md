@@ -47,10 +47,10 @@
 - Modify: `xferry/storage.py`, `xferry/handlers/context.py`, `xferry/server.py`
 - Test: `tests/test_encrypted_storage.py`
 
-- [ ] Write failing tests for create, durable chunk write, idempotent retry, conflict, quota, completion, delete, expiry, and restart reconciliation.
-- [ ] Implement the hidden data store, atomic sidecars, locks, state machine, and startup/TTL reconciliation.
-- [ ] Prove hidden data is accounted but inaccessible to ordinary file operations.
-- [ ] Run focused tests and static checks; commit the task.
+- [x] Write failing tests for create, durable chunk write, idempotent retry, conflict, quota, completion, delete, expiry, and restart reconciliation.
+- [x] Implement the hidden data store, atomic sidecars, locks, state machine, and startup/TTL reconciliation.
+- [x] Prove hidden data is accounted but inaccessible to ordinary file operations.
+- [x] Run focused tests and static checks; commit the task.
 
 ### Task 3: Reserved API and transformed response streaming
 
