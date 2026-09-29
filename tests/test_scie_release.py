@@ -18,10 +18,14 @@ import pytest
 from tools.build_scie_release import CommandRunner, ReleaseBundle, build_release_bundle
 from xferry.management.health import HealthResult
 from xferry.management.model import ManagedLayout
-from xferry.management.releases import ReleaseManager
+from xferry.management.releases import ReleaseManager, ReleaseManifest
 from xferry.management.system import CommandResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_SOURCE_COMMIT = "b" * 40
+TEST_WORKFLOW_RUN = "654321"
+TEST_INSTALLED_PAYLOAD = b"xferry-0.2.0"
+TEST_INSTALLED_SHA256 = hashlib.sha256(TEST_INSTALLED_PAYLOAD).hexdigest()
 UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES = (
     (
         "Unsupported or ambiguous XFerry managed state was detected and preserved; "
@@ -111,6 +115,8 @@ def _render_bundle(tmp_path: Path, payload: bytes = b"scie") -> ReleaseBundle:
         tmp_path / "bundle",
         "0.1.0",
         FakeRunner(payload),
+        source_commit=TEST_SOURCE_COMMIT,
+        workflow_run=TEST_WORKFLOW_RUN,
     )
 
 
@@ -243,6 +249,7 @@ def _seed_valid_supported_installation(
     version: str = "0.2.0",
     *,
     manifest_version: str | None = None,
+    manifest_schema: int = 1,
 ) -> None:
     described_version = manifest_version or version
     payload = f"xferry-{version}".encode()
@@ -251,28 +258,67 @@ def _seed_valid_supported_installation(
     executable = release / "xferry"
     executable.write_bytes(payload)
     executable.chmod(0o755)
-    release.joinpath("xferry-release.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": described_version,
-                "tag": f"v{described_version}",
-                "platform": "linux-x86_64",
-                "executable": {
-                    "name": f"xferry-{described_version}-linux-x86_64",
-                    "size": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
+    if manifest_schema == 1:
+        manifest_payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "version": described_version,
+                    "tag": f"v{described_version}",
+                    "platform": "linux-x86_64",
+                    "executable": {
+                        "name": f"xferry-{described_version}-linux-x86_64",
+                        "size": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    },
                 },
-            },
-            indent=2,
+                indent=2,
+            )
+            + "\n"
         )
-        + "\n",
-        encoding="utf-8",
-    )
+    elif manifest_schema == 2:
+        manifest_payload = (
+            ReleaseManifest.create_v2(
+                version=described_version,
+                platform="linux-x86_64",
+                executable_size=len(payload),
+                executable_sha256=hashlib.sha256(payload).hexdigest(),
+                source_commit=TEST_SOURCE_COMMIT,
+                workflow_run=TEST_WORKFLOW_RUN,
+            )
+            .to_bytes()
+            .decode("utf-8")
+        )
+    else:
+        raise AssertionError(f"unexpected manifest schema: {manifest_schema}")
+    release.joinpath("xferry-release.json").write_text(manifest_payload, encoding="utf-8")
     root.joinpath("opt/xferry/current").symlink_to(Path("releases") / version)
     cli_link = root / "usr/local/bin/xferry"
     cli_link.parent.mkdir(parents=True)
     cli_link.symlink_to("/opt/xferry/current/xferry")
+
+
+def _v2_installed_manifest(*, include_extra_digest: bool = False) -> str:
+    version = "0.2.0"
+    executable_name = f"xferry-{version}-linux-x86_64"
+    executable_sha256 = TEST_INSTALLED_SHA256
+    artifact_digests = {executable_name: executable_sha256}
+    if include_extra_digest:
+        artifact_digests["install.sh"] = "0" * 64
+    return (
+        ReleaseManifest.create_v2(
+            version=version,
+            platform="linux-x86_64",
+            executable_size=len(TEST_INSTALLED_PAYLOAD),
+            executable_sha256=executable_sha256,
+            source_commit=TEST_SOURCE_COMMIT,
+            workflow_run=TEST_WORKFLOW_RUN,
+            artifact_digests=artifact_digests,
+        )
+        .to_bytes()
+        .decode("utf-8")
+        .rstrip("\n")
+    )
 
 
 def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> None:
@@ -285,7 +331,7 @@ def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> 
 
     assert executable.read_bytes() == payload
     assert manifest == {
-        "schema_version": 1,
+        "schema_version": 2,
         "version": "0.1.0",
         "tag": "v0.1.0",
         "platform": "linux-x86_64",
@@ -293,6 +339,17 @@ def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> 
             "name": "xferry-0.1.0-linux-x86_64",
             "size": 12,
             "sha256": expected_sha256,
+        },
+        "source": {
+            "commit": TEST_SOURCE_COMMIT,
+            "workflow_run": TEST_WORKFLOW_RUN,
+        },
+        "artifact_digests": {
+            "xferry-0.1.0-linux-x86_64": expected_sha256,
+        },
+        "signing": {
+            "scheme": "unsigned",
+            "key_ids": [],
         },
     }
     assert bundle.manifest.read_bytes().endswith(b"\n")
@@ -328,6 +385,39 @@ def test_release_builder_rejects_noncanonical_versions_before_build_or_output(
 
     with pytest.raises(ValueError, match="supported release line"):
         build_release_bundle(REPO_ROOT, output, version, runner)
+
+    assert runner.commands == []
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("source_commit", "workflow_run"),
+    [
+        ("", TEST_WORKFLOW_RUN),
+        ("not-a-commit", TEST_WORKFLOW_RUN),
+        (TEST_SOURCE_COMMIT, ""),
+        (TEST_SOURCE_COMMIT, "0"),
+        (TEST_SOURCE_COMMIT, "run-123"),
+    ],
+)
+def test_release_builder_rejects_invalid_provenance_before_build_or_output(
+    tmp_path: Path,
+    source_commit: str,
+    workflow_run: str,
+) -> None:
+    """Malformed provenance must fail before a candidate can be mistaken for releasable output."""
+    runner = FakeRunner(b"scie")
+    output = tmp_path / "bundle"
+
+    with pytest.raises(ValueError, match="invalid (source commit|workflow run)"):
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            "0.1.0",
+            runner,
+            source_commit=source_commit,
+            workflow_run=workflow_run,
+        )
 
     assert runner.commands == []
     assert not output.exists()
@@ -491,24 +581,52 @@ def test_installer_blocks_unmarked_owned_state_before_mktemp_or_download(
     assert not root.joinpath("opt/xferry").exists()
 
 
-def test_installer_allows_a_valid_same_major_managed_installation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("manifest_schema", [1, 2], ids=["v1-migration", "v2"])
+def test_installer_allows_a_valid_same_major_managed_installation(
+    tmp_path: Path,
+    manifest_schema: int,
+) -> None:
     """The guard must not reject an ordinary supported-line bootstrap rerun."""
     payload = b"scie"
     bundle = _render_bundle(tmp_path / "bundle", payload)
 
+    def prepare(root: Path) -> None:
+        _seed_valid_supported_installation(root, manifest_schema=manifest_schema)
+
     result = _run_installer(
         bundle,
-        tmp_path / "same-major",
+        tmp_path / f"same-major-{manifest_schema}",
         payload,
-        prepare_root=_seed_valid_supported_installation,
+        prepare_root=prepare,
     )
-    root = tmp_path / "same-major/root"
+    case_root = tmp_path / f"same-major-{manifest_schema}"
+    root = case_root / "root"
 
     assert result.returncode == 0, result.stderr
-    assert tmp_path.joinpath("same-major/mktemp-called").exists()
-    assert tmp_path.joinpath("same-major/curl-called").exists()
+    assert case_root.joinpath("mktemp-called").exists()
+    assert case_root.joinpath("curl-called").exists()
     assert root.joinpath("opt/xferry/current").readlink() == Path("releases/0.1.0")
     assert root.joinpath("opt/xferry/releases/0.2.0/xferry").is_file()
+
+
+def test_installer_accepts_a_canonical_v2_multi_artifact_digest_set(tmp_path: Path) -> None:
+    """Generated shell parsing stays aligned with the canonical expandable digest inventory."""
+    payload = b"scie"
+    bundle = _render_bundle(tmp_path / "bundle", payload)
+
+    def prepare(root: Path) -> None:
+        _seed_valid_supported_installation(root, manifest_schema=2)
+        root.joinpath("opt/xferry/releases/0.2.0/xferry-release.json").write_text(
+            _v2_installed_manifest(include_extra_digest=True) + "\n",
+            encoding="utf-8",
+        )
+
+    case_root = tmp_path / "multi-digest"
+    result = _run_installer(bundle, case_root, payload, prepare_root=prepare)
+
+    assert result.returncode == 0, result.stderr
+    assert case_root.joinpath("mktemp-called").exists()
+    assert case_root.joinpath("curl-called").exists()
 
 
 def test_installer_blocks_unsupported_manifest_hidden_under_a_supported_directory(
@@ -594,6 +712,38 @@ def test_installer_blocks_unsupported_manifest_hidden_under_a_supported_director
   }
 }""",
             id="declared-size-mismatch",
+        ),
+        pytest.param(
+            _v2_installed_manifest().replace(
+                f'    "workflow_run": "{TEST_WORKFLOW_RUN}"',
+                f'    "workflow_run": "{TEST_WORKFLOW_RUN}",',
+                1,
+            ),
+            id="v2-trailing-source-comma",
+        ),
+        pytest.param(
+            _v2_installed_manifest().replace(
+                f'    "commit": "{TEST_SOURCE_COMMIT}",',
+                f'    "commit": "{TEST_SOURCE_COMMIT}"',
+                1,
+            ),
+            id="v2-missing-source-comma",
+        ),
+        pytest.param(
+            _v2_installed_manifest().replace(
+                f'    "xferry-0.2.0-linux-x86_64": "{TEST_INSTALLED_SHA256}"',
+                f'    "xferry-0.2.0-linux-x86_64": "{TEST_INSTALLED_SHA256}",',
+                1,
+            ),
+            id="v2-trailing-artifact-comma",
+        ),
+        pytest.param(
+            _v2_installed_manifest(include_extra_digest=True).replace(
+                f'    "install.sh": "{"0" * 64}",',
+                f'    "install.sh": "{"0" * 64}"',
+                1,
+            ),
+            id="v2-missing-artifact-comma",
         ),
     ],
 )
@@ -799,22 +949,14 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     layout.auth_file.write_text("admin:known-password\n", encoding="utf-8")
     update_payload = b"updated-release"
     base_url = "https://releases.example.test/xferry/releases"
-    update_manifest = (
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": "0.2.0",
-                "tag": "v0.2.0",
-                "platform": "linux-x86_64",
-                "executable": {
-                    "name": "xferry-0.2.0-linux-x86_64",
-                    "size": len(update_payload),
-                    "sha256": hashlib.sha256(update_payload).hexdigest(),
-                },
-            }
-        )
-        + "\n"
-    ).encode()
+    update_manifest = ReleaseManifest.create_v2(
+        version="0.2.0",
+        platform="linux-x86_64",
+        executable_size=len(update_payload),
+        executable_sha256=hashlib.sha256(update_payload).hexdigest(),
+        source_commit=TEST_SOURCE_COMMIT,
+        workflow_run=TEST_WORKFLOW_RUN,
+    ).to_bytes()
     downloader = _LifecycleDownloader(
         {
             f"{base_url}/download/v0.2.0/xferry-release.json": update_manifest,

@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
+from .release_contract import LINUX_X86_64, platform_id_for_host
+
 
 @dataclass(frozen=True)
 class ManagedLayout:
@@ -62,7 +64,11 @@ class HostFacts:
     @property
     def is_supported(self) -> bool:
         """Return whether this host meets the managed platform boundary."""
-        return self.is_supported_os and self.machine == "x86_64" and self.has_systemd
+        return (
+            self.is_supported_os
+            and platform_id_for_host("linux", self.machine) == LINUX_X86_64
+            and self.has_systemd
+        )
 
 
 @dataclass(frozen=True)

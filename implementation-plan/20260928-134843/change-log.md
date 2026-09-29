@@ -17,3 +17,9 @@
 - Files changed: ADR-006/ADR-011 and ADR navigation, `SECURITY.md` plus its generated mirror, `docs/threat-model.md`, `mkdocs.yml`, the staged documentation/workflow guard and tests, and this active plan's status, stage, change log, and report artifacts.
 - Verification: 133 targeted tests, scoped Ruff lint/format, documentation sync and semantic guard, strict MkDocs, action-pin validation, all 3,212 repository tests, and final architecture/security reviews passed; `.github/workflows/release.yml` remained unchanged and non-publishing.
 - Report: `stage-reports/STAGE-003-20260929-132815.md`
+
+## 2026-09-29 14:40:45 +0300 — STAGE-004
+- Status: CLOSED
+- Files changed: canonical release contract; release, managed-state, host, builder, and installer consumers; focused contract tests; and this active plan's status, stage, change log, and report artifacts.
+- Verification: 274 focused contract tests, 206 managed setup tests, all 3,245 repository tests, mypy, scoped Ruff lint/format, shell syntax, canonical-literal audit, package/archive validation, and final subagent re-review passed.
+- Report: `stage-reports/STAGE-004-20260929-140255.md`

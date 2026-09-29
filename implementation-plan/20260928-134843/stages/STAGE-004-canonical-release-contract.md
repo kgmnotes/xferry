@@ -1,7 +1,7 @@
 # STAGE-004 - Centralize release platform and manifest contracts
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -51,12 +51,12 @@ Create one typed release/platform contract that defines platform IDs, artifact n
 5. Add duplicate-key, unknown-field, path, platform, version, size, digest, downgrade, and v1 migration fixtures.
 
 ## Acceptance criteria
-- [ ] A single Python module owns supported platform IDs, aliases, artifact naming, and manifest validation.
-- [ ] Searches find no independent `linux-x86_64` validation logic outside the canonical model, generated shell data, tests, or documentation fixtures.
-- [ ] Existing valid v1 managed state remains readable for rollback/migration.
-- [ ] New artifacts/state use strict manifest v2 and deterministic names.
-- [ ] Unknown platforms, unsafe names, duplicate keys, loose schemas, and inconsistent tag/version metadata fail closed.
-- [ ] Public imports and runtime protocol behavior remain unchanged.
+- [x] A single Python module owns supported platform IDs, aliases, artifact naming, and manifest validation.
+- [x] Searches find no independent `linux-x86_64` validation logic outside the canonical model, generated shell data, tests, or documentation fixtures.
+- [x] Existing valid v1 managed state remains readable for rollback/migration.
+- [x] New artifacts/state use strict manifest v2 and deterministic names.
+- [x] Unknown platforms, unsafe names, duplicate keys, loose schemas, and inconsistent tag/version metadata fail closed.
+- [x] Public imports and runtime protocol behavior remain unchanged.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -76,4 +76,10 @@ Create one typed release/platform contract that defines platform IDs, artifact n
 - Rollback: retain v1 fixture tests and revert consumers to the previous parser while keeping no v2 artifacts published.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Closed at 2026-09-29 14:40:45 +0300.
+- Added `xferry/management/release_contract.py` as the canonical owner of platform IDs/aliases, artifact naming, provenance, bounded digest metadata, and strict manifest v1/v2 parsing.
+- Retained v1 only for installed-state migration while requiring v2 for new builds and remote downloads; arm64 is modeled but managed-host support remains intentionally x86_64-only.
+- Migrated managed state, release downloads, host normalization/support checks, the SCIE builder, and generated installer data without changing the public `ReleaseManifest` import path or release runtime protocol.
+- An `api-designer` subagent found a shell/Python punctuation-parity gap; the shell parser and adversarial tests were tightened, and re-review found no remaining issues.
+- Verification passed: 274 focused contract tests, 206 managed setup tests, all 3,245 repository tests, mypy (69 files), scoped Ruff lint/format, shell syntax, literal audit, wheel/sdist build and archive validation, and final diff integrity.
+- Closure report: `../stage-reports/STAGE-004-20260929-140255.md`.

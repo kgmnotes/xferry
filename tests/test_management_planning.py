@@ -27,6 +27,7 @@ from xferry.management.planning import (
     render_managed_config,
 )
 from xferry.management.platform import detect_host_facts
+from xferry.management.release_contract import platform_id_for_host
 from xferry.settings import load_settings_file
 
 
@@ -111,6 +112,7 @@ def test_unusable_automatic_host_capacity_is_rejected_before_planning(facts: Hos
         ('ID=debian\nVERSION_ID="12"\n', "x86_64", True, True),
         ('ID=debian\nVERSION_ID="11"\n', "x86_64", True, False),
         ('ID=ubuntu\nVERSION_ID="24.04"\n', "aarch64", True, False),
+        ('ID=ubuntu\nVERSION_ID="24.04"\n', "arm64", True, False),
         ('ID=ubuntu\nVERSION_ID="24.04"\n', "x86_64", False, False),
     ],
 )
@@ -128,8 +130,25 @@ def test_host_detection_normalizes_supported_platforms(
         disk_free_bytes=8 * 1024 * 1024 * 1024,
     )
 
-    assert facts.machine == ("x86_64" if machine == "amd64" else machine)
+    assert facts.machine == {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
     assert facts.is_supported is supported
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("amd64", "linux-x86_64"),
+        ("x86_64", "linux-x86_64"),
+        ("aarch64", "linux-aarch64"),
+        ("arm64", "linux-aarch64"),
+        ("riscv64", None),
+    ],
+)
+def test_release_platform_contract_owns_host_aliases(
+    machine: str,
+    expected: str | None,
+) -> None:
+    assert platform_id_for_host("Linux", machine) == expected
 
 
 def test_host_detection_uses_the_existing_parent_for_a_clean_data_root(tmp_path: Path) -> None:

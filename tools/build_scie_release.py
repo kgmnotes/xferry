@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -20,6 +20,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from xferry.management.managed_state import (  # noqa: E402
     UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS,
+)
+from xferry.management.release_contract import (  # noqa: E402
+    LINUX_X86_64,
+    MAX_ARTIFACT_DIGESTS,
+    PlatformId,
+    ReleaseManifest,
+    artifact_name,
+    machine_aliases,
+    platform_display_name,
+    require_source_commit,
+    require_workflow_run,
 )
 from xferry.management.versions import (  # noqa: E402
     SUPPORTED_RELEASE_MAJOR,
@@ -48,12 +59,28 @@ def _run_command(command: Sequence[str], cwd: Path) -> None:
     subprocess.run(list(command), cwd=cwd, check=True)
 
 
+def _source_commit(repo_root: Path) -> str:
+    """Resolve the immutable source identity for a local or CI bundle."""
+    environment_commit = os.environ.get("GITHUB_SHA")
+    if environment_commit:
+        return environment_commit
+    result = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def _render_installer(
     template: Path,
     *,
     version: str,
     executable: Path,
     manifest_payload: str,
+    platform_id: PlatformId,
 ) -> str:
     payload = executable.read_bytes()
     replacements = {
@@ -62,6 +89,10 @@ def _render_installer(
         "@EXECUTABLE_SIZE@": str(len(payload)),
         "@EXECUTABLE_SHA256@": hashlib.sha256(payload).hexdigest(),
         "@MANIFEST_JSON@": manifest_payload.rstrip("\n"),
+        "@PLATFORM_ID@": platform_id,
+        "@MACHINE_CASE_PATTERN@": "|".join(machine_aliases(platform_id)),
+        "@MAX_ARTIFACT_DIGESTS@": str(MAX_ARTIFACT_DIGESTS),
+        "@PLATFORM_DESCRIPTION@": platform_display_name(platform_id),
         "@SUPPORTED_RELEASE_MAJOR@": SUPPORTED_RELEASE_MAJOR,
         "@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@": UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS,
     }
@@ -105,14 +136,24 @@ def build_release_bundle(
     output_dir: Path,
     version: str,
     runner: CommandRunner,
+    *,
+    source_commit: str | None = None,
+    workflow_run: str | None = None,
 ) -> ReleaseBundle:
     """Build a pinned CPython 3.12 eager SCIE and its bootstrap metadata."""
 
     if not is_supported_release_version(version):
         raise ValueError("release bundle version must belong to the supported release line")
     repo_root = repo_root.resolve()
+    selected_platform = LINUX_X86_64
+    selected_source_commit = require_source_commit(
+        _source_commit(repo_root) if source_commit is None else source_commit
+    )
+    selected_workflow_run = require_workflow_run(
+        os.environ.get("GITHUB_RUN_ID", "local") if workflow_run is None else workflow_run
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
-    executable_name = f"xferry-{version}-linux-x86_64"
+    executable_name = artifact_name(version, selected_platform)
     executable = output_dir / executable_name
     with TemporaryDirectory(prefix="xferry-scie-") as temporary_dir:
         staging_dir = Path(temporary_dir)
@@ -161,23 +202,15 @@ def build_release_bundle(
 
     payload = executable.read_bytes()
     sha256 = hashlib.sha256(payload).hexdigest()
-    manifest_payload = (
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": version,
-                "tag": f"v{version}",
-                "platform": "linux-x86_64",
-                "executable": {
-                    "name": executable_name,
-                    "size": len(payload),
-                    "sha256": sha256,
-                },
-            },
-            indent=2,
-        )
-        + "\n"
+    release_manifest = ReleaseManifest.create_v2(
+        version=version,
+        platform=selected_platform,
+        executable_size=len(payload),
+        executable_sha256=sha256,
+        source_commit=selected_source_commit,
+        workflow_run=selected_workflow_run,
     )
+    manifest_payload = release_manifest.to_bytes().decode("utf-8")
     manifest = output_dir / "xferry-release.json"
     manifest.write_text(manifest_payload, encoding="utf-8")
     checksums = output_dir / "SHA256SUMS"
@@ -189,6 +222,7 @@ def build_release_bundle(
             version=version,
             executable=executable,
             manifest_payload=manifest_payload,
+            platform_id=selected_platform,
         ),
         encoding="utf-8",
     )
@@ -200,13 +234,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--version")
+    parser.add_argument("--source-commit")
+    parser.add_argument("--workflow-run")
     arguments = parser.parse_args(argv)
     version = arguments.version
     if version is None:
         from xferry.config import __version__
 
         version = __version__
-    bundle = build_release_bundle(REPO_ROOT, arguments.output_dir, version, _run_command)
+    bundle = build_release_bundle(
+        REPO_ROOT,
+        arguments.output_dir,
+        version,
+        _run_command,
+        source_commit=arguments.source_commit,
+        workflow_run=arguments.workflow_run,
+    )
     for asset in (bundle.executable, bundle.installer, bundle.manifest, bundle.checksums):
         print(asset)
     return 0

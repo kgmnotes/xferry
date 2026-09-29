@@ -19,7 +19,7 @@ STAGE-010, STAGE-011, and STAGE-012 are parallelizable after STAGE-009. All othe
 | STAGE-001 | MEDIUM | CLOSED | Restore strict typing baseline | None | `mypy xferry`; focused handler tests | `xferry/handlers/notepad.py`, tests if needed |
 | STAGE-002 | MEDIUM | CLOSED | Patch audited CI toolchain pins | None | pip-audit, docs build, toolchain checks | `constraints/ci.txt`, dependency metadata/tests |
 | STAGE-003 | HIGH | CLOSED | Adopt controlled distribution policy and guards | 001, 002 | ADR/docs guard/deployment policy tests | ADR, SECURITY/threat model, guard tools/tests |
-| STAGE-004 | HIGH | OPEN | Centralize release platform and manifest contracts | 003 | model/parser/state compatibility tests | management release modules, builder contract, tests |
+| STAGE-004 | HIGH | CLOSED | Centralize release platform and manifest contracts | 003 | model/parser/state compatibility tests | management release modules, builder contract, tests |
 | STAGE-005 | HIGH | OPEN | Add complete managed host support matrix | 004 | planning/setup tests for 10 distro/arch pairs | platform/planning/setup/diagnostics/tests |
 | STAGE-006 | HIGH | OPEN | Build and verify multi-arch SCIE installers | 004, 005 | x86_64/aarch64 bundle and base-image smoke | SCIE builder, installer template, CI/tests |
 | STAGE-007 | HIGH | OPEN | Establish signed release metadata trust | 004, 006 | signature/tamper/key-rotation/update tests | signing/verifier code, manifest builder, threat model/tests |

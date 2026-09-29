@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import platform
-import re
 import shutil
 import stat
 import tempfile
@@ -26,6 +23,13 @@ from xferry.settings import SettingsError, load_settings_file
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .managed_state import has_unsupported_managed_state
 from .model import ManagedLayout
+from .release_contract import (
+    INSTALLED_EXECUTABLE_NAME,
+    MANIFEST_NAME,
+    MAX_MANIFEST_BYTES,
+    ReleaseManifest,
+    current_platform_id,
+)
 from .system import (
     CommandRunner,
     InsufficientPrivilege,
@@ -37,11 +41,9 @@ from .system import (
 from .versions import is_canonical_release_version, is_supported_release_version
 
 _SERVICE = "xferry.service"
-_MANIFEST_NAME = "xferry-release.json"
-_EXECUTABLE_NAME = "xferry"
-_PLATFORM = "linux-x86_64"
-_MAX_MANIFEST_BYTES = 64 * 1024
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_MANIFEST_NAME = MANIFEST_NAME
+_EXECUTABLE_NAME = INSTALLED_EXECUTABLE_NAME
+_MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
 
 HealthCheck = Callable[[HealthEndpoint, str, str, float], HealthResult]
 
@@ -113,109 +115,6 @@ class HttpsDownloader:
             raise OSError("download exceeded the permitted size")
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate manifest key")
-        result[key] = value
-    return result
-
-
-@dataclass(frozen=True)
-class ReleaseManifest:
-    """Exact Task 1 release-bundle metadata needed to verify one SCIE."""
-
-    schema_version: int
-    version: str
-    tag: str
-    platform: str
-    executable_name: str
-    executable_size: int
-    executable_sha256: str
-
-    @classmethod
-    def parse(cls, payload: bytes) -> ReleaseManifest:
-        """Parse only the literal schema emitted by ``build_scie_release.py``."""
-        try:
-            if not isinstance(payload, bytes) or len(payload) > _MAX_MANIFEST_BYTES:
-                raise ValueError
-            document = json.loads(
-                payload.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-            )
-            if not isinstance(document, dict) or set(document) != {
-                "schema_version",
-                "version",
-                "tag",
-                "platform",
-                "executable",
-            }:
-                raise ValueError
-            schema_version = document["schema_version"]
-            version = document["version"]
-            tag = document["tag"]
-            platform_id = document["platform"]
-            executable = document["executable"]
-            if schema_version != 1 or isinstance(schema_version, bool):
-                raise ValueError
-            if not all(isinstance(value, str) for value in (version, tag, platform_id)):
-                raise ValueError
-            if _safe_version(version) is None or tag != f"v{version}":
-                raise ValueError
-            if platform_id not in {_PLATFORM}:
-                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9_]+)+", platform_id):
-                    raise ValueError
-            if not isinstance(executable, dict) or set(executable) != {
-                "name",
-                "size",
-                "sha256",
-            }:
-                raise ValueError
-            name = executable["name"]
-            size = executable["size"]
-            sha256 = executable["sha256"]
-            if not isinstance(name, str) or not _safe_basename(name):
-                raise ValueError
-            if name != f"xferry-{version}-{platform_id}":
-                raise ValueError
-            if not isinstance(size, int) or isinstance(size, bool) or size < 1:
-                raise ValueError
-            if not isinstance(sha256, str) or _SHA256_RE.fullmatch(sha256) is None:
-                raise ValueError
-            return cls(
-                schema_version=schema_version,
-                version=version,
-                tag=tag,
-                platform=platform_id,
-                executable_name=name,
-                executable_size=size,
-                executable_sha256=sha256,
-            )
-        except (UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            raise ValueError("invalid release manifest") from None
-
-    def to_bytes(self) -> bytes:
-        """Serialize the exact public manifest schema beside an installed binary."""
-        return (
-            json.dumps(
-                {
-                    "schema_version": self.schema_version,
-                    "version": self.version,
-                    "tag": self.tag,
-                    "platform": self.platform,
-                    "executable": {
-                        "name": self.executable_name,
-                        "size": self.executable_size,
-                        "sha256": self.executable_sha256,
-                    },
-                },
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8")
-
-
 @dataclass(frozen=True)
 class ReleaseResult:
     """Secret-free stable result returned by each release lifecycle operation."""
@@ -272,7 +171,7 @@ class ReleaseManager:
         self.effective_uid = effective_uid
         self.root_uid = root_uid
         self.release_base_url = release_base_url.rstrip("/")
-        self.platform_id = platform_id or _local_platform
+        self.platform_id = platform_id or current_platform_id
         self.unit_path = unit_path
         self.cli_link = cli_link
         self.acme_root = acme_root or self.layout.acme_root
@@ -446,7 +345,7 @@ class ReleaseManager:
             metadata = destination.lstat()
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise ValueError
-            return ReleaseManifest.parse(destination.read_bytes())
+            return ReleaseManifest.parse_new(destination.read_bytes())
         except (OSError, ValueError):
             raise _ReleaseFailure(1, "release_manifest_invalid") from None
 
@@ -887,16 +786,6 @@ def _safe_version(value: object) -> str | None:
     return value
 
 
-def _safe_basename(value: str) -> bool:
-    return (
-        value not in {"", ".", ".."}
-        and Path(value).name == value
-        and "/" not in value
-        and "\\" not in value
-        and "\x00" not in value
-    )
-
-
 def _require_https_url(url: str) -> None:
     _require_https_redirect_url(url)
     parsed = urlsplit(url)
@@ -915,12 +804,6 @@ def _require_https_redirect_url(url: str) -> None:
         or parsed.fragment
     ):
         raise _ReleaseFailure(5, "release_url_unsafe")
-
-
-def _local_platform() -> str:
-    if platform.system() == "Linux" and platform.machine() == "x86_64":
-        return _PLATFORM
-    return f"{platform.system().casefold()}-{platform.machine().casefold()}"
 
 
 def _file_sha256(path: Path) -> str:

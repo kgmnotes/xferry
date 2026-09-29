@@ -5,7 +5,7 @@
 | STAGE-001 | CLOSED | MEDIUM | Restore strict typing baseline | 2026-09-28 14:43:22 +0300 | Pinned mypy, 130 focused tests, Ruff, and the 3,171-test full suite passed after a behavior-preserving local annotation. | `stage-reports/STAGE-001-20260928-143829.md` |
 | STAGE-002 | CLOSED | MEDIUM | Patch audited CI toolchain pins | 2026-09-29 13:13:40 +0300 | Refreshed the two vulnerable toolchain pins; strict audit, constraint/toolchain checks, docs gates, and all 3,171 tests passed. | `stage-reports/STAGE-002-20260929-125932.md` |
 | STAGE-003 | CLOSED | HIGH | Adopt controlled distribution policy and guards | 2026-09-29 14:00:12 +0300 | Accepted ADR-011, added release trust boundaries and staged publisher guards, and passed 133 targeted plus all 3,212 repository tests. | `stage-reports/STAGE-003-20260929-132815.md` |
-| STAGE-004 | OPEN | HIGH | Centralize release platform and manifest contracts | - | - | - |
+| STAGE-004 | CLOSED | HIGH | Centralize release platform and manifest contracts | 2026-09-29 14:40:45 +0300 | Added one strict v1/v2 release contract, migrated its consumers and builder/installer data, and passed 274 focused plus all 3,245 repository tests. | `stage-reports/STAGE-004-20260929-140255.md` |
 | STAGE-005 | OPEN | HIGH | Add complete managed host support matrix | - | - | - |
 | STAGE-006 | OPEN | HIGH | Build and verify multi-arch SCIE installers | - | - | - |
 | STAGE-007 | OPEN | HIGH | Establish signed release metadata trust | - | - | - |

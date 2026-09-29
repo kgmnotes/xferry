@@ -14,11 +14,14 @@ from email.message import Message
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from xferry.management import cli
 from xferry.management import releases as release_module
 from xferry.management.health import HealthEndpoint, HealthResult
 from xferry.management.model import ManagedLayout
+from xferry.management.release_contract import PlatformId
 from xferry.management.releases import (
     HttpsDownloader,
     ReleaseManager,
@@ -56,7 +59,11 @@ def test_release_lifecycle_derives_managed_acme_state_from_the_data_root(tmp_pat
     assert manager.acme_root == tmp_path / "var/lib/xferry/.xferry"
 
 
-def _manifest(version: str, payload: bytes, *, platform: str = "linux-x86_64") -> bytes:
+_TEST_SOURCE_COMMIT = "a" * 40
+_TEST_WORKFLOW_RUN = "123456"
+
+
+def _v1_manifest(version: str, payload: bytes, *, platform: str = "linux-x86_64") -> bytes:
     return (
         json.dumps(
             {
@@ -75,10 +82,26 @@ def _manifest(version: str, payload: bytes, *, platform: str = "linux-x86_64") -
     ).encode()
 
 
+def _v2_manifest(
+    version: str,
+    payload: bytes,
+    *,
+    platform: PlatformId = "linux-x86_64",
+) -> bytes:
+    return ReleaseManifest.create_v2(
+        version=version,
+        platform=platform,
+        executable_size=len(payload),
+        executable_sha256=hashlib.sha256(payload).hexdigest(),
+        source_commit=_TEST_SOURCE_COMMIT,
+        workflow_run=_TEST_WORKFLOW_RUN,
+    ).to_bytes()
+
+
 def _manifest_document(
     version: str = "0.2.0", payload: bytes = b"release-two"
 ) -> dict[str, object]:
-    return json.loads(_manifest(version, payload))
+    return json.loads(_v2_manifest(version, payload))
 
 
 class FakeDownloader:
@@ -217,7 +240,7 @@ def _seed_release(
     executable.chmod(0o755)
     if verified:
         metadata = release / "xferry-release.json"
-        metadata.write_bytes(_manifest(version, payload))
+        metadata.write_bytes(_v1_manifest(version, payload))
         metadata.chmod(0o644)
     return release
 
@@ -262,7 +285,7 @@ def _remote_assets(
         else f"{base_url}/download/{tag}/xferry-release.json"
     )
     return {
-        manifest_url: manifest if manifest is not None else _manifest(version, payload),
+        manifest_url: manifest if manifest is not None else _v2_manifest(version, payload),
         f"{base_url}/download/{tag}/xferry-{version}-linux-x86_64": payload,
     }
 
@@ -569,7 +592,9 @@ def test_ambiguous_release_inventory_blocks_every_entrypoint_before_effects(
         ambiguous_path = _seed_release(layout, "0.1.1", b"missing", verified=False)
     elif ambiguity == "version-mismatch":
         ambiguous_path = _seed_release(layout, "0.1.1", b"mismatch")
-        ambiguous_path.joinpath("xferry-release.json").write_bytes(_manifest("0.1.2", b"mismatch"))
+        ambiguous_path.joinpath("xferry-release.json").write_bytes(
+            _v1_manifest("0.1.2", b"mismatch")
+        )
     elif ambiguity == "tag-mismatch":
         ambiguous_path = _seed_release(layout, "0.1.1", b"bad-tag")
         manifest_path = ambiguous_path / "xferry-release.json"
@@ -724,7 +749,7 @@ def test_uninstall_rechecks_unsupported_managed_state_inventory_under_lock_befor
         b"not json",
         b"[]",
         b'{"schema_version":1}',
-        json.dumps(_manifest_document() | {"schema_version": 2}).encode(),
+        json.dumps(_manifest_document() | {"schema_version": 3}).encode(),
         json.dumps(_manifest_document() | {"unexpected": True}).encode(),
         json.dumps(_manifest_document() | {"tag": "v9.9.9"}).encode(),
         b'{"schema_version":1,"schema_version":1}',
@@ -755,15 +780,120 @@ def test_manifest_parser_rejects_unsafe_or_traversal_asset_names(name: str) -> N
 
 def test_manifest_parser_accepts_the_exact_release_bundle_contract() -> None:
     """Changing Task 1's literal bundle fields must be detected by the lifecycle parser."""
-    parsed = ReleaseManifest.parse(_manifest("0.2.0", b"release-two"))
+    parsed = ReleaseManifest.parse(_v2_manifest("0.2.0", b"release-two"))
 
-    assert parsed.schema_version == 1
+    assert parsed.schema_version == 2
     assert parsed.version == "0.2.0"
     assert parsed.tag == "v0.2.0"
     assert parsed.platform == "linux-x86_64"
     assert parsed.executable_name == "xferry-0.2.0-linux-x86_64"
     assert parsed.executable_size == 11
     assert parsed.executable_sha256 == hashlib.sha256(b"release-two").hexdigest()
+    assert parsed.source_commit == _TEST_SOURCE_COMMIT
+    assert parsed.workflow_run == _TEST_WORKFLOW_RUN
+    assert parsed.signing_scheme == "unsigned"
+
+
+def test_manifest_parser_preserves_exact_v1_read_compatibility() -> None:
+    """Existing installed v1 metadata remains readable during migration and rollback."""
+    parsed = ReleaseManifest.parse(_v1_manifest("0.1.0", b"release-one"))
+
+    assert parsed.schema_version == 1
+    assert parsed.version == "0.1.0"
+    assert ReleaseManifest.parse(parsed.to_bytes()) == parsed
+
+
+def test_new_release_parser_rejects_v1_as_a_schema_downgrade() -> None:
+    """A legacy shape is for installed-state migration, not a newly downloaded release."""
+    with pytest.raises(ValueError, match="^invalid release manifest$"):
+        ReleaseManifest.parse_new(_v1_manifest("0.2.0", b"release-two"))
+
+
+@given(
+    major=st.integers(min_value=0, max_value=999),
+    minor=st.integers(min_value=0, max_value=999),
+    patch=st.integers(min_value=0, max_value=999),
+    platform=st.sampled_from(("linux-x86_64", "linux-aarch64")),
+)
+def test_v2_manifest_round_trip_is_canonical_for_every_modeled_platform(
+    major: int,
+    minor: int,
+    patch: int,
+    platform: PlatformId,
+) -> None:
+    """Canonical versions/platforms must round-trip without widening the schema."""
+    version = f"{major}.{minor}.{patch}"
+    payload = f"{version}-{platform}".encode()
+
+    manifest = ReleaseManifest.create_v2(
+        version=version,
+        platform=platform,
+        executable_size=len(payload),
+        executable_sha256=hashlib.sha256(payload).hexdigest(),
+        source_commit=_TEST_SOURCE_COMMIT,
+        workflow_run=_TEST_WORKFLOW_RUN,
+    )
+
+    assert ReleaseManifest.parse_new(manifest.to_bytes()) == manifest
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("platform", "linux-riscv64"),
+        ("executable.size", 0),
+        ("executable.size", True),
+        ("executable.sha256", "A" * 64),
+        ("source.commit", "A" * 40),
+        ("source.workflow_run", "0"),
+        ("artifact_digests", {}),
+        ("artifact_digests", {"other-asset": "0" * 64}),
+        ("signing.scheme", "ed25519"),
+        ("signing.key_ids", ["future-key"]),
+    ],
+)
+def test_v2_manifest_rejects_unknown_or_incomplete_contract_metadata(
+    field: str,
+    value: object,
+) -> None:
+    """Provenance, inventory, platform, and future signing metadata fail closed."""
+    document = _manifest_document()
+    if "." in field:
+        parent, child = field.split(".", 1)
+        nested = dict(document[parent])  # type: ignore[arg-type]
+        nested[child] = value
+        document[parent] = nested
+    else:
+        document[field] = value
+
+    with pytest.raises(ValueError, match="^invalid release manifest$"):
+        ReleaseManifest.parse_new(json.dumps(document).encode())
+
+
+def test_v2_manifest_rejects_a_duplicate_nested_key() -> None:
+    """JSON duplicate rejection applies recursively, not only to top-level fields."""
+    payload = _v2_manifest("0.2.0", b"release-two")
+    duplicate = payload.replace(
+        b'    "workflow_run": "123456"',
+        b'    "workflow_run": "123456",\n    "workflow_run": "123456"',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="^invalid release manifest$"):
+        ReleaseManifest.parse_new(duplicate)
+
+
+def test_v2_manifest_bounds_the_complete_artifact_digest_set() -> None:
+    """A bounded inventory keeps canonical installed serialization below the parser cap."""
+    document = _manifest_document()
+    digest = "0" * 64
+    document["artifact_digests"] = {
+        **dict(document["artifact_digests"]),  # type: ignore[arg-type]
+        **{f"asset-{index:03d}": digest for index in range(128)},
+    }
+
+    with pytest.raises(ValueError, match="^invalid release manifest$"):
+        ReleaseManifest.parse_new(json.dumps(document).encode())
 
 
 @pytest.mark.parametrize(
@@ -780,7 +910,7 @@ def test_manifest_parser_accepts_the_exact_release_bundle_contract() -> None:
 )
 def test_manifest_parser_accepts_canonical_versions_for_archive_inspection(version: str) -> None:
     """Archive inspection recognizes canonical versions independent of update-major support."""
-    parsed = ReleaseManifest.parse(_manifest(version, b"release-two"))
+    parsed = ReleaseManifest.parse(_v1_manifest(version, b"release-two"))
 
     assert parsed.version == version
 
@@ -789,7 +919,7 @@ def test_manifest_parser_accepts_canonical_versions_for_archive_inspection(versi
 def test_manifest_parser_rejects_noncanonical_versions(version: str) -> None:
     """Loose version labels would make manifest publication disagree with installer parsing."""
     with pytest.raises(ValueError, match="^invalid release manifest$"):
-        ReleaseManifest.parse(_manifest(version, b"release-two"))
+        ReleaseManifest.parse(_v1_manifest(version, b"release-two"))
 
 
 @pytest.mark.parametrize(
@@ -805,7 +935,9 @@ def test_update_rejects_size_or_hash_corruption_without_opt_mutation(
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
     assets = _remote_assets(base_url, "0.2.0", remote_payload)
-    assets[f"{base_url}/download/v0.2.0/xferry-release.json"] = _manifest("0.2.0", manifest_payload)
+    assets[f"{base_url}/download/v0.2.0/xferry-release.json"] = _v2_manifest(
+        "0.2.0", manifest_payload
+    )
 
     result = _manager(tmp_path, layout, FakeDownloader(assets)).update("0.2.0", False)
 
@@ -818,7 +950,7 @@ def test_update_rejects_platform_mismatch_before_asset_download(tmp_path: Path) 
     """Installing a release for another platform would fail only after damaging service state."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest = _manifest("0.2.0", b"arm", platform="linux-aarch64")
+    manifest = _v2_manifest("0.2.0", b"arm", platform="linux-aarch64")
     manifest_url = f"{base_url}/download/v0.2.0/xferry-release.json"
     downloader = FakeDownloader({manifest_url: manifest})
 
@@ -829,12 +961,28 @@ def test_update_rejects_platform_mismatch_before_asset_download(tmp_path: Path) 
     assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
 
 
+def test_update_rejects_a_remote_v1_schema_downgrade_before_asset_download(
+    tmp_path: Path,
+) -> None:
+    """Legacy manifests remain readable on disk but cannot authorize a new download."""
+    layout = _installed_layout(tmp_path)
+    base_url = "https://releases.example.test/xferry/releases"
+    manifest_url = f"{base_url}/download/v0.2.0/xferry-release.json"
+    downloader = FakeDownloader({manifest_url: _v1_manifest("0.2.0", b"release-two")})
+
+    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+
+    assert result == ReleaseResult(1, "release_manifest_invalid", version="0.2.0")
+    assert [request[0] for request in downloader.requests] == [manifest_url]
+    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+
+
 def test_exact_update_rejects_a_manifest_for_another_requested_version(tmp_path: Path) -> None:
     """Trusting the download location instead of manifest version would install the wrong tag."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
     manifest_url = f"{base_url}/download/v0.2.0/xferry-release.json"
-    downloader = FakeDownloader({manifest_url: _manifest("0.1.0", b"release-three")})
+    downloader = FakeDownloader({manifest_url: _v2_manifest("0.1.0", b"release-three")})
 
     result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
 
@@ -1046,9 +1194,11 @@ def test_successful_update_atomically_switches_records_verification_and_prunes(
     assert installed.stat().st_uid == os.getuid()
     assert stat.S_IMODE(installed.joinpath("xferry").stat().st_mode) == 0o755
     assert stat.S_IMODE(installed.joinpath("xferry-release.json").stat().st_mode) == 0o644
-    assert ReleaseManifest.parse(
+    installed_manifest = ReleaseManifest.parse(
         installed.joinpath("xferry-release.json").read_bytes()
-    ).version == ("0.2.0")
+    )
+    assert installed_manifest.schema_version == 2
+    assert installed_manifest.version == "0.2.0"
     assert layout.release_root / "current" in replace_destinations
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
         "0.1.0",

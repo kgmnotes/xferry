@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import re
 import stat
 from dataclasses import dataclass
 from enum import Enum
@@ -13,7 +11,8 @@ from itertools import islice
 from pathlib import Path
 
 from .model import ManagedLayout
-from .versions import is_canonical_release_version, is_supported_release_version
+from .release_contract import MAX_MANIFEST_BYTES, ReleaseManifest, current_platform_id
+from .versions import is_supported_release_version
 
 UNSUPPORTED_MANAGED_STATE_CODE = "unsupported-managed-state"
 UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS = (
@@ -24,8 +23,7 @@ UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS = (
     "Then install XFerry in a clean environment."
 )
 _MAX_RELEASE_ENTRIES = 128
-_MAX_MANIFEST_BYTES = 64 * 1024
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
 
 
 class _ReleaseState(Enum):
@@ -39,13 +37,6 @@ class _DescriptorCapabilities:
     directory_open_flags: int
     file_open_flags: int
     effective_uid: int
-
-
-@dataclass(frozen=True)
-class _Manifest:
-    version: str
-    executable_size: int
-    executable_sha256: str
 
 
 @dataclass(frozen=True)
@@ -312,52 +303,17 @@ def _read_manifest(
     *,
     dir_fd: int,
     capabilities: _DescriptorCapabilities,
-) -> tuple[_Manifest, os.stat_result]:
+) -> tuple[ReleaseManifest, os.stat_result]:
     payload, metadata = _read_bounded_regular_file(
         path,
         _MAX_MANIFEST_BYTES,
         dir_fd=dir_fd,
         capabilities=capabilities,
     )
-    document = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
-    if not isinstance(document, dict) or set(document) != {
-        "schema_version",
-        "version",
-        "tag",
-        "platform",
-        "executable",
-    }:
+    manifest = ReleaseManifest.parse(payload)
+    if manifest.platform != current_platform_id():
         raise ValueError
-    version = document["version"]
-    executable = document["executable"]
-    if (
-        document["schema_version"] != 1
-        or not isinstance(version, str)
-        or not is_canonical_release_version(version)
-        or document["tag"] != f"v{version}"
-        or document["platform"] != "linux-x86_64"
-        or not isinstance(executable, dict)
-        or set(executable) != {"name", "size", "sha256"}
-    ):
-        raise ValueError
-    executable_size = executable["size"]
-    if (
-        executable["name"] != f"xferry-{version}-linux-x86_64"
-        or not isinstance(executable_size, int)
-        or isinstance(executable_size, bool)
-        or executable_size < 1
-        or not isinstance(executable["sha256"], str)
-        or _SHA256_RE.fullmatch(executable["sha256"]) is None
-    ):
-        raise ValueError
-    return (
-        _Manifest(
-            version=version,
-            executable_size=executable_size,
-            executable_sha256=executable["sha256"],
-        ),
-        metadata,
-    )
+    return manifest, metadata
 
 
 def _read_bounded_regular_file(
@@ -393,18 +349,9 @@ def _read_bounded_regular_file(
         os.close(descriptor)
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError
-        result[key] = value
-    return result
-
-
 def _valid_executable(
     path: str,
-    manifest: _Manifest,
+    manifest: ReleaseManifest,
     *,
     dir_fd: int,
     capabilities: _DescriptorCapabilities,
