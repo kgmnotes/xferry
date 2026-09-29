@@ -775,6 +775,203 @@ liveness is sufficient, if storage grows too large for frequent exact scans.
 
 ---
 
+## Encrypted Streaming Transfers (EUF v1)
+
+Encrypted transfers are an opt-in, same-origin API for resumable files up to
+the configured 2048 MiB ceiling. The browser encrypts metadata and file bytes
+before upload; the server stores only ciphertext and resumability records. The
+feature is disabled by default and does not change Basic or Advanced upload
+routes.
+
+When disabled, `PING.encrypted_uploads` is exactly:
+
+```json
+{"enabled": false}
+```
+
+When enabled, it has this closed shape (the maximum is the effective configured
+value in bytes):
+
+```json
+{
+  "enabled": true,
+  "version": 1,
+  "max_plaintext_size": 2147483648,
+  "chunk_size": 8388608,
+  "parallel_chunks": 2,
+  "browser_decryption": true,
+  "server_decryption": true
+}
+```
+
+`server_decryption` is true only when one-shot server decryption is safe for
+the current listener: effective TLS is active or the listener is direct
+loopback. Clients must fail closed on a missing, malformed, or unsupported
+capability object. Every reserved route still enforces normal Basic Auth and
+the stricter same-origin browser mutation policy; general CORS cannot make
+cross-origin encrypted-transfer requests valid.
+
+### EUF v1 cryptographic envelope
+
+- `id` is 16 random bytes encoded as exactly 32 lowercase hexadecimal
+  characters. `salt` is 16 random bytes and `nonce_prefix` is 8 random bytes.
+- Passwords contain at least 14 Unicode code points and at most 1024 UTF-8
+  bytes. They are encoded exactly as entered: no trimming or Unicode
+  normalization occurs.
+- PBKDF2-HMAC-SHA256 with 600,000 iterations and `salt` derives a 32-byte
+  master key. HKDF-SHA256 uses the raw file ID as its salt and expands the
+  master key into `K_content` with info `xferry-euf-v1/content` and `K_resume`
+  with info `xferry-euf-v1/resume`.
+- AES-256-GCM uses a 12-byte nonce: `nonce_prefix || index_u32_be`. Content
+  indexes begin at zero; `0xffffffff` is reserved for metadata. Each tag is
+  16 bytes.
+- Metadata plaintext is exact compact UTF-8 JSON with fields `name`,
+  `content_type`, and `last_modified_ms`, in that order, and is at most 4096
+  bytes. Names are non-empty and contain no NUL; content types contain no CR or
+  LF; timestamps are non-negative JavaScript-safe integers.
+- Metadata AAD is `XFERRY-EUF1-META\0 || file_id || plaintext_size_u64_be ||
+  chunk_size_u32_be || chunk_count_u32_be`.
+- Plaintext is split into fixed 8 MiB chunks, except for the final chunk.
+  Chunk AAD is `XFERRY-EUF1-CHUNK\0 || file_id || plaintext_size_u64_be ||
+  chunk_size_u32_be || chunk_count_u32_be || index_u32_be ||
+  plaintext_length_u32_be`.
+- A chunk `resume_mac` is HMAC-SHA256 with `K_resume` over
+  `XFERRY-EUF1-RESUME\0 || file_id || index_u32_be ||
+  plaintext_length_u32_be || plaintext`.
+- Binary JSON values and `X-XFerry-Chunk-MAC` use canonical unpadded base64url.
+  The encrypted data stream is the ordered concatenation of chunk ciphertext
+  and its GCM tag, with no extra frame bytes.
+
+The browser reads only `File.slice(...).arrayBuffer()` chunks and uploads at
+most two chunks concurrently. It must never create a whole-file buffer.
+
+### Public record shape
+
+Partial and complete records use the same closed object. Metadata remains
+encrypted; timestamps are Unix seconds used for lifecycle bookkeeping.
+The record fields are `id`, `version`, `plaintext_size`, `ciphertext_size`,
+`chunk_size`, `chunk_count`, `salt`, `nonce_prefix`, `encrypted_metadata`,
+`status`, `received_chunks`, `created_at`, and `updated_at`; each received
+entry contains `index` and `resume_mac`. The decrypt request contains only
+`content_key`.
+
+```json
+{
+  "id": "00112233445566778899aabbccddeeff",
+  "version": 1,
+  "plaintext_size": 5,
+  "ciphertext_size": 21,
+  "chunk_size": 8388608,
+  "chunk_count": 1,
+  "salt": "AAECAwQFBgcICQoLDA0ODw",
+  "nonce_prefix": "AAECAwQFBgc",
+  "encrypted_metadata": "<unpadded base64url>",
+  "status": "partial",
+  "received_chunks": [
+    {"index": 0, "resume_mac": "<43-character unpadded base64url>"}
+  ],
+  "created_at": 1790600000.0,
+  "updated_at": 1790600001.0
+}
+```
+
+`chunk_count` is `ceil(plaintext_size / 8388608)`, including zero chunks for an
+empty file. `ciphertext_size` is `plaintext_size + chunk_count * 16`.
+
+### Routes and state transitions
+
+| Request | Success response |
+| --- | --- |
+| `GET /_xferry/encrypted-uploads` | `200 {"encrypted_uploads": [...]}` |
+| `PUT /_xferry/encrypted-uploads/{id}` | `201` when created, `200` for an identical retry; body contains `encrypted_upload` |
+| `GET /_xferry/encrypted-uploads/{id}` | `200 {"encrypted_upload": {...}}` for a partial upload |
+| `DELETE /_xferry/encrypted-uploads/{id}` | `200 {"deleted_encrypted_upload": {"id": "..."}}` |
+| `PUT /_xferry/encrypted-uploads/{id}/chunks/{index}` | `201` when stored, `200` for an identical retry; body contains `encrypted_chunk` |
+| `POST /_xferry/encrypted-uploads/{id}/complete` | `200` with `encrypted_file.completed=true|false` |
+| `GET /_xferry/encrypted-files` | `200 {"encrypted_files": [...]}` |
+| `GET /_xferry/encrypted-files/{id}` | `200 {"encrypted_file": {...}}` for a complete file |
+| `DELETE /_xferry/encrypted-files/{id}` | `200 {"deleted_encrypted_file": {"id": "..."}}` |
+| `GET /_xferry/encrypted-files/{id}/data` | `200 application/octet-stream`, the concatenated EUF ciphertext |
+| `POST /_xferry/encrypted-files/{id}/decrypt` | `200`, a streaming plaintext attachment |
+
+All targets are canonical paths with no query or fragment. `{id}` is the
+lowercase 32-hex ID; `{index}` is canonical unsigned decimal without a leading
+zero. Responses use `Cache-Control: no-store`.
+
+Create uses `Content-Type: application/json` and exactly these request fields:
+
+```json
+{
+  "version": 1,
+  "plaintext_size": 5,
+  "chunk_size": 8388608,
+  "chunk_count": 1,
+  "salt": "AAECAwQFBgcICQoLDA0ODw",
+  "nonce_prefix": "AAECAwQFBgc",
+  "encrypted_metadata": "<unpadded base64url>"
+}
+```
+
+A chunk request uses `Content-Type: application/octet-stream`, carries exactly
+one chunk ciphertext plus tag, and supplies its 32-byte MAC as the single
+`X-XFerry-Chunk-MAC` header. Identical create, chunk, and completion retries
+are idempotent. A different manifest for an existing ID or different bytes/MAC
+for an acknowledged chunk is a conflict. Completion succeeds only after every
+chunk is durably acknowledged and transitions `partial -> committing ->
+complete`.
+
+The browser resumes by fetching the partial record, reselecting the original
+local file, re-entering the password, authenticating the encrypted metadata,
+and recomputing every acknowledged `resume_mac` before sending a missing
+chunk. The server never accepts a filename or password in this API.
+
+`GET /_xferry/encrypted-files/{id}/data` supports client-side streaming
+decryption. The client authenticates one chunk at a time and aborts the output
+file on a tag or network failure.
+
+One-shot server decryption requires an explicit UI confirmation and this exact
+JSON body:
+
+```json
+{"content_key": "<32-byte K_content as unpadded base64url>"}
+```
+
+The endpoint accepts only effective HTTPS or a direct loopback peer. It
+authenticates encrypted metadata before sending response headers, streams and
+authenticates each chunk, never creates a plaintext file, and neither persists
+nor logs `content_key`. Supplying the key intentionally moves plaintext and key
+trust to the server for that response. A password, `K_resume`, or any extra
+field is invalid.
+
+### Encrypted-transfer errors
+
+Errors use the standard envelope described in [Error Response
+Bodies](#error-response-bodies). `field` is present when shown below.
+
+| HTTP | `error.code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_json` | JSON is malformed, non-UTF-8, or contains a non-finite number (`body`) |
+| 400 | `missing_field` | A required JSON field or `X-XFerry-Chunk-MAC` is missing |
+| 400 | `invalid_field` | A field, duplicate member, body, path value, or header is non-canonical |
+| 403 | `server_decryption_forbidden` | Server decrypt is neither effective HTTPS nor direct loopback |
+| 404 | `resource_not_found` | Route, ID, or resource state is not visible; all routes use this when disabled |
+| 405 | `method_not_allowed` | Method is not valid for the route; `Allow` is included |
+| 409 | `encrypted_file_conflict` | Existing ID has different manifest data |
+| 409 | `encrypted_chunk_conflict` | A stored chunk retry has different ciphertext or MAC |
+| 409 | `encrypted_file_incomplete` | Completion was requested before every chunk was stored |
+| 413 | `payload_too_large` | JSON or chunk body exceeds the route-specific admission cap |
+| 415 | `unsupported_media_type` | JSON/octet-stream content type is wrong |
+| 422 | `decryption_failed` | `K_content` cannot authenticate encrypted metadata |
+| 507 | `storage_quota_exceeded` | Shared upload bytes, file count, free-space reserve, or disk allocation rejects creation |
+
+Normal authentication, authority, origin, framing, and rate-limit errors can
+occur before route dispatch. Create JSON is capped at 16 KiB, decrypt JSON at
+512 bytes, and each chunk request at 8 MiB plus the 16-byte GCM tag. These caps
+are applied before the general request receiver allocates a large body.
+
+See [ADR-011](ADR/ADR-011-encrypted-streaming-transfers.md) for the key
+custody and persistence decision.
+
 ## SMUGGLE
 
 Create a temporary same-origin HTML/SVG/XML artifact for a file in `uploads/`.

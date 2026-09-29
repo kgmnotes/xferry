@@ -354,7 +354,7 @@ STALE_DOCUMENT_PATTERNS: tuple[StalePattern, ...] = (
     ),
 )
 
-REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 11))
+REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 12))
 
 ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
     OrderedMarkersRequirement(
@@ -607,6 +607,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             (8, "ADR-008-notepad-recovery.md"),
             (9, "ADR-009-api-client-compatibility.md"),
             (10, "ADR-010-methods-and-presets.md"),
+            (11, "ADR-011-encrypted-streaming-transfers.md"),
         )
     ),
 )

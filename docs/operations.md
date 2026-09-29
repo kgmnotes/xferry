@@ -23,8 +23,13 @@ uploads and encrypted note state.
 Inside the configured root:
 
 - `uploads/` contains user files and generated SMUGGLE artifacts.
+- `uploads/.xferry-encrypted/` contains hidden encrypted-transfer `.part` and
+  `.xfr` ciphertext files. Ordinary file APIs cannot list, download, delete,
+  or clear this directory.
 - `notes/` contains encrypted note blobs and plaintext note metadata. It does
   not contain a durable client recovery key.
+- `.xferry/encrypted-uploads/` contains mode-0600 encrypted-transfer state
+  sidecars beneath a mode-0700 service directory.
 
 ACME state is stored under `~/.xferry/acme/` for the runtime user. Protect its
 account keys, domain private keys, and certificate chain files as secrets.
@@ -32,6 +37,60 @@ Temporary self-signed certificate files are removed when the process exits.
 
 Backing up `notes/` does not make a note recoverable after the client-derived
 key is lost.
+
+## Encrypted transfer operations
+
+Large client-encrypted transfers are disabled by default. Enable them only for
+an operator-controlled data root:
+
+```ini
+[server]
+encrypted_uploads = true
+
+[limits]
+encrypted_upload_max_size_mb = 2048
+encrypted_upload_incomplete_ttl_seconds = 86400
+```
+
+The equivalent feature flag is `--encrypted-uploads`. The maximum is a
+plaintext limit; stored ciphertext adds one 16-byte AES-GCM tag per 8 MiB
+chunk. Partial reservations count their complete declared ciphertext length
+against the ordinary upload byte and file quotas, including the free-space
+reserve. Plan filesystem capacity for the largest concurrent partial files,
+completed ciphertext, backups, and temporary operational headroom.
+
+State advances `partial -> committing -> complete`. A chunk is acknowledged
+only after its ciphertext and atomic sidecar state are durable. Startup
+reconciles an interrupted commit without exposing the hidden files through
+ordinary uploads. Incomplete records older than
+`encrypted_upload_incomplete_ttl_seconds` are removed during reconciliation;
+completed files remain until their encrypted-file DELETE route is called.
+Back up the ciphertext and `.xferry/encrypted-uploads/` sidecars together.
+
+The server cannot recover a forgotten browser password and does not store
+plaintext, `K_content`, or `K_resume`. Browser-side download is the default
+trust boundary. The optional server-decrypt action sends `K_content` after a
+separate confirmation and is available only over TLS or direct loopback; it
+streams one response and does not create a plaintext artifact.
+
+Run the checked 64 MiB round-trip and inspect its JSON memory record with:
+
+```bash
+python tools/encrypted_transfer_resource_smoke.py --size-mib 64 --json
+```
+
+The output includes `peak_rss_bytes`, `peak_rss_delta_bytes`, byte counts, and
+source/round-trip SHA-256 values. The 2 GiB smoke is deliberately opt-in
+because it reserves and writes roughly 2 GiB of local storage:
+
+```bash
+XFERRY_RUN_2GIB_SMOKE=1 \
+  pytest -q -s tests/test_encrypted_resource_smoke.py::test_2_gib_encrypted_streaming_resource_smoke_records_peak_memory
+```
+
+Run it on the same filesystem and under the same memory limits intended for
+production. A passing smoke demonstrates bounded application buffers for this
+path; it is not a substitute for host disk quotas or process-level limits.
 
 ## Docker from the checkout
 

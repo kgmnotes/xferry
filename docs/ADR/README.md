@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-These records describe the active architecture. All ten decisions are
+These records describe the active architecture. All eleven decisions are
 accepted and match the current implementation.
 
 | ID | Decision |
@@ -15,6 +15,7 @@ accepted and match the current implementation.
 | [ADR-008](ADR-008-notepad-recovery.md) | Notepad recovery |
 | [ADR-009](ADR-009-api-client-compatibility.md) | API and client compatibility, including curl |
 | [ADR-010](ADR-010-methods-and-presets.md) | Always-on methods and launch presets |
+| [ADR-011](ADR-011-encrypted-streaming-transfers.md) | Client-encrypted streaming transfers |
 
 A new decision should state its context, choice, and consequences. Change the
 active set when implementation changes; use Git history for earlier text.

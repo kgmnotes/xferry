@@ -10,8 +10,10 @@ commands and redacted state through that namespace.
 1. `bootstrap.js` creates the namespace, event bus, DOM contract, and
    registries.
 2. `core.js`, `notifications.js`, `dialogs.js`, and `inspector.js` register shared services.
-3. `upload.js`, `requests.js`, `files.js`, `opsec.js`, and `notepad.js`
-   register workflows.
+3. `upload.js` and `requests.js` register the ordinary request workflows.
+   `encrypted-transfer-crypto.js` then registers EUF v1 primitives and
+   `encrypted-transfer.js` registers the capability-gated large-file workflow.
+   `files.js`, `opsec.js`, and `notepad.js` register the remaining workflows.
 4. `app.js` initializes discovery and shortcuts, then emits `app.ready`.
 
 No Node.js runtime, package manager, bundler, or generated frontend artifact
@@ -24,7 +26,8 @@ and semantic DOM keys. The supported namespace methods are `service`,
 `invoke`, `getState`, `on`, `emit`, `element`, `describe`, and
 `unexpectedGlobals`.
 
-Workflow groups are `upload`, `requests`, `files`, `advanced`, and `notepad`.
+Workflow groups are `upload`, `requests`, `encrypted-transfer`, `files`,
+`advanced`, and `notepad`.
 Production workflows use the shared `http.request` service. Its test-only
 adapter controls allow deterministic browser regression tests without adding
 writable globals.
@@ -37,6 +40,35 @@ create one server-side file per comparison case. They are not dry runs.
 The Advanced workflow uses the public session endpoints and the
 `X-XFerry-Advanced-Session` header. The token remains in closure memory and
 transient request headers. There is no UI-only Advanced API.
+
+## Encrypted transfer workflow
+
+The encrypted panel remains hidden until `PING.encrypted_uploads` has the exact
+supported v1 capability shape. Missing, disabled, unavailable, or additive
+unknown capability data fails closed. Uploads read only 8 MiB `File.slice()`
+regions and run at most two chunks concurrently; a whole-file `arrayBuffer()`
+is outside the contract.
+
+The Web Crypto module derives `K_content` and `K_resume` in its private
+closure. Workflow state exposes only phase, IDs, counts, progress, and
+decrypted presentation metadata after an explicit unlock. IndexedDB stores
+only `id`, acknowledged chunk indexes, status, and update time. It never stores
+passwords, keys, salts, encrypted metadata, or filenames. A reload therefore
+requires the user to reselect the original file and enter its password; the
+workflow authenticates metadata and every acknowledged resume MAC before it
+uploads another chunk.
+
+Client download reads the ciphertext response one authenticated chunk at a
+time and writes plaintext through the File System Access API. Authentication,
+network, or filesystem failure aborts the writable stream rather than closing
+a partial file. `K_content` stays in memory and does not enter inspector state,
+URLs, headers, browser storage, or the server.
+
+The separately confirmed server-decrypt action is the only exception: after
+the user selects an output file it POSTs exactly one `content_key` JSON field,
+then streams the plaintext response to that writable. The inspector treats
+`content_key` as a secret. Refreshing the encrypted-file list clears unlocked
+keys from the workflow closure.
 
 ## Events and DOM
 

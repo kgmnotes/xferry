@@ -54,3 +54,4 @@ nav:
           - Notepad recovery: ADR/ADR-008-notepad-recovery.md
           - API and client compatibility: ADR/ADR-009-api-client-compatibility.md
           - Methods and launch presets: ADR/ADR-010-methods-and-presets.md
+          - Encrypted streaming transfers: ADR/ADR-011-encrypted-streaming-transfers.md

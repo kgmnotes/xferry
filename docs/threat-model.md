@@ -10,7 +10,8 @@ the host filesystem, backups, and the operator are external.
 ## Assets
 
 - Basic Auth credentials, ACME account keys, and certificate private keys
-- uploaded files, note ciphertext and metadata, and the client-held note key
+- uploaded files, client-encrypted file ciphertext and metadata, note
+  ciphertext and metadata, and client-held content, resume, and note keys
 - runtime and configuration integrity
 - worker, memory, disk, socket, and file-descriptor capacity
 - log, metric, and diagnostic privacy
@@ -30,6 +31,11 @@ the host filesystem, backups, and the operator are external.
 | Secret disclosure | Redacted configuration, bounded diagnostics, low-cardinality metrics, and file-backed auth |
 | Advanced token abuse | High-entropy bearer token, auth or direct-loopback ownership, prefix match, expiry, idle timeout, revocation |
 | Lost Notepad key | Explicit non-recovery contract; the server stores no durable client key |
+| Lost encrypted-transfer password | Explicit non-recovery contract; the server does not know the password or content key by default |
+| Mixed-file or forged resume | Authenticated metadata plus per-chunk `K_resume` HMACs recomputed from the reselected local file |
+| Encrypted-file tampering | Per-chunk AES-GCM tags, position/length AAD, fail-closed download, and aborted partial output |
+| Malicious or compromised xferry host | Browser-side decryption by default; no password or key upload; ciphertext alone does not reveal plaintext |
+| One-shot server decryption exposure | Separate confirmation, exact `content_key` body, TLS or a direct loopback peer, no key logging/persistence, no plaintext artifact |
 | Abandoned one-shot artifacts | Age, count, and byte retention plus startup cleanup |
 
 ## Trust boundaries
@@ -52,11 +58,27 @@ Advanced Session tokens select routing and parser context. They do not replace
 Basic Auth. With Basic Auth disabled, Advanced control and data operations are
 limited to a direct loopback peer.
 
+For encrypted transfers, the browser-to-server API boundary contains only
+ciphertext, public manifest values, and resume MACs. The server does not know
+the password or content key by default. Browser-side decryption therefore
+protects against disclosure by an honest-but-curious storage service, a stolen
+ciphertext backup, or a malicious or compromised xferry host that did not
+obtain the browser runtime or password. It does not hide sizes, timing, file
+IDs, chunk completion, or creation/update times.
+
+The one-shot server decryption path deliberately crosses that boundary. After explicit
+confirmation, `K_content` and plaintext are trusted to the server process for
+one response. The route is restricted to effective TLS or a direct loopback
+peer; a TLS-terminating reverse proxy remains able to observe plaintext and the
+key. Basic Auth and same-origin checks remain mandatory controls rather than
+cryptographic substitutes.
+
 ## Out of scope
 
 - multi-tenant isolation
 - safe exposure to arbitrary internet clients without operator controls
 - durable recovery of a Secure Notepad key
+- recovery of a forgotten encrypted-transfer password or content key
 - confidentiality from XOR or a generated SMUGGLE artifact
 - protection from a host administrator, TLS-terminating provider, or
   compromised browser

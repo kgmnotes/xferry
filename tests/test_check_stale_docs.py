@@ -336,7 +336,7 @@ def test_adr_navigation_requires_every_current_decision(tmp_path: Path) -> None:
         ("docs/ADR/README.md",),
     )
 
-    assert any("ADR-010" in finding.message for finding in findings)
+    assert any("ADR-011" in finding.message for finding in findings)
 
 
 def test_version_consistency_reports_ui_and_api_drift(tmp_path: Path) -> None:
