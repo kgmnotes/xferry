@@ -1,7 +1,7 @@
 # STAGE-002 - Patch audited CI toolchain pins
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 MEDIUM
@@ -69,4 +69,10 @@ Refresh the pinned toolchain so strict dependency audit, documentation, and exis
 - Rollback: revert the constraint refresh, then resolve a narrower compatible fixed graph; never restore the vulnerable graph for release use.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Closed: 2026-09-29 13:13:40 +0300.
+- Updated only `constraints/ci.txt`: `mkdocs-material==9.7.6` to `9.7.7` and `pip==26.1.2` to `26.2`. No runtime or transitive pin changed.
+- Remediated `PYSEC-2026-3864` (fixed in `mkdocs-material 9.7.7`) and `PYSEC-2026-3721` (fixed in `pip 26.2`); the vulnerable graph was reproduced before the change as the negative control.
+- A clean Python 3.12 constrained environment resolved the project toolchain without conflict. The new package metadata covers the declared Python 3.10-3.14 range, while the retained CI matrix supplies cross-version execution.
+- Strict pip-audit, dependency completeness, toolchain pin invariants, all render/sync/staleness checks, strict MkDocs, scoped Ruff, and the full 3,171-test suite passed.
+- Read-only dependency and security subagents independently confirmed the minimal diff, unchanged audit/workflow strictness, and closure readiness with no blocking findings.
+- Report: `../stage-reports/STAGE-002-20260929-125932.md`.

@@ -3,7 +3,7 @@
 | Stage | Status | Priority | Title | Last attempt | Result | Report |
 |---|---|---|---|---|---|---|
 | STAGE-001 | CLOSED | MEDIUM | Restore strict typing baseline | 2026-09-28 14:43:22 +0300 | Pinned mypy, 130 focused tests, Ruff, and the 3,171-test full suite passed after a behavior-preserving local annotation. | `stage-reports/STAGE-001-20260928-143829.md` |
-| STAGE-002 | OPEN | MEDIUM | Patch audited CI toolchain pins | - | - | - |
+| STAGE-002 | CLOSED | MEDIUM | Patch audited CI toolchain pins | 2026-09-29 13:13:40 +0300 | Refreshed the two vulnerable toolchain pins; strict audit, constraint/toolchain checks, docs gates, and all 3,171 tests passed. | `stage-reports/STAGE-002-20260929-125932.md` |
 | STAGE-003 | OPEN | HIGH | Adopt controlled distribution policy and guards | - | - | - |
 | STAGE-004 | OPEN | HIGH | Centralize release platform and manifest contracts | - | - | - |
 | STAGE-005 | OPEN | HIGH | Add complete managed host support matrix | - | - | - |
