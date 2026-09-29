@@ -718,7 +718,50 @@ const translations = {
         downloadFailed: "Не удалось скачать файл",
         downloadProgress: "Скачивание",
         downloadSpeed: "Скорость",
-        downloadEta: "Осталось"
+        downloadEta: "Осталось",
+        encryptedTransferEyebrow: "БОЛЬШИЕ ФАЙЛЫ",
+        encryptedTransferTitle: "Потоковая зашифрованная загрузка",
+        encryptedTransferDescription: "Файл шифруется в браузере чанками по 8 МиБ. Пароль и ключи не сохраняются и по умолчанию не отправляются серверу.",
+        encryptedFileLabel: "Файл",
+        encryptedFileHint: "До 2 ГиБ; файл читается только отдельными чанками.",
+        encryptedPasswordLabel: "Пароль шифрования",
+        encryptedPasswordHint: "Минимум 14 символов. Восстановить забытый пароль невозможно.",
+        encryptedPasswordConfirmLabel: "Повторите пароль",
+        encryptedUploadStart: "Зашифровать и отправить",
+        encryptedUploadPause: "Пауза",
+        encryptedUploadResume: "Продолжить",
+        encryptedUploadCancel: "Отменить и удалить",
+        encryptedProgressLabel: "Прогресс зашифрованной загрузки",
+        encryptedStatusIdle: "Готово к выбору файла",
+        encryptedStatusPreparing: "Подготовка ключей и метаданных…",
+        encryptedStatusUploading: "Загружено чанков: {0} из {1}",
+        encryptedStatusPaused: "Загрузка приостановлена. Данные на сервере сохранены.",
+        encryptedStatusComplete: "Зашифрованная загрузка завершена",
+        encryptedStatusCanceled: "Незавершённая загрузка удалена",
+        encryptedStatusError: "Ошибка зашифрованной передачи",
+        encryptedResumeTitle: "Продолжить незавершённую загрузку",
+        encryptedResumeFileLabel: "Выберите исходный файл повторно",
+        encryptedSelectedId: "ID:",
+        encryptedUnlockTitle: "Открыть имя и действия",
+        encryptedPartialTitle: "Незавершённые",
+        encryptedFilesTitle: "Зашифрованные файлы",
+        encryptedRefresh: "Обновить",
+        encryptedUnlock: "Разблокировать",
+        encryptedClientDownload: "Расшифровать в браузере",
+        encryptedServerDownload: "Расшифровать на сервере",
+        encryptedNoPartialUploads: "Незавершённых загрузок нет.",
+        encryptedNoFiles: "Зашифрованных файлов нет.",
+        encryptedUploadComplete: "Зашифрованная загрузка завершена",
+        encryptedUploadFailed: "Не удалось загрузить зашифрованный файл",
+        encryptedServerDecryptConfirmTitle: "Передать ключ серверу?",
+        encryptedServerDecryptConfirmMessage: "Сервер получит ключ содержимого только для этого ответа и расшифрует файл в потоке.",
+        encryptedServerDecryptConfirmAction: "Передать ключ и скачать",
+        encryptedPasswordMismatch: "Пароли не совпадают",
+        encryptedActionFailed: "Не удалось выполнить действие",
+        encryptedResumeAction: "Продолжить",
+        encryptedCancelRemote: "Удалить",
+        encryptedCancelConfirmTitle: "Удалить незавершённую загрузку?",
+        encryptedCancelConfirmMessage: "Загруженные зашифрованные чанки и состояние возобновления будут удалены безвозвратно."
     },
     en: {
         brandTagline: "SWG/NGFW testing tool",
@@ -1371,7 +1414,50 @@ const translations = {
         downloadFailed: "Download failed",
         downloadProgress: "Downloading",
         downloadSpeed: "Speed",
-        downloadEta: "ETA"
+        downloadEta: "ETA",
+        encryptedTransferEyebrow: "LARGE FILES",
+        encryptedTransferTitle: "Streaming encrypted transfer",
+        encryptedTransferDescription: "The browser encrypts the file in 8 MiB chunks. Passwords and keys are not stored and are not sent to the server by default.",
+        encryptedFileLabel: "File",
+        encryptedFileHint: "Up to 2 GiB; the file is read only in individual chunks.",
+        encryptedPasswordLabel: "Encryption password",
+        encryptedPasswordHint: "At least 14 characters. A forgotten password cannot be recovered.",
+        encryptedPasswordConfirmLabel: "Confirm password",
+        encryptedUploadStart: "Encrypt and upload",
+        encryptedUploadPause: "Pause",
+        encryptedUploadResume: "Resume",
+        encryptedUploadCancel: "Cancel and delete",
+        encryptedProgressLabel: "Encrypted upload progress",
+        encryptedStatusIdle: "Ready for a file",
+        encryptedStatusPreparing: "Preparing keys and metadata…",
+        encryptedStatusUploading: "Uploaded chunks: {0} of {1}",
+        encryptedStatusPaused: "Upload paused. Server-side progress was preserved.",
+        encryptedStatusComplete: "Encrypted upload complete",
+        encryptedStatusCanceled: "Partial upload deleted",
+        encryptedStatusError: "Encrypted transfer failed",
+        encryptedResumeTitle: "Resume partial upload",
+        encryptedResumeFileLabel: "Select the original file again",
+        encryptedSelectedId: "ID:",
+        encryptedUnlockTitle: "Unlock name and actions",
+        encryptedPartialTitle: "Partial uploads",
+        encryptedFilesTitle: "Encrypted files",
+        encryptedRefresh: "Refresh",
+        encryptedUnlock: "Unlock",
+        encryptedClientDownload: "Decrypt in browser",
+        encryptedServerDownload: "Decrypt on server",
+        encryptedNoPartialUploads: "No partial uploads.",
+        encryptedNoFiles: "No encrypted files.",
+        encryptedUploadComplete: "Encrypted upload complete",
+        encryptedUploadFailed: "Encrypted upload failed",
+        encryptedServerDecryptConfirmTitle: "Send the key to the server?",
+        encryptedServerDecryptConfirmMessage: "The server receives the content key for this response only and decrypts the file as a stream.",
+        encryptedServerDecryptConfirmAction: "Send key and download",
+        encryptedPasswordMismatch: "Passwords do not match",
+        encryptedActionFailed: "The action failed",
+        encryptedResumeAction: "Resume",
+        encryptedCancelRemote: "Delete",
+        encryptedCancelConfirmTitle: "Delete the partial upload?",
+        encryptedCancelConfirmMessage: "Uploaded encrypted chunks and resume progress will be permanently deleted."
     }
 };
 
@@ -1578,6 +1664,7 @@ const liveRegionTimers = new Map();
 let serverSupportedMethods = null;
 let serverMethodGroups = null;
 let serverSmuggleCapabilities = null;
+let serverEncryptedUploadCapabilities = null;
 let serverDiscoveryStatus = 'pending';
 let serverDiscoveryGeneration = 0;
 
@@ -1643,6 +1730,7 @@ function refreshServerMethodBoundControls() {
                 Object.entries(serverMethodGroups).map(([group, methods]) => [group, [...methods]])
             )
             : null,
+        encryptedUploadCapabilities: serverEncryptedUploadCapabilities,
     });
 }
 
@@ -1670,6 +1758,12 @@ function setServerMethodsFromPing(info) {
         : null;
     serverSmuggleCapabilities = Object.prototype.hasOwnProperty.call(info || {}, 'smuggle_capabilities')
         ? info.smuggle_capabilities
+        : null;
+    serverEncryptedUploadCapabilities = Object.prototype.hasOwnProperty.call(
+        info || {},
+        'encrypted_uploads'
+    )
+        ? info.encrypted_uploads
         : null;
     refreshServerMethodBoundControls();
 }
@@ -1758,6 +1852,7 @@ async function checkServerMode() {
         serverSupportedMethods = null;
         serverMethodGroups = null;
         serverSmuggleCapabilities = null;
+        serverEncryptedUploadCapabilities = null;
         serverDiscoveryStatus = 'unavailable';
         refreshServerMethodBoundControls();
         console.log('Could not check server mode:', e);
@@ -1962,6 +2057,7 @@ app.registerService('core', {
             )
             : null,
         smuggleCapabilities: serverSmuggleCapabilities,
+        encryptedUploadCapabilities: serverEncryptedUploadCapabilities,
         serverDiscoveryStatus,
     }),
 });

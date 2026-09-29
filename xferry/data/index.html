@@ -357,6 +357,102 @@
                                 </div>
                             </details>
                         </div>
+
+                        <section
+                            class="tool-card encrypted-transfer"
+                            id="encryptedTransferPanel"
+                            aria-labelledby="encryptedTransferTitle"
+                            aria-hidden="true"
+                            hidden
+                        >
+                            <div class="encrypted-transfer__header">
+                                <div>
+                                    <p class="eyebrow" data-i18n="encryptedTransferEyebrow">БОЛЬШИЕ ФАЙЛЫ</p>
+                                    <h3 id="encryptedTransferTitle" data-i18n="encryptedTransferTitle">Потоковая зашифрованная загрузка</h3>
+                                </div>
+                                <span class="encrypted-transfer__badge">AES-256-GCM · EUF v1</span>
+                            </div>
+                            <p class="inline-hint" id="encryptedTransferDescription" data-i18n="encryptedTransferDescription">Файл шифруется в браузере чанками по 8 МиБ. Пароль и ключи не сохраняются и по умолчанию не отправляются серверу.</p>
+
+                            <form class="encrypted-transfer__form" id="encryptedUploadForm" novalidate aria-describedby="encryptedTransferDescription">
+                                <div class="encrypted-transfer__fields">
+                                    <div class="field-stack">
+                                        <label class="field-label" for="encryptedFileInput" data-i18n="encryptedFileLabel">Файл</label>
+                                        <input type="file" id="encryptedFileInput" aria-describedby="encryptedFileHint">
+                                        <span class="field-hint" id="encryptedFileHint" data-i18n="encryptedFileHint">До 2 ГиБ; файл читается только отдельными чанками.</span>
+                                    </div>
+                                    <div class="field-stack">
+                                        <label class="field-label" for="encryptedPasswordInput" data-i18n="encryptedPasswordLabel">Пароль шифрования</label>
+                                        <input type="password" id="encryptedPasswordInput" autocomplete="new-password" minlength="14" maxlength="1024" aria-describedby="encryptedPasswordHint">
+                                        <span class="field-hint" id="encryptedPasswordHint" data-i18n="encryptedPasswordHint">Минимум 14 символов. Восстановить забытый пароль невозможно.</span>
+                                    </div>
+                                    <div class="field-stack">
+                                        <label class="field-label" for="encryptedPasswordConfirmInput" data-i18n="encryptedPasswordConfirmLabel">Повторите пароль</label>
+                                        <input type="password" id="encryptedPasswordConfirmInput" autocomplete="new-password" minlength="14" maxlength="1024">
+                                    </div>
+                                </div>
+                                <div class="encrypted-transfer__actions">
+                                    <button type="submit" class="btn-info" id="encryptedUploadStartBtn" data-i18n="encryptedUploadStart">Зашифровать и отправить</button>
+                                    <button type="button" class="btn-ghost" id="encryptedUploadPauseBtn" data-i18n="encryptedUploadPause" disabled>Пауза</button>
+                                    <button type="button" class="btn-ghost" id="encryptedUploadResumeBtn" data-i18n="encryptedUploadResume" disabled>Продолжить</button>
+                                    <button type="button" class="btn-danger" id="encryptedUploadCancelBtn" data-i18n="encryptedUploadCancel" disabled>Отменить и удалить</button>
+                                </div>
+                            </form>
+
+                            <div class="encrypted-transfer__progress" id="encryptedProgressRegion">
+                                <label for="encryptedUploadProgress" data-i18n="encryptedProgressLabel">Прогресс зашифрованной загрузки</label>
+                                <progress id="encryptedUploadProgress" max="100" value="0">0%</progress>
+                                <p id="encryptedTransferStatus" role="status" aria-live="polite" aria-atomic="true" data-i18n="encryptedStatusIdle">Готово к выбору файла</p>
+                            </div>
+
+                            <form class="encrypted-transfer__secondary-form" id="encryptedResumeForm" hidden novalidate>
+                                <h4 data-i18n="encryptedResumeTitle">Продолжить незавершённую загрузку</h4>
+                                <p><span data-i18n="encryptedSelectedId">ID:</span> <output id="encryptedResumeId"></output></p>
+                                <div class="encrypted-transfer__fields">
+                                    <div class="field-stack">
+                                        <label class="field-label" for="encryptedResumeFileInput" data-i18n="encryptedResumeFileLabel">Выберите исходный файл повторно</label>
+                                        <input type="file" id="encryptedResumeFileInput">
+                                    </div>
+                                    <div class="field-stack">
+                                        <label class="field-label" for="encryptedResumePasswordInput" data-i18n="encryptedPasswordLabel">Пароль шифрования</label>
+                                        <input type="password" id="encryptedResumePasswordInput" autocomplete="current-password" minlength="14" maxlength="1024">
+                                    </div>
+                                </div>
+                                <div class="encrypted-transfer__actions">
+                                    <button type="submit" class="btn-info" id="encryptedResumeSelectedBtn" data-i18n="encryptedUploadResume">Продолжить</button>
+                                    <button type="button" class="btn-ghost" id="encryptedResumeDismissBtn" data-i18n="smuggleCancel">Отмена</button>
+                                </div>
+                            </form>
+
+                            <form class="encrypted-transfer__secondary-form" id="encryptedUnlockForm" hidden novalidate>
+                                <h4 data-i18n="encryptedUnlockTitle">Открыть имя и действия</h4>
+                                <p><span data-i18n="encryptedSelectedId">ID:</span> <output id="encryptedUnlockId"></output></p>
+                                <div class="field-stack">
+                                    <label class="field-label" for="encryptedUnlockPasswordInput" data-i18n="encryptedPasswordLabel">Пароль шифрования</label>
+                                    <input type="password" id="encryptedUnlockPasswordInput" autocomplete="current-password" minlength="14" maxlength="1024">
+                                </div>
+                                <div class="encrypted-transfer__actions">
+                                    <button type="submit" class="btn-info" id="encryptedUnlockSelectedBtn" data-i18n="encryptedUnlock">Разблокировать</button>
+                                    <button type="button" class="btn-ghost" id="encryptedUnlockDismissBtn" data-i18n="smuggleCancel">Отмена</button>
+                                </div>
+                            </form>
+
+                            <div class="encrypted-transfer__lists">
+                                <section aria-labelledby="encryptedPartialTitle">
+                                    <div class="encrypted-transfer__list-header">
+                                        <h4 id="encryptedPartialTitle" data-i18n="encryptedPartialTitle">Незавершённые</h4>
+                                        <button type="button" class="btn-ghost btn--sm" id="encryptedRefreshBtn" data-i18n="encryptedRefresh">Обновить</button>
+                                    </div>
+                                    <div class="encrypted-transfer__list" id="encryptedPartialList" role="list" aria-labelledby="encryptedPartialTitle"></div>
+                                </section>
+                                <section aria-labelledby="encryptedFilesTitle">
+                                    <div class="encrypted-transfer__list-header">
+                                        <h4 id="encryptedFilesTitle" data-i18n="encryptedFilesTitle">Зашифрованные файлы</h4>
+                                    </div>
+                                    <div class="encrypted-transfer__list" id="encryptedFileList" role="list" aria-labelledby="encryptedFilesTitle"></div>
+                                </section>
+                            </div>
+                        </section>
                     </div>
                     </section>
 
@@ -966,6 +1062,8 @@
     <script src="/static/ui/advanced-compiler.js"></script>
     <script src="/static/ui/upload.js"></script>
     <script src="/static/ui/requests.js"></script>
+    <script src="/static/ui/encrypted-transfer-crypto.js"></script>
+    <script src="/static/ui/encrypted-transfer.js"></script>
     <script src="/static/ui/smuggle.js"></script>
     <script src="/static/ui/files.js"></script>
     <script src="/static/ui/opsec.js"></script>

@@ -11887,6 +11887,250 @@ async (page) => {
     }
   }
 
+  async function runEncryptedTransferJourney() {
+    const password = "correct horse battery staple";
+    const encryptedUploadName = fixtureName(uploadFilePath);
+    const expectedDownload = Array.from(new TextEncoder().encode("browser smoke upload\n"));
+    const encryptedRequests = [];
+    const recordEncryptedRequest = (request) => {
+      if (!requestPathname(request).includes("/_xferry/encrypted-")) {
+        return;
+      }
+      encryptedRequests.push({
+        url: request.url(),
+        path: requestPathname(request),
+        method: request.method(),
+        headers: request.headers(),
+        body: request.postData() || "",
+      });
+    };
+    page.on("request", recordEncryptedRequest);
+
+    try {
+      await page.locator("#encryptedTransferPanel").waitFor({ state: "visible", timeout: 30000 });
+      await waitForPageCondition(
+        "encrypted transfer capability is ready",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(state?.enabled && state.capabilityStatus === "valid");
+        },
+        null,
+        30000
+      );
+
+      await page.locator("#encryptedRefreshBtn").click();
+      await waitForPageCondition(
+        "encrypted transfer lists were requested",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state &&
+            Array.isArray(state.partialUploads) &&
+            Array.isArray(state.encryptedFiles)
+          );
+        },
+        null,
+        30000
+      );
+
+      await page.evaluate(() => {
+        window.__xferryEncryptedSmokeDownloads = [];
+        Object.defineProperty(window, "showSaveFilePicker", {
+          configurable: true,
+          value: async (options = {}) => {
+            const record = {
+              suggestedName: String(options.suggestedName || ""),
+              chunks: [],
+              closed: false,
+              aborted: false,
+            };
+            window.__xferryEncryptedSmokeDownloads.push(record);
+            return {
+              async createWritable() {
+                return {
+                  write: async (value) => {
+                    const view = value instanceof Uint8Array
+                      ? value
+                      : new Uint8Array(value);
+                    record.chunks.push(Array.from(view));
+                  },
+                  close: async () => {
+                    record.closed = true;
+                  },
+                  abort: async () => {
+                    record.aborted = true;
+                  },
+                };
+              },
+            };
+          },
+        });
+      });
+
+      await page.locator("#encryptedFileInput").setInputFiles(uploadFilePath);
+      await page.locator("#encryptedPasswordInput").fill(password);
+      await page.locator("#encryptedPasswordConfirmInput").fill(password);
+      await page.locator("#encryptedUploadStartBtn").click();
+      await waitForPageCondition(
+        "encrypted upload completed through the real UI",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state?.phase === "complete" &&
+            state.activeId === null &&
+            state.encryptedFiles?.length === 1
+          );
+        },
+        null,
+        120000
+      );
+
+      const completedState = await page.evaluate(() => (
+        window.XferryApp.getState("encrypted-transfer")
+      ));
+      const fileId = completedState.encryptedFiles[0]?.id || "";
+      if (!/^[0-9a-f]{32}$/.test(fileId)) {
+        throw new Error(`Encrypted upload returned an invalid id: ${fileId}`);
+      }
+      const clearedUploadSecrets = await page.evaluate(() => ({
+        password: document.getElementById("encryptedPasswordInput")?.value || "",
+        confirmation: document.getElementById("encryptedPasswordConfirmInput")?.value || "",
+      }));
+      if (clearedUploadSecrets.password || clearedUploadSecrets.confirmation) {
+        throw new Error("Encrypted upload password fields were not cleared");
+      }
+
+      await page.locator('[data-encrypted-action="unlock"]').click();
+      const unlockPasswordInput = page.locator("#encryptedUnlockPasswordInput");
+      await unlockPasswordInput.fill(password);
+      await page.locator("#encryptedUnlockSelectedBtn").click();
+      await waitForPageCondition(
+        "encrypted file unlocked through the real UI",
+        ([targetId, targetName]) => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state?.encryptedFiles?.some((entry) => (
+              entry.id === targetId &&
+              entry.unlocked &&
+              entry.name === targetName
+            ))
+          );
+        },
+        [fileId, encryptedUploadName],
+        120000
+      );
+      if (await unlockPasswordInput.inputValue()) {
+        throw new Error("Encrypted unlock password field was not cleared");
+      }
+
+      await page.locator('[data-encrypted-action="download-client"]').click();
+      await waitForPageCondition(
+        "client-side encrypted download closed its writable stream",
+        () => {
+          const downloads = window.__xferryEncryptedSmokeDownloads || [];
+          return downloads.length >= 1 && downloads[0].closed && !downloads[0].aborted;
+        },
+        null,
+        30000
+      );
+      const downloadedBytes = await page.evaluate(() => (
+        (window.__xferryEncryptedSmokeDownloads?.[0]?.chunks || []).flat()
+      ));
+      if (JSON.stringify(downloadedBytes) !== JSON.stringify(expectedDownload)) {
+        throw new Error(`Client-side decrypted bytes differ: ${JSON.stringify(downloadedBytes)}`);
+      }
+
+      await page.locator('[data-encrypted-action="download-server"]').click();
+      await confirmAppDialog(/decrypt|расшифр/i, 30000);
+      await waitForPageCondition(
+        "server-side encrypted download closed its writable stream",
+        () => {
+          const downloads = window.__xferryEncryptedSmokeDownloads || [];
+          return downloads.length >= 2 && downloads[1].closed && !downloads[1].aborted;
+        },
+        null,
+        30000
+      );
+      const serverDownloadedBytes = await page.evaluate(() => (
+        (window.__xferryEncryptedSmokeDownloads?.[1]?.chunks || []).flat()
+      ));
+      if (JSON.stringify(serverDownloadedBytes) !== JSON.stringify(expectedDownload)) {
+        throw new Error(
+          `Server-side decrypted bytes differ: ${JSON.stringify(serverDownloadedBytes)}`
+        );
+      }
+
+      const createRequest = encryptedRequests.find((request) => (
+        request.method === "PUT" && request.path === `/_xferry/encrypted-uploads/${fileId}`
+      ));
+      const chunkRequest = encryptedRequests.find((request) => (
+        request.method === "PUT" && request.path.includes(`/${fileId}/chunks/`)
+      ));
+      const completeRequest = encryptedRequests.find((request) => (
+        request.method === "POST" &&
+        request.path === `/_xferry/encrypted-uploads/${fileId}/complete`
+      ));
+      const ciphertextRequest = encryptedRequests.find((request) => (
+        request.method === "GET" &&
+        request.path === `/_xferry/encrypted-files/${fileId}/data`
+      ));
+      const decryptRequest = encryptedRequests.find((request) => (
+        request.method === "POST" &&
+        request.path === `/_xferry/encrypted-files/${fileId}/decrypt`
+      ));
+      if (!createRequest || !chunkRequest || !completeRequest || !ciphertextRequest || !decryptRequest) {
+        throw new Error(
+          `Encrypted request coverage is incomplete: ${JSON.stringify(encryptedRequests)}`
+        );
+      }
+      const createBody = JSON.parse(createRequest.body);
+      const expectedCreateKeys = [
+        "chunk_count",
+        "chunk_size",
+        "encrypted_metadata",
+        "nonce_prefix",
+        "plaintext_size",
+        "salt",
+        "version",
+      ];
+      if (Object.keys(createBody).sort().join(",") !== expectedCreateKeys.join(",")) {
+        throw new Error(`Encrypted create request leaked fields: ${JSON.stringify(createBody)}`);
+      }
+      if (!chunkRequest.headers["x-xferry-chunk-mac"]) {
+        throw new Error("Encrypted chunk request omitted X-XFerry-Chunk-MAC");
+      }
+      const decryptBody = JSON.parse(decryptRequest.body);
+      if (
+        Object.keys(decryptBody).join(",") !== "content_key" ||
+        !/^[A-Za-z0-9_-]{43}$/.test(String(decryptBody.content_key || ""))
+      ) {
+        throw new Error(`Server decrypt key envelope is invalid: ${decryptRequest.body}`);
+      }
+      encryptedRequests.forEach((request) => {
+        const serializedHeaders = JSON.stringify(request.headers);
+        if (
+          request.url.includes(password) ||
+          request.body.includes(password) ||
+          serializedHeaders.includes(password)
+        ) {
+          throw new Error(`Encrypted request leaked its password: ${request.method} ${request.url}`);
+        }
+        if (request !== decryptRequest && request.body.includes("content_key")) {
+          throw new Error(`Encrypted request leaked its content key: ${request.method} ${request.url}`);
+        }
+      });
+
+      return {
+        fileId,
+        encryptedRequestCount: encryptedRequests.length,
+        clientDownloadedBytes: downloadedBytes.length,
+        serverDownloadedBytes: serverDownloadedBytes.length,
+      };
+    } finally {
+      page.off("request", recordEncryptedRequest);
+    }
+  }
+
   async function runUiContractsJourney() {
     await assertOutputLiveRegionContracts();
     await assertStaticUiAssetsLoaded();
@@ -14240,6 +14484,7 @@ async (page) => {
   const namedJourneys = {
     "first-run": runFirstRunJourney,
     "basic-upload-profiles": runBasicUploadProfilesJourney,
+    "encrypted-transfer": runEncryptedTransferJourney,
     "ui-contracts": runUiContractsJourney,
     "http-errors": runHttpErrorsJourney,
     "recovery": runRecoveryJourney,
