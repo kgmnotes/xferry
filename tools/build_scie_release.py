@@ -21,14 +21,20 @@ if str(REPO_ROOT) not in sys.path:
 from xferry.management.managed_state import (  # noqa: E402
     UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS,
 )
+from xferry.management.model import (  # noqa: E402
+    SUPPORTED_MANAGED_DISTRIBUTIONS,
+    SUPPORTED_MANAGED_HOST_SUMMARY,
+)
 from xferry.management.release_contract import (  # noqa: E402
-    LINUX_X86_64,
     MAX_ARTIFACT_DIGESTS,
+    SUPPORTED_PLATFORM_IDS,
     PlatformId,
     ReleaseManifest,
     artifact_name,
+    current_platform_id,
     machine_aliases,
     platform_display_name,
+    require_platform_id,
     require_source_commit,
     require_workflow_run,
 )
@@ -83,6 +89,11 @@ def _render_installer(
     platform_id: PlatformId,
 ) -> str:
     payload = executable.read_bytes()
+    managed_os_cases = "|".join(
+        f"{os_id}:{version}"
+        for os_id, versions in SUPPORTED_MANAGED_DISTRIBUTIONS
+        for version in versions
+    )
     replacements = {
         "@VERSION@": version,
         "@EXECUTABLE_NAME@": executable.name,
@@ -91,6 +102,8 @@ def _render_installer(
         "@MANIFEST_JSON@": manifest_payload.rstrip("\n"),
         "@PLATFORM_ID@": platform_id,
         "@MACHINE_CASE_PATTERN@": "|".join(machine_aliases(platform_id)),
+        "@MANAGED_HOST_DESCRIPTION@": SUPPORTED_MANAGED_HOST_SUMMARY,
+        "@MANAGED_OS_CASE_PATTERN@": managed_os_cases,
         "@MAX_ARTIFACT_DIGESTS@": str(MAX_ARTIFACT_DIGESTS),
         "@PLATFORM_DESCRIPTION@": platform_display_name(platform_id),
         "@SUPPORTED_RELEASE_MAJOR@": SUPPORTED_RELEASE_MAJOR,
@@ -137,28 +150,40 @@ def build_release_bundle(
     version: str,
     runner: CommandRunner,
     *,
+    platform_id: PlatformId,
     source_commit: str | None = None,
     workflow_run: str | None = None,
 ) -> ReleaseBundle:
-    """Build a pinned CPython 3.12 eager SCIE and its bootstrap metadata."""
+    """Build one native pinned-CPython SCIE and its bootstrap metadata."""
 
     if not is_supported_release_version(version):
         raise ValueError("release bundle version must belong to the supported release line")
     repo_root = repo_root.resolve()
-    selected_platform = LINUX_X86_64
+    selected_platform = require_platform_id(platform_id)
+    build_host_platform = current_platform_id()
+    if build_host_platform != selected_platform:
+        raise RuntimeError(
+            f"requested SCIE platform {selected_platform} does not match "
+            f"build host {build_host_platform}; use a native matching runner"
+        )
     selected_source_commit = require_source_commit(
         _source_commit(repo_root) if source_commit is None else source_commit
     )
     selected_workflow_run = require_workflow_run(
         os.environ.get("GITHUB_RUN_ID", "local") if workflow_run is None else workflow_run
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = output_dir.resolve()
+    if output_dir.is_symlink() or output_dir.exists():
+        raise ValueError("SCIE output directory must not already exist")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
     executable_name = artifact_name(version, selected_platform)
-    executable = output_dir / executable_name
-    with TemporaryDirectory(prefix="xferry-scie-") as temporary_dir:
+    with TemporaryDirectory(prefix=".xferry-scie-", dir=output_dir.parent) as temporary_dir:
         staging_dir = Path(temporary_dir)
         wheel_dir = staging_dir / "wheel"
         lock = staging_dir / "xferry-release.lock.json"
+        bundle_dir = staging_dir / "bundle"
+        bundle_dir.mkdir()
+        executable = bundle_dir / executable_name
         runner(
             ["python", "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
             repo_root,
@@ -190,6 +215,8 @@ def build_release_bundle(
                 "--scie",
                 "eager",
                 "--scie-only",
+                "--scie-platform",
+                selected_platform,
                 "--interpreter-constraint",
                 "CPython>=3.12,<3.13",
                 "-o",
@@ -197,42 +224,54 @@ def build_release_bundle(
             ],
             repo_root,
         )
-    if not executable.is_file():
-        raise RuntimeError("PEX did not produce the SCIE executable")
+        candidates = sorted(bundle_dir.glob("xferry-*-linux-*"))
+        if candidates != [executable] or not executable.is_file():
+            raise RuntimeError(
+                "PEX must produce exactly one SCIE executable for the requested platform"
+            )
 
-    payload = executable.read_bytes()
-    sha256 = hashlib.sha256(payload).hexdigest()
-    release_manifest = ReleaseManifest.create_v2(
-        version=version,
-        platform=selected_platform,
-        executable_size=len(payload),
-        executable_sha256=sha256,
-        source_commit=selected_source_commit,
-        workflow_run=selected_workflow_run,
-    )
-    manifest_payload = release_manifest.to_bytes().decode("utf-8")
-    manifest = output_dir / "xferry-release.json"
-    manifest.write_text(manifest_payload, encoding="utf-8")
-    checksums = output_dir / "SHA256SUMS"
-    checksums.write_text(f"{sha256}  {executable_name}\n", encoding="utf-8")
-    installer = output_dir / "install.sh"
-    installer.write_text(
-        _render_installer(
-            repo_root / "packaging" / "install.sh.in",
+        payload = executable.read_bytes()
+        sha256 = hashlib.sha256(payload).hexdigest()
+        release_manifest = ReleaseManifest.create_v2(
             version=version,
-            executable=executable,
-            manifest_payload=manifest_payload,
-            platform_id=selected_platform,
-        ),
-        encoding="utf-8",
+            platform=selected_platform,
+            executable_size=len(payload),
+            executable_sha256=sha256,
+            source_commit=selected_source_commit,
+            workflow_run=selected_workflow_run,
+        )
+        manifest_payload = release_manifest.to_bytes().decode("utf-8")
+        manifest = bundle_dir / "xferry-release.json"
+        manifest.write_text(manifest_payload, encoding="utf-8")
+        checksums = bundle_dir / "SHA256SUMS"
+        checksums.write_text(f"{sha256}  {executable_name}\n", encoding="utf-8")
+        installer = bundle_dir / "install.sh"
+        installer.write_text(
+            _render_installer(
+                repo_root / "packaging" / "install.sh.in",
+                version=version,
+                executable=executable,
+                manifest_payload=manifest_payload,
+                platform_id=selected_platform,
+            ),
+            encoding="utf-8",
+        )
+        installer.chmod(0o755)
+        bundle_dir.replace(output_dir)
+
+    return ReleaseBundle(
+        output_dir,
+        output_dir / executable_name,
+        output_dir / "install.sh",
+        output_dir / "xferry-release.json",
+        output_dir / "SHA256SUMS",
     )
-    installer.chmod(0o755)
-    return ReleaseBundle(output_dir, executable, installer, manifest, checksums)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--platform", choices=SUPPORTED_PLATFORM_IDS, required=True)
     parser.add_argument("--version")
     parser.add_argument("--source-commit")
     parser.add_argument("--workflow-run")
@@ -247,6 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.output_dir,
         version,
         _run_command,
+        platform_id=arguments.platform,
         source_commit=arguments.source_commit,
         workflow_run=arguments.workflow_run,
     )

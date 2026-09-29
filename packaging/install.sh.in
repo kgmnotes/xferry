@@ -36,16 +36,16 @@ systemd_runtime="$probe_root/run/systemd/system"
 meminfo="$probe_root/proc/meminfo"
 
 if [ ! -r "$os_release" ]; then
-  echo 'xferry requires Ubuntu 22.04/24.04/26.04 or Debian 12' >&2
+  echo 'xferry requires @MANAGED_HOST_DESCRIPTION@' >&2
   exit 4
 fi
 
 os_id="$(awk -F= '$1 == "ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "$os_release")"
 os_version="$(awk -F= '$1 == "VERSION_ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "$os_release")"
 case "$os_id:$os_version" in
-  ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12) ;;
+  @MANAGED_OS_CASE_PATTERN@) ;;
   *)
-    echo 'xferry requires Ubuntu 22.04/24.04/26.04 or Debian 12' >&2
+    echo 'xferry requires @MANAGED_HOST_DESCRIPTION@' >&2
     exit 4
     ;;
 esac
@@ -99,6 +99,7 @@ valid_supported_version() {
 valid_supported_release() {
   candidate_release="$1"
   candidate_version="$2"
+  required_schema="${3:-any}"
   candidate_manifest="$candidate_release/xferry-release.json"
   candidate_executable="$candidate_release/xferry"
   real_directory "$candidate_release" || return 1
@@ -114,6 +115,7 @@ valid_supported_release() {
     awk \
       -v expected_version="$candidate_version" \
       -v expected_platform="$platform_id" \
+      -v required_schema="$required_schema" \
       -v expected_name="xferry-$candidate_version-$platform_id" '
       function invalid() { exit 1 }
       function declared_size(line, prefix, value) {
@@ -156,6 +158,7 @@ valid_supported_release() {
         sha256 = declared_sha256(lines[9])
 
         if (lines[2] == "  \"schema_version\": 1,") {
+          if (required_schema == "2") invalid()
           if (NR != 11 || lines[10] != "  }" || lines[11] != "}") invalid()
           print size ":" sha256
           exit 0
@@ -320,6 +323,19 @@ if [ "$actual_sha256" != "$artifact_sha256" ]; then
   exit 1
 fi
 
+candidate_release="$stage_dir/candidate"
+mkdir "$candidate_release"
+chmod 0755 "$candidate_release"
+install -m 0755 "$downloaded" "$candidate_release/xferry"
+cat > "$candidate_release/xferry-release.json" <<'XFERRY_CANDIDATE_MANIFEST'
+@MANIFEST_JSON@
+XFERRY_CANDIDATE_MANIFEST
+chmod 0644 "$candidate_release/xferry-release.json"
+if ! valid_supported_release "$candidate_release" "$version" 2; then
+  echo 'xferry candidate manifest or executable is invalid' >&2
+  exit 1
+fi
+
 release_path="$release_root/releases/$version"
 bin_root="$destdir/usr/local/bin"
 if [ -e "$release_path" ]; then
@@ -331,11 +347,8 @@ mkdir -p "$release_root/releases" "$bin_root"
 install_stage="$release_root/.install-$version-$$"
 mkdir "$install_stage"
 chmod 0755 "$install_stage"
-install -m 0755 "$downloaded" "$install_stage/xferry"
-cat > "$install_stage/xferry-release.json" <<'XFERRY_MANIFEST'
-@MANIFEST_JSON@
-XFERRY_MANIFEST
-chmod 0644 "$install_stage/xferry-release.json"
+install -m 0755 "$candidate_release/xferry" "$install_stage/xferry"
+install -m 0644 "$candidate_release/xferry-release.json" "$install_stage/xferry-release.json"
 mv "$install_stage" "$release_path"
 
 ln -s "releases/$version" "$release_root/.current-$version"

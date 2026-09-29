@@ -29,3 +29,9 @@
 - Files changed: managed host model, setup planning/result mapping, doctor and CLI diagnostics, i18n action rendering, four focused test modules, and this active plan's overview, status, stage, change log, and report artifacts.
 - Verification: all 309 stage-targeted and 381 expanded management/CLI tests, strict mypy for 69 source files, scoped Ruff lint/format, all 3,265 repository tests, representative Windows/macOS JSON review, and independent QA/final reviews passed.
 - Report: `stage-reports/STAGE-005-20260929-144237.md`
+
+## 2026-09-29 18:58:35 +0300 — STAGE-006
+- Status: CLOSED
+- Files changed: native multi-platform SCIE builder, generated installer validation, CI/manual release verification matrices, canonical managed-state platform preflight, focused builder/installer/workflow/lifecycle tests, and this active plan's overview, status, stage, change log, and report artifacts.
+- Verification: 177 stage-targeted and 458 expanded tests, strict mypy, repository-wide Ruff lint/format, shell/YAML/actionlint checks, real native x86_64 and aarch64 builds and no-host-Python CLI probes, all ten native target images, all 3,291 repository tests, and independent final re-review passed. Native evidence: GitHub Actions run `36593256300`, SHA `ca8c83631437d07a4bbce67933a5dbd309f36a4e`.
+- Report: `stage-reports/STAGE-006-20260929-155138.md`

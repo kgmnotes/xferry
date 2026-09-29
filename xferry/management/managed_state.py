@@ -134,14 +134,22 @@ def _descriptor_capabilities() -> _DescriptorCapabilities | None:
     )
 
 
-def has_unsupported_managed_state(layout: ManagedLayout) -> bool:
+def has_unsupported_managed_state(
+    layout: ManagedLayout,
+    *,
+    platform_id: str | None = None,
+) -> bool:
     """Return whether setup must preserve unsupported or ambiguous managed state."""
     try:
         _validate_layout_paths(layout)
         capabilities = _descriptor_capabilities()
         if capabilities is None:
             return True
-        release_state = _release_state(layout, capabilities)
+        release_state = _release_state(
+            layout,
+            capabilities,
+            platform_id=platform_id or current_platform_id(),
+        )
         if release_state is _ReleaseState.BLOCKED:
             return True
         return not _owned_state_is_safe(
@@ -156,6 +164,8 @@ def has_unsupported_managed_state(layout: ManagedLayout) -> bool:
 def _release_state(
     layout: ManagedLayout,
     capabilities: _DescriptorCapabilities,
+    *,
+    platform_id: str,
 ) -> _ReleaseState:
     try:
         root_parent_descriptor, root_descriptor = _open_release_root(
@@ -225,6 +235,7 @@ def _release_state(
                         "xferry-release.json",
                         dir_fd=release_descriptor,
                         capabilities=capabilities,
+                        platform_id=platform_id,
                     )
                     executable_metadata = _valid_executable(
                         "xferry",
@@ -303,6 +314,7 @@ def _read_manifest(
     *,
     dir_fd: int,
     capabilities: _DescriptorCapabilities,
+    platform_id: str,
 ) -> tuple[ReleaseManifest, os.stat_result]:
     payload, metadata = _read_bounded_regular_file(
         path,
@@ -311,7 +323,7 @@ def _read_manifest(
         capabilities=capabilities,
     )
     manifest = ReleaseManifest.parse(payload)
-    if manifest.platform != current_platform_id():
+    if manifest.platform != platform_id:
         raise ValueError
     return manifest, metadata
 

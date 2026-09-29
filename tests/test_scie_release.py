@@ -18,6 +18,12 @@ import pytest
 from tools.build_scie_release import CommandRunner, ReleaseBundle, build_release_bundle
 from xferry.management.health import HealthResult
 from xferry.management.model import ManagedLayout
+from xferry.management.release_contract import (
+    LINUX_AARCH64,
+    LINUX_X86_64,
+    SUPPORTED_PLATFORM_IDS,
+    PlatformId,
+)
 from xferry.management.releases import ReleaseManager, ReleaseManifest
 from xferry.management.system import CommandResult
 
@@ -35,6 +41,15 @@ UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES = (
     "Remove the managed state with its original tooling.",
     "Then install XFerry in a clean environment.",
 )
+
+
+@pytest.fixture(autouse=True)
+def _stable_native_build_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep builder contracts deterministic on both native workflow runners."""
+    monkeypatch.setattr(
+        "tools.build_scie_release.current_platform_id",
+        lambda: LINUX_X86_64,
+    )
 
 
 def test_release_builder_help_runs_when_invoked_directly_in_isolated_mode() -> None:
@@ -55,6 +70,7 @@ def test_release_builder_help_runs_when_invoked_directly_in_isolated_mode() -> N
 
     assert result.returncode == 0, result.stderr
     assert "Build deterministic SCIE products" in result.stdout
+    assert "--platform {linux-x86_64,linux-aarch64}" in result.stdout
 
 
 class FakeRunner:
@@ -109,12 +125,28 @@ class NestedForbiddenWheelRunner(FakeRunner):
                 )
 
 
-def _render_bundle(tmp_path: Path, payload: bytes = b"scie") -> ReleaseBundle:
+class ExtraCandidateRunner(FakeRunner):
+    """Inject a second platform candidate to exercise exact-output validation."""
+
+    def __call__(self, command: Sequence[str], cwd: Path) -> None:
+        super().__call__(command, cwd)
+        if tuple(command[:1]) == ("pex",) and "--scie" in command:
+            output = Path(command[command.index("-o") + 1])
+            output.with_name("xferry-0.1.0-linux-aarch64").write_bytes(b"unexpected")
+
+
+def _render_bundle(
+    tmp_path: Path,
+    payload: bytes = b"scie",
+    *,
+    platform_id: PlatformId = LINUX_X86_64,
+) -> ReleaseBundle:
     return build_release_bundle(
         REPO_ROOT,
         tmp_path / "bundle",
         "0.1.0",
         FakeRunner(payload),
+        platform_id=platform_id,
         source_commit=TEST_SOURCE_COMMIT,
         workflow_run=TEST_WORKFLOW_RUN,
     )
@@ -123,7 +155,13 @@ def _render_bundle(tmp_path: Path, payload: bytes = b"scie") -> ReleaseBundle:
 def test_release_builder_rejects_a_wheel_with_an_internal_public_surface(tmp_path: Path) -> None:
     """Catches SCIE construction accepting an internal artifact from its real wheel input."""
     with pytest.raises(RuntimeError, match="CLAU" + "DE.md"):
-        build_release_bundle(REPO_ROOT, tmp_path / "bundle", "0.1.0", ForbiddenWheelRunner(b"scie"))
+        build_release_bundle(
+            REPO_ROOT,
+            tmp_path / "bundle",
+            "0.1.0",
+            ForbiddenWheelRunner(b"scie"),
+            platform_id=LINUX_X86_64,
+        )
 
 
 def test_release_builder_rejects_nested_internal_wheel_content(tmp_path: Path) -> None:
@@ -134,7 +172,89 @@ def test_release_builder_rejects_nested_internal_wheel_content(tmp_path: Path) -
             tmp_path / "bundle",
             "0.1.0",
             NestedForbiddenWheelRunner(b"scie"),
+            platform_id=LINUX_X86_64,
         )
+
+
+def test_release_builder_rejects_unknown_platform_before_build_or_output(tmp_path: Path) -> None:
+    runner = FakeRunner(b"scie")
+    output = tmp_path / "bundle"
+
+    with pytest.raises(ValueError, match="unknown release platform"):
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            "0.1.0",
+            runner,
+            platform_id="linux-riscv64",  # type: ignore[arg-type]
+            source_commit=TEST_SOURCE_COMMIT,
+            workflow_run=TEST_WORKFLOW_RUN,
+        )
+
+    assert runner.commands == []
+    assert not output.exists()
+
+
+def test_release_builder_rejects_platform_mismatched_build_host_before_output(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(b"scie")
+    output = tmp_path / "bundle"
+
+    with pytest.raises(RuntimeError, match="does not match build host"):
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            "0.1.0",
+            runner,
+            platform_id=LINUX_AARCH64,
+            source_commit=TEST_SOURCE_COMMIT,
+            workflow_run=TEST_WORKFLOW_RUN,
+        )
+
+    assert runner.commands == []
+    assert not output.exists()
+
+
+def test_release_builder_refuses_existing_output_without_mutation(tmp_path: Path) -> None:
+    runner = FakeRunner(b"scie")
+    output = tmp_path / "bundle"
+    output.mkdir()
+    sentinel = output / "preserve"
+    sentinel.write_bytes(b"existing output")
+
+    with pytest.raises(ValueError, match="must not already exist"):
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            "0.1.0",
+            runner,
+            platform_id=LINUX_X86_64,
+            source_commit=TEST_SOURCE_COMMIT,
+            workflow_run=TEST_WORKFLOW_RUN,
+        )
+
+    assert runner.commands == []
+    assert sentinel.read_bytes() == b"existing output"
+
+
+def test_release_builder_rejects_more_than_one_candidate_without_publishing_output(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "bundle"
+
+    with pytest.raises(RuntimeError, match="exactly one SCIE executable"):
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            "0.1.0",
+            ExtraCandidateRunner(b"scie"),
+            platform_id=LINUX_X86_64,
+            source_commit=TEST_SOURCE_COMMIT,
+            workflow_run=TEST_WORKFLOW_RUN,
+        )
+
+    assert not output.exists()
 
 
 def _run_installer(
@@ -144,6 +264,7 @@ def _run_installer(
     *,
     os_id: str = "ubuntu",
     os_version: str = "24.04",
+    machine: str = "x86_64",
     has_systemd: bool = True,
     ram_mib: int = 1024,
     prepare_root: Callable[[Path], None] | None = None,
@@ -153,7 +274,7 @@ def _run_installer(
     tmp_path.chmod(0o755)
     (fake_bin / "id").write_text("#!/bin/sh\necho 0\n", encoding="utf-8")
     (fake_bin / "uname").write_text(
-        '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n',
+        '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo "$XFERRY_TEST_MACHINE" ;; esac\n',
         encoding="utf-8",
     )
     (fake_bin / "curl").write_text(
@@ -208,6 +329,7 @@ def _run_installer(
         "XFERRY_RELEASE_BASE_URL": "https://releases.example.test/xferry",
         "XFERRY_TEST_CURL_MARKER": str(tmp_path / "curl-called"),
         "XFERRY_TEST_MKTEMP_MARKER": str(tmp_path / "mktemp-called"),
+        "XFERRY_TEST_MACHINE": machine,
         "XFERRY_TEST_PAYLOAD": str(downloaded),
     }
     return subprocess.run(
@@ -321,11 +443,26 @@ def _v2_installed_manifest(*, include_extra_digest: bool = False) -> str:
     )
 
 
-def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform_id", SUPPORTED_PLATFORM_IDS)
+def test_release_bundle_writes_literal_manifest_and_checksum(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform_id: PlatformId,
+) -> None:
     payload = b"scie-payload"
-    bundle = _render_bundle(tmp_path, payload)
+    monkeypatch.setattr("tools.build_scie_release.current_platform_id", lambda: platform_id)
+    bundle = build_release_bundle(
+        REPO_ROOT,
+        tmp_path / "bundle",
+        "0.1.0",
+        FakeRunner(payload),
+        platform_id=platform_id,
+        source_commit=TEST_SOURCE_COMMIT,
+        workflow_run=TEST_WORKFLOW_RUN,
+    )
 
-    executable = bundle.output_dir / "xferry-0.1.0-linux-x86_64"
+    executable_name = f"xferry-0.1.0-{platform_id}"
+    executable = bundle.output_dir / executable_name
     manifest = json.loads(bundle.manifest.read_text(encoding="utf-8"))
     expected_sha256 = hashlib.sha256(payload).hexdigest()
 
@@ -334,9 +471,9 @@ def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> 
         "schema_version": 2,
         "version": "0.1.0",
         "tag": "v0.1.0",
-        "platform": "linux-x86_64",
+        "platform": platform_id,
         "executable": {
-            "name": "xferry-0.1.0-linux-x86_64",
+            "name": executable_name,
             "size": 12,
             "sha256": expected_sha256,
         },
@@ -345,7 +482,7 @@ def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> 
             "workflow_run": TEST_WORKFLOW_RUN,
         },
         "artifact_digests": {
-            "xferry-0.1.0-linux-x86_64": expected_sha256,
+            executable_name: expected_sha256,
         },
         "signing": {
             "scheme": "unsigned",
@@ -353,9 +490,7 @@ def test_release_bundle_writes_literal_manifest_and_checksum(tmp_path: Path) -> 
         },
     }
     assert bundle.manifest.read_bytes().endswith(b"\n")
-    assert bundle.checksums.read_text(encoding="utf-8") == (
-        f"{expected_sha256}  xferry-0.1.0-linux-x86_64\n"
-    )
+    assert bundle.checksums.read_text(encoding="utf-8") == f"{expected_sha256}  {executable_name}\n"
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "4.1.0", "99.0.0"])
@@ -368,7 +503,13 @@ def test_release_builder_rejects_other_majors_before_build_or_output(
     output = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="supported release line"):
-        build_release_bundle(REPO_ROOT, output, version, runner)
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            version,
+            runner,
+            platform_id=LINUX_X86_64,
+        )
 
     assert runner.commands == []
     assert not output.exists()
@@ -384,7 +525,13 @@ def test_release_builder_rejects_noncanonical_versions_before_build_or_output(
     output = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="supported release line"):
-        build_release_bundle(REPO_ROOT, output, version, runner)
+        build_release_bundle(
+            REPO_ROOT,
+            output,
+            version,
+            runner,
+            platform_id=LINUX_X86_64,
+        )
 
     assert runner.commands == []
     assert not output.exists()
@@ -415,6 +562,7 @@ def test_release_builder_rejects_invalid_provenance_before_build_or_output(
             output,
             "0.1.0",
             runner,
+            platform_id=LINUX_X86_64,
             source_commit=source_commit,
             workflow_run=workflow_run,
         )
@@ -430,14 +578,32 @@ def test_release_builder_accepts_canonical_supported_versions(
 ) -> None:
     runner = FakeRunner(b"scie")
 
-    bundle = build_release_bundle(REPO_ROOT, tmp_path / "bundle", version, runner)
+    bundle = build_release_bundle(
+        REPO_ROOT,
+        tmp_path / "bundle",
+        version,
+        runner,
+        platform_id=LINUX_X86_64,
+    )
 
     assert bundle.executable.name == f"xferry-{version}-linux-x86_64"
 
 
-def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform_id", SUPPORTED_PLATFORM_IDS)
+def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform_id: PlatformId,
+) -> None:
+    monkeypatch.setattr("tools.build_scie_release.current_platform_id", lambda: platform_id)
     runner: CommandRunner = FakeRunner(b"scie")
-    _ = build_release_bundle(REPO_ROOT, tmp_path / "bundle", "0.1.0", runner)
+    bundle = build_release_bundle(
+        REPO_ROOT,
+        tmp_path / "bundle",
+        "0.1.0",
+        runner,
+        platform_id=platform_id,
+    )
     commands = [command for command, _cwd in runner.commands]
 
     assert any(command[:4] == ("python", "-m", "build", "--wheel") for command in commands)
@@ -448,14 +614,24 @@ def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(tmp_path: P
     assert "constraints/ci.txt" in lock_command
     assert "pex==2.99.0" in (REPO_ROOT / "constraints/ci.txt").read_text(encoding="utf-8")
     assert ("--scie", "eager") == tuple(scie_command[scie_command.index("--scie") :][:2])
+    assert ("--scie-platform", platform_id) == tuple(
+        scie_command[scie_command.index("--scie-platform") :][:2]
+    )
     assert "CPython>=3.12,<3.13" in scie_command
     assert ("-c", "xferry") == tuple(scie_command[scie_command.index("-c") :][:2])
+    assert bundle.executable.name == f"xferry-0.1.0-{platform_id}"
 
 
 def test_release_builder_passes_the_wheel_as_a_positional_pex_requirement(tmp_path: Path) -> None:
     """PEX treats ``--requirement`` inputs as UTF-8 requirement files, not wheels."""
     runner: CommandRunner = FakeRunner(b"scie")
-    _ = build_release_bundle(REPO_ROOT, tmp_path / "bundle", "0.1.0", runner)
+    _ = build_release_bundle(
+        REPO_ROOT,
+        tmp_path / "bundle",
+        "0.1.0",
+        runner,
+        platform_id=LINUX_X86_64,
+    )
     lock_command = next(
         command for command, _cwd in runner.commands if command[:3] == ("pex3", "lock", "create")
     )
@@ -494,6 +670,132 @@ def test_rendered_installer_verifies_before_installing(tmp_path: Path) -> None:
     assert stat.S_IMODE(release_dir.joinpath("xferry-release.json").stat().st_mode) == 0o644
     assert (root / "opt/xferry/current").readlink() == Path("releases/0.1.0")
     assert (root / "usr/local/bin/xferry").readlink() == Path("/opt/xferry/current/xferry")
+
+
+@pytest.mark.parametrize(
+    ("os_id", "os_version", "platform_id", "machine"),
+    [
+        ("ubuntu", "22.04", LINUX_X86_64, "x86_64"),
+        ("ubuntu", "24.04", LINUX_X86_64, "x86_64"),
+        ("ubuntu", "26.04", LINUX_X86_64, "x86_64"),
+        ("debian", "12", LINUX_X86_64, "x86_64"),
+        ("debian", "13", LINUX_X86_64, "x86_64"),
+        ("ubuntu", "22.04", LINUX_AARCH64, "aarch64"),
+        ("ubuntu", "24.04", LINUX_AARCH64, "aarch64"),
+        ("ubuntu", "26.04", LINUX_AARCH64, "aarch64"),
+        ("debian", "12", LINUX_AARCH64, "aarch64"),
+        ("debian", "13", LINUX_AARCH64, "aarch64"),
+    ],
+)
+def test_installer_accepts_the_complete_managed_distro_architecture_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    os_id: str,
+    os_version: str,
+    platform_id: PlatformId,
+    machine: str,
+) -> None:
+    payload = f"scie-{platform_id}".encode()
+    monkeypatch.setattr("tools.build_scie_release.current_platform_id", lambda: platform_id)
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        platform_id=platform_id,
+    )
+
+    result = _run_installer(
+        bundle,
+        tmp_path / "install",
+        payload,
+        os_id=os_id,
+        os_version=os_version,
+        machine=machine,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = tmp_path / "install/root/opt/xferry/current/xferry"
+    assert installed.read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    ("platform_id", "host_machine"),
+    [
+        (LINUX_X86_64, "aarch64"),
+        (LINUX_AARCH64, "x86_64"),
+        (LINUX_X86_64, "riscv64"),
+    ],
+)
+def test_installer_rejects_wrong_or_unknown_platform_before_download_or_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform_id: PlatformId,
+    host_machine: str,
+) -> None:
+    monkeypatch.setattr("tools.build_scie_release.current_platform_id", lambda: platform_id)
+    bundle = _render_bundle(tmp_path / "candidate", platform_id=platform_id)
+    case_root = tmp_path / "install"
+
+    result = _run_installer(bundle, case_root, b"scie", machine=host_machine)
+
+    assert result.returncode == 4
+    assert not case_root.joinpath("mktemp-called").exists()
+    assert not case_root.joinpath("curl-called").exists()
+    assert not case_root.joinpath("root/opt").exists()
+    assert not case_root.joinpath("root/usr").exists()
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ('  "schema_version": 2,', '  "schema_version": 3,'),
+        (
+            '  "platform": "linux-x86_64",',
+            '  "platform": "linux-aarch64",',
+        ),
+        (
+            '    "name": "xferry-0.1.0-linux-x86_64",',
+            '    "name": "xferry-0.1.0-linux-aarch64",',
+        ),
+    ],
+    ids=("unsupported-schema", "wrong-platform", "wrong-name"),
+)
+def test_installer_rejects_invalid_candidate_metadata_before_destination_mutation(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    payload = b"scie"
+    bundle = _render_bundle(tmp_path / "candidate", payload)
+    installer = bundle.installer.read_text(encoding="utf-8")
+    assert installer.count(original) == 1
+    bundle.installer.write_text(installer.replace(original, replacement), encoding="utf-8")
+    case_root = tmp_path / "install"
+
+    result = _run_installer(bundle, case_root, payload)
+
+    assert result.returncode == 1
+    assert "candidate manifest or executable is invalid" in result.stderr
+    assert not case_root.joinpath("root/opt").exists()
+    assert not case_root.joinpath("root/usr").exists()
+
+
+@pytest.mark.parametrize(
+    "downloaded_payload",
+    [b"", b"s", b"scie-with-unexpected-trailing-bytes"],
+    ids=("empty", "truncated", "corrupt"),
+)
+def test_installer_rejects_truncated_or_corrupt_payload_before_destination_mutation(
+    tmp_path: Path,
+    downloaded_payload: bytes,
+) -> None:
+    bundle = _render_bundle(tmp_path / "candidate", b"scie")
+    case_root = tmp_path / "install"
+
+    result = _run_installer(bundle, case_root, downloaded_payload)
+
+    assert result.returncode == 1
+    assert not case_root.joinpath("root/opt").exists()
+    assert not case_root.joinpath("root/usr").exists()
 
 
 def test_installer_blocks_unsupported_state_before_mktemp_download_or_mutation(

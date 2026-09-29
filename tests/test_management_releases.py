@@ -682,7 +682,7 @@ def test_update_rechecks_unsupported_managed_state_inventory_under_lock_before_c
     monkeypatch.setattr(
         release_module,
         "has_unsupported_managed_state",
-        lambda _layout: next(checks),
+        lambda _layout, *, platform_id: next(checks),
         raising=False,
     )
 
@@ -706,7 +706,7 @@ def test_rollback_rechecks_unsupported_managed_state_inventory_under_lock_before
     monkeypatch.setattr(
         release_module,
         "has_unsupported_managed_state",
-        lambda _layout: next(checks),
+        lambda _layout, *, platform_id: next(checks),
         raising=False,
     )
 
@@ -728,7 +728,7 @@ def test_uninstall_rechecks_unsupported_managed_state_inventory_under_lock_befor
     monkeypatch.setattr(
         release_module,
         "has_unsupported_managed_state",
-        lambda _layout: next(checks),
+        lambda _layout, *, platform_id: next(checks),
         raising=False,
     )
 
@@ -1661,6 +1661,28 @@ def test_default_rollback_selects_previous_verified_release_and_keeps_old_curren
     assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
     assert sorted(path.name for path in releases.iterdir()) == ["0.2.0", "0.3.0"]
     assert runner.restart_count == 1
+
+
+def test_release_preflight_uses_the_managers_platform_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An injected platform must govern both inventory validation and rollback."""
+    layout = _installed_layout(tmp_path)
+    _seed_release(layout, "0.2.0", b"release-two")
+    monkeypatch.setattr(
+        "xferry.management.managed_state.current_platform_id",
+        lambda: "linux-aarch64",
+    )
+
+    result = _manager(tmp_path, layout, FakeDownloader({})).rollback("0.2.0", True)
+
+    assert result == ReleaseResult(
+        0,
+        "rollback_dry_run",
+        version="0.2.0",
+        dry_run=True,
+    )
 
 
 def test_exact_rollback_uses_only_a_verified_installed_target(tmp_path: Path) -> None:

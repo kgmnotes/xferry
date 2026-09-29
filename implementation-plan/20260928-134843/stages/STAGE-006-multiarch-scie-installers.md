@@ -1,7 +1,7 @@
 # STAGE-006 - Build and verify multi-arch SCIE installers
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -50,12 +50,12 @@ Produce deterministic, correctly named SCIE candidates and installer assets for 
 5. Exercise install/setup/status/doctor/rollback/uninstall in isolated managed roots, with wrong-platform and corrupt-payload rejection.
 
 ## Acceptance criteria
-- [ ] Builder emits exactly one valid candidate per requested platform with deterministic names and manifest metadata.
-- [ ] Installer selects only the host-matching artifact and rejects unsupported/mismatched platforms before mutation.
-- [ ] Both candidates run `run --version`, `--help`, and `run --check-config` without host Python.
-- [ ] Every target distro/architecture combination has automated smoke evidence; emulated versus native coverage is explicitly recorded.
-- [ ] Corrupt, truncated, wrong-name, wrong-platform, and unsupported-schema artifacts fail closed.
-- [ ] No asset is uploaded to a public registry or Release in this stage.
+- [x] Builder emits exactly one valid candidate per requested platform with deterministic names and manifest metadata.
+- [x] Installer selects only the host-matching artifact and rejects unsupported/mismatched platforms before mutation.
+- [x] Both candidates run `run --version`, `--help`, and `run --check-config` without host Python.
+- [x] Every target distro/architecture combination has automated smoke evidence; all ten final combinations ran natively.
+- [x] Corrupt, truncated, wrong-name, wrong-platform, and unsupported-schema artifacts fail closed.
+- [x] No asset is uploaded to a public registry or Release in this stage.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -76,4 +76,10 @@ Produce deterministic, correctly named SCIE candidates and installer assets for 
 - Rollback: keep publication disabled and remove the unsupported candidate; do not claim support until native evidence passes.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Closed on 2026-09-29 after adding explicit native `linux-x86_64`/`linux-aarch64` builder targets, exact per-platform atomic bundles, schema-v2 manifest validation, and generated installer host/distro selection.
+- CI and the manual read-only release workflow now use native `ubuntu-24.04` and `ubuntu-24.04-arm` runners and smoke Ubuntu 22.04/24.04/26.04 plus Debian 12/13 without host Python; neither workflow publishes or uploads the candidates.
+- Installer and builder regressions cover all ten distro/architecture pairs, host mismatch, corrupt/truncated payloads, wrong names/platforms, unsupported schemas, pre-mutation rejection, isolated lifecycle operations, and output atomicity.
+- Real x86_64 and aarch64 SCIEs passed `run --version`, `--help`, `run --check-config`, checksum validation, and all five target base images per architecture; the native jobs are recorded in GitHub Actions run `36593256300` at tested SHA `ca8c83631437d07a4bbce67933a5dbd309f36a4e`.
+- The first native arm run exposed a split platform source in managed-state test injection. Release preflight now uses the manager's canonical platform source, its regression is covered locally, and the repeated native arm lifecycle selection passed all 78 tests.
+- Focused verification passed 458 tests; strict mypy/Ruff and all 3,291 repository tests passed after the cross-architecture correction.
+- Report: `stage-reports/STAGE-006-20260929-155138.md`.

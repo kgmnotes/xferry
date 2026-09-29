@@ -625,7 +625,10 @@ class ReleaseManager:
         return version
 
     def _require_supported_managed_installation(self) -> None:
-        if has_unsupported_managed_state(self.layout):
+        if has_unsupported_managed_state(
+            self.layout,
+            platform_id=self.platform_id(),
+        ):
             raise _ReleaseFailure(1, "unsupported_managed_state")
 
     def _select_rollback_target(self, requested: str | None) -> tuple[str, Path, ReleaseManifest]:

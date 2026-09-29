@@ -11,6 +11,7 @@ permissions:
 
 env:
   PIP_CONSTRAINT: constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -522,9 +523,21 @@ jobs:
           retention-days: 14
 
   scie-verify:
-    name: Build and verify SCIE bundle
-    runs-on: ubuntu-latest
+    name: Build and verify SCIE bundle (${{ matrix.platform }}, native)
+    runs-on: ${{ matrix.runner }}
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            docker_platform: linux/amd64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            docker_platform: linux/arm64
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
@@ -544,29 +557,87 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install build pex==2.99.0
+          python -m pip install -e ".[test]" build pex==2.99.0
 
-      - name: Build SCIE bundle
-        run: python tools/build_scie_release.py --output-dir dist/scie
-
-      - name: Validate SCIE manifest, checksum, and canonical CLI
+      - name: Confirm native build architecture
         run: |
           set -euo pipefail
-          executable="$(find dist/scie -maxdepth 1 -type f -name 'xferry-*-linux-x86_64')"
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          printf 'platform=%s runner_machine=%s evidence=native\n' \
+            '${{ matrix.platform }}' "$(uname -m)"
+
+      - name: Build deterministic SCIE release bundle
+        run: |
+          set -euo pipefail
+          python tools/build_scie_release.py \
+            --platform '${{ matrix.platform }}' \
+            --output-dir 'dist/scie-${{ matrix.platform }}'
+
+      - name: Validate SCIE manifest and checksum
+        env:
+          SCIE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
           python - <<'PY'
           import hashlib
-          import json
+          import os
           from pathlib import Path
 
-          bundle = Path("dist/scie")
-          manifest = json.loads((bundle / "xferry-release.json").read_text(encoding="utf-8"))
-          executable = bundle / manifest["executable"]["name"]
+          from xferry.management.release_contract import ReleaseManifest
+
+          platform = os.environ["SCIE_PLATFORM"]
+          bundle = Path(f"dist/scie-{platform}")
+          manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json").read_bytes())
+          executable = bundle / manifest.executable_name
           digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-          assert executable.stat().st_size == manifest["executable"]["size"]
-          assert digest == manifest["executable"]["sha256"]
+          assert manifest.platform == platform
+          assert executable.stat().st_size == manifest.executable_size
+          assert digest == manifest.executable_sha256
           assert (bundle / "SHA256SUMS").read_text(encoding="utf-8") == (
               f"{digest}  {executable.name}\n"
           )
+          assert {path.name for path in bundle.iterdir()} == {
+              "SHA256SUMS",
+              "install.sh",
+              "xferry-release.json",
+              executable.name,
+          }
           PY
-          "${executable}" run --version
-          "${executable}" run --check-config
+
+      - name: Smoke SCIE without host Python
+        run: |
+          set -euo pipefail
+          executable="$(find "$PWD/dist/scie-${{ matrix.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
+          PATH=/nonexistent "$executable" run --version
+          PATH=/nonexistent "$executable" --help > /dev/null
+          PATH=/nonexistent "$executable" run --check-config
+
+      - name: Smoke SCIE on every supported Linux base
+        run: |
+          set -euo pipefail
+          bundle="$PWD/dist/scie-${{ matrix.platform }}"
+          executable="$(basename "$(find "$bundle" -maxdepth 1 -type f -name 'xferry-*-linux-*')")"
+          for image in ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12 debian:13; do
+            printf 'platform=%s image=%s evidence=native\n' '${{ matrix.platform }}' "$image"
+            docker run --rm \
+              --platform '${{ matrix.docker_platform }}' \
+              --volume "$bundle:/release:ro" \
+              "$image" \
+              /bin/sh -eu -c '
+                test "$(uname -m)" = "$1"
+                candidate="/release/$2"
+                "$candidate" run --version
+                "$candidate" --help > /dev/null
+                "$candidate" run --check-config
+              ' sh '${{ matrix.machine }}' "$executable"
+          done
+
+      - name: Exercise isolated managed lifecycle and failure paths
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_scie_release.py \
+            tests/test_management_setup.py::test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes \
+            tests/test_management_service.py::test_cli_status_and_doctor_render_secret_free_stable_json \
+            tests/test_management_releases.py::test_default_rollback_selects_previous_verified_release_and_keeps_old_current \
+            tests/test_management_releases.py::test_default_uninstall_removes_only_managed_runtime_and_preserves_state

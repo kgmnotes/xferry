@@ -436,20 +436,39 @@ def test_release_verification_workflow_is_manual_read_only_and_non_publishing() 
         "Hardened local image lifecycle smoke"
     )
     assert "Build deterministic SCIE release bundle" in scie_verify
-    assert "python tools/build_scie_release.py --output-dir dist/scie" in scie_verify
-    assert 'manifest = json.loads((bundle / "xferry-release.json").read_text' in scie_verify
-    assert 'executable.stat().st_size == manifest["executable"]["size"]' in scie_verify
+    assert "--platform '${{ matrix.platform }}'" in scie_verify
+    assert "--output-dir 'dist/scie-${{ matrix.platform }}'" in scie_verify
+    assert "linux-x86_64" in scie_verify
+    assert "linux-aarch64" in scie_verify
+    assert "runner: ubuntu-24.04" in scie_verify
+    assert "runner: ubuntu-24.04-arm" in scie_verify
+    assert 'manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json")' in scie_verify
+    assert "assert manifest.schema_version == 2" in scie_verify
+    assert "executable.stat().st_size == manifest.executable_size" in scie_verify
     assert "hashlib.sha256(executable.read_bytes()).hexdigest()" in scie_verify
     assert 'bundle / "SHA256SUMS"' in scie_verify
-    assert '"$executable" run --version' in scie_verify
-    assert '"$executable" run --check-config' in scie_verify
-    assert "Smoke SCIE on supported Linux bases" in scie_verify
-    for image in ("ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12"):
+    assert 'PATH=/nonexistent "$executable" run --version' in scie_verify
+    assert 'PATH=/nonexistent "$executable" --help' in scie_verify
+    assert 'PATH=/nonexistent "$executable" run --check-config' in scie_verify
+    assert "Smoke SCIE on every supported Linux base" in scie_verify
+    for image in (
+        "ubuntu:22.04",
+        "ubuntu:24.04",
+        "ubuntu:26.04",
+        "debian:12",
+        "debian:13",
+    ):
         assert image in scie_verify
+    assert "--platform '${{ matrix.docker_platform }}'" in scie_verify
+    assert "evidence=native" in scie_verify
+    assert "Exercise isolated managed lifecycle and failure paths" in scie_verify
+    for lifecycle in ("setup", "status", "doctor", "rollback", "uninstall"):
+        assert lifecycle in scie_verify
     assert (
         scie_verify.index("Build deterministic SCIE release bundle")
         < scie_verify.index("Verify SCIE manifest and checksums")
         < scie_verify.index("Smoke SCIE without host Python")
+        < scie_verify.index("Smoke SCIE on every supported Linux base")
     )
     assert "without publication" in gate
 
@@ -694,12 +713,29 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
 
     assert "python tools/check_toolchain_pins.py" in test_job
     assert "needs: test" in scie_job
-    assert "python -m pip install build pex==2.99.0" in scie_job
-    assert "python tools/build_scie_release.py --output-dir dist/scie" in scie_job
-    assert '"${executable}" run --version' in scie_job
-    assert '"${executable}" run --check-config' in scie_job
+    assert 'python -m pip install -e ".[test]" build pex==2.99.0' in scie_job
+    assert "linux-x86_64" in scie_job
+    assert "linux-aarch64" in scie_job
+    assert "runner: ubuntu-24.04-arm" in scie_job
+    assert "--platform '${{ matrix.platform }}'" in scie_job
+    assert "--output-dir 'dist/scie-${{ matrix.platform }}'" in scie_job
+    assert 'PATH=/nonexistent "$executable" run --version' in scie_job
+    assert 'PATH=/nonexistent "$executable" --help' in scie_job
+    assert 'PATH=/nonexistent "$executable" run --check-config' in scie_job
     assert "xferry-release.json" in scie_job
     assert "SHA256SUMS" in scie_job
+    assert "ReleaseManifest.parse_new" in scie_job
+    assert "evidence=native" in scie_job
+    for image in (
+        "ubuntu:22.04",
+        "ubuntu:24.04",
+        "ubuntu:26.04",
+        "debian:12",
+        "debian:13",
+    ):
+        assert image in scie_job
+    for lifecycle in ("setup", "status", "doctor", "rollback", "uninstall"):
+        assert lifecycle in scie_job
 
 
 def test_cross_platform_cli_smoke_exercises_module_and_console_help() -> None:
