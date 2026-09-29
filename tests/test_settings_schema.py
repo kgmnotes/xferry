@@ -38,18 +38,18 @@ from xferry.settings_schema import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_schema_covers_all_48_public_runtime_fields_in_dataclass_order() -> None:
+def test_schema_covers_all_51_public_runtime_fields_in_dataclass_order() -> None:
     runtime_fields = tuple(
         settings_field.name
         for settings_field in fields(ServerSettings)
         if not settings_field.name.startswith("_")
     )
 
-    assert len(runtime_fields) == 48
+    assert len(runtime_fields) == 51
     assert tuple(spec.name for spec in SETTING_SPECS) == runtime_fields
     assert tuple(SETTING_SPEC_BY_NAME) == runtime_fields
-    assert len(ENV_TO_SETTING_MAP) == 48
-    assert len(CLI_TO_SETTING_MAP) == 44
+    assert len(ENV_TO_SETTING_MAP) == 51
+    assert len(CLI_TO_SETTING_MAP) == 47
     assert (
         {spec.name for spec in SETTING_SPECS if spec.cli is None}
         == set(NO_CLI_SETTING_NAMES)
@@ -175,6 +175,22 @@ def test_cli_defaults_and_schema_defaults_stay_in_lockstep() -> None:
             continue
         expected = getattr(defaults, spec.name) if spec.cli.default_from_runtime else None
         assert getattr(namespace, spec.cli.dest) == expected
+
+
+def test_encrypted_upload_cli_switch_and_limits_are_exposed() -> None:
+    namespace = create_parser().parse_args(
+        [
+            "--encrypted-uploads",
+            "--encrypted-upload-max-size",
+            "1536",
+            "--encrypted-upload-incomplete-ttl",
+            "3600",
+        ]
+    )
+
+    assert namespace.encrypted_uploads is True
+    assert namespace.encrypted_upload_max_size == 1536
+    assert namespace.encrypted_upload_incomplete_ttl == 3600
 
 
 def test_ascii_whitespace_and_plugin_csv_grammars_remain_distinct() -> None:

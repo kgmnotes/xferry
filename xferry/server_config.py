@@ -24,6 +24,8 @@ class ServerLimits:
     """Request, storage, and worker limits used by one server instance."""
 
     max_upload_size: int = 100 * 1024 * 1024
+    encrypted_upload_max_size: int = 2048 * 1024 * 1024
+    encrypted_upload_incomplete_ttl: float = 86400
     upload_storage_limit: int | None = None
     upload_file_limit: int | None = None
     upload_reserved_free_space: int = 0
@@ -104,6 +106,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     root_dir: Path | str = Path()
+    encrypted_uploads: bool = False
     limits: ServerLimits = field(default_factory=ServerLimits)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     tls: TLSConfig = field(default_factory=TLSConfig)
@@ -129,6 +132,17 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
 
     limits = config.limits
     _require_int("max_upload_size", limits.max_upload_size, minimum=1)
+    _require_int(
+        "encrypted_upload_max_size",
+        limits.encrypted_upload_max_size,
+        minimum=1,
+        maximum=2048 * 1024 * 1024,
+    )
+    _require_number(
+        "encrypted_upload_incomplete_ttl",
+        limits.encrypted_upload_incomplete_ttl,
+        minimum_exclusive=0,
+    )
     _require_optional_int("upload_storage_limit", limits.upload_storage_limit, minimum=0)
     _require_optional_int("upload_file_limit", limits.upload_file_limit, minimum=0)
     _require_int("upload_reserved_free_space", limits.upload_reserved_free_space, minimum=0)

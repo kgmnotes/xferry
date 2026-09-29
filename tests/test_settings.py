@@ -30,6 +30,9 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert settings.root_dir == "."
     assert not hasattr(settings, "profile")
     assert settings.max_size_mb == 100
+    assert settings.encrypted_uploads is False
+    assert settings.encrypted_upload_max_size_mb == 2048
+    assert settings.encrypted_upload_incomplete_ttl_seconds == 86400
     assert settings.upload_quota_externally_managed is False
     assert settings.workers == 10
 
@@ -38,7 +41,45 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert config.port == 8080
     assert config.root_dir == Path().resolve()
     assert config.limits.max_upload_size == 100 * 1024 * 1024
+    assert config.encrypted_uploads is False
+    assert config.limits.encrypted_upload_max_size == 2048 * 1024 * 1024
+    assert config.limits.encrypted_upload_incomplete_ttl == 86400
     assert config.limits.max_workers == 10
+
+
+def test_encrypted_upload_settings_follow_ini_env_and_cli_precedence() -> None:
+    file_settings = load_settings_text(
+        """
+        [server]
+        encrypted_uploads = true
+
+        [limits]
+        encrypted_upload_max_size_mb = 1024
+        encrypted_upload_incomplete_ttl_seconds = 7200
+        """,
+        validate=False,
+    )
+
+    settings = resolve_settings(
+        file_settings=file_settings,
+        env={
+            "XFERRY_ENCRYPTED_UPLOADS": "false",
+            "XFERRY_ENCRYPTED_UPLOAD_MAX_SIZE_MB": "1536",
+        },
+        cli_values={
+            "encrypted_uploads": True,
+            "encrypted_upload_incomplete_ttl_seconds": 3600,
+        },
+    )
+
+    assert settings.encrypted_uploads is True
+    assert settings.encrypted_upload_max_size_mb == 1536
+    assert settings.encrypted_upload_incomplete_ttl_seconds == 3600
+
+    config = settings.to_server_config()
+    assert config.encrypted_uploads is True
+    assert config.limits.encrypted_upload_max_size == 1536 * 1024 * 1024
+    assert config.limits.encrypted_upload_incomplete_ttl == 3600
 
 
 def test_ini_file_env_and_cli_precedence(tmp_path: Path) -> None:

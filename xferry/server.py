@@ -22,6 +22,7 @@ from typing import Any
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
+from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_VERSION
 from .extensions import (
     HandlerContext,
     PluginMethodSpec,
@@ -128,7 +129,10 @@ class XFerryServer(HandlerMixin):
         self.host = config.host
         self.port = config.port
         self.root_dir = Path(config.root_dir)
+        self.encrypted_uploads = config.encrypted_uploads
         self.max_upload_size = limits.max_upload_size
+        self.encrypted_upload_max_size = limits.encrypted_upload_max_size
+        self.encrypted_upload_incomplete_ttl = limits.encrypted_upload_incomplete_ttl
         self.upload_storage_policy = UploadStoragePolicy(
             max_total_bytes=limits.upload_storage_limit,
             max_file_count=limits.upload_file_limit,
@@ -305,6 +309,27 @@ class XFerryServer(HandlerMixin):
             allow_public_direct=plugin_config.allow_public_direct,
         )
         self._request_pipeline = RequestPipeline(self)
+
+    def get_encrypted_upload_capabilities(self) -> dict[str, object]:
+        """Return the stable browser contract for encrypted transfers."""
+        if not self.encrypted_uploads:
+            return {"enabled": False}
+        normalized_host = self.host.strip().lower().strip("[]")
+        try:
+            loopback = (
+                normalized_host == "localhost" or ipaddress.ip_address(normalized_host).is_loopback
+            )
+        except ValueError:
+            loopback = False
+        return {
+            "enabled": True,
+            "version": EUF_VERSION,
+            "max_plaintext_size": self.encrypted_upload_max_size,
+            "chunk_size": EUF_CHUNK_SIZE,
+            "parallel_chunks": 2,
+            "browser_decryption": True,
+            "server_decryption": self.tls_enabled or loopback,
+        }
 
     def _register_plugins(
         self,

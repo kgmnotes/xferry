@@ -59,6 +59,9 @@ class RuntimePosture:
     allowed_hosts_mode: Literal["auto", "explicit"]
     allowed_hosts: tuple[str, ...]
     max_upload_mb: int
+    encrypted_uploads: bool
+    encrypted_upload_max_size_mb: int
+    encrypted_upload_incomplete_ttl_seconds: int
     body_admission_budget_mb: int
     workers: int
     max_websocket_connections: int
@@ -114,6 +117,15 @@ class RuntimePosture:
             (
                 f"  Body admission budget: {self.body_admission_budget_mb} MB; "
                 f"workers: {self.workers}; WebSockets: {self.max_websocket_connections}"
+            ),
+            (
+                "  Encrypted uploads: "
+                + (
+                    f"enabled (max: {self.encrypted_upload_max_size_mb} MB; "
+                    f"incomplete TTL: {self.encrypted_upload_incomplete_ttl_seconds}s)"
+                    if self.encrypted_uploads
+                    else "disabled"
+                )
             ),
         ]
         lines.extend(f"  NOTE: {note}" for note in self.notes)
@@ -224,6 +236,9 @@ def derive_runtime_posture(
         allowed_hosts_mode="explicit" if allowed_hosts else "auto",
         allowed_hosts=allowed_hosts,
         max_upload_mb=settings.max_size_mb,
+        encrypted_uploads=settings.encrypted_uploads,
+        encrypted_upload_max_size_mb=settings.encrypted_upload_max_size_mb,
+        encrypted_upload_incomplete_ttl_seconds=(settings.encrypted_upload_incomplete_ttl_seconds),
         body_admission_budget_mb=(
             settings.body_memory_budget_mb
             if settings.body_memory_budget_mb is not None
