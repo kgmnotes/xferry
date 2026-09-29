@@ -23,3 +23,9 @@
 - Files changed: canonical release contract; release, managed-state, host, builder, and installer consumers; focused contract tests; and this active plan's status, stage, change log, and report artifacts.
 - Verification: 274 focused contract tests, 206 managed setup tests, all 3,245 repository tests, mypy, scoped Ruff lint/format, shell syntax, canonical-literal audit, package/archive validation, and final subagent re-review passed.
 - Report: `stage-reports/STAGE-004-20260929-140255.md`
+
+## 2026-09-29 15:48:34 +0300 — STAGE-005
+- Status: CLOSED
+- Files changed: managed host model, setup planning/result mapping, doctor and CLI diagnostics, i18n action rendering, four focused test modules, and this active plan's overview, status, stage, change log, and report artifacts.
+- Verification: all 309 stage-targeted and 381 expanded management/CLI tests, strict mypy for 69 source files, scoped Ruff lint/format, all 3,265 repository tests, representative Windows/macOS JSON review, and independent QA/final reviews passed.
+- Report: `stage-reports/STAGE-005-20260929-144237.md`

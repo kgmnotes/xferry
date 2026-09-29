@@ -1,7 +1,7 @@
 # STAGE-005 - Add complete managed host support matrix
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -48,11 +48,11 @@ Make managed host detection, planning, preflight, and diagnostics correctly acce
 5. Verify existing x86_64 behavior and exit codes remain compatible.
 
 ## Acceptance criteria
-- [ ] All ten required distro/architecture pairs are accepted when systemd and other prerequisites are present.
-- [ ] Unsupported OS, version, architecture, or missing systemd fails before mutation.
-- [ ] Errors include detected OS/version/architecture/systemd and a concrete next action.
-- [ ] JSON diagnostics use stable `code`, `message`, `detail`, and `next_actions` fields without secrets.
-- [ ] Windows/macOS clearly report that managed commands are Linux/systemd-only and point portable users to pipx lifecycle commands.
+- [x] All ten required distro/architecture pairs are accepted when systemd and other prerequisites are present.
+- [x] Unsupported OS, version, architecture, or missing systemd fails before mutation.
+- [x] Errors include detected OS/version/architecture/systemd and a concrete next action.
+- [x] JSON diagnostics use stable `code`, `message`, `detail`, and `next_actions` fields without secrets.
+- [x] Windows/macOS clearly report that managed commands are Linux/systemd-only and point portable users to pipx lifecycle commands.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -72,4 +72,9 @@ Make managed host detection, planning, preflight, and diagnostics correctly acce
 - Rollback: keep the new detection tests but feature-gate acceptance until STAGE-006 closes; do not publish managed support prematurely.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Closed on 2026-09-29 after adding Debian 13 and canonical x86_64/aarch64 acceptance across the five supported distro releases.
+- Unsupported host dimensions retain exit code 4 and stop before the setup lock or managed writes; text and JSON output now carry bounded detected facts, the supported matrix, and local next actions.
+- Doctor and non-Linux command diagnostics expose stable `code`, `message`, `detail`, and `next_actions` fields without credentials, paths, telemetry, or backend imports; Windows/macOS point to pipx install/upgrade/uninstall.
+- Verification passed 309 stage-targeted tests, 381 expanded management/CLI tests, strict mypy for all 69 source files, scoped Ruff lint/format, all 3,265 repository tests, direct representative-output review, and independent subagent review.
+- Native arm64/systemd execution remains the optional STAGE-006 artifact smoke concern; injected host/preflight coverage proves this stage's host contract without publishing or building installers.
+- Report: `stage-reports/STAGE-005-20260929-144237.md`.

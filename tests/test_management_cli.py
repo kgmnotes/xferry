@@ -218,6 +218,47 @@ def test_module_entrypoint_rejects_linux_management_operations_before_backend_im
 
     assert child.returncode == 4
     assert "blocked management backend" not in child.stderr
+    assert "Linux/systemd-only" in child.stderr
+    assert "pipx install xferry" in child.stderr
+    assert "pipx upgrade xferry" in child.stderr
+    assert "pipx uninstall xferry" in child.stderr
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "display_name"),
+    [("win32", "Windows"), ("darwin", "macOS")],
+)
+def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
+    platform_name: str,
+    display_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from xferry.management import cli
+
+    monkeypatch.setattr(cli.sys, "platform", platform_name)
+
+    assert main(["doctor", "--json"]) == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "unsupported-platform"
+    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
+    assert display_name in payload["detail"]
+    assert payload["next_actions"] == [
+        (
+            "Use a supported managed host: Ubuntu 22.04/24.04/26.04 or Debian 12/13 "
+            "on x86_64/aarch64 with systemd."
+        ),
+        (
+            "For portable use, run `pipx install xferry`; use `pipx upgrade xferry` "
+            "and `pipx uninstall xferry` for lifecycle management."
+        ),
+    ]
+
+    assert main(["status"]) == 4
+    text = capsys.readouterr().err
+    assert "Linux/systemd-only" in text
+    assert display_name in text
+    assert "pipx install xferry" in text
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,12 @@ from xferry.security.tls import sslip_domain_for_ip
 from xferry.settings import ServerSettings, SettingsError, load_settings_file
 
 from .health import HealthEndpoint, HealthResult, authenticated_ping
-from .model import HostFacts, ManagedLayout
+from .model import (
+    MANAGED_HOST_REQUIRED_MESSAGE,
+    HostFacts,
+    ManagedLayout,
+    supported_managed_host_matrix,
+)
 from .platform import detect_host_facts
 from .system import (
     CommandRunner,
@@ -90,6 +95,11 @@ class DoctorReport:
 
     exit_code: int
     checks: dict[str, DoctorCheck]
+    code: str = "doctor-result"
+    message: str = "Managed diagnostics completed."
+    detail: str = "Managed diagnostics completed."
+    next_actions: tuple[str, ...] = ()
+    facts: HostFacts | None = None
 
     def to_json(self) -> dict[str, object]:
         """Return a stable JSON document without paths, errors, or credentials."""
@@ -98,8 +108,14 @@ class DoctorReport:
                 name: {"detail": check.detail, "status": check.status}
                 for name, check in self.checks.items()
             },
+            "code": self.code,
+            "detail": self.detail,
+            "detected": None if self.facts is None else self.facts.detected_managed_host,
             "exit_code": self.exit_code,
+            "message": self.message,
+            "next_actions": list(self.next_actions),
             "status": "ok" if self.exit_code == 0 else "error",
+            "supported_matrix": supported_managed_host_matrix(),
         }
 
 
@@ -172,12 +188,16 @@ def run_doctor(options: DoctorOptions, context: ServiceContext) -> DoctorReport:
         return DoctorReport(
             3,
             {"privilege": DoctorCheck("required", "managed diagnostics require root")},
+            code="privilege-required",
+            message="Managed diagnostics require root.",
+            detail="Protected managed state was not inspected.",
+            next_actions=("Rerun the diagnostic with `sudo xferry doctor`.",),
         )
     checks: dict[str, DoctorCheck] = {}
     facts = context.facts()
     checks["platform"] = DoctorCheck(
         "supported" if facts.is_supported else "unsupported",
-        "supported platform" if facts.is_supported else "unsupported platform",
+        "supported platform" if facts.is_supported else facts.managed_support_detail,
     )
 
     installed = context.layout.current_executable.is_file()
@@ -221,7 +241,17 @@ def run_doctor(options: DoctorOptions, context: ServiceContext) -> DoctorReport:
         else:
             checks["health"] = DoctorCheck("skipped", "authenticated health check skipped")
 
-    return DoctorReport(_doctor_exit(checks), checks)
+    exit_code = _doctor_exit(checks)
+    code, message, detail, next_actions = _doctor_diagnostic(exit_code, checks, facts)
+    return DoctorReport(
+        exit_code,
+        checks,
+        code=code,
+        message=message,
+        detail=detail,
+        next_actions=next_actions,
+        facts=facts,
+    )
 
 
 def _load_config(path: Path) -> tuple[ServerSettings | None, str]:
@@ -332,6 +362,61 @@ def _doctor_exit(checks: dict[str, DoctorCheck]) -> int:
     if checks["health"].status in {"unavailable", "unhealthy"}:
         return 6
     return 0
+
+
+def _doctor_diagnostic(
+    exit_code: int,
+    checks: dict[str, DoctorCheck],
+    facts: HostFacts,
+) -> tuple[str, str, str, tuple[str, ...]]:
+    """Map doctor findings to a stable, actionable, secret-free summary."""
+    if exit_code == 0:
+        return (
+            "doctor-ok",
+            "Managed diagnostics passed.",
+            "All requested managed checks passed.",
+            (),
+        )
+    if exit_code == 4:
+        return (
+            "unsupported-platform",
+            MANAGED_HOST_REQUIRED_MESSAGE,
+            facts.managed_support_detail,
+            facts.managed_support_next_actions,
+        )
+    if exit_code == 1:
+        return (
+            "installation-missing",
+            "Managed installation is missing.",
+            checks["installation"].detail,
+            ("Run `sudo xferry setup`, then rerun `sudo xferry doctor`.",),
+        )
+    if exit_code == 2:
+        return (
+            "configuration-unavailable",
+            "Managed configuration is unavailable.",
+            checks["configuration"].detail,
+            ("Review the managed configuration, then rerun `sudo xferry doctor`.",),
+        )
+    if exit_code == 5:
+        failed_check = (
+            checks["network"]
+            if checks["network"].status in {"unavailable", "unreachable"}
+            else checks["health"]
+        )
+        return (
+            "network-unavailable",
+            "Managed network checks failed.",
+            failed_check.detail,
+            ("Check DNS, firewall, and TLS connectivity, then rerun `sudo xferry doctor`.",),
+        )
+    failed_check = checks["service"] if checks["service"].status != "active" else checks["health"]
+    return (
+        "service-unhealthy",
+        "Managed service is unhealthy.",
+        failed_check.detail,
+        ("Run `sudo xferry status` and `xferry logs`, then rerun `sudo xferry doctor`.",),
+    )
 
 
 def _operation_exit(returncode: int) -> int:

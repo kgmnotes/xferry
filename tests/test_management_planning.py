@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -104,22 +105,67 @@ def test_unusable_automatic_host_capacity_is_rejected_before_planning(facts: Hos
 
 
 @pytest.mark.parametrize(
-    ("os_release", "machine", "systemd", "supported"),
+    "os_release",
     [
-        ('ID=ubuntu\nVERSION_ID="22.04"\n', "amd64", True, True),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "x86_64", True, True),
-        ('ID=ubuntu\nVERSION_ID="26.04"\n', "x86_64", True, True),
-        ('ID=debian\nVERSION_ID="12"\n', "x86_64", True, True),
-        ('ID=debian\nVERSION_ID="11"\n', "x86_64", True, False),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "aarch64", True, False),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "arm64", True, False),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "x86_64", False, False),
+        'ID=ubuntu\nVERSION_ID="22.04"\n',
+        'ID=ubuntu\nVERSION_ID="24.04"\n',
+        'ID=ubuntu\nVERSION_ID="26.04"\n',
+        'ID=debian\nVERSION_ID="12"\n',
+        'ID=debian\nVERSION_ID="13"\n',
     ],
 )
-def test_host_detection_normalizes_supported_platforms(
-    os_release: str, machine: str, systemd: bool, supported: bool
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_host_detection_accepts_the_complete_managed_matrix(os_release: str, machine: str) -> None:
+    """Every confirmed distro/release pair must work on both canonical architectures."""
+    facts = detect_host_facts(
+        os_release_text=os_release,
+        machine=machine,
+        has_systemd=True,
+        page_size=1024 * 1024,
+        physical_pages=1024,
+        cpu_count=2,
+        disk_free_bytes=8 * 1024 * 1024 * 1024,
+    )
+
+    assert facts.machine == machine
+    assert facts.is_supported is True
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+    assert check_setup_preflight(plan, _probes()).ok
+
+
+@pytest.mark.parametrize(
+    ("machine", "normalized"),
+    [("amd64", "x86_64"), ("arm64", "aarch64")],
+)
+def test_host_detection_normalizes_managed_architecture_aliases(
+    machine: str, normalized: str
 ) -> None:
-    """Changing OS parsing, x86 normalization, or systemd detection must change support."""
+    facts = detect_host_facts(
+        os_release_text='ID=debian\nVERSION_ID="13"\n',
+        machine=machine,
+        has_systemd=True,
+        page_size=1024 * 1024,
+        physical_pages=1024,
+        cpu_count=2,
+        disk_free_bytes=8 * 1024 * 1024 * 1024,
+    )
+
+    assert facts.machine == normalized
+    assert facts.is_supported is True
+
+
+@pytest.mark.parametrize(
+    ("os_release", "machine", "systemd"),
+    [
+        ('ID=fedora\nVERSION_ID="40"\n', "x86_64", True),
+        ('ID=debian\nVERSION_ID="11"\n', "x86_64", True),
+        ('ID=ubuntu\nVERSION_ID="24.04"\n', "riscv64", True),
+        ('ID=ubuntu\nVERSION_ID="24.04"\n', "aarch64", False),
+    ],
+)
+def test_host_detection_rejects_each_unsupported_platform_dimension(
+    os_release: str, machine: str, systemd: bool
+) -> None:
     facts = detect_host_facts(
         os_release_text=os_release,
         machine=machine,
@@ -130,8 +176,7 @@ def test_host_detection_normalizes_supported_platforms(
         disk_free_bytes=8 * 1024 * 1024 * 1024,
     )
 
-    assert facts.machine == {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
-    assert facts.is_supported is supported
+    assert facts.is_supported is False
 
 
 @pytest.mark.parametrize(
@@ -257,6 +302,53 @@ def test_preflight_reports_all_read_only_boundary_observations() -> None:
     assert preflight.required_bind_ports == (443, 80)
     assert preflight.unavailable_bind_ports == (443,)
     assert preflight.ufw_active is True
+
+
+@pytest.mark.parametrize(
+    ("facts_builder", "detected_fragment"),
+    [
+        (lambda: replace(_facts(), os_id="fedora", os_version="40"), "os=fedora"),
+        (lambda: replace(_facts(), os_version="20.04"), "version=20.04"),
+        (lambda: replace(_facts(), machine="riscv64"), "architecture=riscv64"),
+        (lambda: replace(_facts(), has_systemd=False), "systemd=absent"),
+    ],
+)
+def test_unsupported_preflight_has_actionable_secret_free_host_diagnostics(
+    facts_builder: Callable[[], HostFacts], detected_fragment: str
+) -> None:
+    facts = facts_builder()
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+
+    preflight = check_setup_preflight(plan, _probes())
+
+    failure = next(item for item in preflight.failures if item.code == "unsupported-platform")
+    assert failure.message == "Managed commands are Linux/systemd-only on supported hosts."
+    assert detected_fragment in failure.detail
+    assert "Ubuntu 22.04/24.04/26.04 and Debian 12/13" in failure.detail
+    assert "x86_64/aarch64" in failure.detail
+    assert any("pipx install xferry" in action for action in failure.next_actions)
+
+
+def test_setup_cli_renders_stable_unsupported_host_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from xferry.management import cli
+
+    facts = replace(_facts(), os_id="fedora", os_version="40", machine="aarch64")
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+    preflight = check_setup_preflight(plan, _probes())
+    monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, preflight))
+
+    assert main(["setup", "--private", "--dry-run", "--json"]) == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "unsupported-platform"
+    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
+    assert "os=fedora" in payload["detail"]
+    assert "version=40" in payload["detail"]
+    assert "architecture=aarch64" in payload["detail"]
+    assert "systemd=present" in payload["detail"]
+    assert any("pipx upgrade xferry" in action for action in payload["next_actions"])
 
 
 def test_preflight_requires_explicit_firewall_consent_even_when_interactive() -> None:

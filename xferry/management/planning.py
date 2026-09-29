@@ -9,6 +9,7 @@ from xferry.security.tls import normalize_domain, sslip_domain_for_ip, validate_
 from xferry.settings import render_settings_ini
 
 from .model import (
+    MANAGED_HOST_REQUIRED_MESSAGE,
     HostFacts,
     PreflightFailure,
     ResourceOverrides,
@@ -150,7 +151,9 @@ def check_setup_preflight(plan: SetupPlan, probes: SetupProbes) -> SetupPrefligh
         failures.append(
             PreflightFailure(
                 "unsupported-platform",
-                "managed setup requires supported OS, x86_64, and systemd",
+                MANAGED_HOST_REQUIRED_MESSAGE,
+                plan.facts.managed_support_detail,
+                plan.facts.managed_support_next_actions,
             )
         )
     if not executable_ready:

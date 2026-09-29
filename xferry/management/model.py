@@ -2,13 +2,58 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from .release_contract import LINUX_X86_64, platform_id_for_host
+from .release_contract import SUPPORTED_PLATFORM_IDS, platform_id_for_host
+
+SUPPORTED_MANAGED_DISTRIBUTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ubuntu", ("22.04", "24.04", "26.04")),
+    ("debian", ("12", "13")),
+)
+SUPPORTED_MANAGED_ARCHITECTURES: tuple[str, ...] = tuple(
+    platform_id.removeprefix("linux-") for platform_id in SUPPORTED_PLATFORM_IDS
+)
+SUPPORTED_MANAGED_HOST_SUMMARY = (
+    "Ubuntu 22.04/24.04/26.04 and Debian 12/13 on x86_64/aarch64 with systemd"
+)
+MANAGED_HOST_REQUIRED_MESSAGE = "Managed commands are Linux/systemd-only on supported hosts."
+MANAGED_HOST_NEXT_ACTIONS = (
+    (
+        "Use a supported managed host: Ubuntu 22.04/24.04/26.04 or Debian 12/13 "
+        "on x86_64/aarch64 with systemd."
+    ),
+    (
+        "For portable use, run `pipx install xferry`; use `pipx upgrade xferry` "
+        "and `pipx uninstall xferry` for lifecycle management."
+    ),
+)
+
+_SUPPORTED_MANAGED_OS_RELEASES = frozenset(
+    (os_id, version) for os_id, versions in SUPPORTED_MANAGED_DISTRIBUTIONS for version in versions
+)
+_DIAGNOSTIC_TOKEN_RE = re.compile(r"[^0-9A-Za-z._+-]")
+
+
+def supported_managed_host_matrix() -> dict[str, object]:
+    """Return the stable, secret-free managed host support contract."""
+    return {
+        "architectures": list(SUPPORTED_MANAGED_ARCHITECTURES),
+        "distributions": {
+            os_id: list(versions) for os_id, versions in SUPPORTED_MANAGED_DISTRIBUTIONS
+        },
+        "init_system": "systemd",
+    }
+
+
+def _diagnostic_token(value: str) -> str:
+    """Bound detected host text to one safe token for logs and diagnostics."""
+    sanitized = _DIAGNOSTIC_TOKEN_RE.sub("?", value)[:64]
+    return sanitized or "unknown"
 
 
 @dataclass(frozen=True)
@@ -54,21 +99,43 @@ class HostFacts:
     @property
     def is_supported_os(self) -> bool:
         """Return whether the operating system is in the managed support boundary."""
-        return (self.os_id, self.os_version) in {
-            ("ubuntu", "22.04"),
-            ("ubuntu", "24.04"),
-            ("ubuntu", "26.04"),
-            ("debian", "12"),
-        }
+        return (self.os_id, self.os_version) in _SUPPORTED_MANAGED_OS_RELEASES
+
+    @property
+    def is_supported_architecture(self) -> bool:
+        """Return whether the canonical release contract recognizes this Linux machine."""
+        return platform_id_for_host("linux", self.machine) in SUPPORTED_PLATFORM_IDS
 
     @property
     def is_supported(self) -> bool:
         """Return whether this host meets the managed platform boundary."""
+        return self.is_supported_os and self.is_supported_architecture and self.has_systemd
+
+    @property
+    def detected_managed_host(self) -> dict[str, object]:
+        """Return bounded host facts safe for text or JSON diagnostic output."""
+        return {
+            "architecture": _diagnostic_token(self.machine),
+            "os": _diagnostic_token(self.os_id),
+            "systemd": self.has_systemd,
+            "version": _diagnostic_token(self.os_version),
+        }
+
+    @property
+    def managed_support_detail(self) -> str:
+        """Describe the detected host and complete managed support matrix."""
+        detected = self.detected_managed_host
+        systemd = "present" if detected["systemd"] else "absent"
         return (
-            self.is_supported_os
-            and platform_id_for_host("linux", self.machine) == LINUX_X86_64
-            and self.has_systemd
+            f"Detected os={detected['os']}, version={detected['version']}, "
+            f"architecture={detected['architecture']}, systemd={systemd}. "
+            f"Supported matrix: {SUPPORTED_MANAGED_HOST_SUMMARY}."
         )
+
+    @property
+    def managed_support_next_actions(self) -> tuple[str, ...]:
+        """Return deterministic local remediation without network calls or telemetry."""
+        return MANAGED_HOST_NEXT_ACTIONS
 
 
 @dataclass(frozen=True)
@@ -139,6 +206,8 @@ class PreflightFailure:
 
     code: str
     message: str
+    detail: str = ""
+    next_actions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

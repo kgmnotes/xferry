@@ -67,6 +67,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "service_action_done": "Managed service {action} completed.",
         "service_action_failed": "Managed service {action} failed.",
         "doctor_check_text": "Doctor {name}: {status} ({detail})",
+        "next_action_text": "Next action: {action}",
         "operation_failure": "Management operation failed.",
         "purge_prompt": (
             "Permanently delete XFerry config, data, credentials, and ACME state? [y/N] "
@@ -123,6 +124,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "service_action_done": "Операция службы {action} выполнена.",
         "service_action_failed": "Операция службы {action} не выполнена.",
         "doctor_check_text": "Проверка {name}: {status} ({detail})",
+        "next_action_text": "Следующее действие: {action}",
         "operation_failure": "Операция управления не выполнена.",
         "purge_prompt": (
             "Безвозвратно удалить настройки, данные, учётные данные и состояние ACME XFerry? [y/N] "

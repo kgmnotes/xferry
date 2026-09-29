@@ -58,6 +58,9 @@ class SetupResult:
     exit_code: int
     message: str
     credentials: Credentials | None = field(default=None, repr=False)
+    code: str | None = None
+    detail: str = ""
+    next_actions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,9 @@ class CredentialsResult:
     exit_code: int
     message: str
     credentials: Credentials | None = field(default=None, repr=False)
+    code: str | None = None
+    detail: str = ""
+    next_actions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -713,9 +719,17 @@ def _preflight_result(preflight: SetupPreflight) -> SetupResult:
     )
     if unsupported_managed_state_failure is not None:
         return SetupResult(1, unsupported_managed_state_failure.message)
-    codes = {failure.code for failure in preflight.failures}
+    failures_by_code = {failure.code: failure for failure in preflight.failures}
+    codes = set(failures_by_code)
     if "unsupported-platform" in codes:
-        return SetupResult(4, "unsupported managed platform")
+        failure = failures_by_code["unsupported-platform"]
+        return SetupResult(
+            4,
+            failure.message,
+            code=failure.code,
+            detail=failure.detail,
+            next_actions=failure.next_actions,
+        )
     if "port-unavailable" in codes:
         return SetupResult(5, "required network port is unavailable")
     if codes & {"firewall-denied", "firewall-consent-required", "invalid-firewall-port"}:
