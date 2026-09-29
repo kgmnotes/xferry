@@ -67,6 +67,47 @@ configuration procedure.
   can consume it first.
 - ACME account keys and certificate private keys are secrets.
 
+## Release and update supply chain
+
+ADR-011 accepts a staged controlled-distribution architecture, but it does not
+activate a public channel. The supported distribution remains a reviewed source
+checkout, and the current Release Verification workflow must remain unable to
+write to PyPI, GHCR, or GitHub Releases until the channel-specific stages close.
+
+Release tags, workflow definitions, publisher identities, candidate artifacts,
+digests, manifests, checksums, SBOMs, provenance, signing identities, registry
+records, installer metadata, and update metadata are security-sensitive assets.
+The release boundary also includes GitHub-hosted runners, protected repository
+environments, PyPI, GHCR, GitHub Releases, the signing service, installers, and
+update clients.
+
+The following controls govern every future publisher:
+
+1. Only a protected `vX.Y.Z` tag may authorize production publication. Branch
+   and pull-request workflows cannot reach a production publisher.
+2. The tagged version must match the source, package, changelog, and manifest
+   versions. Build jobs create one candidate; publisher jobs promote those exact
+   verified bytes or OCI digests and never rebuild them.
+3. External actions use full commit-SHA pins. Workflow permissions default to
+   read-only, with channel-specific write scopes granted only to a publisher job
+   behind the protected `production` environment and required review.
+4. PyPI uses OIDC trusted publishing and never a static API token. Registry,
+   release, attestation, and signing credentials are short-lived and scoped to
+   the one job and environment that need them wherever the service supports it.
+5. Published versions are immutable. Installation, update, and rollback select
+   an exact version or digest rather than a mutable convenience label.
+6. Installers and update clients verify the signed metadata, artifact digest,
+   release identity, trusted key, and downgrade policy before replacing a
+   working installation. Verification fails closed.
+
+Designated release maintainers own signing-key custody, rotation, revocation,
+and recovery. Private signing material must stay outside the repository,
+ordinary build jobs, artifacts, and logs. Reviewed verifier trust roots and key
+rotation metadata belong in the repository; an independent protected-environment
+approval gates access to the signing identity. A compromise stops promotion,
+revokes or yanks affected releases where supported, rotates identities, and
+publishes updated trust or revocation metadata before release work resumes.
+
 ## Payloads and notes
 
 Advanced upload and SMUGGLE support `none`, XOR, and AES payload modes. XOR is

@@ -11,3 +11,9 @@
 - Files changed: `constraints/ci.txt`, `plan.md`, `stage-status.md`, `stages/STAGE-002-patch-audited-toolchain-pins.md`, `change-log.md`, and the stage report.
 - Verification: clean constrained resolution, package consistency, dependency/toolchain contracts, strict pip-audit, docs render/sync/staleness, scoped Ruff, strict MkDocs, and all 3,171 tests passed; independent dependency and security reviews passed.
 - Report: `stage-reports/STAGE-002-20260929-125932.md`
+
+## 2026-09-29 14:00:12 +0300 — STAGE-003
+- Status: CLOSED
+- Files changed: ADR-006/ADR-011 and ADR navigation, `SECURITY.md` plus its generated mirror, `docs/threat-model.md`, `mkdocs.yml`, the staged documentation/workflow guard and tests, and this active plan's status, stage, change log, and report artifacts.
+- Verification: 133 targeted tests, scoped Ruff lint/format, documentation sync and semantic guard, strict MkDocs, action-pin validation, all 3,212 repository tests, and final architecture/security reviews passed; `.github/workflows/release.yml` remained unchanged and non-publishing.
+- Report: `stage-reports/STAGE-003-20260929-132815.md`

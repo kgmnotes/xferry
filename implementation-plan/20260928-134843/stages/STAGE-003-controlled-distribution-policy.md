@@ -1,7 +1,7 @@
 # STAGE-003 - Adopt controlled distribution policy and guards
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -50,12 +50,12 @@ Supersede the source-only architecture decision with an approved, staged control
 5. Preserve source-only wording in user docs until public channels pass their later acceptance stages.
 
 ## Acceptance criteria
-- [ ] A new accepted ADR explicitly supersedes ADR-006 and records all confirmed product targets and launch invariants.
-- [ ] Security/threat-model docs cover release/update supply-chain boundaries and key ownership requirements.
-- [ ] Current verification-only workflow still has no externally reachable publication path.
-- [ ] Tests reject branch/PR publication, static PyPI tokens, unpinned actions, broad permissions, rebuilding in publish jobs, and unprotected production jobs.
-- [ ] Semantic guards no longer permanently forbid safe future PyPI/GHCR/GitHub Release/update references.
-- [ ] User-facing docs still describe only behavior that exists at this stage.
+- [x] A new accepted ADR explicitly supersedes ADR-006 and records all confirmed product targets and launch invariants.
+- [x] Security/threat-model docs cover release/update supply-chain boundaries and key ownership requirements.
+- [x] Current verification-only workflow still has no externally reachable publication path.
+- [x] Tests reject branch/PR publication, static PyPI tokens, unpinned actions, broad permissions, rebuilding in publish jobs, and unprotected production jobs.
+- [x] Semantic guards no longer permanently forbid safe future PyPI/GHCR/GitHub Release/update references.
+- [x] User-facing docs still describe only behavior that exists at this stage.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -76,4 +76,23 @@ Supersede the source-only architecture decision with an approved, staged control
 - Rollback: revert the new guard logic and ADR status together; never leave policy and enforcement on different decisions.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+Closed on 2026-09-29 14:00:12 +0300.
+
+- Added accepted ADR-011 with the three release journeys, immutable version
+  authority, build-once promotion, protected approvals, least privilege,
+  signing/key ownership, rollback, and documentation ownership; retained
+  ADR-006 as explicitly superseded history.
+- Extended the canonical security policy and threat model across tag, workflow,
+  runner, candidate, registry, signing, installer, and update-client trust
+  boundaries; regenerated `docs/security.md` through `tools/sync_docs.py`.
+- Replaced global source-only publication bans with staged user-doc availability
+  checks and structured release-workflow policy validation. Safe future policy
+  fixtures pass, while unsafe triggers, credentials, actions, permissions,
+  rebuilds, environments, tag filters, and YAML spelling variants fail.
+- Left `.github/workflows/release.yml`, `README.md`, `docs/quick-start.md`, and
+  runtime update code unchanged. The current release workflow remains manual,
+  read-only, and non-publishing.
+- Verification passed: 133 targeted tests, Ruff lint/format, documentation
+  synchronization and semantic guards, strict MkDocs, immutable action pins,
+  all 3,212 repository tests, and final architecture/security subagent reviews.
+- Report: `stage-reports/STAGE-003-20260929-132815.md`.

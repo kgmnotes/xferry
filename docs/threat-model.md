@@ -3,9 +3,12 @@
 ## Scope
 
 The system boundary includes the TCP/TLS listener, HTTP parser,
-authentication, browser-origin policy, handlers, WebSocket notes, storage, and
-bundled UI. Clients, reverse proxies, tunnel providers, DNS and ACME services,
-the host filesystem, backups, and the operator are external.
+authentication, browser-origin policy, handlers, WebSocket notes, storage,
+bundled UI, and the accepted release and update contract. Clients, reverse
+proxies, tunnel providers, DNS and ACME services, the host filesystem, backups,
+GitHub-hosted runners, protected repository environments, PyPI, GHCR, GitHub
+Releases, signing services, installers, update clients, and the operator are
+external.
 
 ## Assets
 
@@ -14,6 +17,11 @@ the host filesystem, backups, and the operator are external.
 - runtime and configuration integrity
 - worker, memory, disk, socket, and file-descriptor capacity
 - log, metric, and diagnostic privacy
+- protected release tags and workflow definitions
+- publisher identities, environment approvals, and signing keys
+- candidate artifacts, OCI digests, manifests, checksums, SBOMs, provenance,
+  registry records, installer metadata, and update metadata
+- installer and update-client trust roots, version state, and rollback state
 
 ## Threats and controls
 
@@ -31,6 +39,13 @@ the host filesystem, backups, and the operator are external.
 | Advanced token abuse | High-entropy bearer token, auth or direct-loopback ownership, prefix match, expiry, idle timeout, revocation |
 | Lost Notepad key | Explicit non-recovery contract; the server stores no durable client key |
 | Abandoned one-shot artifacts | Age, count, and byte retention plus startup cleanup |
+| Branch or pull-request publication | Production publishers accept protected version-tag refs only and require protected-environment approval |
+| Workflow or third-party action compromise | Reviewed workflow changes, full commit-SHA action pins, non-persisted checkout credentials, and least-privilege job permissions |
+| Candidate substitution or publish-job rebuild | Build-once candidate handoff, recorded digests, publisher dependency on verified jobs, and pre-publication digest verification |
+| Static publisher credential theft | PyPI OIDC trusted publishing and short-lived, environment-scoped identities for other channels where supported |
+| Registry tag drift or artifact replacement | Immutable versions and digests; mutable labels are not install, update, or rollback authorities |
+| Signing-key compromise | Restricted maintainer ownership, protected signing boundary, rotation and revocation procedure, and reviewed verifier trust roots |
+| Installer or update metadata tampering | Signature, digest, version, key, expiry, revocation, and downgrade checks that fail closed |
 
 ## Trust boundaries
 
@@ -52,6 +67,27 @@ Advanced Session tokens select routing and parser context. They do not replace
 Basic Auth. With Basic Auth disabled, Advanced control and data operations are
 limited to a direct loopback peer.
 
+A protected version tag is the release identity boundary. Repository and tag
+rules admit a candidate into trusted build jobs; they do not by themselves
+authorize an external write. Exact candidate artifacts and recorded digests
+cross from build jobs into separate publisher jobs. Those jobs cross the
+protected `production` environment and receive only the write scope for their
+one channel. Pull-request code and branch-triggered jobs remain outside that
+boundary.
+
+PyPI, GHCR, and GitHub Releases are separate distribution boundaries. Their
+availability metadata is not sufficient proof of artifact identity. Consumers
+anchor trust in an exact version or digest plus signed metadata. The signing
+service is a separate boundary from the build runner: designated release
+maintainers own its identity, while reviewed repository content owns verifier
+trust roots and rotation metadata.
+
+Installers and update clients cross from public channel metadata into a local
+managed host. They must verify signatures, digests, release identity, trusted
+keys, revocation state, and downgrade policy before changing the installation.
+Rollback crosses the same boundary and may select only a previously verified,
+still-trusted exact release.
+
 ## Out of scope
 
 - multi-tenant isolation
@@ -60,6 +96,9 @@ limited to a direct loopback peer.
 - confidentiality from XOR or a generated SMUGGLE artifact
 - protection from a host administrator, TLS-terminating provider, or
   compromised browser
+- availability or internal integrity of third-party distribution services
+- recovery of a compromised release without maintainer revocation, credential
+  rotation, and a newly reviewed release
 
 Review this model when authentication, storage boundaries, proxy trust,
 cryptography, distribution policy, or the always-on method surface changes.

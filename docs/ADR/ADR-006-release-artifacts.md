@@ -1,6 +1,10 @@
 # ADR-006: Source-only distribution
 
-- **Status:** accepted
+- **Status:** superseded by ADR-011
+
+ADR-011 replaces this decision with a staged controlled-distribution policy.
+This record preserves the source-only decision that governed the repository
+before that policy was accepted.
 
 ## Context
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import check_stale_docs
 from xferry.settings import LaunchPreset, load_settings_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -414,6 +415,7 @@ def test_release_verification_workflow_is_manual_read_only_and_non_publishing() 
     """Manual build checks must not become a package, registry, or release channel."""
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
+    assert check_stale_docs.release_workflow_policy_findings(workflow) == []
     _assert_manual_only_release_trigger(workflow)
     assert "needs: [build, image-verify, scie-verify]" in workflow
 
