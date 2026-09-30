@@ -432,6 +432,11 @@ def test_release_verification_workflow_is_manual_read_only_and_non_publishing() 
     assert "--platform linux/amd64,linux/arm64" in workflow
     assert "--output type=oci,dest=candidate/oci,tar=false" in workflow
     assert "--sbom=true --provenance=mode=max" in workflow
+    image_build = _workflow_job(workflow, "image-verify")
+    build_position = image_build.index("--output type=oci,dest=candidate/oci,tar=false")
+    normalize_position = image_build.index("candidate_inventory.py normalize-oci")
+    archive_position = image_build.index("Archive exact OCI outputs")
+    assert build_position < normalize_position < archive_position
     assert "skopeo --insecure-policy copy" in workflow
     assert "Hardened local image lifecycle smoke" in workflow
     assert "--image xferry:candidate" in workflow

@@ -237,6 +237,97 @@ def test_candidate_supports_current_buildx_empty_attestation_config_and_subject(
     assert verify_inventory(root, TAG, COMMIT, RUN, expected_sha256=digest) == digest
 
 
+def test_normalize_oci_export_removes_empty_buildx_ingest_before_inventory(
+    tmp_path: Path,
+) -> None:
+    root = _candidate(tmp_path / "candidate")
+    ingest = root / "oci/ingest"
+    ingest.mkdir()
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools/candidate_inventory.py"),
+        "normalize-oci",
+        "--candidate-dir",
+        str(root),
+    ]
+
+    normalized = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert normalized.returncode == 0, normalized.stderr
+    assert not ingest.exists()
+    digest = create_inventory(root, TAG, COMMIT, RUN)
+    assert verify_inventory(root, TAG, COMMIT, RUN, expected_sha256=digest) == digest
+
+
+@pytest.mark.parametrize("shape", ["file", "nonempty", "nested"])
+def test_normalize_oci_export_rejects_nonempty_or_non_directory_ingest(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    root = _candidate(tmp_path / "candidate")
+    ingest = root / "oci/ingest"
+    if shape == "file":
+        ingest.write_bytes(b"unexpected staged content")
+    elif shape == "nonempty":
+        ingest.mkdir()
+        (ingest / "data").write_bytes(b"incomplete export")
+    else:
+        (ingest / "nested").mkdir(parents=True)
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools/candidate_inventory.py"),
+        "normalize-oci",
+        "--candidate-dir",
+        str(root),
+    ]
+
+    rejected = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert rejected.returncode == 1
+    assert "OCI ingest path must be an empty directory" in rejected.stderr
+    assert ingest.exists()
+
+
+@pytest.mark.parametrize("symlinked_parent", ["candidate", "oci"])
+def test_normalize_oci_export_rejects_symlinked_parent_without_external_deletion(
+    tmp_path: Path,
+    symlinked_parent: str,
+) -> None:
+    if symlinked_parent == "candidate":
+        outside = _candidate(tmp_path / "outside-candidate")
+        ingest = outside / "oci/ingest"
+        ingest.mkdir()
+        root = tmp_path / "candidate"
+        root.symlink_to(outside, target_is_directory=True)
+    else:
+        root = _candidate(tmp_path / "candidate")
+        outside = tmp_path / "outside-oci"
+        (root / "oci").rename(outside)
+        ingest = outside / "ingest"
+        ingest.mkdir()
+        (root / "oci").symlink_to(outside, target_is_directory=True)
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools/candidate_inventory.py"),
+        "normalize-oci",
+        "--candidate-dir",
+        str(root),
+    ]
+
+    rejected = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert rejected.returncode == 1
+    assert "OCI candidate root and OCI directory must be real directories" in rejected.stderr
+    assert ingest.is_dir()
+    assert list(ingest.iterdir()) == []
+
+
 def test_source_and_inventory_cli_work_in_isolated_mode(tmp_path: Path) -> None:
     source = _source(tmp_path / "source")
     root = _candidate(tmp_path / "candidate")

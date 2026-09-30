@@ -217,6 +217,8 @@ jobs:
             --build-arg SOURCE_COMMIT="$GITHUB_SHA" \
             --sbom=true --provenance=mode=max \
             --output type=oci,dest=candidate/oci,tar=false .
+      - name: Normalize empty OCI exporter staging state
+        run: python tools/candidate_inventory.py normalize-oci --candidate-dir candidate
       - name: Archive exact OCI outputs
         id: archive
         run: |
