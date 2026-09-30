@@ -11,6 +11,7 @@ a proxy and backend disagree on request boundaries.
 import socket
 import threading
 import time
+from pathlib import Path
 
 from tests.conftest import find_free_port
 from tests.server_factory import make_server
@@ -35,12 +36,12 @@ class SingleRecvSocket:
         raise AssertionError("receive_request read body after oversized Content-Length")
 
 
-def _start_server(port: int):
+def _start_server(port: int, root: Path):
     """Start a server on localhost for testing."""
     server = make_server(
         host="127.0.0.1",
         port=port,
-        root_dir="/tmp",
+        root_dir=str(root),
         quiet=True,
     )
     t = threading.Thread(target=server.start, daemon=True)
@@ -49,8 +50,9 @@ def _start_server(port: int):
     for _ in range(50):
         time.sleep(0.05)
         if server.running:
-            break
-    return server
+            return server
+    server.stop()
+    raise AssertionError("portable test server did not start within 2.5s")
 
 
 def _send_raw(port: int, raw: bytes, timeout: float = 2.0) -> bytes:
@@ -87,10 +89,10 @@ class TestContentLengthSmuggling:
         assert response == b""
         assert sock.recv_calls == 1
 
-    def test_duplicate_different_content_lengths_rejected(self):
+    def test_duplicate_different_content_lengths_rejected(self, tmp_path: Path):
         """Two different Content-Length values should be rejected (empty response)."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = (
                 b"GET / HTTP/1.1\r\n"
@@ -107,10 +109,10 @@ class TestContentLengthSmuggling:
         finally:
             server.stop()
 
-    def test_negative_content_length_rejected(self):
+    def test_negative_content_length_rejected(self, tmp_path: Path):
         """Negative Content-Length should be rejected."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = b"GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\n"
             response = _send_raw(port, raw)
@@ -118,10 +120,10 @@ class TestContentLengthSmuggling:
         finally:
             server.stop()
 
-    def test_duplicate_same_content_length_accepted(self):
+    def test_duplicate_same_content_length_accepted(self, tmp_path: Path):
         """Duplicate identical Content-Length values should be accepted."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = (
                 b"PING / HTTP/1.1\r\n"
@@ -136,10 +138,10 @@ class TestContentLengthSmuggling:
         finally:
             server.stop()
 
-    def test_normal_single_content_length_accepted(self):
+    def test_normal_single_content_length_accepted(self, tmp_path: Path):
         """Normal request with single Content-Length should work fine."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = b"PING / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
             response = _send_raw(port, raw)
@@ -147,10 +149,10 @@ class TestContentLengthSmuggling:
         finally:
             server.stop()
 
-    def test_transfer_encoding_chunked_rejected(self):
+    def test_transfer_encoding_chunked_rejected(self, tmp_path: Path):
         """Transfer-Encoding is unsupported and should be dropped."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = (
                 b"POST / HTTP/1.1\r\n"
@@ -165,10 +167,10 @@ class TestContentLengthSmuggling:
         finally:
             server.stop()
 
-    def test_transfer_encoding_with_content_length_rejected(self):
+    def test_transfer_encoding_with_content_length_rejected(self, tmp_path: Path):
         """Transfer-Encoding plus Content-Length must also be dropped."""
         port = find_free_port()
-        server = _start_server(port)
+        server = _start_server(port, tmp_path)
         try:
             raw = (
                 b"POST / HTTP/1.1\r\n"

@@ -97,7 +97,10 @@ def _strip_global_language(argv: Sequence[str]) -> list[str]:
 
 def _root_help(translator: Translator) -> str:
     """Build the compact management reference shown by ``xferry help``."""
-    command_lines = "\n".join(f"  {command}" for command in _PRIMARY_COMMANDS)
+    portable_lines = "\n".join(f"  {command}" for command in ("run", "examples", "help"))
+    command_lines = "\n".join(
+        f"  {command}" for command in _PRIMARY_COMMANDS if command in _LINUX_MANAGEMENT_COMMANDS
+    )
     maintenance_lines = "\n".join(f"  {command}" for command in _MAINTENANCE_COMMANDS)
     return "\n".join(
         (
@@ -105,11 +108,17 @@ def _root_help(translator: Translator) -> str:
             "",
             translator.get("root_description"),
             "",
+            translator.get("portable_heading"),
+            portable_lines,
+            "",
             translator.get("commands_heading"),
             command_lines,
             "",
             translator.get("maintenance_heading"),
             maintenance_lines,
+            "",
+            translator.get("portable_lifecycle"),
+            translator.get("root_options"),
             "",
             translator.get("examples_heading"),
             translator.get("root_examples"),
@@ -559,6 +568,13 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         if not argv:
             print(_root_help(context.translator))
             return 0
+        if len(argv) == 1 and argv[0] not in _COMMANDS:
+            print(
+                f"xferry help: {context.translator.get('usage_error')}: "
+                f"{context.translator.get('unknown_command', command=argv[0])}",
+                file=sys.stderr,
+            )
+            return 2
         if len(argv) != 1 or argv[0] not in _COMMAND_EXAMPLES:
             print(f"xferry help: {context.translator.get('usage_error')}", file=sys.stderr)
             return 2
@@ -609,6 +625,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_root_help(context.translator))
         return 0
 
+    if remaining == ["--version"]:
+        print(f"xferry {__version__}")
+        return 0
+
     if remaining and remaining[0] in _COMMANDS:
         command = remaining[0]
         if command == "run":
@@ -618,5 +638,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_management(command, remaining[1:], context)
 
     print(_root_help(context.translator), file=sys.stderr)
-    print(f"xferry: error: {context.translator.get('usage_error')}", file=sys.stderr)
+    message = context.translator.get("unknown_command", command=remaining[0])
+    print(f"xferry: error: {message}", file=sys.stderr)
     return 2

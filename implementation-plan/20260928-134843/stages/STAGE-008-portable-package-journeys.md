@@ -1,7 +1,7 @@
 # STAGE-008 - Prove portable packaged CLI journeys
 
 ## Status
-OPEN
+PARTIALLY_CLOSED
 
 ## Priority
 HIGH
@@ -50,11 +50,11 @@ Prove that a built wheel works outside the source checkout through a pipx-style 
 
 ## Acceptance criteria
 - [ ] The same built wheel installs and runs on Windows, macOS, and Linux at Python 3.10, 3.12, and 3.14.
-- [ ] Acceptance runs outside the checkout and cannot import source-tree code accidentally.
-- [ ] `xferry --version`, `python -m xferry --version`, `xferry --help`, `xferry run --check-config`, and a bounded server lifecycle smoke succeed.
-- [ ] Help labels managed Linux commands and points portable upgrade/uninstall to pipx.
-- [ ] Unknown commands name the offending command and point to `xferry help`.
-- [ ] The existing full Linux Python 3.10-3.14 suite remains green.
+- [x] Acceptance runs outside the checkout and cannot import source-tree code accidentally.
+- [x] `xferry --version`, `python -m xferry --version`, `xferry --help`, `xferry run --check-config`, and a bounded server lifecycle smoke succeed.
+- [x] Help labels managed Linux commands and points portable upgrade/uninstall to pipx.
+- [x] Unknown commands name the offending command and point to `xferry help`.
+- [x] The existing full Linux Python 3.10-3.14 suite remains green.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -75,4 +75,12 @@ Prove that a built wheel works outside the source checkout through a pipx-style 
 - Rollback: retain built-wheel smoke at 3.12 while fixing runner-specific orchestration; do not fall back to editable installs as release evidence.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Attempt completed: 2026-09-30 11:06:22 +0300.
+- Implemented root version, localized portable/managed help and actionable unknown-command errors while preserving usage/platform exit semantics.
+- Added one Linux-built wheel transfer into nine isolated portable acceptance jobs, enforced producer SHA256 before installation, verified external venv imports, copied only portable test inputs, and bounded server health/stop with regression coverage.
+- Verified the same real wheel on Linux Python 3.10/3.12/3.14: all required commands, server lifecycle, and 312 portable tests per interpreter passed. External offline wheel/sdist installs also passed.
+- All 343 stage-targeted tests, strict mypy, repository Ruff lint/format, workflow actionlint, and all 3,330 tests with coverage on each Linux Python 3.10/3.11/3.12/3.13/3.14 passed. Reproduced and corrected a pre-existing Python 3.10 stdlib-help assumption in the schema test.
+- A narrowly scoped read-only QA subagent audited the package/CI paths and final lifecycle compatibility; no remaining concrete code defect was found.
+- A separate candidate review found no Critical or Important issue and one Minor known-command diagnostic regression. The fix was developed test-first; 6 focused cases, all 3,332 Python 3.12 tests, Ruff, formatting, actionlint, and diff checks passed afterward. A newly built exact wheel (`fce1ba554e5949a7f0d1ab822d8fa8f502d48631ea58f913c8f6ee7f0ef39918`) then passed the complete 312-test portable journey on Linux Python 3.10/3.12/3.14.
+- Remaining acceptance gap: native Windows/macOS and actual hosted cross-job transfer are unverified. Run and record the nine-job matrix against the wrapper-pushed candidate before marking CLOSED. No commits or pushes were performed.
+- Report: `../stage-reports/STAGE-008-20260930-102812.md`.

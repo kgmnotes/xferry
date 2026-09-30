@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shlex
+import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -296,15 +299,20 @@ def _run_checked(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     quiet_stdout: bool = False,
+    timeout: float = 300,
 ) -> None:
     print(f"+ {shlex.join(command)}", flush=True)
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.DEVNULL if quiet_stdout else None,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.DEVNULL if quiet_stdout else None,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ArtifactValidationError(f"command exceeded {timeout}s: {command[0]}") from exc
     if result.returncode != 0:
         raise ArtifactValidationError(
             f"command failed with exit {result.returncode}: {shlex.join(command)}"
@@ -343,6 +351,7 @@ _IMPORT_PROBE = """
 import importlib.util
 import inspect
 import os
+import sys
 from pathlib import Path
 
 import acme
@@ -355,9 +364,21 @@ from xferry import XFerryServer
 del acme, cryptography, josepy, SSL
 assert importlib.util.find_spec("src") is None
 repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+venv = Path(os.environ["XFERRY_PROBE_VENV"]).resolve()
+assert Path(sys.prefix).resolve() == venv, sys.prefix
+assert sys.prefix != sys.base_prefix
+for entry in sys.path:
+    location = Path(entry or os.getcwd()).resolve()
+    assert location != repo and not location.is_relative_to(repo), location
 for value in (xferry, XFerryServer):
     location = Path(inspect.getfile(value)).resolve()
     assert location != repo and not location.is_relative_to(repo), location
+    assert location.is_relative_to(venv), location
+for name, module in list(sys.modules.items()):
+    if name == "xferry" or name.startswith("xferry."):
+        location = Path(module.__file__).resolve()
+        assert location.is_relative_to(venv), (name, location)
+print("installed XFerry origin:", xferry.__file__)
 """.strip()
 
 
@@ -369,15 +390,18 @@ def _venv_commands(venv_dir: Path) -> tuple[Path, Path]:
 
 def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None:
     python, console = _venv_commands(venv_dir)
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    environment["GITHUB_WORKSPACE"] = str(workspace)
+    environment = _probe_environment(workspace=workspace, venv_dir=venv_dir)
     commands: tuple[tuple[tuple[str, ...], bool], ...] = (
         ((str(python), "-m", "pip", "check"), False),
-        ((str(python), "-c", _IMPORT_PROBE), False),
+        ((str(python), "-I", "-c", _IMPORT_PROBE), False),
         ((str(console), "--help"), True),
+        ((str(console), "--version"), False),
+        ((str(console), "run", "--help"), True),
         ((str(console), "run", "--version"), False),
+        ((str(console), "run", "--check-config"), False),
         ((str(python), "-m", "xferry", "--help"), True),
+        ((str(python), "-m", "xferry", "--version"), False),
+        ((str(python), "-m", "xferry", "run", "--help"), True),
         ((str(python), "-m", "xferry", "run", "--version"), False),
         ((str(python), "-m", "xferry", "run", "--check-config"), False),
     )
@@ -388,6 +412,228 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
             env=environment,
             quiet_stdout=quiet_stdout,
         )
+
+
+def _probe_environment(*, workspace: Path, venv_dir: Path) -> dict[str, str]:
+    """Keep application probes independent of ambient Python and pip configuration."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PYTHON") and key not in {"PIP_CONSTRAINT", "PYTEST_ADDOPTS"}
+    }
+    environment.update(
+        GITHUB_WORKSPACE=str(workspace),
+        XFERRY_PROBE_VENV=str(venv_dir),
+        PYTHONNOUSERSITE="1",
+        PYTHONUNBUFFERED="1",
+        XFERRY_LANG="en",
+    )
+    return environment
+
+
+_HEALTH_PROBE = """
+import http.client
+import json
+import sys
+import time
+
+deadline = time.monotonic() + float(sys.argv[2])
+while time.monotonic() < deadline:
+    connection = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=0.5)
+    try:
+        connection.request("PING", "/", headers={"Connection": "close"})
+        response = connection.getresponse()
+        body = response.read(65537)
+        if response.status == 200 and len(body) <= 65536:
+            document = json.loads(body)
+            if (
+                isinstance(document, dict)
+                and document.get("health") == "ready"
+                and isinstance(document.get("supported_methods"), list)
+                and {"PING", "NOTE", "SMUGGLE"} <= set(document["supported_methods"])
+                and not {"status", "ok", "success", "profile", "capabilities"}
+                    .intersection(document)
+                and time.monotonic() < deadline
+            ):
+                print("installed server canonical PING passed", flush=True)
+                raise SystemExit(0)
+    except (OSError, http.client.HTTPException, ValueError, TypeError):
+        pass
+    finally:
+        connection.close()
+    time.sleep(0.1)
+raise SystemExit("installed server health was not ready before deadline")
+""".strip()
+
+
+def _server_lifecycle_smoke(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None:
+    """Start the installed module, require canonical health, and bound cleanup."""
+    python, _ = _venv_commands(venv_dir)
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    command = (
+        str(python),
+        "-I",
+        "-m",
+        "xferry",
+        "run",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--dir",
+        str(probe_dir),
+        "--quiet",
+    )
+    print(f"+ bounded server lifecycle: {shlex.join(command)}", flush=True)
+    terminated = False
+    with (probe_dir / "server.log").open("wb") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=probe_dir,
+            env=_probe_environment(workspace=workspace, venv_dir=venv_dir),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            if process.poll() is not None:
+                raise ArtifactValidationError("installed server exited before health was ready")
+            # A separate process supplies a total deadline even for trickling HTTP input.
+            _run_checked(
+                (str(python), "-I", "-c", _HEALTH_PROBE, str(port), "14"),
+                cwd=probe_dir,
+                env=_probe_environment(workspace=workspace, venv_dir=venv_dir),
+                timeout=15,
+            )
+            if process.poll() is not None:
+                raise ArtifactValidationError("installed server exited after health before stop")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                terminated = True
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.wait(timeout=5)
+                raise ArtifactValidationError("installed server stop exceeded 5s") from exc
+    if not terminated:
+        raise ArtifactValidationError("installed server exited after health before stop")
+    expected_returncode = 1 if os.name == "nt" else 0
+    if process.returncode != expected_returncode:
+        raise ArtifactValidationError(f"installed server stop failed: exit {process.returncode}")
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise ArtifactValidationError("installed server still accepts connections after stop")
+    print("installed server start/health/stop passed", flush=True)
+
+
+def _portable_tests(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None:
+    """Copy only portable test inputs, then test installed imports in the pytest process."""
+    test_root = probe_dir / "portable-tests"
+    test_root.mkdir()
+    inputs = (
+        "pyproject.toml",
+        "tests/__init__.py",
+        "tests/conftest.py",
+        "tests/server_factory.py",
+        "tests/test_cli.py",
+        "tests/test_security/__init__.py",
+        "tests/test_security/test_crypto.py",
+    )
+    for relative in inputs:
+        destination = test_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(workspace / relative, destination)
+    shutil.copytree(
+        workspace / "tests/test_http",
+        test_root / "tests/test_http",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    python, _ = _venv_commands(venv_dir)
+    script = (
+        _IMPORT_PROBE + "\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import pytest\n"
+        "result = pytest.main(['-q', 'tests/test_http', "
+        "'tests/test_security/test_crypto.py', 'tests/test_cli.py'])\n"
+        + _IMPORT_PROBE
+        + "\nraise SystemExit(result)"
+    )
+    _run_checked(
+        (str(python), "-I", "-c", script, str(test_root)),
+        cwd=test_root,
+        env=_probe_environment(workspace=workspace, venv_dir=venv_dir),
+        timeout=600,
+    )
+
+
+def portable_smoke(
+    *,
+    wheel: Path,
+    wheel_sha256: str,
+    constraints: Path,
+    fresh_root: Path,
+    workspace: Path,
+) -> None:
+    """Install the transferred wheel into a pipx-equivalent application venv and prove it."""
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    if len(wheel_sha256) != 64 or digest != wheel_sha256:
+        raise ArtifactValidationError("portable wheel SHA256 differs from the Linux build")
+    fresh_root = _require_outside_workspace(
+        fresh_root, workspace=workspace, label="portable application root"
+    )
+    if fresh_root.exists() and any(fresh_root.iterdir()):
+        raise ArtifactValidationError(f"portable application root must start empty: {fresh_root}")
+    fresh_root.mkdir(parents=True, exist_ok=True)
+    probe_dir = fresh_root / "outside-checkout"
+    probe_dir.mkdir()
+    venv_dir = fresh_root / "app-venv"
+    environment = _probe_environment(workspace=workspace, venv_dir=venv_dir)
+    _run_checked(
+        (sys.executable, "-I", "-m", "venv", str(venv_dir)), cwd=probe_dir, env=environment
+    )
+    python, _ = _venv_commands(venv_dir)
+    _run_checked(
+        (
+            str(python),
+            "-I",
+            "-m",
+            "pip",
+            "--isolated",
+            "install",
+            "--no-cache-dir",
+            "--constraint",
+            str(constraints),
+            str(wheel),
+        ),
+        cwd=probe_dir,
+        env=environment,
+    )
+    print(f"portable wheel SHA256: {digest}", flush=True)
+    _probe_installed_artifact(venv_dir=venv_dir, probe_dir=probe_dir, workspace=workspace)
+    _server_lifecycle_smoke(venv_dir=venv_dir, probe_dir=probe_dir, workspace=workspace)
+    # Test tools are added after proving the runtime dependency metadata on its own.
+    _run_checked(
+        (
+            str(python),
+            "-I",
+            "-m",
+            "pip",
+            "--isolated",
+            "install",
+            "--no-cache-dir",
+            "--constraint",
+            str(constraints),
+            "pytest",
+            "setuptools",
+        ),
+        cwd=probe_dir,
+        env=environment,
+    )
+    _portable_tests(venv_dir=venv_dir, probe_dir=probe_dir, workspace=workspace)
 
 
 def offline_smoke(
@@ -478,6 +724,12 @@ def _parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument("--wheelhouse", type=Path, required=True)
     smoke_parser.add_argument("--fresh-root", type=Path, required=True)
     smoke_parser.add_argument("--constraints", type=Path, required=True)
+    portable_parser = subparsers.add_parser("portable-smoke")
+    portable_parser.add_argument("--workspace", type=Path, required=True)
+    portable_parser.add_argument("--wheel", required=True)
+    portable_parser.add_argument("--wheel-sha256", required=True)
+    portable_parser.add_argument("--fresh-root", type=Path, required=True)
+    portable_parser.add_argument("--constraints", type=Path, required=True)
     return parser
 
 
@@ -506,6 +758,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             wheel=wheel,
             wheelhouse=args.wheelhouse,
             constraints=constraints,
+            workspace=workspace,
+        )
+        return 0
+
+    if args.command == "portable-smoke":
+        portable_smoke(
+            wheel=wheel,
+            wheel_sha256=args.wheel_sha256,
+            constraints=constraints,
+            fresh_root=args.fresh_root,
             workspace=workspace,
         )
         return 0

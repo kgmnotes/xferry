@@ -334,6 +334,75 @@ def test_root_help_flags_print_root_help_without_importing_server_cli(
     assert captured.err == ""
 
 
+@pytest.mark.parametrize("argv", [["--version"], ["--lang", "ru", "--version"]])
+def test_root_version_uses_package_authority_without_server_imports(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Root version is available even when server backends cannot be imported."""
+    _block_server_cli(monkeypatch)
+    assert main(argv) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"xferry {__version__}\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("language", "portable_heading", "managed_heading"),
+    [
+        ("en", "Portable commands (Windows, macOS, Linux):", "Managed Linux/systemd commands:"),
+        ("ru", "Переносимые команды (Windows, macOS, Linux):", "Команды Linux/systemd:"),
+    ],
+)
+def test_root_help_labels_portable_and_managed_lifecycles(
+    language: str,
+    portable_heading: str,
+    managed_heading: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--lang", language, "--help"]) == 0
+    output = capsys.readouterr().out
+    portable, managed = output.split(managed_heading)
+    assert portable_heading in portable
+    for command in ("run", "examples", "help"):
+        assert f"  {command}\n" in portable
+    assert "  setup\n" in managed
+    assert "  setup\n" not in portable
+    assert "pipx upgrade xferry" in output
+    assert "pipx uninstall xferry" in output
+    assert "--version" in output
+
+
+@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize("argv", [["typo"], ["help", "typo"]])
+def test_unknown_command_names_the_token_and_points_to_help(
+    language: str, argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--lang", language, *argv]) == 2
+    captured = capsys.readouterr()
+    assert "'typo'" in captured.err
+    assert "xferry help" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("language", "usage_error", "unknown_command"),
+    [
+        ("en", "usage error", "Unknown command"),
+        ("ru", "ошибка использования", "Неизвестная команда"),
+    ],
+)
+def test_help_for_known_command_without_details_is_a_usage_error(
+    language: str,
+    usage_error: str,
+    unknown_command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A known command without focused help must not be mislabeled as unknown."""
+    assert main(["--lang", language, "help", "help"]) == 2
+    captured = capsys.readouterr()
+    assert usage_error in captured.err
+    assert unknown_command not in captured.err
+
+
 @pytest.mark.parametrize("argv", [["--port", "8123"], ["unsupported-command"]])
 def test_root_rejects_bare_server_flags_and_unknown_positionals_without_server_cli(
     argv: list[str],

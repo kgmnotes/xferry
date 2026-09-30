@@ -738,15 +738,37 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
         assert lifecycle in scie_job
 
 
-def test_cross_platform_cli_smoke_exercises_module_and_console_help() -> None:
-    """Catches Windows smoke dropping the portable module or installed-script help paths."""
+def test_cross_platform_acceptance_transfers_one_wheel_across_all_nine_pairs() -> None:
+    """Catches editable acceptance, rebuilt consumers, or an incomplete portable matrix."""
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    cross_platform_job = _workflow_job(workflow, "cross-platform")
-    cli_smoke = _workflow_named_step(cross_platform_job, "CLI smoke")
-
-    assert "python -m xferry run --help" in cli_smoke
-    assert "xferry --help" in cli_smoke
-    assert "xferry run --help" in cli_smoke
+    build = _workflow_job(workflow, "python314-readiness")
+    portable = _workflow_job(workflow, "cross-platform")
+    exhaustive = _workflow_job(workflow, "test")
+    assert build.count("python -m build --sdist --wheel --outdir dist") == 1
+    assert "wheel-sha256: ${{ steps.wheel-identity.outputs.sha256 }}" in build
+    upload = _workflow_named_step(build, "Upload portable wheel")
+    assert "name: portable-wheel" in upload
+    assert "path: dist/xferry-*.whl" in upload
+    assert "if-no-files-found: error" in upload
+    assert "needs: python314-readiness" in portable
+    assert "os: [ubuntu-latest, macos-15, windows-latest]" in portable
+    assert 'python-version: ["3.10", "3.12", "3.14"]' in portable
+    assert "python-version: ${{ matrix.python-version }}" in portable
+    download = _workflow_named_step(portable, "Download exact portable wheel")
+    assert "actions/download-artifact@" in download
+    assert "name: portable-wheel" in download
+    assert "path: portable-artifacts" in download
+    acceptance = _workflow_named_step(portable, "Isolated packaged CLI and portable tests")
+    assert "shell: bash" in acceptance
+    assert "needs.python314-readiness.outputs.wheel-sha256" in acceptance
+    assert "verify_python_artifacts.py portable-smoke" in acceptance
+    assert "--wheel 'portable-artifacts/xferry-*.whl'" in acceptance
+    assert '--wheel-sha256 "$PORTABLE_WHEEL_SHA256"' in acceptance
+    assert '--fresh-root "$RUNNER_TEMP/xferry-portable-app"' in acceptance
+    assert "pip install -e" not in portable
+    assert "python -m build" not in portable
+    assert 'python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]' in exhaustive
+    assert "pytest --cov=xferry" in exhaustive
 
 
 def test_ci_websocket_risk_lane_has_one_pytest_invocation_with_exact_paths() -> None:

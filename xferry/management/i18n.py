@@ -21,8 +21,15 @@ _ENVIRONMENT_LANGUAGE_KEYS = ("XFERRY_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE"
 _MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "root_description": "Manage an installed XFerry service or run the server with xferry run.",
-        "commands_heading": "Management commands:",
+        "portable_heading": "Portable commands (Windows, macOS, Linux):",
+        "commands_heading": "Managed Linux/systemd commands:",
         "maintenance_heading": "Optional maintenance:",
+        "portable_lifecycle": (
+            "Portable lifecycle: pipx upgrade xferry; pipx uninstall xferry.\n"
+            "Managed commands and optional maintenance require a supported Linux/systemd host."
+        ),
+        "root_options": "Root options: --help, --version, --lang LANG.",
+        "unknown_command": "Unknown command '{command}'. Run `xferry help` for available commands.",
         "examples_heading": "Examples:",
         "root_examples": (
             "  xferry run --preset local\n"
@@ -78,8 +85,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "root_description": (
             "Управляйте установленной службой XFerry или запускайте сервер через xferry run."
         ),
-        "commands_heading": "Команды управления:",
+        "portable_heading": "Переносимые команды (Windows, macOS, Linux):",
+        "commands_heading": "Команды Linux/systemd:",
         "maintenance_heading": "Необязательное обслуживание:",
+        "portable_lifecycle": (
+            "Переносимая установка: pipx upgrade xferry; pipx uninstall xferry.\n"
+            "Команды управления и обслуживания требуют поддерживаемой системы Linux/systemd."
+        ),
+        "root_options": "Общие параметры: --help, --version, --lang LANG.",
+        "unknown_command": "Неизвестная команда '{command}'. Список команд: `xferry help`.",
         "examples_heading": "Примеры:",
         "root_examples": (
             "  xferry run --preset local\n"
