@@ -53,7 +53,7 @@ channel is not a supported channel.
 
 All channels carry the same version identity. GitHub Release metadata is the
 discovery boundary for managed artifacts, but signed metadata and artifact
-digests—not the release page or a mutable URL—are the update authority.
+digests, not the release page or a mutable URL, are the update authority.
 
 ### Trigger, approval, and permission controls
 
