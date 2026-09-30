@@ -66,3 +66,10 @@
 - Verification: 54 focused tests, all 3,335 Python 3.12 tests, strict mypy, repository Ruff lint/format, actionlint, pytest collection policy, a real external-wheel lifecycle plus 312 portable tests, diff integrity, and independent review passed.
 - Remaining evidence: fresh hosted producer identity and all nine green portable consumers.
 - Report: `stage-reports/STAGE-008-20260930-102812.md`
+
+## 2026-09-30 12:07:05 +0300 — STAGE-008
+- Status: CLOSED
+- Hosted evidence: run `36693644399`, SHA `bcf2430262de016369829896f52c71c8fc1ef2c0`; producer wheel SHA256 `86f2bb19c4a5e9de0d4820d6a0d09a7de646f782e7e81c6f473597ba02a20d5d`; all nine Ubuntu/macOS/Windows × Python 3.10/3.12/3.14 consumers passed.
+- Verification: the hosted producer and nine portable consumers, 54 focused tests, all 3,335 Python 3.12 tests, strict mypy, repository Ruff lint/format, actionlint, pytest collection policy, real external-wheel acceptance, diff integrity, and independent review passed.
+- Known unrelated gate: the aggregate CI conclusion remains red only at the documented pre-existing public-tree policy before the full Linux jobs; shipping artifact validation and all STAGE-008 jobs are green.
+- Report: `stage-reports/STAGE-008-20260930-102812.md`

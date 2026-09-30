@@ -1,7 +1,7 @@
 # STAGE-008 - Prove portable packaged CLI journeys
 
 ## Status
-PARTIALLY_CLOSED
+CLOSED
 
 ## Priority
 HIGH
@@ -49,7 +49,7 @@ Prove that a built wheel works outside the source checkout through a pipx-style 
 5. Keep the full Ubuntu Python 3.10-3.14 suite as the exhaustive logic gate.
 
 ## Acceptance criteria
-- [ ] The same built wheel installs and runs on Windows, macOS, and Linux at Python 3.10, 3.12, and 3.14.
+- [x] The same built wheel installs and runs on Windows, macOS, and Linux at Python 3.10, 3.12, and 3.14.
 - [x] Acceptance runs outside the checkout and cannot import source-tree code accidentally.
 - [x] `xferry --version`, `python -m xferry --version`, `xferry --help`, `xferry run --check-config`, and a bounded server lifecycle smoke succeed.
 - [x] Help labels managed Linux commands and points portable upgrade/uninstall to pipx.
@@ -84,5 +84,6 @@ Prove that a built wheel works outside the source checkout through a pipx-style 
 - A separate candidate review found no Critical or Important issue and one Minor known-command diagnostic regression. The fix was developed test-first; 6 focused cases, all 3,332 Python 3.12 tests, Ruff, formatting, actionlint, and diff checks passed afterward. A newly built exact wheel (`fce1ba554e5949a7f0d1ab822d8fa8f502d48631ea58f913c8f6ee7f0ef39918`) then passed the complete 312-test portable journey on Linux Python 3.10/3.12/3.14.
 - Hosted run `36690775333` at `c16760603b4717d73270c00fb05180a68004b001` proved the exact cross-job wheel transfer and passed six of nine portable pairs. macOS 3.10 failed because `setup-python` inherited a relative `PIP_CONSTRAINT`; Windows 3.10/3.14 completed health and process termination but hit a transient accepting socket during the one-shot close probe.
 - Both hosted causes were remediated test-first: the workflow now supplies `${{ github.workspace }}/constraints/ci.txt`, and lifecycle verification polls port refusal for at most two seconds after the process has exited. All 54 focused tests, all 3,335 Python 3.12 tests, mypy, repository Ruff lint/format, actionlint, collection policy, a real 312-test external-wheel journey, and independent review passed.
-- Remaining acceptance gap: rerun the hosted producer and all nine native OS/Python consumers against the remediated commit, record the new wheel identity, and require nine green portable jobs before marking CLOSED.
+- Closed: 2026-09-30 12:07:05 +0300. Hosted run `36693644399` at `bcf2430262de016369829896f52c71c8fc1ef2c0` produced wheel SHA256 `86f2bb19c4a5e9de0d4820d6a0d09a7de646f782e7e81c6f473597ba02a20d5d`; the producer and all nine Ubuntu/macOS/Windows × Python 3.10/3.12/3.14 portable consumers passed.
+- The aggregate workflow remained red only because the separately documented pre-existing public-tree policy runs before the Linux full-suite steps; all STAGE-008 gates and the fresh local 3,335-test suite passed.
 - Report: `../stage-reports/STAGE-008-20260930-102812.md`.
