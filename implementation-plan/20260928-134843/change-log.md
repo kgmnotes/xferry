@@ -108,3 +108,22 @@
 - Independent review found that deleting the top-level workflow permissions block escaped the policy guard. A failing regression reproduced it; the guard now requires exactly `contents: read` and `actions: read`.
 - Verification: the new regression passed, all 3,533 repository tests passed, and strict mypy, Ruff lint/format, compile, actionlint v1.7.7, stale-doc guard, release preflight, and diff integrity were clean.
 - Remaining: owner-confirmed TestPyPI Trusted Publisher mapping, workflow registration on the default branch, actual immutable `0.1.0` upload, accepted-byte verification, and hosted Ubuntu/macOS/Windows receipts.
+
+## 2026-10-01 00:43:20 +0300 — STAGE-011 hosted closure
+- Status: CLOSED.
+- Integration: PR #37 merged the GHCR rehearsal as `4a0deec`; PR #40 merged the registry-verifier destination fix as `54a1713`. Both rehearsal branches were retained and protected; `ghcr-staging` allowlists only the corrected v2 branch.
+- Hosted evidence: run `36779670844`, protected head `f0da2711b7bb111071bad926752bd31be065dc13`; all five jobs passed.
+- Published identity: `ghcr.io/kgmnotes/xferry:v0.1.0`, digest `sha256:38fa2dbd7e14edd7ad305620d4d8ee80cea1eb8857f500c757263dcdb88d3622`; publication refused a mutable `latest` tag before registry write.
+- Acceptance: exact STAGE-009 OCI graph promoted without rebuild; registry identity, both platform manifests, SPDX/SLSA descriptors, native amd64/arm64 image/runtime/browser lifecycles, named-volume persistence, and cleanup verified.
+- Boundary: production activation remains disabled until STAGE-015; public container documentation remains STAGE-014 scope.
+- Report: `stage-reports/STAGE-011-20261001-004320.md`.
+
+## 2026-10-01 01:41:45 +0300 — STAGE-012 hosted closure
+- Status: CLOSED.
+- Reviewed implementation: PR #41, protected and locked head `19ce00f7e0e97efe8221d3a594bab0e2ce439e36`, received `gkumurzhi` approval, all 23 required checks, and an independent no-findings review. It remains unmerged to avoid the automatic public Pages deployment attached to every `main` push.
+- Hosted evidence: run `36785117025`; identity, protected signing, secret-free draft publication/download, and read-only verification all passed after independent approvals by `gkumurzhi`.
+- Release identity: draft prerelease `400481506`, lightweight tag `xferry-stage-012-rehearsal-v0.1.0-36712344792-v2`, exactly 18 versioned assets, no `latest`, overwrite, edit, or rebuild path.
+- Verification: 250 focused tests; all 3,608 tests at 87.73% coverage; stale-doc, Node syntax, Ruff lint/format, actionlint and diff checks; independent code review; hosted signature/tamper verification; and a separate authenticated local download and verification all passed.
+- Rollback: failed v1 draft `400465201` was deleted after v2 success. The v1 protected branch and tag remain at `a0b1de8`; the v2 draft remains unpublished.
+- Boundary: no production `v0.1.0` tag, non-draft public Release, production PyPI publication, or public documentation deployment occurred. Anonymous public delivery remains STAGE-015 scope.
+- Report: `stage-reports/STAGE-012-20261001-014145.md`.

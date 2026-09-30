@@ -1,7 +1,7 @@
 # STAGE-011 - Add multi-arch GHCR publication path
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -50,20 +50,20 @@ Implement an initially non-production-activated GHCR publisher that promotes the
 6. Keep the production caller disabled until STAGE-015.
 
 ## Acceptance criteria
-- [ ] GHCR manifest contains exactly `linux/amd64` and `linux/arm64` for the target version.
-- [ ] Registry digests correspond to the promoted OCI candidate inventory; no publish-job build occurs.
-- [ ] Each architecture passes `verify_docker_image.py` and `docker_image_smoke.py` after pulling from GHCR.
-- [ ] Version tag and digest are immutable release identities; no `latest` dependency is created.
-- [ ] SBOM, provenance, and attestation are attached and verifiable.
-- [ ] Publisher permissions are job-scoped and production activation remains disabled.
+- [x] GHCR manifest contains exactly `linux/amd64` and `linux/arm64` for the target version.
+- [x] Registry digests correspond to the promoted OCI candidate inventory; no publish-job build occurs.
+- [x] Each architecture passes `verify_docker_image.py` and `docker_image_smoke.py` after pulling from GHCR.
+- [x] Version tag and digest are immutable release identities; no `latest` dependency is created.
+- [x] SBOM, provenance, and attestation are attached and verifiable.
+- [x] Publisher permissions are job-scoped and production activation remains disabled.
 
 ## Verification plan
 | Check | Command or method | Expected result |
 |---|---|---|
-| Targeted tests | `python -m pytest -q tests/test_docker_context.py tests/test_docker_image_smoke.py tests/test_deployment_artifacts.py` | All pass |
-| Registry manifest | `docker buildx imagetools inspect ghcr.io/kgmnotes/xferry:vX.Y.Z` on rehearsal tag | Two expected platforms and recorded digest |
-| Runtime integration | Pull by digest on amd64/arm64; run `tools/verify_docker_image.py` and `tools/docker_image_smoke.py` | Both pass |
-| Security/static review | Inspect permissions, action SHAs, SBOM/provenance, and absence of rebuild/latest | Contract satisfied |
+| Targeted/static tests | Corrected branch: 160 focused tests, Ruff lint/format, compile, Actionlint and policy checks | All passed before PR #40 merged |
+| Registry manifest | Run `36779670844`; receipt/index independently downloaded and hashed | Exact digest `sha256:38fa2dbd7e14edd7ad305620d4d8ee80cea1eb8857f500c757263dcdb88d3622`; exactly two target platforms plus their attestations |
+| Runtime integration | Native `pull-smoke` jobs pulled `ghcr.io/kgmnotes/xferry@sha256:38fa2d...` on amd64 and arm64 | Image verification, runtime lifecycle, browser first-run, persistence and cleanup passed on both architectures |
+| Security/static review | Protected workflow, exact candidate receipt, registry verifier, and independent review | Least privilege, no rebuild, SPDX/SLSA identity, and publication-time absence of `latest` verified |
 
 ## Suggested subagents
 - `docker-expert` - OCI promotion and multi-platform correctness.
@@ -76,4 +76,9 @@ Implement an initially non-production-activated GHCR publisher that promotes the
 - Rollback: delete/deprecate only rehearsal tags, keep production caller disabled, and require native arm64 evidence before STAGE-015.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Implementation merged through PR #37 as `4a0deec`; the deterministic registry-verifier destination fix merged through PR #40 as `54a1713`.
+- Successful hosted evidence: [run `36779670844`](https://github.com/kgmnotes/xferry/actions/runs/36779670844), exact protected head `f0da2711b7bb111071bad926752bd31be065dc13`.
+- Published identity: `ghcr.io/kgmnotes/xferry:v0.1.0` at `sha256:38fa2dbd7e14edd7ad305620d4d8ee80cea1eb8857f500c757263dcdb88d3622`; no `latest` tag existed at the publication gate.
+- All five jobs passed: immutable candidate identity/preparation, protected publish, registry graph verification, native amd64 pull/runtime/browser smoke, and native arm64 pull/runtime/browser smoke. The registry graph preserved the exact STAGE-009 platform, SPDX SBOM and SLSA provenance descriptors.
+- Production caller remains disabled; STAGE-015 owns activation. Canonical public container documentation remains STAGE-014 scope.
+- Closure report: `stage-reports/STAGE-011-20261001-004320.md`.
