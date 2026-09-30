@@ -35,6 +35,7 @@ from xferry.management.release_contract import (  # noqa: E402
     machine_aliases,
     platform_display_name,
     require_platform_id,
+    require_signing_key_id,
     require_source_commit,
     require_workflow_run,
 )
@@ -87,6 +88,7 @@ def _render_installer(
     executable: Path,
     manifest_payload: str,
     platform_id: PlatformId,
+    manifest_signature_required: bool,
 ) -> str:
     payload = executable.read_bytes()
     managed_os_cases = "|".join(
@@ -100,6 +102,7 @@ def _render_installer(
         "@EXECUTABLE_SIZE@": str(len(payload)),
         "@EXECUTABLE_SHA256@": hashlib.sha256(payload).hexdigest(),
         "@MANIFEST_JSON@": manifest_payload.rstrip("\n"),
+        "@MANIFEST_SIGNATURE_REQUIRED@": ("true" if manifest_signature_required else "false"),
         "@PLATFORM_ID@": platform_id,
         "@MACHINE_CASE_PATTERN@": "|".join(machine_aliases(platform_id)),
         "@MANAGED_HOST_DESCRIPTION@": SUPPORTED_MANAGED_HOST_SUMMARY,
@@ -153,6 +156,7 @@ def build_release_bundle(
     platform_id: PlatformId,
     source_commit: str | None = None,
     workflow_run: str | None = None,
+    signing_key_id: str | None = None,
 ) -> ReleaseBundle:
     """Build one native pinned-CPython SCIE and its bootstrap metadata."""
 
@@ -171,6 +175,9 @@ def build_release_bundle(
     )
     selected_workflow_run = require_workflow_run(
         os.environ.get("GITHUB_RUN_ID", "local") if workflow_run is None else workflow_run
+    )
+    selected_signing_key_ids = (
+        () if signing_key_id is None else (require_signing_key_id(signing_key_id),)
     )
     output_dir = output_dir.resolve()
     if output_dir.is_symlink() or output_dir.exists():
@@ -239,6 +246,7 @@ def build_release_bundle(
             executable_sha256=sha256,
             source_commit=selected_source_commit,
             workflow_run=selected_workflow_run,
+            signing_key_ids=selected_signing_key_ids,
         )
         manifest_payload = release_manifest.to_bytes().decode("utf-8")
         manifest = bundle_dir / "xferry-release.json"
@@ -253,6 +261,7 @@ def build_release_bundle(
                 executable=executable,
                 manifest_payload=manifest_payload,
                 platform_id=selected_platform,
+                manifest_signature_required=release_manifest.signing_scheme == "ed25519",
             ),
             encoding="utf-8",
         )
@@ -275,6 +284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version")
     parser.add_argument("--source-commit")
     parser.add_argument("--workflow-run")
+    parser.add_argument("--signing-key-id")
     arguments = parser.parse_args(argv)
     version = arguments.version
     if version is None:
@@ -289,6 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         platform_id=arguments.platform,
         source_commit=arguments.source_commit,
         workflow_run=arguments.workflow_run,
+        signing_key_id=arguments.signing_key_id,
     )
     for asset in (bundle.executable, bundle.installer, bundle.manifest, bundle.checksums):
         print(asset)

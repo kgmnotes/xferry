@@ -153,7 +153,17 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
         "release_platform_unsupported": "The release platform does not match this host.",
         "release_download_failed": "The release download failed.",
         "release_manifest_invalid": "The release manifest is invalid.",
+        "release_manifest_unsigned": "The remote release manifest is not signed.",
+        "release_manifest_noncanonical": "The signed release manifest is not canonical.",
+        "release_signature_download_failed": "The release signature download failed.",
+        "release_signature_invalid": "The release signature is invalid.",
+        "release_signing_key_unknown": "The release signing key is not trusted.",
+        "release_signing_key_revoked": "The release signing key has been revoked.",
         "release_manifest_mismatch": "The release manifest does not match the requested version.",
+        "release_downgrade_blocked": (
+            "Managed update requires the exact current or a newer version; "
+            "use rollback for another non-newer release."
+        ),
         "release_integrity_failed": "The release size or checksum verification failed.",
         "candidate_config_invalid": "The candidate cannot load the managed configuration.",
         "candidate_restart_failed": (
@@ -210,7 +220,17 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
         "release_platform_unsupported": "Платформа выпуска не соответствует этому серверу.",
         "release_download_failed": "Не удалось загрузить выпуск.",
         "release_manifest_invalid": "Манифест выпуска недействителен.",
+        "release_manifest_unsigned": "Удалённый манифест выпуска не подписан.",
+        "release_manifest_noncanonical": "Подписанный манифест выпуска неканоничен.",
+        "release_signature_download_failed": "Не удалось загрузить подпись выпуска.",
+        "release_signature_invalid": "Подпись выпуска недействительна.",
+        "release_signing_key_unknown": "Ключ подписи выпуска не является доверенным.",
+        "release_signing_key_revoked": "Ключ подписи выпуска отозван.",
         "release_manifest_mismatch": "Манифест не соответствует запрошенной версии.",
+        "release_downgrade_blocked": (
+            "Управляемое обновление требует текущую точную или более новую версию; "
+            "для другого не более нового выпуска используйте откат."
+        ),
         "release_integrity_failed": "Проверка размера или контрольной суммы не пройдена.",
         "candidate_config_invalid": "Новая версия не может загрузить управляемую конфигурацию.",
         "candidate_restart_failed": "Новая служба не запустилась; предыдущий выпуск восстановлен.",

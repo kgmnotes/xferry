@@ -7,6 +7,8 @@ platform_id='@PLATFORM_ID@'
 artifact_name='@EXECUTABLE_NAME@'
 artifact_size='@EXECUTABLE_SIZE@'
 artifact_sha256='@EXECUTABLE_SHA256@'
+manifest_signature_required='@MANIFEST_SIGNATURE_REQUIRED@'
+manifest_signature_name='xferry-release.json.sig'
 supported_release_major='@SUPPORTED_RELEASE_MAJOR@'
 unsupported_managed_state_instructions='@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@'
 release_base_url="${XFERRY_RELEASE_BASE_URL:-https://github.com/kgmnotes/xferry/releases/download/v@VERSION@}"
@@ -101,6 +103,7 @@ valid_supported_release() {
   candidate_version="$2"
   required_schema="${3:-any}"
   candidate_manifest="$candidate_release/xferry-release.json"
+  candidate_signature="$candidate_release/$manifest_signature_name"
   candidate_executable="$candidate_release/xferry"
   real_directory "$candidate_release" || return 1
   regular_file "$candidate_manifest" || return 1
@@ -160,7 +163,7 @@ valid_supported_release() {
         if (lines[2] == "  \"schema_version\": 1,") {
           if (required_schema == "2") invalid()
           if (NR != 11 || lines[10] != "  }" || lines[11] != "}") invalid()
-          print size ":" sha256
+          print size ":" sha256 ":0"
           exit 0
         }
         if (lines[2] != "  \"schema_version\": 2,") invalid()
@@ -207,16 +210,48 @@ valid_supported_release() {
         }
         if (!expected_digest_seen) invalid()
         if (lines[artifact_end + 1] != "  \"signing\": {") invalid()
-        if (lines[artifact_end + 2] != "    \"scheme\": \"unsigned\",") invalid()
-        if (lines[artifact_end + 3] != "    \"key_ids\": []") invalid()
-        if (lines[artifact_end + 4] != "  }" || lines[artifact_end + 5] != "}") invalid()
-        if (NR != artifact_end + 5) invalid()
-        print size ":" sha256
+        signing_scheme = lines[artifact_end + 2]
+        signing_key_ids = lines[artifact_end + 3]
+        if (signing_scheme == "    \"scheme\": \"unsigned\",") {
+          if (signing_key_ids != "    \"key_ids\": []") invalid()
+          signature_required = 0
+          signing_end = artifact_end + 5
+        } else if (signing_scheme == "    \"scheme\": \"ed25519\",") {
+          if (signing_key_ids != "    \"key_ids\": [") invalid()
+          signing_key_id = lines[artifact_end + 4]
+          if (signing_key_id !~ /^      "[a-z0-9][a-z0-9._-]*[a-z0-9]"$/ &&
+              signing_key_id !~ /^      "[a-z0-9]"$/) invalid()
+          if (length(signing_key_id) > 72) invalid()
+          if (lines[artifact_end + 5] != "    ]") invalid()
+          signature_required = 1
+          signing_end = artifact_end + 7
+        } else {
+          invalid()
+        }
+        if (lines[signing_end - 1] != "  }" || lines[signing_end] != "}") invalid()
+        if (NR != signing_end) invalid()
+        print size ":" sha256 ":" signature_required
       }
     ' "$candidate_manifest"
   )" || return 1
   candidate_declared_size="${candidate_manifest_fields%%:*}"
-  candidate_declared_sha256="${candidate_manifest_fields#*:}"
+  candidate_manifest_remainder="${candidate_manifest_fields#*:}"
+  candidate_declared_sha256="${candidate_manifest_remainder%%:*}"
+  candidate_signature_required="${candidate_manifest_remainder#*:}"
+  case "$candidate_signature_required" in
+    0) ;;
+    1)
+      regular_file "$candidate_signature" || return 1
+      candidate_signature_size="$(wc -c < "$candidate_signature" | tr -d '[:space:]')"
+      case "$candidate_signature_size" in
+        ''|*[!0-9]*) return 1 ;;
+      esac
+      [ "$candidate_signature_size" -gt 0 ] \
+        && [ "$candidate_signature_size" -le 4096 ] \
+        || return 1
+      ;;
+    *) return 1 ;;
+  esac
   candidate_executable_size="$(wc -c < "$candidate_executable" | tr -d '[:space:]')"
   case "$candidate_executable_size" in
     ''|*[!0-9]*) return 1 ;;
@@ -311,6 +346,14 @@ trap cleanup EXIT HUP INT TERM
 downloaded="$stage_dir/$artifact_name"
 curl -fsSL --retry 3 -o "$downloaded" "$release_base_url/$artifact_name"
 
+downloaded_signature=''
+if [ "$manifest_signature_required" = true ]; then
+  downloaded_signature="$stage_dir/$manifest_signature_name"
+  curl -fsSL --retry 3 \
+    -o "$downloaded_signature" \
+    "$release_base_url/$manifest_signature_name"
+fi
+
 actual_size="$(wc -c < "$downloaded" | tr -d '[:space:]')"
 if [ "$actual_size" != "$artifact_size" ]; then
   echo "xferry download has unexpected size: $actual_size" >&2
@@ -331,6 +374,9 @@ cat > "$candidate_release/xferry-release.json" <<'XFERRY_CANDIDATE_MANIFEST'
 @MANIFEST_JSON@
 XFERRY_CANDIDATE_MANIFEST
 chmod 0644 "$candidate_release/xferry-release.json"
+if [ "$manifest_signature_required" = true ]; then
+  install -m 0644 "$downloaded_signature" "$candidate_release/$manifest_signature_name"
+fi
 if ! valid_supported_release "$candidate_release" "$version" 2; then
   echo 'xferry candidate manifest or executable is invalid' >&2
   exit 1
@@ -349,6 +395,11 @@ mkdir "$install_stage"
 chmod 0755 "$install_stage"
 install -m 0755 "$candidate_release/xferry" "$install_stage/xferry"
 install -m 0644 "$candidate_release/xferry-release.json" "$install_stage/xferry-release.json"
+if [ "$manifest_signature_required" = true ]; then
+  install -m 0644 \
+    "$candidate_release/$manifest_signature_name" \
+    "$install_stage/$manifest_signature_name"
+fi
 mv "$install_stage" "$release_path"
 
 ln -s "releases/$version" "$release_root/.current-$version"

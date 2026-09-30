@@ -8,7 +8,7 @@
 | STAGE-004 | platform/manifest/model/state unit and property tests; mypy | v1 fixture fuzzing | Existing managed-state compatibility | Current schema/platform fixtures |
 | STAGE-005 | all target distro/arch detection and diagnostic tests | native host preflight | Native arm64 availability | Current x86_64/Debian 12 behavior |
 | STAGE-006 | two SCIE bundles; checksum/manifest/install tests; distro base smoke | native arm64/systemd smoke | arm64 runner/QEMU fidelity | Existing x86_64 SCIE smoke |
-| STAGE-007 | canonicalization/signature/tamper/key rotation/downgrade tests | offline verifier interoperability | Key custody decision | Existing checksum/rollback cases |
+| STAGE-007 | canonicalization/signature/tamper/key rotation/downgrade tests | offline verifier interoperability | None; enrollment and protected custody confirmed | Existing checksum/rollback cases |
 | STAGE-008 | built-wheel install matrix; pipx-style commands; portable subset; CLI contracts | actual TestPyPI install deferred to 010 | Hosted OS runner availability | Existing editable 3.12 matrix |
 | STAGE-009 | tag/version/changelog preflight; exact artifact digest equality; no external writes | workflow dry run | GitHub Actions runner | Current verification workflow |
 | STAGE-010 | TestPyPI Trusted Publishing; exact-version pipx smoke on three OSes | manual metadata review | Namespace/publisher ownership | Stage 008 wheel matrix |

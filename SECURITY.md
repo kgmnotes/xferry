@@ -106,6 +106,93 @@ approval gates access to the signing identity. A compromise stops promotion,
 revokes or yanks affected releases where supported, rotates identities, and
 publishes updated trust or revocation metadata before release work resumes.
 
+### Signed release metadata contract
+
+Remote managed releases use manifest schema v2 plus the detached
+`xferry-release.json.sig` envelope. The signed bytes are exactly the UTF-8 bytes
+emitted by `ReleaseManifest.to_bytes()`: fixed field order, two-space JSON
+indentation, lexically sorted artifact digests, and one trailing newline. A
+signed manifest declares `ed25519` and exactly one lowercase key ID. The
+detached envelope fixes its schema, algorithm, payload type, key ID, and base64
+signature; signature input is domain-separated and binds both the payload type
+and key ID. Semantically equivalent but non-canonical JSON is rejected.
+
+The signed fields include the exact version and tag, platform-specific artifact
+name, byte size, SHA-256 digest, source commit, workflow run, and complete
+declared artifact-digest map. The client authenticates those fields before it
+derives or downloads an executable URL. HTTPS and redirect policy, byte size,
+SHA-256, platform/version admission, downgrade prevention, config validation,
+health checks, and automatic rollback remain additional mandatory controls.
+
+The embedded public-key ring supports two active keys during a planned
+rotation. Each manifest still selects one signer: artifacts signed by either
+active key verify during the overlap. After cutover, mark the old key
+`REVOKED`; its signatures then fail with `release_signing_key_revoked`. Removing
+an ID makes it unknown and fails with `release_signing_key_unknown`. Do not
+remove or revoke the old key until every still-supported artifact has been
+re-signed or retired. A revoked release is never an eligible signed rollback
+target.
+
+The initial production key is enrolled with the following reviewed record:
+
+- key ID: `xferry-release-2026-09`;
+- raw public key (hex):
+  `4fe9ccd46e154ff6d866957995395993a584f50c80e3384d5db4068791684efc`;
+- raw-public-key SHA-256 fingerprint:
+  `e5e2e0f8bc8e051c540edea2ff5e0570c22876485c3f1cb6c3fd668a02b54859`;
+- private-key custody: GitHub Environment `production-release`, secret
+  `XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM`;
+- environment protection: required reviewer `kgmnotes`, admin bypass disabled;
+- rotation and revocation owner: `kgmnotes`.
+
+The matching environment variable `XFERRY_RELEASE_SIGNING_KEY_ID` carries the
+non-secret key ID. Test suites generate separate disposable keys in memory;
+test keys must never enter the production ring.
+
+`production-release` is the private signing-key boundary. It is deliberately
+separate from the `production` publisher-approval environment required by
+ADR-011. Later release jobs may pass only signed artifacts and recorded digests
+between those boundaries; they must never pass or export private key material.
+Before any workflow is allowed to consume the signing secret, its environment
+ref policy must be restricted to the reviewed release workflow and authorized
+release refs.
+
+If the signing identity may be compromised, stop every release and promotion
+job, preserve the workflow and artifact evidence, and disable use of the
+environment secret. Mark the affected public key `REVOKED` in the shipped ring,
+publish an advisory and withdraw or deprecate affected artifacts without
+deleting evidence, then create a new protected identity and ship its reviewed
+public key before release work resumes. Planned rotation may use a two-active-key
+overlap; suspected compromise must not. Loss of the environment secret is
+recovered by rotation, never by copying private material into the repository or
+logs.
+
+The signing helper reads an Ed25519 private key only from a permission-restricted
+path or an already-protected file descriptor. It signs already-built canonical
+manifest or installer bytes, never rebuilds artifacts, and never prints private
+material. Release automation must sign both `xferry-release.json` and
+`install.sh` at the protected signing boundary.
+
+### Privileged installer verification order
+
+The production key is enrolled, but the managed channel is not public until the
+release-assets stage closes. The required shape is download, offline verification
+with the shipped public-key ring, and only then explicit privileged execution:
+
+```console
+curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json"
+curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json.sig"
+curl --fail --silent --show-error --remote-name "$release_url/install.sh"
+curl --fail --silent --show-error --remote-name "$release_url/install.sh.sig"
+python tools/verify_release_signature.py --manifest xferry-release.json --signature xferry-release.json.sig
+python tools/verify_release_signature.py --installer install.sh --signature install.sh.sig
+sudo sh ./install.sh
+```
+
+Run the verifier from a reviewed checkout. Never stream a network response into
+a shell, and never use
+`curl | sudo sh`: the installer is itself part of the root trust chain.
+
 ## Payloads and notes
 
 Advanced upload and SMUGGLE support `none`, XOR, and AES payload modes. XOR is

@@ -35,3 +35,18 @@
 - Files changed: native multi-platform SCIE builder, generated installer validation, CI/manual release verification matrices, canonical managed-state platform preflight, focused builder/installer/workflow/lifecycle tests, and this active plan's overview, status, stage, change log, and report artifacts.
 - Verification: 177 stage-targeted and 458 expanded tests, strict mypy, repository-wide Ruff lint/format, shell/YAML/actionlint checks, real native x86_64 and aarch64 builds and no-host-Python CLI probes, all ten native target images, all 3,291 repository tests, and independent final re-review passed. Native evidence: GitHub Actions run `36593256300`, SHA `ca8c83631437d07a4bbce67933a5dbd309f36a4e`.
 - Report: `stage-reports/STAGE-006-20260929-155138.md`
+
+## 2026-09-29 19:53:24 +0300 — STAGE-007
+- Status: PARTIALLY_CLOSED
+- Files changed: canonical release contract and version ordering; release trust, update, and rollback handling; signing/offline verification tools; SCIE builder and installer metadata; security/threat-model documentation; focused tests; and this active plan's overview, status, stage, change log, and report artifacts.
+- Verification: 265 stage-targeted and all 3,308 repository tests, strict mypy for 70 source files, scoped Ruff lint/format, installer shell syntax, documentation sync, diff validation, bounded private-key/logging review, and independent security review passed. Production release workflow remained unchanged.
+- Remaining blocker: no owner-approved production Ed25519 public key, key ID, custody model, or rotation/revocation owner is available to enroll; the default key ring remains empty and remote update remains disabled and fail-closed.
+- Report: `stage-reports/STAGE-007-20260929-190303.md`
+
+## 2026-09-30 10:19:54 +0300 — STAGE-007
+- Status: CLOSED
+- Files changed: enrolled production public trust root and proof; protected signing-custody/runbook documentation; under-lock downgrade recheck and regression test; resolved active-plan status, matrix, risks, change log, and closure report.
+- External configuration: private key stored only as `XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM` in required-reviewer GitHub Environment `production-release`; key ID stored as non-secret environment variable; owner `kgmnotes`; admin bypass disabled.
+- Verification: 266 stage-targeted and all 3,309 repository tests, strict mypy for 70 source files, scoped Ruff lint/format, installer shell syntax, documentation sync, diff validation, bounded private-key/logging review, offline production-key interoperability, and independent security/custody/acceptance reviews passed.
+- Residual: bind or reverify the installer's persisted manifest signature before public activation; tracked for STAGE-012/013 and fail-closed today.
+- Report: `stage-reports/STAGE-007-20260930-101954.md`

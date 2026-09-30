@@ -14,8 +14,18 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tools.build_scie_release import CommandRunner, ReleaseBundle, build_release_bundle
+from tools.sign_release_metadata import (
+    main as sign_release_metadata,
+)
+from tools.sign_release_metadata import (
+    sign_installer,
+    sign_manifest,
+)
+from tools.verify_release_signature import verify_installer_files
 from xferry.management.health import HealthResult
 from xferry.management.model import ManagedLayout
 from xferry.management.release_contract import (
@@ -23,6 +33,13 @@ from xferry.management.release_contract import (
     LINUX_X86_64,
     SUPPORTED_PLATFORM_IDS,
     PlatformId,
+)
+from xferry.management.release_trust import (
+    MANIFEST_SIGNATURE_TYPE,
+    ReleaseKeyRing,
+    TrustedReleaseKey,
+    create_detached_signature,
+    verify_signed_manifest,
 )
 from xferry.management.releases import ReleaseManager, ReleaseManifest
 from xferry.management.system import CommandResult
@@ -140,6 +157,7 @@ def _render_bundle(
     payload: bytes = b"scie",
     *,
     platform_id: PlatformId = LINUX_X86_64,
+    signing_key_id: str | None = None,
 ) -> ReleaseBundle:
     return build_release_bundle(
         REPO_ROOT,
@@ -149,6 +167,7 @@ def _render_bundle(
         platform_id=platform_id,
         source_commit=TEST_SOURCE_COMMIT,
         workflow_run=TEST_WORKFLOW_RUN,
+        signing_key_id=signing_key_id,
     )
 
 
@@ -268,6 +287,7 @@ def _run_installer(
     has_systemd: bool = True,
     ram_mib: int = 1024,
     prepare_root: Callable[[Path], None] | None = None,
+    signature_payload: bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir(parents=True)
@@ -280,11 +300,17 @@ def _run_installer(
     (fake_bin / "curl").write_text(
         "#!/bin/sh\n"
         ': > "$XFERRY_TEST_CURL_MARKER"\n'
+        "output=''\n"
+        "url=''\n"
         'while [ "$#" -gt 0 ]; do\n'
-        '  if [ "$1" = "-o" ]; then cp "$XFERRY_TEST_PAYLOAD" "$2"; exit 0; fi\n'
+        '  if [ "$1" = "-o" ]; then output="$2"; shift 2; continue; fi\n'
+        '  url="$1"\n'
         "  shift\n"
         "done\n"
-        "exit 2\n",
+        'case "$url" in\n'
+        '  *.sig) cp "$XFERRY_TEST_SIGNATURE" "$output" ;;\n'
+        '  *) cp "$XFERRY_TEST_PAYLOAD" "$output" ;;\n'
+        "esac\n",
         encoding="utf-8",
     )
     real_mktemp = shutil.which("mktemp")
@@ -298,6 +324,8 @@ def _run_installer(
 
     downloaded = tmp_path / "downloaded-scie"
     downloaded.write_bytes(payload)
+    downloaded_signature = tmp_path / "downloaded-signature"
+    downloaded_signature.write_bytes(signature_payload or b"")
     target_root = tmp_path / "root"
     target_root.joinpath("etc").mkdir(parents=True)
     target_root.joinpath("etc/os-release").write_text(
@@ -331,6 +359,7 @@ def _run_installer(
         "XFERRY_TEST_MKTEMP_MARKER": str(tmp_path / "mktemp-called"),
         "XFERRY_TEST_MACHINE": machine,
         "XFERRY_TEST_PAYLOAD": str(downloaded),
+        "XFERRY_TEST_SIGNATURE": str(downloaded_signature),
     }
     return subprocess.run(
         ["sh", str(bundle.installer)],
@@ -491,6 +520,216 @@ def test_release_bundle_writes_literal_manifest_and_checksum(
     }
     assert bundle.manifest.read_bytes().endswith(b"\n")
     assert bundle.checksums.read_text(encoding="utf-8") == f"{expected_sha256}  {executable_name}\n"
+
+
+def test_release_signer_uses_external_key_without_rebuilding_manifest_or_artifacts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    key_id = "test-release-2026"
+    bundle = _render_bundle(tmp_path / "candidate", signing_key_id=key_id)
+    manifest_before = bundle.manifest.read_bytes()
+    executable_before = bundle.executable.read_bytes()
+    private_key = Ed25519PrivateKey.generate()
+    private_key_path = tmp_path / "protected-signing-key.pem"
+    private_key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    private_key_path.chmod(0o600)
+    signature_path = tmp_path / "xferry-release.json.sig"
+
+    result = sign_release_metadata(
+        (
+            "--manifest",
+            str(bundle.manifest),
+            "--signature-output",
+            str(signature_path),
+            "--key-id",
+            key_id,
+            "--private-key",
+            str(private_key_path),
+        )
+    )
+
+    assert result == 0
+    assert capsys.readouterr() == ("", "")
+    assert bundle.manifest.read_bytes() == manifest_before
+    assert bundle.executable.read_bytes() == executable_before
+    manifest = verify_signed_manifest(
+        manifest_before,
+        signature_path.read_bytes(),
+        key_ring=ReleaseKeyRing(
+            (
+                TrustedReleaseKey(
+                    key_id,
+                    private_key.public_key().public_bytes_raw(),
+                ),
+            )
+        ),
+    )
+    assert manifest.signing_key_ids == (key_id,)
+    assert stat.S_IMODE(signature_path.stat().st_mode) == 0o644
+
+
+def test_release_signer_rejects_a_world_readable_private_key(
+    tmp_path: Path,
+) -> None:
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        signing_key_id="test-release-2026",
+    )
+    private_key_path = tmp_path / "unsafe-signing-key.pem"
+    private_key_path.write_bytes(
+        Ed25519PrivateKey.generate().private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    private_key_path.chmod(0o644)
+
+    with pytest.raises(ValueError, match="must not be accessible"):
+        sign_release_metadata(
+            (
+                "--manifest",
+                str(bundle.manifest),
+                "--signature-output",
+                str(tmp_path / "signature"),
+                "--key-id",
+                "test-release-2026",
+                "--private-key",
+                str(private_key_path),
+            )
+        )
+
+    assert not (tmp_path / "signature").exists()
+
+
+def test_release_signer_accepts_an_already_protected_private_key_descriptor(
+    tmp_path: Path,
+) -> None:
+    key_id = "test-release-2026"
+    bundle = _render_bundle(tmp_path / "candidate", signing_key_id=key_id)
+    private_key = Ed25519PrivateKey.generate()
+    key_path = tmp_path / "external-key.pem"
+    key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    signature_path = tmp_path / "manifest.sig"
+
+    with key_path.open("rb") as private_stream:
+        assert (
+            sign_release_metadata(
+                (
+                    "--manifest",
+                    str(bundle.manifest),
+                    "--signature-output",
+                    str(signature_path),
+                    "--key-id",
+                    key_id,
+                    "--private-key-fd",
+                    str(private_stream.fileno()),
+                )
+            )
+            == 0
+        )
+
+    assert (
+        verify_signed_manifest(
+            bundle.manifest.read_bytes(),
+            signature_path.read_bytes(),
+            key_ring=ReleaseKeyRing(
+                (
+                    TrustedReleaseKey(
+                        key_id,
+                        private_key.public_key().public_bytes_raw(),
+                    ),
+                )
+            ),
+        ).version
+        == "0.1.0"
+    )
+
+
+def test_installer_signature_verifies_before_privileged_execution(tmp_path: Path) -> None:
+    key_id = "test-release-2026"
+    private_key = Ed25519PrivateKey.generate()
+    key_ring = ReleaseKeyRing(
+        (
+            TrustedReleaseKey(
+                key_id,
+                private_key.public_key().public_bytes_raw(),
+            ),
+        )
+    )
+    bundle = _render_bundle(tmp_path / "candidate")
+    signature_path = tmp_path / "install.sh.sig"
+    signature_path.write_bytes(
+        sign_installer(
+            bundle.installer.read_bytes(),
+            key_id=key_id,
+            private_key=private_key,
+        )
+    )
+
+    verify_installer_files(bundle.installer, signature_path, key_ring=key_ring)
+    bundle.installer.write_text(
+        bundle.installer.read_text(encoding="utf-8") + "# tampered\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="release_signature_invalid"):
+        verify_installer_files(bundle.installer, signature_path, key_ring=key_ring)
+
+
+def test_signed_bundle_installer_persists_manifest_signature_for_rollback(
+    tmp_path: Path,
+) -> None:
+    key_id = "test-release-2026"
+    private_key = Ed25519PrivateKey.generate()
+    payload = b"signed-scie"
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        signing_key_id=key_id,
+    )
+    signature = sign_manifest(
+        bundle.manifest.read_bytes(),
+        key_id=key_id,
+        private_key=private_key,
+    )
+
+    result = _run_installer(
+        bundle,
+        tmp_path / "installed",
+        payload,
+        signature_payload=signature,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = tmp_path / "installed/root/opt/xferry/releases/0.1.0"
+    assert installed.joinpath("xferry-release.json.sig").read_bytes() == signature
+    assert stat.S_IMODE(installed.joinpath("xferry-release.json.sig").stat().st_mode) == 0o644
+
+
+def test_installer_guidance_verifies_downloads_before_explicit_sudo() -> None:
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    procedure = security.split("### Privileged installer verification order", maxsplit=1)[1]
+    commands = procedure.split("```console", maxsplit=1)[1].split("```", maxsplit=1)[0]
+
+    assert commands.index("--manifest xferry-release.json") < commands.index(
+        "--installer install.sh"
+    )
+    assert commands.index("--installer install.sh") < commands.index("sudo sh ./install.sh")
+    assert "| sudo" not in commands
+    assert "curl |" not in commands
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "4.1.0", "99.0.0"])
@@ -1251,6 +1490,8 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     layout.auth_file.write_text("admin:known-password\n", encoding="utf-8")
     update_payload = b"updated-release"
     base_url = "https://releases.example.test/xferry/releases"
+    key_id = "test-release-2026"
+    private_key = Ed25519PrivateKey.generate()
     update_manifest = ReleaseManifest.create_v2(
         version="0.2.0",
         platform="linux-x86_64",
@@ -1258,10 +1499,18 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         executable_sha256=hashlib.sha256(update_payload).hexdigest(),
         source_commit=TEST_SOURCE_COMMIT,
         workflow_run=TEST_WORKFLOW_RUN,
+        signing_key_ids=(key_id,),
     ).to_bytes()
+    update_signature = create_detached_signature(
+        update_manifest,
+        payload_type=MANIFEST_SIGNATURE_TYPE,
+        key_id=key_id,
+        signer=private_key,
+    )
     downloader = _LifecycleDownloader(
         {
             f"{base_url}/download/v0.2.0/xferry-release.json": update_manifest,
+            f"{base_url}/download/v0.2.0/xferry-release.json.sig": update_signature,
             f"{base_url}/download/v0.2.0/xferry-0.2.0-linux-x86_64": update_payload,
         }
     )
@@ -1279,6 +1528,14 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         acme_root=layout.acme_root,
         staging_parent=tmp_path / "staging",
         remote_updates_enabled=True,
+        release_key_ring=ReleaseKeyRing(
+            (
+                TrustedReleaseKey(
+                    key_id,
+                    private_key.public_key().public_bytes_raw(),
+                ),
+            )
+        ),
     )
 
     updated = manager.update("0.2.0", False)

@@ -44,8 +44,8 @@ external.
 | Candidate substitution or publish-job rebuild | Build-once candidate handoff, recorded digests, publisher dependency on verified jobs, and pre-publication digest verification |
 | Static publisher credential theft | PyPI OIDC trusted publishing and short-lived, environment-scoped identities for other channels where supported |
 | Registry tag drift or artifact replacement | Immutable versions and digests; mutable labels are not install, update, or rollback authorities |
-| Signing-key compromise | Restricted maintainer ownership, protected signing boundary, rotation and revocation procedure, and reviewed verifier trust roots |
-| Installer or update metadata tampering | Signature, digest, version, key, expiry, revocation, and downgrade checks that fail closed |
+| Signing-key compromise | Restricted maintainer ownership, protected signing boundary, two-key overlap, local revocation state, and reviewed verifier trust roots |
+| Installer or update metadata tampering | Canonical Ed25519 signature before artifact-reference use, separately signed installer bytes, digest, version, key, revocation, and downgrade checks that fail closed |
 
 ## Trust boundaries
 
@@ -87,6 +87,24 @@ managed host. They must verify signatures, digests, release identity, trusted
 keys, revocation state, and downgrade policy before changing the installation.
 Rollback crosses the same boundary and may select only a previously verified,
 still-trusted exact release.
+
+The concrete launch contract signs the exact canonical schema-v2 manifest
+bytes with Ed25519 and carries the signature in a strict detached envelope that
+binds its payload type and key ID. The manifest authenticates source commit,
+workflow run, exact platform artifact, size, SHA-256, and the complete declared
+digest set before the client derives the artifact URL. Installer bytes use a
+separate signature domain and must be verified before explicit `sudo`
+execution. HTTPS, hash/size, configuration, health, and rollback checks remain
+defense in depth rather than substitutes for publisher authentication.
+
+The reviewed client key ring can carry the old and new active public keys
+during rotation. A manifest selects one key; an unknown or locally revoked key
+fails closed. The old key is revoked or removed only after supported artifacts
+have moved to the new signer. Production key `xferry-release-2026-09` is held
+by the required-reviewer `production-release` GitHub Environment and its public
+trust root is shipped in the client. This enrollment authenticates a publisher;
+it does not make the managed channel public before the release-assets and final
+activation stages close.
 
 ## Out of scope
 

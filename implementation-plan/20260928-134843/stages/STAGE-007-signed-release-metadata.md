@@ -1,7 +1,7 @@
 # STAGE-007 - Establish signed release metadata trust
 
 ## Status
-OPEN
+CLOSED
 
 ## Priority
 HIGH
@@ -52,13 +52,13 @@ Require cryptographic publisher authentication for remote managed artifacts thro
 6. Cover tampering, unknown/revoked key ID, wrong key, non-canonical encoding, mismatched digest set, platform swap, downgrade, and rotation overlap.
 
 ## Acceptance criteria
-- [ ] Valid manifest v2 signatures verify offline using only shipped public keys and existing runtime dependencies.
-- [ ] Any metadata/artifact-reference mutation invalidates the signature before filesystem/service mutation.
-- [ ] Unsigned remote manifests and unknown/revoked keys fail closed with stable, actionable error codes.
-- [ ] Two-key rotation overlap is tested; removal/revocation behavior is documented.
-- [ ] No private key or real secret appears in tracked files, logs, fixtures, or artifacts.
-- [ ] Existing SHA-256, size, HTTPS/redirect, config, health, and automatic rollback checks remain required.
-- [ ] Installer instructions/assets do not require `curl | sudo sh`.
+- [x] Valid manifest v2 signatures verify offline using only shipped public keys and existing runtime dependencies. Owner-approved key `xferry-release-2026-09` is embedded; an enrollment proof and an ephemeral canonical manifest signed before private-key cleanup both verified through the shipped ring.
+- [x] Any metadata/artifact-reference mutation invalidates the signature before filesystem/service mutation.
+- [x] Unsigned remote manifests and unknown/revoked keys fail closed with stable, actionable error codes.
+- [x] Two-key rotation overlap is tested; removal/revocation behavior is documented.
+- [x] No private key or real secret appears in tracked files, logs, fixtures, or artifacts.
+- [x] Existing SHA-256, size, HTTPS/redirect, config, health, and automatic rollback checks remain required.
+- [x] Installer instructions/assets do not require `curl | sudo sh`.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -79,4 +79,10 @@ Require cryptographic publisher authentication for remote managed artifacts thro
 - Rollback: keep public update disabled, revoke the candidate key ID, retain current local rollback, and revert verifier/signing changes before any signed release is declared supported.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Added a strict canonical schema-v2 `ed25519` manifest contract, domain-separated detached signature envelopes, and an immutable active/revoked public-key ring. Owner-approved production key `xferry-release-2026-09` is enrolled; its private material exists only in the required-reviewer GitHub Environment `production-release`, and `kgmnotes` owns rotation/revocation.
+- Remote update now authenticates the canonical manifest and declared key ID before deriving or downloading an artifact. Signed metadata and its signature are persisted and reverified for managed release eligibility; version downgrades and equal-precedence identity changes are rejected.
+- Added external-path/file-descriptor signing, offline manifest/installer verification, signed installer metadata handling, actionable English/Russian failure messages, rotation/revocation guidance, threat-model updates, and adversarial coverage for tampering, noncanonical encodings, platform swaps, wrong/unknown/revoked keys, overlap, downgrade, and pre-mutation rejection.
+- Verification passed: 266 focused tests, all 3,309 repository tests, strict mypy for 70 source files, scoped Ruff lint/format, shell syntax, documentation synchronization, diff validation, bounded private-key/logging checks, protected-environment metadata review, and offline production-key interoperability.
+- An independent final security review found a stale-current race that could replace a concurrent newer release. The version policy is now rechecked under the managed lock before candidate execution, with a RED-to-GREEN regression test.
+- The signed installer still re-downloads the manifest signature after operator verification; substitution can only make installed state fail closed and lose rollback eligibility, not authorize different code. This publication-path hardening is recorded for STAGE-012/013 before activation.
+- Report: `stage-reports/STAGE-007-20260930-101954.md`.

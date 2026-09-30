@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import platform as host_platform
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, TypeAlias, TypedDict, TypeGuard
@@ -16,6 +16,7 @@ MANIFEST_NAME = "xferry-release.json"
 INSTALLED_EXECUTABLE_NAME = "xferry"
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_DIGESTS = 128
+MAX_SIGNING_KEY_IDS = 1
 
 PlatformId: TypeAlias = Literal["linux-x86_64", "linux-aarch64"]
 LINUX_X86_64: PlatformId = "linux-x86_64"
@@ -37,6 +38,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SOURCE_COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _WORKFLOW_RUN_RE = re.compile(r"(?:local|[1-9][0-9]*)\Z")
 _ASSET_NAME_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,254}\Z")
+_SIGNING_KEY_ID_RE = re.compile(r"(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])\Z")
 
 
 class _CommonManifestFields(TypedDict):
@@ -129,6 +131,13 @@ def require_workflow_run(value: object) -> str:
     return value
 
 
+def require_signing_key_id(value: object) -> str:
+    """Return a bounded, portable release-signing key identifier."""
+    if not isinstance(value, str) or _SIGNING_KEY_ID_RE.fullmatch(value) is None:
+        raise ValueError("invalid signing key ID")
+    return value
+
+
 def _is_sha256(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
@@ -174,11 +183,13 @@ class ReleaseManifest:
         source_commit: str,
         workflow_run: str,
         artifact_digests: Mapping[str, str] | None = None,
+        signing_key_ids: Sequence[str] = (),
     ) -> ReleaseManifest:
-        """Create a strict unsigned v2 manifest for a newly built artifact."""
+        """Create a strict v2 manifest ready for unsigned testing or detached signing."""
         selected_platform = require_platform_id(platform)
         name = artifact_name(version, selected_platform)
         digests = {name: executable_sha256} if artifact_digests is None else dict(artifact_digests)
+        selected_key_ids = list(signing_key_ids)
         document: dict[str, object] = {
             "schema_version": 2,
             "version": version,
@@ -195,8 +206,8 @@ class ReleaseManifest:
             },
             "artifact_digests": digests,
             "signing": {
-                "scheme": "unsigned",
-                "key_ids": [],
+                "scheme": "ed25519" if selected_key_ids else "unsigned",
+                "key_ids": selected_key_ids,
             },
         }
         return cls._parse_document(document, require_v2=True)
@@ -299,8 +310,20 @@ class ReleaseManifest:
             raise ValueError
         if not isinstance(signing, dict) or set(signing) != {"scheme", "key_ids"}:
             raise ValueError
-        key_ids = signing["key_ids"]
-        if signing["scheme"] != "unsigned" or key_ids != []:
+        scheme = signing["scheme"]
+        raw_key_ids = signing["key_ids"]
+        if not isinstance(raw_key_ids, list):
+            raise ValueError
+        key_ids = tuple(require_signing_key_id(key_id) for key_id in raw_key_ids)
+        if len(key_ids) != len(set(key_ids)) or tuple(sorted(key_ids)) != key_ids:
+            raise ValueError
+        if scheme == "unsigned":
+            if key_ids:
+                raise ValueError
+        elif scheme == "ed25519":
+            if not 0 < len(key_ids) <= MAX_SIGNING_KEY_IDS:
+                raise ValueError
+        else:
             raise ValueError
         return cls(
             schema_version=2,
@@ -308,7 +331,8 @@ class ReleaseManifest:
             source_commit=source_commit,
             workflow_run=workflow_run,
             artifact_digests=tuple(sorted(digests)),
-            signing_scheme="unsigned",
+            signing_scheme=scheme,
+            signing_key_ids=key_ids,
         )
 
     @staticmethod

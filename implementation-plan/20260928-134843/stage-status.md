@@ -8,7 +8,7 @@
 | STAGE-004 | CLOSED | HIGH | Centralize release platform and manifest contracts | 2026-09-29 14:40:45 +0300 | Added one strict v1/v2 release contract, migrated its consumers and builder/installer data, and passed 274 focused plus all 3,245 repository tests. | `stage-reports/STAGE-004-20260929-140255.md` |
 | STAGE-005 | CLOSED | HIGH | Add complete managed host support matrix | 2026-09-29 15:48:34 +0300 | Added the complete ten-host matrix, pre-mutation rejection, and actionable redacted diagnostics; 309 focused and all 3,265 repository tests passed. | `stage-reports/STAGE-005-20260929-144237.md` |
 | STAGE-006 | CLOSED | HIGH | Build and verify multi-arch SCIE installers | 2026-09-29 18:58:35 +0300 | Added fail-closed dual-architecture SCIE bundles and native ten-image verification; both native jobs and all 3,291 repository tests passed. | `stage-reports/STAGE-006-20260929-155138.md` |
-| STAGE-007 | OPEN | HIGH | Establish signed release metadata trust | - | - | - |
+| STAGE-007 | CLOSED | HIGH | Establish signed release metadata trust | 2026-09-30 10:19:54 +0300 | Enrolled the protected production Ed25519 trust root, closed the concurrent-downgrade race, and passed 266 focused plus all 3,309 repository tests. | `stage-reports/STAGE-007-20260930-101954.md` |
 | STAGE-008 | OPEN | HIGH | Prove portable packaged CLI journeys | - | - | - |
 | STAGE-009 | OPEN | HIGH | Create build-once candidate promotion pipeline | - | - | - |
 | STAGE-010 | OPEN | HIGH | Add PyPI Trusted Publishing path | - | - | - |
