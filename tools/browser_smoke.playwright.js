@@ -4768,7 +4768,7 @@ async (page) => {
           area.dataset.exchangePath === targetPath
         );
       },
-      ["/uploads"],
+      ["/upload"],
       10000
     );
 
@@ -4829,7 +4829,7 @@ async (page) => {
     await assertExchangeDownload(
       "uploadRequestArea",
       [
-        "POST /uploads HTTP/1.1",
+        "POST /upload HTTP/1.1",
         "Content-Type: multipart/form-data; boundary=<browser-generated>",
         "Content-Length: <browser-generated>",
       ],
