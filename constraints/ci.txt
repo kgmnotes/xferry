@@ -68,7 +68,7 @@ pytest==9.0.3
 pytest-benchmark==5.2.3
 pytest-cov==7.0.0
 python-dateutil==2.9.0.post0
-python-discovery==1.2.2
+python-discovery==1.6.1
 PyYAML==6.0.3
 pyyaml_env_tag==1.1
 requests==2.33.1
@@ -82,6 +82,6 @@ tomli==2.4.1
 tomli_w==1.2.0
 typing_extensions==4.15.0
 urllib3==2.8.0
-virtualenv==21.3.0
+virtualenv==21.7.13
 watchdog==6.0.0
 wheel==0.46.3
