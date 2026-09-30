@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   identity:
-    if: ${{ inputs.confirm_ghcr && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal' }}
+    if: ${{ inputs.confirm_ghcr && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal-v2' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-011-ghcr-rehearsal")"
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-011-ghcr-rehearsal-v2")"
           test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
           test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
       - name: Verify fixed producer identity
@@ -206,6 +206,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo=1.13.3+ds1-2ubuntu0.24.04.3
           printf '%s' "$GH_TOKEN" | skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          mkdir -p registry
           skopeo copy --all --preserve-digests "docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" "oci:registry/oci"
           python tools/ghcr_publish.py verify-registry-layout \
             --receipt staged/ghcr-candidate-receipt.json --registry-oci-dir registry/oci

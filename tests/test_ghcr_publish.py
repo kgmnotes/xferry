@@ -463,6 +463,61 @@ def test_final_latest_guard_does_not_treat_unrelated_404_as_manifest_absence(
     assert completed.returncode != 0
 
 
+def test_registry_verification_creates_oci_parent_before_skopeo_copy(
+    tmp_path: Path,
+) -> None:
+    """Catches Skopeo rejecting an OCI destination whose parent is absent."""
+    workflow = (REPO_ROOT / ".github/workflows/ghcr.yml").read_text()
+    script = _workflow_run_script(
+        workflow, "Copy registry graph and verify digests, SBOM, and provenance"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "sudo").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "skopeo").write_text(
+        """#!/bin/sh
+if [ "$1" = "login" ]; then
+  cat >/dev/null
+  exit 0
+fi
+if [ "$1" = "copy" ]; then
+  test -d registry || exit 97
+  mkdir -p registry/oci
+  exit 0
+fi
+exit 98
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "python").write_text(
+        """#!/bin/sh
+test "$1" = "tools/ghcr_publish.py"
+test "$2" = "verify-registry-layout"
+test -d registry/oci
+""",
+        encoding="utf-8",
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "GH_TOKEN": "test-token",
+            "GITHUB_ACTOR": "kgmnotes",
+            "GHCR_DIGEST": "sha256:" + "a" * 64,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 @pytest.mark.parametrize(
     ("before", "after"),
     [
@@ -492,7 +547,8 @@ def test_final_latest_guard_does_not_treat_unrelated_404_as_manifest_absence(
             'skopeo copy --all --preserve-digests "docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}"',
             'skopeo copy --all "docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}"',
         ),
-        ("refs/heads/codex/stage-011-ghcr-rehearsal", "refs/heads/main"),
+        ("mkdir -p registry", "true # skipped registry destination setup"),
+        ("refs/heads/codex/stage-011-ghcr-rehearsal-v2", "refs/heads/main"),
         ("artifact-ids: 11095067140", "artifact-ids: 1"),
         ("Refuse mutable latest tag", "Publish mutable latest tag"),
     ],
