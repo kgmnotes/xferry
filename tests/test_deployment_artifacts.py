@@ -741,6 +741,7 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
 def test_cross_platform_acceptance_transfers_one_wheel_across_all_nine_pairs() -> None:
     """Catches editable acceptance, rebuilt consumers, or an incomplete portable matrix."""
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "env:\n  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt" in workflow
     build = _workflow_job(workflow, "python314-readiness")
     portable = _workflow_job(workflow, "cross-platform")
     exhaustive = _workflow_job(workflow, "test")

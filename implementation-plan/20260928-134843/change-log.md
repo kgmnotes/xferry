@@ -58,3 +58,11 @@
 - Post-review verification: fixed one Minor known-command diagnostic regression test-first; 6 focused cases, all 3,332 Python 3.12 tests, Ruff lint/format, actionlint, diff integrity, and an independent candidate review passed with no Critical or Important findings. The rebuilt exact wheel (`fce1ba554e5949a7f0d1ab822d8fa8f502d48631ea58f913c8f6ee7f0ef39918`) passed the full 312-test portable journey on Linux Python 3.10/3.12/3.14.
 - Remaining evidence: run and record all nine native OS/Python consumer jobs and producer wheel identity after the authorized wrapper pushes the candidate; no commit, push, or hosted dispatch was performed in this invocation.
 - Report: `stage-reports/STAGE-008-20260930-102812.md`
+
+## 2026-09-30 12:00:21 +0300 — STAGE-008 hosted remediation
+- Status: PARTIALLY_CLOSED
+- Hosted evidence: run `36690775333` passed the exact-wheel producer and six of nine portable consumers; macOS 3.10 exposed a relative constraints path, while Windows 3.10/3.14 exposed a transient post-exit listener race.
+- Files changed: `.github/workflows/ci.yml`, `tools/verify_python_artifacts.py`, the two focused regression modules, the stage file, this change log, and the existing stage report.
+- Verification: 54 focused tests, all 3,335 Python 3.12 tests, strict mypy, repository Ruff lint/format, actionlint, pytest collection policy, a real external-wheel lifecycle plus 312 portable tests, diff integrity, and independent review passed.
+- Remaining evidence: fresh hosted producer identity and all nine green portable consumers.
+- Report: `stage-reports/STAGE-008-20260930-102812.md`

@@ -6,6 +6,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,92 @@ def test_lifecycle_does_not_accept_a_spontaneous_exit_after_health(
         verifier._server_lifecycle_smoke(
             venv_dir=tmp_path / "app", probe_dir=tmp_path, workspace=tmp_path / "checkout"
         )
+
+
+def test_lifecycle_port_check_allows_transient_connection_after_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+
+    class ProbeSocket:
+        results = iter((0, errno.ECONNREFUSED))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, address):
+            return next(self.results)
+
+    monkeypatch.setattr(verifier.socket, "socket", ProbeSocket)
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+    verifier._wait_for_server_port_to_close(8000, timeout=1, poll_interval=0.05)
+
+
+def test_lifecycle_port_check_accepts_immediate_connection_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+
+    class ProbeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, address):
+            return errno.ECONNREFUSED
+
+    monkeypatch.setattr(verifier.socket, "socket", ProbeSocket)
+    verifier._wait_for_server_port_to_close(8000)
+
+
+def test_lifecycle_port_check_fails_when_listener_survives_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProbeSocket:
+        attempts = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, address):
+            self.attempts += 1
+            return 0
+
+    probe = ProbeSocket()
+    clock = [0.0]
+    sleeps = []
+
+    def sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(verifier.socket, "socket", lambda *args: probe)
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    with pytest.raises(verifier.ArtifactValidationError, match="still accepts connections"):
+        verifier._wait_for_server_port_to_close(8000, timeout=0.12, poll_interval=0.05)
+    assert probe.attempts >= 2
+    assert sum(sleeps) == pytest.approx(0.12)
+    assert all(delay <= 0.05 for delay in sleeps)
 
 
 @pytest.mark.parametrize("legacy", [False, True])

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  PIP_CONSTRAINT: constraints/ci.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
   SCIENCE_NET_TIMEOUT: "60"
 
 concurrency:

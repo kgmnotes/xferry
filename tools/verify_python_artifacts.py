@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -523,11 +524,30 @@ def _server_lifecycle_smoke(*, venv_dir: Path, probe_dir: Path, workspace: Path)
     expected_returncode = 1 if os.name == "nt" else 0
     if process.returncode != expected_returncode:
         raise ArtifactValidationError(f"installed server stop failed: exit {process.returncode}")
-    with socket.socket() as probe:
-        probe.settimeout(0.5)
-        if probe.connect_ex(("127.0.0.1", port)) == 0:
-            raise ArtifactValidationError("installed server still accepts connections after stop")
+    _wait_for_server_port_to_close(port)
     print("installed server start/health/stop passed", flush=True)
+
+
+def _wait_for_server_port_to_close(
+    port: int,
+    *,
+    timeout: float = 2.0,
+    poll_interval: float = 0.05,
+) -> None:
+    """Require the server port to stop accepting connections within a fixed deadline."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ArtifactValidationError("installed server still accepts connections after stop")
+        with socket.socket() as probe:
+            probe.settimeout(min(0.5, remaining))
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ArtifactValidationError("installed server still accepts connections after stop")
+        time.sleep(min(poll_interval, remaining))
 
 
 def _portable_tests(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None:
