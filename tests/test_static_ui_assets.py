@@ -158,6 +158,356 @@ def extract_workspace_panel(html: str, panel_id: str) -> str:
     return html[panel_start : panel_start + 1 + next_panel.start()]
 
 
+def test_global_notification_service_updates_one_toast_and_preserves_accessible_lifecycle() -> None:
+    """Catches duplicate upload toasts, disappearing errors, and focus loss on dismissal."""
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.dataset = {};
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this.className = '';
+    this.textContent = '';
+    this.focused = false;
+  }
+
+  append(...nodes) {
+    nodes.forEach(node => {
+      node.parentNode = this;
+      this.children.push(node);
+    });
+  }
+
+  appendChild(node) {
+    this.append(node);
+    return node;
+  }
+
+  remove() {
+    if (!this.parentNode) return;
+    this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+    this.parentNode = null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) || null;
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatch(type, event = {}) {
+    const payload = {
+      target: this,
+      relatedTarget: null,
+      preventDefault() {},
+      stopPropagation() {},
+      ...event,
+    };
+    (this.listeners.get(type) || []).forEach(listener => listener(payload));
+  }
+
+  contains(candidate) {
+    return this === candidate || this.children.some(child => child.contains(candidate));
+  }
+
+  querySelector(selector) {
+    const match = /^\[data-([a-z0-9-]+)(?:="([^"]*)")?\]$/.exec(selector);
+    if (!match) throw new Error(`Unsupported selector: ${selector}`);
+    const key = match[1].replace(/-([a-z])/g, (_whole, letter) => letter.toUpperCase());
+    const expected = match[2];
+    const queue = [...this.children];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (
+        Object.prototype.hasOwnProperty.call(current.dataset, key)
+        && (expected === undefined || current.dataset[key] === expected)
+      ) {
+        return current;
+      }
+      queue.push(...current.children);
+    }
+    return null;
+  }
+
+  focus() {
+    this.focused = true;
+    document.activeElement = this;
+  }
+
+  get isConnected() {
+    let current = this;
+    while (current) {
+      if (current === document.body) return true;
+      current = current.parentNode;
+    }
+    return false;
+  }
+}
+
+const body = new FakeElement('body');
+const region = new FakeElement('div');
+const polite = new FakeElement('div');
+const alert = new FakeElement('div');
+body.append(region, polite, alert);
+const elements = new Map([
+  ['appNotificationRegion', region],
+  ['appNotificationLive', polite],
+  ['appNotificationAlert', alert],
+]);
+const timers = new Map();
+let timerId = 0;
+let nowMs = 0;
+let locale = 'en';
+const announcements = [];
+const listeners = new Map();
+const services = new Map();
+const core = {
+  t(key) {
+    if (key !== 'notificationDismiss') return key;
+    return locale === 'en' ? 'Dismiss notification' : 'Закрыть уведомление';
+  },
+  announceLiveRegion(id, message) {
+    announcements.push([id, message]);
+    elements.get(id).textContent = message;
+  },
+  focusElementWithoutScroll(element) {
+    element?.focus();
+  },
+};
+const app = {
+  events: { LOCALE_CHANGED: 'locale.changed' },
+  service(name) {
+    if (name === 'core') return core;
+    return services.get(name);
+  },
+  registerService(name, api) {
+    services.set(name, api);
+  },
+  on(name, listener) {
+    const registered = listeners.get(name) || [];
+    registered.push(listener);
+    listeners.set(name, registered);
+  },
+};
+
+globalThis.document = {
+  body,
+  activeElement: null,
+  createElement: tagName => new FakeElement(tagName),
+  getElementById: id => elements.get(id) || null,
+};
+globalThis.window = {
+  XferryApp: app,
+  setTimeout(callback, delay) {
+    const id = ++timerId;
+    timers.set(id, {
+      callback() {
+        timers.delete(id);
+        callback();
+      },
+      delay,
+      dueAt: nowMs + delay,
+    });
+    return id;
+  },
+  clearTimeout(id) {
+    timers.delete(id);
+  },
+};
+Date.now = () => nowMs;
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+vm.runInThisContext(source, { filename: process.argv[1] });
+const notifications = services.get('notifications');
+const origin = new FakeElement('button');
+body.append(origin);
+
+notifications.show({
+  id: 'upload',
+  tone: 'pending',
+  message: 'Uploading files',
+  timeoutMs: null,
+  origin,
+});
+const pendingToast = region.querySelector('[data-app-notification="upload"]');
+const pendingMessage = pendingToast.querySelector('[data-app-notification-message]');
+notifications.update('upload', {
+  tone: 'success',
+  message: 'Upload complete: 2 successful',
+  timeoutMs: 5000,
+});
+const successToast = region.querySelector('[data-app-notification="upload"]');
+const successMessage = successToast.querySelector('[data-app-notification-message]');
+const successTimer = [...timers.values()][0];
+const successSnapshot = {
+  count: region.children.length,
+  sameElement: pendingToast === successToast,
+  pendingMessage: pendingMessage.textContent,
+  message: successMessage.textContent,
+  tone: successToast.dataset.tone,
+  timeout: successTimer?.delay || null,
+};
+successTimer.callback();
+const missingUpdate = notifications.update('upload', {
+  tone: 'success',
+  message: 'Translated success',
+  timeoutMs: 5000,
+});
+const missingUpdateDidNotRecreate = !region.querySelector('[data-app-notification="upload"]');
+
+notifications.show({
+  id: 'upload',
+  tone: 'error',
+  message: 'Upload complete: 1 error',
+  timeoutMs: null,
+  origin,
+});
+const errorToast = region.querySelector('[data-app-notification="upload"]');
+const dismiss = errorToast.querySelector('[data-app-notification-dismiss]');
+locale = 'ru';
+(listeners.get('locale.changed') || []).forEach(listener => listener({ lang: 'ru' }));
+dismiss.focus();
+dismiss.dispatch('click');
+
+notifications.show({
+  id: 'timer-contract',
+  tone: 'success',
+  message: 'Timer starts',
+  timeoutMs: 5000,
+  origin,
+});
+const timerToast = region.querySelector('[data-app-notification="timer-contract"]');
+const [initialTimerId, initialTimer] = [...timers.entries()][0];
+nowMs = 1000;
+notifications.update('timer-contract', {
+  tone: 'success',
+  message: 'Timer translated',
+  timeoutMs: 5000,
+});
+const [localeTimerId, localeTimer] = [...timers.entries()][0];
+nowMs = 2000;
+timerToast.dispatch('mouseenter');
+const hoverPaused = timers.size === 0;
+nowMs = 4000;
+timerToast.dispatch('mouseleave');
+const [hoverTimerId, hoverTimer] = [...timers.entries()][0];
+nowMs = 4500;
+timerToast.dispatch('focusin');
+const focusPaused = timers.size === 0;
+nowMs = 6000;
+timerToast.dispatch('focusout');
+const [focusTimerId, focusTimer] = [...timers.entries()][0];
+nowMs = 6500;
+notifications.update('timer-contract', {
+  tone: 'success',
+  message: 'Timer localized again',
+  timeoutMs: 5000,
+});
+const [finalLocaleTimerId, finalLocaleTimer] = [...timers.entries()][0];
+nowMs = 8500;
+finalLocaleTimer.callback();
+
+process.stdout.write(JSON.stringify({
+  registered: Boolean(notifications),
+  success: successSnapshot,
+  successRemoved: missingUpdateDidNotRecreate && !errorToast.isConnected,
+  missingUpdate,
+  errorWasPersistent: timers.size === 0,
+  dismissLabel: dismiss.getAttribute('aria-label'),
+  originFocused: origin.focused,
+  timerContract: {
+    initialDueAt: initialTimer?.dueAt || null,
+    localeTimerReused: localeTimerId === initialTimerId,
+    localeDueAt: localeTimer?.dueAt || null,
+    hoverPaused,
+    hoverResumeDelay: hoverTimer?.delay || null,
+    hoverResumeDueAt: hoverTimer?.dueAt || null,
+    focusPaused,
+    focusTimerReplaced: focusTimerId !== hoverTimerId,
+    focusResumeDelay: focusTimer?.delay || null,
+    focusResumeDueAt: focusTimer?.dueAt || null,
+    finalLocaleTimerReused: finalLocaleTimerId === focusTimerId,
+    finalLocaleDueAt: finalLocaleTimer?.dueAt || null,
+    removedAtDeadline: !timerToast.isConnected && timers.size === 0,
+  },
+  announcements,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script, str(UI_ROOT / "notifications.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "registered": True,
+        "success": {
+            "count": 1,
+            "sameElement": True,
+            "pendingMessage": "Upload complete: 2 successful",
+            "message": "Upload complete: 2 successful",
+            "tone": "success",
+            "timeout": 5000,
+        },
+        "successRemoved": True,
+        "missingUpdate": False,
+        "errorWasPersistent": True,
+        "dismissLabel": "Закрыть уведомление",
+        "originFocused": True,
+        "timerContract": {
+            "initialDueAt": 5000,
+            "localeTimerReused": True,
+            "localeDueAt": 5000,
+            "hoverPaused": True,
+            "hoverResumeDelay": 3000,
+            "hoverResumeDueAt": 7000,
+            "focusPaused": True,
+            "focusTimerReplaced": True,
+            "focusResumeDelay": 2500,
+            "focusResumeDueAt": 8500,
+            "finalLocaleTimerReused": True,
+            "finalLocaleDueAt": 8500,
+            "removedAtDeadline": True,
+        },
+        "announcements": [
+            ["appNotificationLive", "Uploading files"],
+            ["appNotificationLive", "Upload complete: 2 successful"],
+            ["appNotificationAlert", "Upload complete: 1 error"],
+            ["appNotificationLive", "Timer starts"],
+            ["appNotificationLive", "Timer translated"],
+            ["appNotificationLive", "Timer localized again"],
+        ],
+    }
+
+
+def test_global_notification_host_is_outside_workspaces_and_loaded_first() -> None:
+    """Catches notifications becoming invisible when their originating tab is hidden."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+
+    assert html.count('id="appNotificationRegion"') == 1
+    assert html.count('id="appNotificationLive"') == 1
+    assert html.count('id="appNotificationAlert"') == 1
+    assert html.index('id="appNotificationRegion"') > html.index("</main>")
+    assert html.index("/static/ui/core.js") < html.index("/static/ui/notifications.js")
+    assert html.index("/static/ui/notifications.js") < html.index("/static/ui/upload.js")
+
+
 def test_static_ui_uses_larger_readable_base_scale() -> None:
     tokens_css = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "tokens.css").read_text(
         encoding="utf-8"
@@ -204,7 +554,7 @@ def test_secure_web_gateway_positioning_covers_the_full_toolkit() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_index = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
 
-    assert "веб-шлюзов безопасности (SWG)" in html
+    assert "secure web gateways and next-generation firewalls (SWG/NGFW)" in html
     assert "SWG" in core_js
     assert "testing Secure Web Gateways" in readme
     assert "Secure Web Gateway" in normalize_ws(docs_index)
@@ -224,21 +574,20 @@ def test_russian_locale_uses_russian_swg_tool_copy() -> None:
     )
     ru_values = extract_locale_values(core_js, "ru")
 
-    tagline = "Инструмент для тестирования SWG"
-    assert tagline in html
+    tagline = "Инструмент для тестирования SWG/NGFW"
     assert f'brandTagline: "{tagline}"' in core_js
     assert "HTTP-инструмент для Secure Web Gateway проверок" not in html
     assert "HTTP-инструмент для Secure Web Gateway проверок" not in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
-    assert 'tabUpload: "Отправить"' in core_js
-    assert 'tabFiles: "Файлы"' in core_js
+    assert 'topTabUpload: "Отправить"' in core_js
+    assert 'topTabFiles: "Получить"' in core_js
     assert 'tabRequests: "Запросы"' in core_js
     assert 'tabOpsec: "Расширенные"' in core_js
     assert 'tabNotepad: "Блокнот"' in core_js
@@ -304,8 +653,9 @@ def test_header_brand_uses_compact_copy_and_theme_aware_ferry_marks() -> None:
     dark_mark = UI_ROOT / "xferry-mark.svg"
     light_mark = UI_ROOT / "xferry-mark-light.svg"
 
-    assert 'brandTagline: "Инструмент для тестирования SWG"' in core_js
-    assert 'brandTagline: "SWG testing tool"' in core_js
+    assert 'brandTagline: "Инструмент для тестирования SWG/NGFW"' in core_js
+    assert 'brandTagline: "SWG/NGFW testing tool"' in core_js
+    assert '<p data-i18n="brandTagline">SWG/NGFW testing tool</p>' in header
     assert header.count("<img ") == 1
     assert 'id="brandMark"' in header
     assert 'data-theme-dark="/static/ui/xferry-mark.svg"' in header
@@ -339,15 +689,15 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
     )
 
     expected_ru_labels = {
-        "tabUpload": "Отправить",
-        "tabFiles": "Файлы",
+        "topTabUpload": "Отправить",
+        "topTabFiles": "Получить",
         "tabRequests": "Запросы",
         "tabOpsec": "Расширенные",
         "tabNotepad": "Блокнот",
     }
     expected_en_labels = {
-        "tabUpload": "Send",
-        "tabFiles": "Files",
+        "topTabUpload": "Upload",
+        "topTabFiles": "Download",
         "tabRequests": "Requests",
         "tabOpsec": "Advanced",
         "tabNotepad": "Notepad",
@@ -358,15 +708,36 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
         assert f'{key}: "{label}"' in core_js
 
     assert extract_top_tab_buttons(html) == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
     assert 'tabUpload: "Upload (regular)"' not in core_js
     assert 'tabOpsec: "Upload (advanced)"' not in core_js
     assert 'tabFiles: "Download"' not in core_js
+
+
+def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_headings() -> None:
+    """Catches transfer labels being repeated between navigation and tool content."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+    core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert extract_top_tab_buttons(html)[:2] == [
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+    ]
+    assert 'topTabUpload: "Отправить"' in core_js
+    assert 'topTabFiles: "Получить"' in core_js
+    assert 'topTabUpload: "Upload"' in core_js
+    assert 'topTabFiles: "Download"' in core_js
+
+    for panel_id in ("upload-tab", "files-tab", "opsec-tab", "notepad-tab"):
+        panel = extract_workspace_panel(html, panel_id)
+        assert 'class="workspace-view__header"' not in panel
 
 
 def test_advanced_upload_constructor_is_profile_first() -> None:
@@ -453,29 +824,64 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(
         encoding="utf-8"
     )
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
 
+    assert 'id="uploadTargetPathGroup"' in upload_tab
+    assert re.findall(
+        r'class="[^"]*upload-target-path-btn[^"]*"\s+data-upload-target-path="([^"]+)"',
+        upload_tab,
+    ) == ["/", "/upload", "/api", "/file"]
+    assert 'data-upload-target-path="/upload" role="radio" aria-checked="true"' in upload_tab
     assert 'id="uploadProfileGroup"' in upload_tab
     assert re.findall(
         r'class="[^"]*upload-profile-btn[^"]*"\s+data-upload-profile="([^"]+)"',
         upload_tab,
-    ) == ["multipart", "raw-url", "raw-header"]
+    ) == ["multipart", "raw-url", "raw-header", "raw-generated"]
     assert 'data-upload-profile="multipart" role="radio" aria-checked="true"' in upload_tab
+    assert 'id="uploadMimeMode"' in upload_tab
+    assert re.findall(
+        r'<option value="(auto|octet-stream|text-plain|pdf)"',
+        upload_tab,
+    ) == ["auto", "octet-stream", "text-plain", "pdf"]
+    assert 'id="uploadCustomMime"' not in upload_tab
+    assert 'id="uploadMimeError"' not in upload_tab
+    assert 'aria-describedby="uploadMimeHint"' in upload_tab
     assert 'id="uploadRequestSummary"' in upload_tab
     for field in ("request-line", "body-kind", "mime", "filename-source"):
         assert f'data-upload-summary="{field}"' in upload_tab
     assert 'id="uploadCompareBtn"' in upload_tab
+    assert 'id="uploadCompareMethodsBtn"' in upload_tab
+    comparison_controls = re.search(
+        r'<div\b(?=[^>]*\bid="uploadComparisonActions")(?=[^>]*\bhidden\b)[^>]*>',
+        upload_tab,
+    )
+    assert comparison_controls is not None
     assert 'id="uploadCompareResults"' in upload_tab
+    assert "compare: compareBasicUploadProfiles" in upload_js
+    assert "'compare-methods': compareBasicUploadMethods" in upload_js
+    assert "'set-target-path': setUploadTargetPath" in upload_js
     assert 'id="basicAdvancedRoutingWarning"' not in upload_tab
     assert 'id="basicAdvancedRoutingDisableBtn"' not in upload_tab
     assert 'id="uploadHelpDetails"' not in upload_tab
     assert 'class="upload-flow-strip"' not in upload_tab
 
     locale_keys = {
+        "uploadTargetPathLabel",
         "uploadProfileLabel",
         "uploadProfileMultipart",
         "uploadProfileRawUrl",
         "uploadProfileRawHeader",
+        "uploadProfileNoFilename",
+        "uploadOptionsTitle",
+        "uploadMimeModeLabel",
+        "uploadMimeModeAuto",
+        "uploadMimeModeOctetStream",
+        "uploadMimeModeTextPlain",
+        "uploadMimeModePdf",
+        "uploadMimeHint",
+        "uploadMimeRequired",
+        "uploadMimeInvalid",
         "uploadRequestSummaryTitle",
         "uploadSummaryRequestLine",
         "uploadSummaryBodyKind",
@@ -485,6 +891,12 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
         "uploadCompareConfirmTitle",
         "uploadCompareConfirmBody",
         "uploadCompareConfirmAction",
+        "uploadCompareMethodsBtn",
+        "uploadCompareMethodsConfirmTitle",
+        "uploadCompareMethodsConfirmBody",
+        "uploadCompareMethodsConfirmAction",
+        "uploadCompareMethodsResultsTitle",
+        "uploadCompareMethodsRunning",
         "uploadRoutingConflict",
         "uploadVerdictDelivered",
         "uploadVerdictMetadataChanged",
@@ -515,40 +927,475 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
     assert upload_tab.count('class="upload-method-section"') == 1
     assert upload_tab.count('class="upload-method-group"') == 1
-    assert upload_tab.count('role="radiogroup"') == 2
+    assert upload_tab.count('role="radiogroup"') == 3
     assert re.findall(
         r'class="[^"]*upload-method-btn[^"]*"\s+data-upload-method="([A-Z]+)"',
         upload_tab,
     ) == ["POST", "NONE", "PUT", "PATCH"]
 
     for element_id in (
+        "uploadPickerActions",
         "dropZone",
         "fileInput",
         "fileList",
         "uploadBtn",
         "uploadCompareBtn",
+        "uploadCompareMethodsBtn",
         "uploadSelectionState",
+        "uploadComparisonActions",
         "uploadRequestSummary",
     ):
         assert upload_tab.count(f'id="{element_id}"') == 1
 
     source_order = (
         'class="upload-method-section"',
+        'id="uploadTargetPathGroup"',
         'id="uploadProfileGroup"',
+        'id="uploadPickerActions"',
         'id="dropZone"',
+        'id="uploadBtn"',
+        'id="uploadSelectionState"',
         'id="fileList"',
         'id="uploadRequestSummary"',
-        'class="upload-primary-action"',
+        'id="uploadComparisonActions"',
         'id="uploadCompareResults"',
-        'data-testid="upload-result"',
         'data-tool-trace-scope="upload"',
     )
     positions = [upload_tab.index(marker) for marker in source_order]
     assert positions == sorted(positions)
+    assert 'data-tool-summary-scope="upload"' not in upload_tab
+    assert "data-tool-trace-phase" not in upload_tab
+    assert 'data-tool-trace-scope="upload"' in upload_tab
     assert upload_tab.index('role="radiogroup"') < upload_tab.index('id="dropZone"')
-    assert upload_tab.index('id="uploadSelectionState"') > upload_tab.index(
-        'class="upload-primary-action"'
+    selection_tag = re.search(r'<div\b[^>]*\bid="uploadSelectionState"[^>]*>', upload_tab)
+    assert selection_tag is not None
+    assert re.search(r'class="[^"]*\bsr-only\b[^"]*"', selection_tag.group(0))
+
+
+def test_basic_upload_compiler_supports_no_filename_and_declared_mime_in_node() -> None:
+    """Exercise the real Basic compiler helpers against hand-derived wire contracts."""
+    script = r"""
+const fs = require('node:fs');
+
+function extractFunction(source, marker, nextMarker) {
+    const start = source.indexOf(marker);
+    const end = source.indexOf(nextMarker, start);
+    if (start < 0 || end < 0) throw new Error(`Could not extract ${marker}`);
+    return (0, eval)(`(${source.slice(start, end).trim()})`);
+}
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+globalThis.uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'pdf', 'custom']);
+globalThis.uploadCustomMimeMaxLength = 120;
+const uploadMimePatternSource = source.match(/^const uploadMimePattern = (.+);$/m)?.[1];
+if (!uploadMimePatternSource) throw new Error('Could not extract uploadMimePattern');
+globalThis.uploadMimePattern = (0, eval)(uploadMimePatternSource);
+globalThis.basicUploadProfiles = Object.freeze([
+    'multipart',
+    'raw-url',
+    'raw-header',
+    'raw-generated',
+]);
+globalThis.basicUploadTargetPaths = Object.freeze(['/', '/upload', '/api', '/file']);
+globalThis.SERVER_URL = 'https://xferry.test/';
+globalThis.location = { href: 'https://xferry.test/' };
+globalThis.withUiNoGzipHeader = headers => ({ ...headers });
+globalThis.createExchangeBinaryBody = options => ({ kind: 'binary', ...options });
+
+globalThis.buildUploadMultipartPreviewEnvelope = extractFunction(
+    source,
+    'function buildUploadMultipartPreviewEnvelope',
+    'function getUploadMimeValidation'
+);
+globalThis.getUploadMimeValidation = extractFunction(
+    source,
+    'function getUploadMimeValidation',
+    'function resolveUploadDeclaredMime'
+);
+globalThis.resolveUploadDeclaredMime = extractFunction(
+    source,
+    'function resolveUploadDeclaredMime',
+    'function getUploadByteView'
+);
+globalThis.getUploadByteView = extractFunction(
+    source,
+    'function getUploadByteView',
+    'function compileBasicUploadRequest'
+);
+globalThis.compileBasicUploadRequest = extractFunction(
+    source,
+    'function compileBasicUploadRequest',
+    'function setUploadMethod'
+);
+
+const bytes = new TextEncoder().encode('abc');
+const file = new File([bytes], 'sample.bin', { type: 'application/x-sample' });
+const summarize = (state) => {
+    const plan = globalThis.compileBasicUploadRequest(state, file, bytes.buffer);
+    const formFile = plan.body instanceof FormData ? plan.body.get('file') : null;
+    return {
+        profile: plan.profile,
+        pathname: plan.pathname,
+        wireHeaders: plan.wireHeaders,
+        mime: plan.mime,
+        filenameSource: plan.filenameSource,
+        previewFilename: plan.requestExchange.body.filename,
+        formFile: formFile instanceof File
+            ? { name: formFile.name, type: formFile.type, size: formFile.size }
+            : null,
+    };
+};
+
+const invalid = globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime: 'text/plain\r\nX-Evil: yes',
+});
+let invalidCompile = '';
+try {
+    summarize({ method: 'POST', profile: 'raw-url', mimeMode: 'custom', customMime: '' });
+} catch (error) {
+    invalidCompile = error.name;
+}
+
+const invalidCustomMimes = [
+    'text/plain;\ncharset=utf-8',
+    'text/plain; note="☃"',
+    'text/plain; note="\u0001"',
+].map(customMime => globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime,
+}));
+const validCustomMime = globalThis.getUploadMimeValidation({
+    mimeMode: 'custom',
+    customMime: 'Application/X-ASCII; Note="visible value"',
+});
+const mixedCaseMultipartPlan = globalThis.compileBasicUploadRequest({
+    method: 'POST',
+    profile: 'multipart',
+    mimeMode: 'custom',
+    customMime: 'Text/Plain; Boundary=ABCD',
+}, file, bytes.buffer);
+const mixedCaseMultipartFile = mixedCaseMultipartPlan.body.get('file');
+const sampledBytes = new Uint8Array(1043).fill(65);
+const sampledFile = new File([sampledBytes], 'sampled.bin', {
+    type: 'application/octet-stream',
+});
+const sampledPlan = globalThis.compileBasicUploadRequest(
+    { method: 'POST', profile: 'raw-generated', mimeMode: 'auto' },
+    sampledFile,
+    null,
+    sampledBytes.slice(0, 513).buffer
+);
+const reservedRawUrlNames = ['api', 'file', 'upload'];
+const rootReservedRawUrls = reservedRawUrlNames.map(name => {
+    const reservedFile = new File([bytes], name, { type: 'application/octet-stream' });
+    const plan = globalThis.compileBasicUploadRequest({
+        method: 'PUT',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/',
+    }, reservedFile, bytes.buffer);
+    return {
+        name,
+        pathname: plan.pathname,
+        filenameSource: plan.filenameSource,
+    };
+});
+const nestedReservedRawUrls = reservedRawUrlNames.map(name => {
+    const reservedFile = new File([bytes], name, { type: 'application/octet-stream' });
+    return globalThis.compileBasicUploadRequest({
+        method: 'PUT',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/upload',
+    }, reservedFile, bytes.buffer).pathname;
+});
+
+process.stdout.write(JSON.stringify({
+    multipartAuto: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'auto' }),
+    multipartPdf: summarize({ method: 'POST', profile: 'multipart', mimeMode: 'pdf' }),
+    rawUrlText: summarize({ method: 'PUT', profile: 'raw-url', mimeMode: 'text-plain' }),
+    rawHeaderPdf: summarize({ method: 'PATCH', profile: 'raw-header', mimeMode: 'pdf' }),
+    rawHeaderCustom: summarize({
+        method: 'PATCH',
+        profile: 'raw-header',
+        mimeMode: 'custom',
+        customMime: 'application/x-xferry; version=1',
+    }),
+    noFilenameAuto: summarize({ method: 'NONE', profile: 'raw-generated', mimeMode: 'auto' }),
+    apiTargets: globalThis.basicUploadProfiles.map(profile => summarize({
+        method: 'POST',
+        profile,
+        mimeMode: 'auto',
+        targetPath: '/api',
+    }).pathname),
+    rootRawUrl: summarize({
+        method: 'POST',
+        profile: 'raw-url',
+        mimeMode: 'auto',
+        targetPath: '/',
+    }).pathname,
+    rootReservedRawUrls,
+    nestedReservedRawUrls,
+    invalidTargetFallback: summarize({
+        method: 'POST',
+        profile: 'raw-generated',
+        mimeMode: 'auto',
+        targetPath: '/unknown',
+    }).pathname,
+    invalid,
+    invalidCompile,
+    invalidCustomMimes,
+    validCustomMime,
+    mixedCaseMultipart: {
+        planMime: mixedCaseMultipartPlan.mime,
+        partMime: mixedCaseMultipartFile.type,
+        exchangeMime: mixedCaseMultipartPlan.requestExchange.body.contentType,
+        rawPrefix: mixedCaseMultipartPlan.requestExchange.body.rawPrefix,
+    },
+    sampledRawPreview: {
+        contentLength: sampledPlan.traceHeaders['Content-Length'],
+        size: sampledPlan.requestExchange.body.size,
+        previewBytes: sampledPlan.requestExchange.body.bytes?.byteLength ?? -1,
+        transportBodyType: sampledPlan.body?.constructor?.name || '',
+    },
+}));
+"""
+
+    completed = subprocess.run(
+        ["node", "-e", script, str(UI_ROOT / "upload.js")],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "multipartAuto": {
+            "profile": "multipart",
+            "pathname": "/upload",
+            "wireHeaders": {},
+            "mime": "application/x-sample",
+            "filenameSource": "part",
+            "previewFilename": "sample.bin",
+            "formFile": {
+                "name": "sample.bin",
+                "type": "application/x-sample",
+                "size": 3,
+            },
+        },
+        "multipartPdf": {
+            "profile": "multipart",
+            "pathname": "/upload",
+            "wireHeaders": {},
+            "mime": "application/pdf",
+            "filenameSource": "part",
+            "previewFilename": "sample.bin",
+            "formFile": {
+                "name": "sample.bin",
+                "type": "application/pdf",
+                "size": 3,
+            },
+        },
+        "rawUrlText": {
+            "profile": "raw-url",
+            "pathname": "/upload/sample.bin",
+            "wireHeaders": {"Content-Type": "text/plain"},
+            "mime": "text/plain",
+            "filenameSource": "url",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "rawHeaderPdf": {
+            "profile": "raw-header",
+            "pathname": "/upload",
+            "wireHeaders": {
+                "Content-Type": "application/pdf",
+                "X-File-Name": "sample.bin",
+            },
+            "mime": "application/pdf",
+            "filenameSource": "header",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "rawHeaderCustom": {
+            "profile": "raw-header",
+            "pathname": "/upload",
+            "wireHeaders": {
+                "Content-Type": "application/x-xferry; version=1",
+                "X-File-Name": "sample.bin",
+            },
+            "mime": "application/x-xferry; version=1",
+            "filenameSource": "header",
+            "previewFilename": "sample.bin",
+            "formFile": None,
+        },
+        "noFilenameAuto": {
+            "profile": "raw-generated",
+            "pathname": "/upload",
+            "wireHeaders": {"Content-Type": "application/octet-stream"},
+            "mime": "application/octet-stream",
+            "filenameSource": "generated",
+            "previewFilename": "",
+            "formFile": None,
+        },
+        "apiTargets": ["/api", "/api/sample.bin", "/api", "/api"],
+        "rootRawUrl": "/sample.bin",
+        "rootReservedRawUrls": [
+            {"name": "api", "pathname": "/api/", "filenameSource": "url"},
+            {"name": "file", "pathname": "/file/", "filenameSource": "url"},
+            {"name": "upload", "pathname": "/upload/", "filenameSource": "url"},
+        ],
+        "nestedReservedRawUrls": [
+            "/upload/api",
+            "/upload/file",
+            "/upload/upload",
+        ],
+        "invalidTargetFallback": "/upload",
+        "invalid": {
+            "mode": "custom",
+            "valid": False,
+            "mime": "",
+            "errorKey": "uploadMimeInvalid",
+        },
+        "invalidCompile": "TypeError",
+        "invalidCustomMimes": [
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+            {
+                "mode": "custom",
+                "valid": False,
+                "mime": "",
+                "errorKey": "uploadMimeInvalid",
+            },
+        ],
+        "validCustomMime": {
+            "mode": "custom",
+            "valid": True,
+            "mime": 'Application/X-ASCII; Note="visible value"',
+            "errorKey": "",
+        },
+        "mixedCaseMultipart": {
+            "planMime": "text/plain; boundary=abcd",
+            "partMime": "text/plain; boundary=abcd",
+            "exchangeMime": "text/plain; boundary=abcd",
+            "rawPrefix": (
+                "--<browser-generated>\r\n"
+                'Content-Disposition: form-data; name="file"; filename="sample.bin"\r\n'
+                "Content-Type: text/plain; boundary=abcd\r\n\r\n"
+            ),
+        },
+        "sampledRawPreview": {
+            "contentLength": "1043",
+            "size": 1043,
+            "previewBytes": 513,
+            "transportBodyType": "File",
+        },
+    }
+
+
+def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> None:
+    """Catches Upload feedback drifting away from its local technical details."""
+    html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
+    core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
+    files_js = (UI_ROOT / "files.js").read_text(encoding="utf-8")
+    features_css = (UI_ROOT / "features.css").read_text(encoding="utf-8")
+    upload_tab = extract_workspace_panel(html, "upload-tab")
+
+    assert upload_tab.count('id="uploadStatus"') == 1
+    assert upload_tab.count('id="uploadStatusMessage"') == 1
+    assert upload_tab.count('id="uploadStatusMeta"') == 1
+    assert upload_tab.count('id="uploadStatusHttpValue"') == 1
+    assert upload_tab.count('id="uploadStatusPathValue"') == 1
+    assert upload_tab.count('id="uploadStatusSizeValue"') == 1
+    assert upload_tab.count('id="uploadStatusDetailsBtn"') == 1
+    assert upload_tab.count('id="uploadTechnicalDetails"') == 1
+
+    status_tag = re.search(r'<div\b[^>]*\bid="uploadStatus"[^>]*>', upload_tab)
+    details_button_tag = re.search(
+        r'<button\b[^>]*\bid="uploadStatusDetailsBtn"[^>]*>',
+        upload_tab,
+    )
+    details_tag = re.search(
+        r'<details\b[^>]*\bid="uploadTechnicalDetails"[^>]*>',
+        upload_tab,
+    )
+    assert status_tag is not None
+    assert re.search(r"\bhidden(?:\s|=|>)", status_tag.group(0))
+    assert details_button_tag is not None
+    assert 'aria-controls="uploadTechnicalDetails"' in details_button_tag.group(0)
+    assert 'aria-expanded="false"' in details_button_tag.group(0)
+    assert details_tag is not None
+    assert 'data-tool-trace-scope="upload"' in details_tag.group(0)
+    assert 'data-tool-trace-visible-when-empty="true"' in details_tag.group(0)
+    assert re.search(
+        r'<div\b(?=[^>]*\bid="uploadStatus")(?=[^>]*\bhidden\b)[^>]*>'
+        r".*?</div>\s*"
+        r'<details\b(?=[^>]*\bid="uploadTechnicalDetails")'
+        r'(?=[^>]*\bdata-tool-trace-scope="upload")[^>]*>',
+        upload_tab,
+        flags=re.DOTALL,
+    )
+
+    for locale in ("ru", "en"):
+        assert "uploadStatusDetails" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusHttp" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusPath" in extract_locale_keys(core_js, locale)
+        assert "uploadStatusSize" in extract_locale_keys(core_js, locale)
+        assert "uploadTechnicalDetailsEmpty" in extract_locale_keys(core_js, locale)
+
+    assert "app.service('notifications')" not in upload_js
+    assert "uploadNotificationId" not in upload_js
+    assert "timeoutMs" not in upload_js
+    assert "renderUploadStatus({ announce: false });" in upload_js
+    assert "function maybeAutoOpenUploadTechnicalDetails()" in upload_js
+    assert "technicalDetailsUserToggled" in upload_js
+    assert "singleResult" in upload_js
+
+    for files_notification_contract in (
+        "const notifications = app.service('notifications');",
+        "notifications.show({",
+        "id: 'files-delete',",
+        "timeoutMs: 5000,",
+    ):
+        assert files_notification_contract in files_js
+
+    status_rule = re.search(
+        r"^\.upload-status\s*\{(?P<body>.*?)^\}",
+        features_css,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert status_rule is not None
+    assert "position: fixed" not in status_rule.group("body")
+    assert ".upload-status__meta" in features_css
+    assert (
+        '.tool-trace[data-tool-trace-visible-when-empty="true"][data-phase="empty"]' in features_css
+    )
+
+
+def test_upload_multipart_raw_preview_models_browser_managed_part_headers() -> None:
+    upload_js = (UI_ROOT / "upload.js").read_text(encoding="utf-8")
+    inspector_js = (UI_ROOT / "inspector.js").read_text(encoding="utf-8")
+
+    assert "function buildUploadMultipartPreviewEnvelope" in upload_js
+    assert 'Content-Disposition: form-data; name="file"; filename="${safeFilename}"' in upload_js
+    assert "Content-Type: ${mime}" in upload_js
+    assert "rawPrefix" in upload_js
+    assert "rawSuffix" in upload_js
+    assert "rawPrefix: options.rawPrefix" in inspector_js
+    assert "body.rawPrefix" in inspector_js
+    assert "body.rawSuffix" in inspector_js
 
 
 def test_upload_exchange_logs_have_download_controls() -> None:
@@ -708,7 +1555,10 @@ def test_upload_request_previews_are_built_before_send() -> None:
     )
 
     assert "function refreshUploadRequestPreview" in upload_js
-    assert "function compileBasicUploadRequest(state, file, bodyBytes = null)" in upload_js
+    assert (
+        "function compileBasicUploadRequest(state, file, bodyBytes = null, "
+        "previewBytes = bodyBytes)" in upload_js
+    )
     assert "function buildUploadExchangeLog(entries, side = 'request', options = {})" in upload_js
     assert "message.rawText || buildExchangeRawMessage(message, side)" in upload_js
     assert "requestExportLog" in upload_js
@@ -747,11 +1597,11 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
 
     top_tabs = extract_top_tab_buttons(html)
     assert top_tabs == [
-        ("tab-upload", "tabUpload", "Отправить"),
-        ("tab-files", "tabFiles", "Файлы"),
-        ("tab-request", "tabRequests", "Запросы"),
-        ("tab-opsec", "tabOpsec", "Расширенные"),
-        ("tab-notepad", "tabNotepad", "Блокнот"),
+        ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-files", "topTabFiles", "Download"),
+        ("tab-request", "tabRequests", "Requests"),
+        ("tab-opsec", "tabOpsec", "Advanced"),
+        ("tab-notepad", "tabNotepad", "Notepad"),
     ]
 
     assert 'id="tab-upload" data-tool-entry="upload" data-tab-target="upload"' in html
@@ -769,13 +1619,13 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
     )
 
     for expected in (
-        'tabUpload: "Отправить"',
-        'tabFiles: "Файлы"',
+        'topTabUpload: "Отправить"',
+        'topTabFiles: "Получить"',
         'tabRequests: "Запросы"',
         'tabOpsec: "Расширенные"',
         'tabNotepad: "Блокнот"',
-        'tabUpload: "Send"',
-        'tabFiles: "Files"',
+        'topTabUpload: "Upload"',
+        'topTabFiles: "Download"',
         'tabRequests: "Requests"',
         'tabOpsec: "Advanced"',
         'tabNotepad: "Notepad"',
@@ -817,6 +1667,7 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "/static/ui/theme.js",
         "/static/ui/bootstrap.js",
         "/static/ui/core.js",
+        "/static/ui/notifications.js",
         "/static/ui/dialogs.js",
         "/static/ui/inspector.js",
         "/static/ui/http-errors.js",
@@ -841,6 +1692,7 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
 
     expected_initializers = {
         "core.js": "initializeCore",
+        "notifications.js": "initializeNotifications",
         "dialogs.js": "initializeDialogs",
         "inspector.js": "initializeInspector",
         "http-errors.js": "initializeHttpErrors",
@@ -1302,17 +2154,12 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
     files_js = (UI_ROOT / "files.js").read_text(encoding="utf-8")
+    components_css = (UI_ROOT / "components.css").read_text(encoding="utf-8")
     features_css = (UI_ROOT / "features.css").read_text(encoding="utf-8")
     files_tab = extract_workspace_panel(html, "files-tab")
 
-    assert files_tab.count('id="filesToastRegion"') == 1
-    assert files_tab.count('id="filesToastLive"') == 1
-    assert '<div class="file-toast-region" id="filesToastRegion">' in files_tab
-    assert (
-        '<div class="sr-only" id="filesToastLive" role="status" '
-        'aria-live="polite" aria-atomic="true"></div>'
-    ) in files_tab
-    assert files_tab.index('id="serverFiles"') < files_tab.index('id="filesToastRegion"')
+    assert 'id="filesToastRegion"' not in files_tab
+    assert 'id="filesToastLive"' not in files_tab
 
     expected_copy = {
         "ru": {
@@ -1320,47 +2167,49 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
             "deleteSelectedFilesRefreshError": (
                 "Файлы удалены ({0}), но список не удалось обновить"
             ),
-            "filesToastDismiss": "Закрыть уведомление",
         },
         "en": {
             "deleteSelectedFilesSuccess": "Selected files deleted",
             "deleteSelectedFilesRefreshError": (
                 "Files deleted ({0}), but the list could not be refreshed"
             ),
-            "filesToastDismiss": "Dismiss notification",
         },
     }
     for locale, labels in expected_copy.items():
         locale_block = extract_locale_block(core_js, locale)
         for key, label in labels.items():
             assert f'{key}: "{label}"' in locale_block
+        assert "filesToastDismiss:" not in locale_block
 
-    toast_helpers = files_js.split("function clearFilesToastTimer()", 1)[1].split(
+    toast_helpers = files_js.split("function getFilesDeletedToastMessage()", 1)[1].split(
         "refreshFilesMethodAvailability();",
         1,
     )[0]
     for snippet in (
-        "const filesToastRegionEl = document.getElementById('filesToastRegion');",
-        "function getFilesDeletedToastMessage()",
+        "const notifications = app.service('notifications');",
         "function syncFilesToastCopy()",
         "function dismissFilesToast({ restoreFocus = false } = {})",
-        "function scheduleFilesToastDismiss(toast, delay = 5000)",
         "function showFilesDeletedToast(deletedCount)",
-        "toast.dataset.filesToast = '';",
-        "message.dataset.filesToastMessage = '';",
-        "closeButton.dataset.filesToastDismiss = '';",
-        "closeButton.addEventListener('click', () => dismissFilesToast({ restoreFocus: true }))",
-        "announceLiveRegion('filesToastLive', getFilesDeletedToastMessage());",
-        "toast.addEventListener('focusin', clearFilesToastTimer);",
-        "event.stopPropagation();",
-        "dismissFilesToast({ restoreFocus: true });",
+        "notifications.update('files-delete', {",
+        "notifications.dismiss('files-delete', { restoreFocus });",
+        "notifications.show({",
+        "id: 'files-delete',",
+        "tone: 'success',",
+        "message: getFilesDeletedToastMessage(),",
+        "timeoutMs: 5000,",
+        "origin: browsePathInput,",
     ):
-        assert snippet in files_js
+        assert snippet in toast_helpers or snippet in files_js
     assert "filesToastDeletedCount || 0" in toast_helpers
-    assert "if (restoreFocus && toastHadFocus)" in toast_helpers
-    assert "focusFilesBrowserAnchor();" in toast_helpers
-    assert "toast.focus(" not in toast_helpers
-    assert "closeButton.focus(" not in toast_helpers
+    for legacy_snippet in (
+        "filesToastRegionEl",
+        "filesToastTimer",
+        "data-files-toast",
+        "filesToastLive",
+        "filesToastDismiss",
+        "document.createElement('div')",
+    ):
+        assert legacy_snippet not in toast_helpers
 
     bulk_delete = files_js.split("async function deleteSelectedUploadFiles", 1)[1].split(
         "// ===== DELETE file =====",
@@ -1390,9 +2239,9 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     assert "if (!suppressLiveAnnouncements)" in browse_directory
     assert "filesBrowseStatusEl.setAttribute('aria-live', 'polite');" in browse_directory
 
-    region_block = features_css.split("\n.file-toast-region {", 1)[1].split("\n}", 1)[0]
-    toast_block = features_css.split("\n.file-toast {", 1)[1].split("\n}", 1)[0]
-    dismiss_block = features_css.split("\n.file-toast__dismiss {", 1)[1].split("\n}", 1)[0]
+    region_block = components_css.split("\n.app-notification-region {", 1)[1].split("\n}", 1)[0]
+    toast_block = components_css.split("\n.app-notification {", 1)[1].split("\n}", 1)[0]
+    dismiss_block = components_css.split("\n.app-notification__dismiss {", 1)[1].split("\n}", 1)[0]
     for declaration in (
         "position: fixed;",
         "right: max(var(--space-4), env(safe-area-inset-right));",
@@ -1405,8 +2254,9 @@ def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() 
     assert "min-height: 60px;" in toast_block
     for declaration in ("width: 44px;", "min-width: 44px;", "min-height: 44px;"):
         assert declaration in dismiss_block
-    assert ".file-toast__dismiss:focus-visible" in features_css
-    assert "@media (prefers-reduced-motion: no-preference)" in features_css
+    assert ".app-notification__dismiss:focus-visible" in components_css
+    assert "@media (prefers-reduced-motion: no-preference)" in components_css
+    assert ".file-toast" not in features_css
 
 
 def test_files_inspection_ui_uses_one_opt_in_info_contract_and_safe_fallback() -> None:
@@ -3370,8 +4220,8 @@ function extractFunction(source, marker, nextMarker) {
     }
 
 
-def test_basic_upload_comparison_accepts_only_complete_canonical_payload_in_node() -> None:
-    """Execute the real comparison consumer against a server-shaped STAGE-006 response."""
+def test_basic_upload_comparison_normalizes_canonical_payload_profiles_in_node() -> None:
+    """Execute all UI profile tokens against their canonical server-shaped responses."""
     script = r"""
 const fs = require('node:fs');
 
@@ -3395,10 +4245,10 @@ globalThis.getCompareVerdict = extractFunction(
 );
 
 const hash = 'a'.repeat(64);
-const payload = {
+const responsePayload = (profile, carrier, filenameSource, normalizedName = 'compare.txt') => ({
     file: {
-        name: 'compare.txt',
-        path: '/uploads/final-compare.txt',
+        name: normalizedName,
+        path: `/uploads/${normalizedName}`,
         size_bytes: 3,
         size_human: '3.0 B',
         content_type: 'text/plain',
@@ -3407,24 +4257,45 @@ const payload = {
     },
     upload: {
         kind: 'basic',
-        profile: 'multipart',
-        carrier: 'multipart',
-        filename_source: 'part',
-        normalized_name: 'compare.txt',
-        collision_renamed: true,
-        request_body_size: 3,
+        profile,
+        carrier,
+        filename_source: filenameSource,
+        normalized_name: normalizedName,
+        collision_renamed: normalizedName === 'collision-compare.txt',
+        request_body_size: carrier === 'multipart' ? 32 : 3,
         payload_size: 3,
     },
-};
-const verdict = globalThis.getCompareVerdict(
-    { profile: 'multipart', filenameSource: 'part', mime: 'text/plain' },
+});
+const cases = [
+    ['multipart', 'multipart', 'multipart', 'part', 'collision-compare.txt'],
+    ['raw-url', 'raw_url', 'body', 'url', 'compare.txt'],
+    ['raw-header', 'raw_header', 'body', 'header', 'compare.txt'],
+    ['raw-generated', 'raw_url', 'body', 'generated', 'generated-123.bin'],
+];
+const verdicts = Object.fromEntries(cases.map(([
+    uiProfile,
+    serverProfile,
+    carrier,
+    filenameSource,
+    normalizedName,
+]) => [
+    uiProfile,
+    globalThis.getCompareVerdict(
+        { profile: uiProfile, filenameSource, mime: 'text/plain' },
+        { name: 'compare.txt', size: 3 },
+        hash,
+        { ok: true },
+        responsePayload(serverProfile, carrier, filenameSource, normalizedName),
+    ),
+]));
+const wrongCanonicalProfile = globalThis.getCompareVerdict(
+    { profile: 'raw-url', filenameSource: 'url', mime: 'text/plain' },
     { name: 'compare.txt', size: 3 },
     hash,
     { ok: true },
-    payload,
-    null,
+    responsePayload('raw_header', 'body', 'url'),
 );
-process.stdout.write(JSON.stringify({ verdict }));
+process.stdout.write(JSON.stringify({ verdicts, wrongCanonicalProfile }));
 """
 
     completed = subprocess.run(
@@ -3435,7 +4306,15 @@ process.stdout.write(JSON.stringify({ verdict }));
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"verdict": "delivered"}
+    assert json.loads(completed.stdout) == {
+        "verdicts": {
+            "multipart": "delivered",
+            "raw-url": "delivered",
+            "raw-header": "delivered",
+            "raw-generated": "delivered",
+        },
+        "wrongCanonicalProfile": "metadata-changed",
+    }
 
 
 def test_stage006_consumer_validators_reject_incomplete_or_wrong_kind_2xx_in_node() -> None:
@@ -3828,13 +4707,17 @@ def test_files_xor_decrypt_fetch_uses_the_conditional_no_gzip_header_helper() ->
     assert "xhr.setRequestHeader(uiNoGzipHeader, uiNoGzipHeaderValue)" not in decrypt_fetch
 
 
-def test_header_controls_expose_state_and_invalid_locale_falls_back() -> None:
+def test_header_controls_default_to_english_dark_and_invalid_locale_falls_back() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
+    theme_js = (UI_ROOT / "theme.js").read_text(encoding="utf-8")
+    header = html.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
 
-    assert 'id="langRu"' in html and 'aria-pressed="true">RU</button>' in html
-    assert 'id="langEn"' in html and 'aria-pressed="false">EN</button>' in html
-    assert 'id="themeBtn"' in html and 'aria-pressed="false">🌙</button>' in html
+    assert '<html lang="en">' in html
+    assert 'id="langEn"' in header and 'aria-pressed="true">EN</button>' in header
+    assert 'id="langRu"' in header and 'aria-pressed="false">RU</button>' in header
+    assert 'id="themeBtn"' in header and 'aria-pressed="false">🌙</button>' in header
+    assert header.index('id="langEn"') < header.index('id="langRu"') < header.index('id="themeBtn"')
 
     for key in (
         "langRussianSelectedLabel",
@@ -3849,10 +4732,14 @@ def test_header_controls_expose_state_and_invalid_locale_falls_back() -> None:
 
     assert "const supportedLangs = new Set(['ru', 'en']);" in core_js
     assert "function normalizeLang(lang)" in core_js
+    assert "return supportedLangs.has(lang) ? lang : 'en';" in core_js
     assert "let currentLang = normalizeLang(storedLang);" in core_js
-    assert "translations[currentLang] || translations.ru" in core_js
+    assert "translations[currentLang] || translations.en" in core_js
     assert "button.setAttribute('aria-pressed', String(selected));" in core_js
     assert "btn.setAttribute('aria-pressed', String(isLight));" in core_js
+    assert 'localStorage.getItem("theme") === "light"' in theme_js
+    assert 'setAttribute("data-theme", "light")' in theme_js
+    assert 'setAttribute("data-theme", "dark")' not in theme_js
 
 
 def test_advanced_password_error_is_bound_to_the_invalid_field() -> None:

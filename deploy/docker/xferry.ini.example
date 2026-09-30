@@ -1,6 +1,7 @@
 # xferry public-direct Docker Compose example.
 # Copy to ./xferry.ini before Compose mounts it at /etc/xferry/xferry.ini.
 
+# BEGIN GENERATED: xferry-settings/docker
 [server]
 preset = public-direct
 host = 0.0.0.0
@@ -12,6 +13,8 @@ workers = 10
 
 [security]
 auth_file = /run/secrets/xferry_auth
+# Auto-mode admits loopback plus the final sslip certificate hostname.
+allowed_hosts =
 
 [tls]
 # Runtime TLS becomes active through sslip/letsencrypt/cert+key even if
@@ -41,3 +44,4 @@ cors_origin =
 plugin_allowlist =
 plugins_allow_public_direct = false
 plugins_override_core = false
+# END GENERATED: xferry-settings/docker

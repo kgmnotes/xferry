@@ -13,17 +13,19 @@ def _read(relative_path: Path) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_quick_start_is_source_first_until_publication_exists() -> None:
+def test_quick_start_enforces_the_durable_source_only_policy() -> None:
     text = _read(QUICK_START)
+    normalized = " ".join(text.split())
 
     for marker in (
-        "No GitHub Release, PyPI package,",
+        "supported distribution is a reviewed source checkout",
+        "do not publish a GitHub Release, PyPI package",
         "git clone https://github.com/kgmnotes/xferry.git",
         "python3 -m venv .venv",
         "python -m pip install .",
         "xferry run --preset local --open",
     ):
-        assert marker in text
+        assert marker in normalized
     assert text.index("git clone") < text.index("xferry run --preset local --open")
     assert "releases/latest" not in text
     assert "ghcr.io/kgmnotes/xferry" not in text

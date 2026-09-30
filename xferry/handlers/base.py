@@ -180,6 +180,14 @@ class BaseHandler:
         self.handler_context = context
         return context
 
+    def _publish_ordinary_upload(self, file_path: Path, data: bytes) -> Path:
+        """Publish an ordinary upload without exposing stale SMUGGLE provenance."""
+        coordinator = self._get_handler_context().smuggle_temp
+        with coordinator.transaction() as registry:
+            published_path = self._get_upload_storage().publish_bytes(file_path, data)
+            registry.discard(published_path)
+            return published_path
+
     def _get_file_path(self, url_path: str, for_sandbox: bool = False) -> Path | None:
         """
         Convert URL path to filesystem path.

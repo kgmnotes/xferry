@@ -4,6 +4,9 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .auth import (
+    AuthAdmissionController,
+    AuthAdmissionDenied,
+    AuthAttemptLease,
     BasicAuthenticator,
     generate_random_credentials,
     hash_password,
@@ -36,6 +39,9 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "AuthAdmissionController",
+    "AuthAdmissionDenied",
+    "AuthAttemptLease",
     "BasicAuthenticator",
     "parse_basic_auth",
     "hash_password",

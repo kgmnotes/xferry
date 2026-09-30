@@ -20,8 +20,10 @@ Documentation: <https://xferry.kgmnotes.ru/>
 
 ## Install from source
 
-Version `0.1.0` is the current public source version. No GitHub Release, PyPI
-package, or GHCR image has been published, so install from a checkout:
+The supported distribution is a reviewed source checkout. Automated workflows
+do not publish packages, release binaries, or registry images; they only verify
+wheel, source-distribution, container, and SCIE build products. Install from a
+checkout:
 
 ```bash
 git clone https://github.com/kgmnotes/xferry.git

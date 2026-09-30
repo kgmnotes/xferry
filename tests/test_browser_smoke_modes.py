@@ -29,23 +29,6 @@ EXPECTED_MODES = (
 )
 
 
-def _workflow_job(workflow: str, job_name: str) -> str:
-    lines = workflow.splitlines()
-    marker = f"  {job_name}:"
-    try:
-        start = lines.index(marker)
-    except ValueError as exc:
-        raise AssertionError(f"workflow job {job_name!r} is missing") from exc
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if len(line) - len(line.lstrip()) == 2 and line.endswith(":"):
-            end = index
-            break
-    return "\n".join(lines[start:end])
-
-
 def test_browser_smoke_exposes_independent_journeys() -> None:
     assert browser_smoke.SMOKE_MODES == EXPECTED_MODES
 
@@ -398,6 +381,44 @@ def test_external_target_does_not_import_or_start_a_server(
     assert recorded == result
 
 
+def test_browser_smoke_opens_with_the_installed_chromium_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    opened_config: dict[str, object] = {}
+
+    def fake_run_playwright(
+        base_cmd: list[str],
+        session: str,
+        *args: str,
+        cwd: Path,
+    ) -> str:
+        del base_cmd, session, cwd
+        if "open" in args:
+            config_path = Path(args[args.index("--config") + 1])
+            opened_config.update(json.loads(config_path.read_text(encoding="utf-8")))
+        if "run-code" in args:
+            return json.dumps({"journey": "first-run"})
+        return ""
+
+    monkeypatch.setattr(browser_smoke, "_playwright_command", lambda: ["fake-playwright"])
+    monkeypatch.setattr(browser_smoke, "_run_playwright", fake_run_playwright)
+
+    browser_smoke.run_browser_smoke(
+        mode="first-run",
+        target_url="http://127.0.0.1:9876/",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+
+    browser = opened_config["browser"]
+    assert isinstance(browser, dict)
+    assert browser["browserName"] == "chromium"
+    launch_options = browser["launchOptions"]
+    assert isinstance(launch_options, dict)
+    assert launch_options["channel"] == "chromium"
+    assert launch_options["headless"] is True
+
+
 def test_external_target_failure_is_labeled_and_persisted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -448,6 +469,28 @@ def test_playwright_dispatcher_owns_every_mode_and_failure_artifacts() -> None:
     assert "runUnavailablePath()" in script
     assert "page.screenshot({" in script
     assert "${smokeMode}-failure.png" in script
+
+
+def test_first_run_upload_preview_waits_for_the_default_upload_endpoint() -> None:
+    """The first-run oracle must follow the basic uploader's /upload request target."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    preview_wait = script.split('"upload request preview ready before send"', 1)[1].split(
+        "10000", 1
+    )[0]
+
+    assert '["/upload"]' in preview_wait
+    assert '["/uploads"]' not in preview_wait
+
+
+def test_first_run_upload_download_assertion_uses_the_default_upload_endpoint() -> None:
+    """The downloaded request oracle must expect the request the basic uploader sends."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    upload_helper = script.split("async function uploadViaDom", 1)[1].split(
+        "async function clearUploadsViaUiAndAssertSummaryPersistence", 1
+    )[0]
+
+    assert '"POST /upload HTTP/1.1"' in upload_helper
+    assert '"POST /uploads HTTP/1.1"' not in upload_helper
 
 
 def test_advanced_smoke_uses_per_tab_session_and_canonical_send() -> None:
@@ -692,9 +735,8 @@ def test_smuggle_mode_exercises_real_none_xor_and_aes_artifacts() -> None:
     assert "URLSearchParams" not in request_assertion
 
 
-def test_workflows_gate_source_wheel_image_and_preserve_diagnostics() -> None:
+def test_ci_gates_source_wheel_image_and_preserves_diagnostics() -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    release = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
     assert "Compact source and wheel browser journeys" in ci
     assert ci.count("--mode first-run") >= 2
@@ -704,31 +746,11 @@ def test_workflows_gate_source_wheel_image_and_preserve_diagnostics() -> None:
     assert "python -m xferry \\\n            run \\\n            --host 127.0.0.1" in ci
     assert (
         'xferry-browser-wheel-venv/bin/xferry" \\\n'
-        "              run \\\n"
-        "              --host 127.0.0.1"
+        "                run \\\n"
+        "                --host 127.0.0.1"
     ) in ci
+    assert 'if [ "${CANDIDATE_GATES}" != "true" ]; then' in ci
     assert "Full browser aggregate on main" in ci
     assert "--mode full" in ci
     assert "Upload browser journey diagnostics" in ci
     assert "if: always()" in ci
-
-    build = _workflow_job(release, "build")
-    image_verify = _workflow_job(release, "image-verify")
-    publish_ghcr = _workflow_job(release, "publish-ghcr")
-
-    assert "Installed wheel external first-run" in build
-    assert "--mode first-run" in build
-    assert "--target-url" in build
-    assert "Installed wheel full browser aggregate" in build
-    assert "--installed-package" in build
-    assert "--mode full" in build
-    assert "Upload wheel browser diagnostics" in build
-    assert (
-        'xferry-wheel-smoke/bin/xferry" \\\n              run \\\n              --host 127.0.0.1'
-    ) in build
-
-    assert "Hardened local image lifecycle smoke" in image_verify
-    assert "--browser-first-run" in image_verify
-    assert "Upload image browser diagnostics" in image_verify
-    assert "docker/login-action" not in image_verify
-    assert "docker/login-action@v3" in publish_ghcr

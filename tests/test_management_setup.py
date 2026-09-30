@@ -879,6 +879,45 @@ def test_failed_preflight_never_enters_root_or_mutation_boundary(tmp_path: Path)
     assert not (tmp_path / "run/lock/xferry-ops.lock").exists()
 
 
+@pytest.mark.parametrize(
+    "facts",
+    [
+        replace(_facts(), os_id="fedora", os_version="40"),
+        replace(_facts(), os_version="20.04"),
+        replace(_facts(), machine="riscv64"),
+        replace(_facts(), has_systemd=False),
+    ],
+)
+def test_real_unsupported_host_preflight_stops_before_every_mutation(
+    facts: HostFacts, tmp_path: Path
+) -> None:
+    """Every unsupported host dimension must preserve the pre-lock mutation boundary."""
+    runner = FakeRunner()
+    plan = replace(_plan(tmp_path), facts=facts)
+
+    def platform_preflight(candidate: SetupPlan) -> SetupPreflight:
+        return check_setup_preflight(
+            candidate,
+            SetupProbes(
+                executable_is_ready=lambda _path: True,
+                port_is_available=lambda _host, _port: True,
+                ufw_is_active=lambda: False,
+            ),
+        )
+
+    result = _executor(tmp_path, runner, preflight=platform_preflight).apply(plan)
+
+    assert result.exit_code == 4
+    assert result.code == "unsupported-platform"
+    assert "Detected" in result.detail
+    assert result.next_actions
+    assert runner.commands == []
+    assert not plan.layout.lock_file.exists()
+    assert not plan.layout.config_file.exists()
+    assert not plan.layout.auth_file.exists()
+    assert not plan.layout.unit_file.exists()
+
+
 def test_default_setup_guard_blocks_unsupported_managed_config_before_any_mutation(
     tmp_path: Path,
 ) -> None:

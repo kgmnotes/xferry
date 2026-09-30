@@ -56,6 +56,122 @@ def test_server_config_models_are_frozen_slotted_and_composed(tmp_path: Path) ->
     assert config.plugins is plugins
 
 
+def test_direct_server_config_cannot_bypass_allowed_host_validation(tmp_path: Path) -> None:
+    """Catch in-process server construction bypassing operator authority validation."""
+    from xferry.server_config import (
+        AuthConfig,
+        ServerConfig,
+        ServerLimits,
+        TLSConfig,
+        resolve_server_config,
+    )
+
+    public_file_tls = ServerConfig(
+        host="0.0.0.0",
+        port=8443,
+        root_dir=tmp_path,
+        limits=ServerLimits(
+            body_memory_budget=1024,
+            upload_storage_limit=1024,
+        ),
+        tls=TLSConfig(cert_file=tmp_path / "cert.pem", key_file=tmp_path / "key.pem"),
+        auth=AuthConfig(auth_file=tmp_path / "auth.txt"),
+        public_direct=True,
+    )
+    with pytest.raises(ValueError, match="explicit allowed_hosts"):
+        resolve_server_config(public_file_tls)
+
+    resolved = resolve_server_config(
+        replace(public_file_tls, allowed_hosts=("FILES.EXAMPLE.", "[::1]"))
+    )
+    assert resolved.allowed_hosts == ("files.example", "::1")
+
+    acme = ServerConfig(
+        host="0.0.0.0",
+        root_dir=tmp_path,
+        tls=TLSConfig(letsencrypt=True, domain="files.example"),
+        allowed_hosts=("other.example",),
+    )
+    with pytest.raises(ValueError, match="certificate domain"):
+        resolve_server_config(acme)
+
+
+def test_direct_config_rejects_non_ascii_ascii_alias_allowed_host() -> None:
+    """Catch direct config canonicalizing a Unicode alias into an ASCII authority."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    with pytest.raises(ValueError, match="invalid allowed host"):
+        resolve_server_config(ServerConfig(allowed_hosts=("ban\u212a.example",)))
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"],
+)
+def test_direct_public_config_classifies_every_unspecified_bind_form(
+    host: str,
+    tmp_path: Path,
+) -> None:
+    """Catch equivalent wildcard IP spellings bypassing explicit file-cert authorities."""
+    from xferry.server_config import (
+        AuthConfig,
+        ServerConfig,
+        ServerLimits,
+        TLSConfig,
+        resolve_server_config,
+    )
+
+    config = ServerConfig(
+        host=host,
+        port=8443,
+        root_dir=tmp_path,
+        limits=ServerLimits(body_memory_budget=1024, upload_storage_limit=1024),
+        tls=TLSConfig(cert_file=tmp_path / "cert.pem", key_file=tmp_path / "key.pem"),
+        auth=AuthConfig(auth_file=tmp_path / "auth.txt"),
+        public_direct=True,
+    )
+
+    with pytest.raises(ValueError, match="explicit allowed_hosts"):
+        resolve_server_config(config)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://exam\tple.test",
+        "http://example.test?",
+        "http://example.test#",
+        "http://example.test/?",
+        "http://example.test/#",
+        "http://example.test\x1f",
+    ],
+)
+def test_cors_origin_rejects_lossy_raw_urlsplit_representations(origin: str) -> None:
+    """Catch config validation accepting an origin after parser data loss."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    with pytest.raises(ValueError, match="invalid CORS origin"):
+        resolve_server_config(ServerConfig(cors_origin=origin))
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://BÜCHER.example./",
+        "http://192.0.2.10:8080/",
+        "http://[2001:db8::1]:8080/",
+    ],
+)
+def test_cors_origin_strict_parser_preserves_supported_authorities(origin: str) -> None:
+    """Catch strict raw validation rejecting legitimate DNS, IPv4, or bracketed IPv6."""
+    from xferry.server_config import ServerConfig, resolve_server_config
+
+    config = resolve_server_config(ServerConfig(cors_origin=origin))
+
+    assert config.cors_origin == origin
+    assert config.cors_origins == (origin,)
+
+
 def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_derived_limits(
     tmp_path: Path,
 ) -> None:
@@ -296,7 +412,7 @@ def test_server_request_cors_uses_resolved_origins_without_reparsing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catches request handling reparsing the already validated CORS string."""
-    from xferry.http import HTTPRequest
+    from tests.conftest import make_request
     from xferry.server import XFerryServer
 
     server = XFerryServer(
@@ -310,8 +426,10 @@ def test_server_request_cors_uses_resolved_origins_without_reparsing(
         "xferry.http.cors.parse_cors_origins",
         lambda _configured: pytest.fail("request CORS must use config.cors_origins"),
     )
-    request = HTTPRequest(
-        b"GET / HTTP/1.1\r\nHost: server.example\r\nOrigin: https://app.example\r\n\r\n"
+    request = make_request(
+        "GET",
+        "/",
+        headers={"Host": "server.example", "Origin": "https://app.example"},
     )
 
     assert server._resolve_cors_origin(request) == "https://app.example"

@@ -390,5 +390,11 @@ def _mime_types_match(left: str, right: str) -> bool:
     aliases = {
         frozenset({"application/zip", "application/x-zip-compressed"}),
         frozenset({"image/x-icon", "image/vnd.microsoft.icon"}),
+        frozenset(
+            {
+                "application/vnd.microsoft.portable-executable",
+                "application/x-msdos-program",
+            }
+        ),
     }
     return left == right or frozenset({left, right}) in aliases

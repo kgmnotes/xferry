@@ -21,6 +21,15 @@ ADVANCED_DECODE_REJECTION_REASONS = frozenset(
         "crypto_unavailable",
     }
 )
+AUTHENTICATION_DENIAL_REASONS = frozenset(
+    {
+        "capacity",
+        "cooldown",
+        "peer_capacity",
+        "timeout",
+    }
+)
+AUTHENTICATION_OUTCOMES = frozenset({"error", "failed", "succeeded"})
 SCAN_OBSERVATION_SCOPES = frozenset(
     {
         "upload_quota",
@@ -63,6 +72,16 @@ class MetricsCollector:
         self._request_admission_active: int = 0
         self._request_admission_accepted: int = 0
         self._request_admission_rejected: int = 0
+        self._authentication_active: int = 0
+        self._authentication_attempts: int = 0
+        self._authentication_succeeded: int = 0
+        self._authentication_failed: int = 0
+        self._authentication_errors: int = 0
+        self._authentication_denials: int = 0
+        self._authentication_denial_reasons: dict[str, int] = dict.fromkeys(
+            AUTHENTICATION_DENIAL_REASONS,
+            0,
+        )
         self._request_latency_count: int = 0
         self._request_latency_total_ms: float = 0.0
         self._request_latency_max_ms: float = 0.0
@@ -225,6 +244,37 @@ class MetricsCollector:
         with self._lock:
             self._request_admission_rejected += 1
 
+    def record_authentication_started(self) -> None:
+        """Record one admitted authentication verification beginning."""
+        with self._lock:
+            self._authentication_active += 1
+            self._authentication_attempts += 1
+
+    def record_authentication_finished(self, outcome: str) -> None:
+        """Record one authentication verification outcome with closed labels."""
+        _require_known(outcome, AUTHENTICATION_OUTCOMES, "authentication outcome")
+        with self._lock:
+            if self._authentication_active < 1:
+                raise RuntimeError("authentication finish recorded without an active attempt")
+            self._authentication_active -= 1
+            if outcome == "succeeded":
+                self._authentication_succeeded += 1
+            elif outcome == "failed":
+                self._authentication_failed += 1
+            else:
+                self._authentication_errors += 1
+
+    def record_authentication_denial(self, reason: str) -> None:
+        """Record an authentication admission denial with closed labels."""
+        _require_known(
+            reason,
+            AUTHENTICATION_DENIAL_REASONS,
+            "authentication denial reason",
+        )
+        with self._lock:
+            self._authentication_denials += 1
+            self._authentication_denial_reasons[reason] += 1
+
     def record_worker_exception(self, source: str, exc: BaseException) -> None:
         """Record an exception observed in worker-related execution."""
         exc_type = type(exc).__name__
@@ -365,6 +415,15 @@ class MetricsCollector:
                     "active": self._request_admission_active,
                     "accepted": self._request_admission_accepted,
                     "rejected": self._request_admission_rejected,
+                },
+                "authentication": {
+                    "active": self._authentication_active,
+                    "attempts": self._authentication_attempts,
+                    "succeeded": self._authentication_succeeded,
+                    "failed": self._authentication_failed,
+                    "errors": self._authentication_errors,
+                    "denials": self._authentication_denials,
+                    "denial_reasons": dict(self._authentication_denial_reasons),
                 },
                 "websocket": {
                     "active": self._websocket_active,

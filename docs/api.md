@@ -92,15 +92,43 @@ WebSocket message shapes remain documented in their separate section.
 
 XFerry has one always-on core method surface. The handler registry, exact-origin
 CORS preflight, browser UI affordances, and WebSocket notes all use this full
-surface by default. Core methods are:
+surface by default. The canonical runtime-backed core contract is:
 
-`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `FETCH`, `INFO`,
-`PING`, `NONE`, `NOTE`, `SMUGGLE`, plus syntactically valid unregistered
-methods when an authorized Advanced Session selects the upload route.
+<!-- BEGIN GENERATED: xferry-contracts/core-methods -->
+| `method` | `mutating` | `cors_exact` | `cors_wildcard` | `ui_group` | `exposure_note` |
+| --- | --- | --- | --- | --- | --- |
+| `GET` | `false` | `true` | `true` | `request` | Reads the built-in UI or files within the uploads scope. |
+| `HEAD` | `false` | `true` | `true` | `request` | Reads response metadata without returning a response body. |
+| `POST` | `true` | `true` | `false` | `upload` | Stores an ordinary upload from the request body. |
+| `PUT` | `true` | `true` | `false` | `upload` | Stores an ordinary upload through the legacy upload handler. |
+| `PATCH` | `true` | `true` | `false` | `upload` | Creates or updates an uploaded file from the request body. |
+| `DELETE` | `true` | `true` | `false` | `files` | Deletes uploaded files or explicitly clears the uploads scope. |
+| `OPTIONS` | `false` | `true` | `true` | `request` | Reports CORS preflight policy without mutating server state. |
+| `FETCH` | `false` | `true` | `true` | `files` | Downloads an uploaded file with FETCH status metadata. |
+| `INFO` | `false` | `true` | `true` | `request` | Lists or inspects paths constrained to the uploads scope. |
+| `PING` | `false` | `true` | `true` | `request` | Reports health, method discovery, and operational metrics. |
+| `NONE` | `true` | `true` | `false` | `upload` | Stores an ordinary upload through the legacy NONE method. |
+| `NOTE` | `true` | `true` | `false` | `notepad` | Reads and mutates encrypted Secure Notepad state. |
+| `SMUGGLE` | `true` | `true` | `false` | `files` | Creates a controlled temporary HTML download artifact. |
+<!-- END GENERATED: xferry-contracts/core-methods -->
+
+Syntactically valid unregistered methods are outside the core registry. They
+select the upload route only when an authorized Advanced Session explicitly
+admits them under its scoped contract.
 
 Wildcard CORS remains read-only and lists only read methods; exact CORS origins
 can receive the full method list and can echo a requested unknown advanced
 upload method when the method token is valid.
+
+### Plugin handler boundary
+
+Explicitly enabled plugin handlers have the public callable shape
+`(HTTPRequest, HandlerContext) -> HTTPResponse`. The immutable, slotted service
+boundary is exactly `PluginServices(upload_dir, upload_storage)` nested in
+`HandlerContext(services, plugin_name)`. A handler can use
+`context.services.upload_dir`, `context.services.upload_storage`, and
+`context.plugin_name`; there is no `HandlerContext.server` property, shim,
+alias, or wider runtime authority.
 
 ---
 
@@ -141,6 +169,43 @@ The receive layer enforces protocol framing before handler dispatch:
   response is built, except aggregate body-memory budget exhaustion, which
   returns a JSON `503`. Rejections are counted under `metrics.receive`.
 
+### Trusted request admission
+
+After parsing and direct-peer attachment, but before keep-alive,
+authentication, route selection, Advanced sessions, WebSocket handling, CORS,
+or dispatch, XFerry admits the request authority and security-sensitive
+singleton fields.
+
+- HTTP/1.1 and every other parser-accepted version except exact HTTP/1.0 require
+  exactly one nonempty valid `Host`. HTTP/1.0 may omit it; a present value uses
+  the same strict grammar.
+- DNS/IDNA case and a terminal root dot, IPv4, and bracketed IPv6 are
+  canonicalized. A request Host may include a decimal port from 1 through
+  65535. Configured allowed hosts are host/IP values only, without ports.
+- Duplicate occurrences, including identical values, or obs-fold are rejected for `Host`,
+  `Authorization`, `Origin`, `Sec-Fetch-Site`, `Connection`, `Upgrade`,
+  `Sec-WebSocket-Key`, `Sec-WebSocket-Version`,
+  `Access-Control-Request-Method`, and `Access-Control-Request-Headers`. A
+  single comma-list value remains valid for fields such as `Connection` and
+  preflight requested headers.
+- Invalid or ambiguous protected fields return closed `400 invalid_header`.
+  A syntactically valid but unapproved Host returns closed
+  `421 misdirected_request`. Both responses use `Cache-Control: no-store`, emit
+  no CORS or authentication challenge, and occur before auth/session/handler
+  side effects.
+- Same-origin compares the effective server TLS scheme, canonical admitted
+  host, and effective port. An exact CORS origin can authorize its documented
+  browser behavior only after Host admission; it never expands allowed hosts.
+
+Configure authorities with repeatable `--allowed-host HOST`,
+`XFERRY_ALLOWED_HOSTS`, or `[security] allowed_hosts`. INI and environment
+lists use ASCII whitespace, never commas. Each higher-precedence layer replaces
+the lower list as a whole. Empty/omitted selects auto-mode: loopback binds add
+`localhost` and loopback IP forms, wildcard binds admit only loopback forms,
+and concrete binds admit their canonical host. The active ACME/domain/sslip
+certificate name is included before listener bind. Explicit entries reject
+wildcards, CIDRs, URLs, schemes, ports, userinfo, paths, queries, and fragments.
+
 ---
 
 ## GET
@@ -157,8 +222,11 @@ the built-in UI assets. Other file paths are resolved inside `uploads/`;
 `/file.txt` and `/uploads/file.txt` both target `<root>/uploads/file.txt`.
 
 **Response:** File contents with appropriate `Content-Type`. Bundled HTML files
-include `Content-Security-Policy`; uploaded HTML/SVG files are forced to
-download as attachments.
+include `Content-Security-Policy`. Ordinary uploaded HTML, SVG, and XHTML
+files are forced to download as attachments. A registered SMUGGLE artifact is
+the intentional exception: its synchronized provenance preserves the generated
+runnable media type and one-shot cleanup lifecycle. Replacing or deleting that
+file clears the provenance before ordinary upload behavior can resume.
 
 The bundled UI CSP currently includes `default-src 'self'`, `script-src
 'self'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data:`,
@@ -189,18 +257,44 @@ HEAD /uploads/path/to/file HTTP/1.1
 
 All four methods use the same Basic handler unless an authorized matching
 `X-XFerry-Advanced-Session` selects Advanced dispatch. Basic has three exact
-wire profiles:
+wire profiles: `multipart`, `raw_url`, and `raw_header`. The bundled UI exposes
+four request-building scenarios; **No filename** is an intentional UI-only
+variant of the canonical `raw_url` profile. A separate request-path selector
+offers `/`, `/upload`, `/api`, and `/file`, with `/upload` selected by default.
+Choosing one of these paths does not create, inspect, or attach an Advanced
+Session; the Upload tab continues to send Basic requests without the Advanced
+session header.
 
-| Profile | Request target | Body/headers | Filename source |
-|---------|----------------|--------------|-----------------|
-| **Multipart (default)** | `/uploads` | The browser UI sends one `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the multipart boundary and `Content-Length`. | `X-File-Name`, then part `filename`, then URL, then generated |
-| **Raw URL** | `/uploads/<encoded-name>` | Original file bytes, no `X-File-Name` | URL |
-| **Raw Header** | `/uploads` | Original bytes, `Content-Type: application/octet-stream`, URL-encoded `X-File-Name` | header |
+| UI choice | Request target | Body/headers | Filename source | Canonical response profile |
+|-----------|----------------|--------------|-----------------|----------------------------|
+| **Multipart (default)** | selected path | One `FormData` file part using field `file`; the server accepts any non-empty file-part field name. The browser owns the outer multipart boundary and `Content-Length`. | part `filename` | `multipart` |
+| **Raw URL** | selected path plus `/<encoded-name>`; root becomes `/<encoded-name>` | Original file bytes, no `X-File-Name` | URL | `raw_url` |
+| **Raw Header** | selected path | Original file bytes and a URL-encoded `X-File-Name` | header | `raw_header` |
+| **No filename** | selected path | Original file bytes, no `X-File-Name` | generated | `raw_url` |
+
+For the root Raw URL target, the literal filenames `api`, `file`, and `upload`
+would otherwise be indistinguishable from the exact Basic collection paths.
+The bundled UI therefore sends them as `/api/`, `/file/`, and `/upload/`;
+these compatibility forms still resolve the final segment as the URL filename.
+
+The selected request target is independent of the publication path. A
+successful upload is still stored in `uploads/` and returned as
+`/uploads/<normalized-name>`.
+
+The UI's **Declared MIME** selector offers Auto, `application/octet-stream`,
+`text/plain`, and `application/pdf`. In Auto mode, Multipart and Raw URL use
+the browser file type when available and otherwise use
+`application/octet-stream`; Raw Header and No filename use
+`application/octet-stream`. For Multipart, the declared value is the MIME of
+the file part only, and the UI previews the browser-normalized `File.type`
+(including its ASCII lowercasing): the browser still generates the outer
+`multipart/form-data; boundary=...` header. For all raw scenarios, the
+declared value is the request `Content-Type`.
 
 Example Raw Header request:
 
 ```http
-POST /uploads HTTP/1.1
+POST /upload HTTP/1.1
 Content-Type: application/octet-stream
 X-File-Name: myfile.txt
 Content-Length: 1234
@@ -209,12 +303,14 @@ Content-Length: 1234
 ```
 
 Filename precedence is `X-File-Name` > multipart file-part `filename` > URL
-path > generated timestamp name. The `/uploads` collection special case
-applies only to multipart: a raw request to `/uploads` without
-`X-File-Name` saves a literal filename `uploads`. `X-File-Name` values are
-URL-decoded and sanitized before publication. A multipart part `filename` is
-parsed and sanitized but is not URL-decoded by XFerry. Collisions receive a
-safe suffix.
+path > generated timestamp name. When no higher-precedence source exists, the
+exact Basic collection paths `/`, `/upload`, `/api`, and `/file` reach the
+generated-name branch. Other raw paths continue to use their final segment as
+the filename. For compatibility, `/uploads` is a collection only for
+multipart: a raw request to `/uploads` without `X-File-Name` saves a literal
+filename `uploads`. `X-File-Name` values are URL-decoded and sanitized before
+publication. A multipart part `filename` is parsed and sanitized but is not
+URL-decoded by XFerry. Collisions receive a safe suffix.
 
 For Basic multipart, scalar form fields are ignored. The request must contain
 exactly one top-level file part with a non-empty payload. Zero or multiple file
@@ -476,6 +572,20 @@ PING / HTTP/1.1
       "accepted": 150,
       "rejected": 1
     },
+    "authentication": {
+      "active": 0,
+      "attempts": 12,
+      "succeeded": 9,
+      "failed": 3,
+      "errors": 0,
+      "denials": 1,
+      "denial_reasons": {
+        "capacity": 0,
+        "cooldown": 1,
+        "peer_capacity": 0,
+        "timeout": 0
+      }
+    },
     "response": {
       "bytes": 524288,
       "stream_aborts": 0,
@@ -584,91 +694,39 @@ SMUGGLE request. It includes `schema_version=1`, `source_max_bytes`,
 `trigger_events`, `custom_trigger_methods`, `temp_policy`, and boolean `caps`.
 Current defaults, limits, and built-ins are:
 
-- default builder values: `mode=simple`, `preset=direct`, `locale=ru`,
-  `encryption=none`, `payload_encoding=base64`, `trigger_method=svg`,
-  `trigger_event=onload`, `output_format=html`,
-  `download_variant=blob-anchor`, `page_template=default`,
-  `mime_type=application/octet-stream`, `delay_ms=0`, `null_byte=false`, and
-  `show_notice=true`
-- field limits: `download_name` 120 characters, `download_ext` 32 characters,
-  `title` 120 characters, `message` 280 characters, `cta_label` 80 characters,
-  `delay_ms` `0..10000`, `mime_type` 120 characters, and `trigger_event` 64
-  characters
-- modes: `simple`, `constructor` (`mode=simple|constructor`)
-- mode applicability: `preset`, `cta_label`, and `delay_ms` are simple-only;
-  `payload_encoding`, `trigger_method`, `trigger_event`, `output_format`,
-  `download_variant`, `page_template`, `mime_type`, and `null_byte` are
-  constructor-only
-- encryption modes: `none`, `xor`, `aes` (`encryption=none|xor|aes`).
-  `none` leaves bytes unchanged and carries no password. `xor` is explicit
-  compatibility obfuscation with a password gate, not confidentiality.
-  `aes` is password-based AES-256-GCM using the canonical XFerry wire format.
-  There is no AES-to-XOR or XOR-to-AES fallback.
-- locales: `ru`, `en`
-- suggested extracted-file extensions: `txt`, `bin`, `dat`, `zip`, `pdf`;
-  `extensions` is a UI suggestion list, not an allowlist or a content-safety
-  boundary
-- constructor MIME presets cover generic/text (`application/octet-stream`,
-  `text/plain`, `text/html`, `text/css`, `text/csv`, `text/javascript`,
-  `application/json`, `application/xml`, `application/pdf`), archives
-  (`application/zip`, `application/gzip`, `application/x-tar`,
-  `application/x-7z-compressed`, `application/vnd.rar`), images/media
-  (`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`,
-  `audio/mpeg`, `video/mp4`), legacy and OOXML Office types
-  (`application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
-  `application/vnd.ms-excel`,
-  `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
-  `application/vnd.ms-powerpoint`,
-  `application/vnd.openxmlformats-officedocument.presentationml.presentation`),
-  packages/binaries (`application/java-archive`,
-  `application/vnd.android.package-archive`, `application/wasm`,
-  `application/vnd.microsoft.portable-executable`, `application/x-msi`), and
-  scripts (`text/x-python`, `application/x-powershell`, `application/x-sh`)
-- `mime_by_extension` supplies matching suggestions for `bin`, `dat`, `txt`,
-  `log`, `md`, `csv`, `html`, `htm`, `css`, `js`, `mjs`, `json`, `xml`, `pdf`,
-  `zip`, `gz`, `tgz`, compound `tar.gz`, `tar`, `7z`, `rar`, `png`, `jpg`,
-  `jpeg`, `gif`, `webp`, `svg`, `mp3`, `mp4`, `doc`, `docx`, `xls`, `xlsx`,
-  `ppt`, `pptx`, `jar`, `apk`, `wasm`, `exe`, `dll`, `scr`, `msi`, `py`, `pyw`,
-  `ps1`, `psm1`, `psd1`, `sh`, `bash`, and `zsh`
-- simple presets: `direct`, `card_manual`, `card_auto`
-- payload encodings: `base64`, `base64url`, `base32`, `percent`, `reverse`,
-  `xor`, `hex`, `split`, `attrs`, `charcode`
-- outer artifact formats: `html`, `htm`, `shtml`, `shtm`, `xhtml`, `xht`,
-  `xhtm`, `xml`, `svg` (this expansion adds no output formats)
-- page templates: `default`, `minimal`, `corporate`, `drive`,
-  `npf-zip-archive-help`
-- download variants: `blob-anchor`, `data-uri`, `iframe-blob`, `filereader`,
-  `fetch-blob`, `window-open`, `loc-assign`, `form-post`, `timeout-blob`,
-  `promise-blob`, `raf-blob`, `microtask-blob`, `observer-blob`,
-  `response-blob`, `readable-stream`, `message-channel-blob`,
-  `idle-callback-blob`
-- trigger map: `svg:onload`; `body:onload,onpageshow`;
-  `img:onerror,onload`; `audio:onerror,onloadstart`;
-  `video:onerror,onloadstart`; `source:onerror`;
-  `input:onfocus,oninput,onchange,onkeydown`;
-  `select:onfocus,onchange`;
-  `button:onfocus,onclick,onpointerdown,onkeydown`;
-  `textarea:onfocus,oninput,onchange,onkeydown`;
-  `details:ontoggle,onclick`; `iframe:srcdoc,onload`;
-  `animate:onbegin,onend,onrepeat`; `animmotion:onbegin,onend,onrepeat`;
-  `set:onbegin,onend`;
-  `cssanim:onanimationstart,onanimationend,onanimationiteration`;
-  `csstransition:ontransitionrun,ontransitionstart,ontransitionend`;
-  `link:onerror,onload`; `script:onerror`; `form:onsubmit`;
-  `custom:onfocus`; `focusin:onfocusin`;
-  `contentvis:oncontentvisibilityautostatechange`.
-  Clients should still prefer the exact `trigger_events` map returned by the
-  running server over a hard-coded copy.
-- custom trigger eligibility: `custom_trigger_methods` lists the canonical,
-  registered element-method tokens that may accept a validated custom event:
-  `svg`, `body`, `img`, `audio`, `video`, `source`, `input`, `select`, `button`,
-  `textarea`, `details`, `iframe`, `animate`, `animmotion`, `set`, `cssanim`,
-  `csstransition`, `link`, `script`, `form`, `custom`, `focusin`, and
-  `contentvis`
-- capability flags: `one_shot`, `constructor`, `xor_obfuscation`,
-  `aes_gcm`, `source_cap_enforced`, `custom_extension`, `custom_mime_type`,
-  `custom_trigger_event`, and `searchable_options` are boolean; the current
-  built-in implementation reports all nine as `true`
+<!-- BEGIN GENERATED: xferry-contracts/smuggle-capabilities -->
+| Root field | Canonical runtime value (JSON) |
+| --- | --- |
+| `schema_version` | `1` |
+| `source_max_bytes` | `10485760` |
+| `field_limits` | `{"download_name": 120, "download_ext": 32, "title": 120, "message": 280, "cta_label": 80, "delay_ms": 10000, "mime_type": 120, "trigger_event": 64}` |
+| `defaults` | `{"mode": "simple", "preset": "direct", "locale": "ru", "encryption": "none", "payload_encoding": "base64", "trigger_method": "svg", "trigger_event": "onload", "output_format": "html", "download_variant": "blob-anchor", "page_template": "default", "mime_type": "application/octet-stream", "delay_ms": 0, "show_notice": true, "null_byte": false}` |
+| `mode_fields` | `{"simple_only": ["cta_label", "delay_ms", "preset"], "constructor_only": ["download_variant", "mime_type", "null_byte", "output_format", "page_template", "payload_encoding", "trigger_event", "trigger_method"]}` |
+| `extensions` | `["txt", "bin", "dat", "pdf", "zip", "7z", "rar", "tar", "gz", "tar.gz", "csv", "json", "xml", "html", "htm", "js", "css", "svg", "png", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "exe", "dll", "scr", "msi", "ps1", "psm1", "bat", "cmd", "sh", "py", "jar", "apk", "wasm"]` |
+| `mime_presets` | `["application/octet-stream", "text/plain", "text/html", "text/css", "text/csv", "text/javascript", "application/json", "application/xml", "application/pdf", "application/zip", "application/gzip", "application/x-tar", "application/x-7z-compressed", "application/vnd.rar", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "audio/mpeg", "video/mp4", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/java-archive", "application/vnd.android.package-archive", "application/wasm", "application/vnd.microsoft.portable-executable", "application/x-msi", "text/x-python", "application/x-powershell", "application/x-sh"]` |
+| `mime_by_extension` | `{"bin": "application/octet-stream", "dat": "application/octet-stream", "txt": "text/plain", "log": "text/plain", "md": "text/plain", "csv": "text/csv", "html": "text/html", "htm": "text/html", "css": "text/css", "js": "text/javascript", "mjs": "text/javascript", "json": "application/json", "xml": "application/xml", "pdf": "application/pdf", "zip": "application/zip", "gz": "application/gzip", "tgz": "application/gzip", "tar.gz": "application/gzip", "tar": "application/x-tar", "7z": "application/x-7z-compressed", "rar": "application/vnd.rar", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml", "mp3": "audio/mpeg", "mp4": "video/mp4", "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xls": "application/vnd.ms-excel", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "ppt": "application/vnd.ms-powerpoint", "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "jar": "application/java-archive", "apk": "application/vnd.android.package-archive", "wasm": "application/wasm", "exe": "application/vnd.microsoft.portable-executable", "dll": "application/vnd.microsoft.portable-executable", "scr": "application/vnd.microsoft.portable-executable", "msi": "application/x-msi", "py": "text/x-python", "pyw": "text/x-python", "ps1": "application/x-powershell", "psm1": "application/x-powershell", "psd1": "application/x-powershell", "sh": "application/x-sh", "bash": "application/x-sh", "zsh": "application/x-sh"}` |
+| `presets` | `["direct", "card_manual", "card_auto"]` |
+| `locales` | `["ru", "en"]` |
+| `encryption_modes` | `["none", "xor", "aes"]` |
+| `modes` | `["simple", "constructor"]` |
+| `payload_encodings` | `["base64", "base64url", "base32", "percent", "reverse", "xor", "hex", "split", "attrs", "charcode"]` |
+| `output_formats` | `["html", "htm", "shtml", "shtm", "xhtml", "xht", "xhtm", "xml", "svg"]` |
+| `page_templates` | `["default", "minimal", "corporate", "drive", "npf-zip-archive-help"]` |
+| `download_variants` | `["blob-anchor", "data-uri", "iframe-blob", "filereader", "fetch-blob", "window-open", "loc-assign", "form-post", "timeout-blob", "promise-blob", "raf-blob", "microtask-blob", "observer-blob", "response-blob", "readable-stream", "message-channel-blob", "idle-callback-blob"]` |
+| `trigger_events` | `{"svg": ["onload"], "body": ["onload", "onpageshow"], "img": ["onerror", "onload"], "audio": ["onerror", "onloadstart"], "video": ["onerror", "onloadstart"], "source": ["onerror"], "input": ["onfocus", "oninput", "onchange", "onkeydown"], "select": ["onfocus", "onchange"], "button": ["onfocus", "onclick", "onpointerdown", "onkeydown"], "textarea": ["onfocus", "oninput", "onchange", "onkeydown"], "details": ["ontoggle", "onclick"], "iframe": ["srcdoc", "onload"], "animate": ["onbegin", "onend", "onrepeat"], "animmotion": ["onbegin", "onend", "onrepeat"], "set": ["onbegin", "onend"], "cssanim": ["onanimationstart", "onanimationend", "onanimationiteration"], "csstransition": ["ontransitionrun", "ontransitionstart", "ontransitionend"], "link": ["onerror", "onload"], "script": ["onerror"], "form": ["onsubmit"], "custom": ["onfocus"], "focusin": ["onfocusin"], "contentvis": ["oncontentvisibilityautostatechange"]}` |
+| `custom_trigger_methods` | `["svg", "body", "img", "audio", "video", "source", "input", "select", "button", "textarea", "details", "iframe", "animate", "animmotion", "set", "cssanim", "csstransition", "link", "script", "form", "custom", "focusin", "contentvis"]` |
+| `temp_policy` | `{"max_age_seconds": 3600, "max_file_count": 32, "max_total_bytes": 134217728}` |
+| `caps` | `{"one_shot": true, "constructor": true, "xor_obfuscation": true, "aes_gcm": true, "source_cap_enforced": true, "custom_extension": true, "custom_mime_type": true, "custom_trigger_event": true, "searchable_options": true}` |
+<!-- END GENERATED: xferry-contracts/smuggle-capabilities -->
+
+The table serializes each complete root value as JSON. Mapping keys and list
+items remain in runtime insertion order; clients should consume the object from
+`PING` rather than parse this documentation table. `extensions` remains UI
+suggestion data, not an allowlist or content-safety boundary. The closed
+selectors are `mode=simple|constructor` and `encryption=none|xor|aes`; the
+default is `payload_encoding=base64`. `xor` is explicit compatibility
+obfuscation, not confidentiality, and there is no AES-to-XOR or XOR-to-AES
+fallback.
 
 The server owns built-in method name, handler binding, mutation, CORS, UI group,
 and exposure metadata in one typed `CoreMethodSpec` registry. Handler
@@ -680,9 +738,9 @@ that policy to prevent method drift.
 `requests` contains totals, status/error counts, and `latency_ms`; `receive`
 contains request bytes and rejected framing; `response` contains response bytes
 and streamed-response aborts. `connections`, `timeouts`, `request_admission`,
-`websocket`, and `worker` are independent canonical groups. Worker failures
-are counted in `worker`, and accepted WebSocket upgrades are counted in
-`websocket`, not in request-response aliases.
+`authentication`, `websocket`, and `worker` are independent canonical groups.
+Worker failures are counted in `worker`, and accepted WebSocket upgrades are
+counted in `websocket`, not in request-response aliases.
 
 `storage.usage` is refreshed with exact filesystem scans when `PING` or
 `GET /metrics` builds its snapshot. `uploads` is aggregate regular-file usage
@@ -695,6 +753,14 @@ disk-full denials, note byte/count denials, and SMUGGLE temporary byte/file
 denials. `advanced_upload.decode_rejections` similarly uses the fixed reasons
 shown above. Paths, filenames, note titles, session IDs, methods, encodings,
 and exception messages never become metric labels.
+
+`authentication` reports bounded Basic Auth verifier work and admission
+denials using only fixed labels. `active` is the current number of in-flight
+verifications, `attempts` is the cumulative admitted verifier count, and
+`succeeded`, `failed`, and `errors` partition completed verifier outcomes.
+`denial_reasons` uses only `capacity`, `cooldown`, `peer_capacity`, and
+`timeout`; direct peers, usernames, credentials, principals, and Authorization
+header values are not metric labels or metric values.
 
 `storage.scans` contains cumulative `count`, examined `items`, `total_ms`,
 `avg_ms`, and `max_ms` for five fixed scopes: `info`, `upload_quota`,
@@ -824,7 +890,7 @@ or content checks.
 
 **With safe builder parameters:**
 ```
-SMUGGLE /uploads/report.bin?mode=simple&encryption=none&download_name=Quarterly-Report&download_ext=pdf&preset=card_auto&title=Quarterly%20Report&message=Internal%20controlled%20test%20file&cta_label=Download%20test%20artifact&delay_ms=1200&show_notice=1 HTTP/1.1
+SMUGGLE /uploads/research-sample.bin?mode=simple&encryption=none&download_name=controlled-test-artifact&download_ext=pdf&preset=card_auto&title=Controlled%20research%20artifact&message=Authorized%20internal%20test%20file&cta_label=Open%20test%20artifact&delay_ms=1200&show_notice=1 HTTP/1.1
 ```
 
 **Response (200):**
@@ -838,8 +904,8 @@ SMUGGLE /uploads/report.bin?mode=simple&encryption=none&download_name=Quarterly-
     "one_shot": true,
     "expires_at": null
   },
-  "source": {"name": "report.bin", "path": "/uploads/report.bin", "size_bytes": 1234},
-  "download": {"name": "Quarterly-Report.pdf", "name_applied": true, "mime_type": "application/octet-stream"},
+  "source": {"name": "research-sample.bin", "path": "/uploads/research-sample.bin", "size_bytes": 1234},
+  "download": {"name": "controlled-test-artifact.pdf", "name_applied": true, "mime_type": "application/octet-stream"},
   "builder": {
     "schema_version": 1,
     "mode": "simple",
@@ -1851,7 +1917,8 @@ same-origin or explicitly allowed by `--cors-origin`. Protected methods are
 `POST`, `PUT`, `PATCH`, `DELETE`, `NONE`, `NOTE`, `SMUGGLE`, plus unknown
 methods that carry advanced-upload data.
 
-Requests with an `Origin` header must match the request host/scheme or a
+Requests with an `Origin` header must match the admitted canonical request
+host/effective port and active server scheme or a
 configured CORS origin. `Sec-Fetch-Site: cross-site` and `same-site` requests
 without `Origin` are rejected; with `Origin`, they require a configured CORS
 origin. Non-browser API clients that omit both `Origin` and `Sec-Fetch-Site`

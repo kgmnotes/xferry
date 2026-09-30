@@ -181,6 +181,22 @@ def test_module_entrypoint_keeps_direct_command_help_portable_without_linux_back
 
 @pytest.mark.parametrize(
     "argv",
+    (("update",), ("update", "--help"), ("help", "update")),
+)
+def test_update_is_not_a_public_management_command(
+    argv: tuple[str, ...],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The source-only policy must not leave a hidden parser or help route."""
+    assert main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert "update" not in captured.out
+    assert "usage" in captured.err.lower()
+
+
+@pytest.mark.parametrize(
+    "argv",
     [
         ["setup", "--dry-run"],
         ["credentials", "reset"],
@@ -190,7 +206,6 @@ def test_module_entrypoint_keeps_direct_command_help_portable_without_linux_back
         ["stop"],
         ["restart"],
         ["doctor"],
-        ["update", "--dry-run"],
         ["rollback", "--dry-run"],
         ["uninstall", "--dry-run"],
     ],
@@ -203,6 +218,47 @@ def test_module_entrypoint_rejects_linux_management_operations_before_backend_im
 
     assert child.returncode == 4
     assert "blocked management backend" not in child.stderr
+    assert "Linux/systemd-only" in child.stderr
+    assert "pipx install xferry" in child.stderr
+    assert "pipx upgrade xferry" in child.stderr
+    assert "pipx uninstall xferry" in child.stderr
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "display_name"),
+    [("win32", "Windows"), ("darwin", "macOS")],
+)
+def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
+    platform_name: str,
+    display_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from xferry.management import cli
+
+    monkeypatch.setattr(cli.sys, "platform", platform_name)
+
+    assert main(["doctor", "--json"]) == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "unsupported-platform"
+    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
+    assert display_name in payload["detail"]
+    assert payload["next_actions"] == [
+        (
+            "Use a supported managed host: Ubuntu 22.04/24.04/26.04 or Debian 12/13 "
+            "on x86_64/aarch64 with systemd."
+        ),
+        (
+            "For portable use, run `pipx install xferry`; use `pipx upgrade xferry` "
+            "and `pipx uninstall xferry` for lifecycle management."
+        ),
+    ]
+
+    assert main(["status"]) == 4
+    text = capsys.readouterr().err
+    assert "Linux/systemd-only" in text
+    assert display_name in text
+    assert "pipx install xferry" in text
 
 
 @pytest.mark.parametrize(
@@ -276,6 +332,75 @@ def test_root_help_flags_print_root_help_without_importing_server_cli(
     assert "usage: xferry [--lang LANG] COMMAND [OPTIONS]" in captured.out
     assert "xferry run --preset local" in captured.out
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("argv", [["--version"], ["--lang", "ru", "--version"]])
+def test_root_version_uses_package_authority_without_server_imports(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Root version is available even when server backends cannot be imported."""
+    _block_server_cli(monkeypatch)
+    assert main(argv) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"xferry {__version__}\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("language", "portable_heading", "managed_heading"),
+    [
+        ("en", "Portable commands (Windows, macOS, Linux):", "Managed Linux/systemd commands:"),
+        ("ru", "Переносимые команды (Windows, macOS, Linux):", "Команды Linux/systemd:"),
+    ],
+)
+def test_root_help_labels_portable_and_managed_lifecycles(
+    language: str,
+    portable_heading: str,
+    managed_heading: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--lang", language, "--help"]) == 0
+    output = capsys.readouterr().out
+    portable, managed = output.split(managed_heading)
+    assert portable_heading in portable
+    for command in ("run", "examples", "help"):
+        assert f"  {command}\n" in portable
+    assert "  setup\n" in managed
+    assert "  setup\n" not in portable
+    assert "pipx upgrade xferry" in output
+    assert "pipx uninstall xferry" in output
+    assert "--version" in output
+
+
+@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize("argv", [["typo"], ["help", "typo"]])
+def test_unknown_command_names_the_token_and_points_to_help(
+    language: str, argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--lang", language, *argv]) == 2
+    captured = capsys.readouterr()
+    assert "'typo'" in captured.err
+    assert "xferry help" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("language", "usage_error", "unknown_command"),
+    [
+        ("en", "usage error", "Unknown command"),
+        ("ru", "ошибка использования", "Неизвестная команда"),
+    ],
+)
+def test_help_for_known_command_without_details_is_a_usage_error(
+    language: str,
+    usage_error: str,
+    unknown_command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A known command without focused help must not be mislabeled as unknown."""
+    assert main(["--lang", language, "help", "help"]) == 2
+    captured = capsys.readouterr()
+    assert usage_error in captured.err
+    assert unknown_command not in captured.err
 
 
 @pytest.mark.parametrize("argv", [["--port", "8123"], ["unsupported-command"]])
@@ -366,21 +491,21 @@ def test_root_help_separates_optional_long_lived_maintenance(
     maintenance_heading: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Update and rollback must not look required for a disposable deployment."""
+    """Local rollback must not look required for a disposable deployment."""
     assert main(argv) == 0
     output = capsys.readouterr().out
     assert maintenance_heading in output
-    assert "  update" in output
+    assert "  update" not in output
     assert "  rollback" in output
     assert "Legacy server options" not in output
     assert "xferry [SERVER OPTIONS]" not in output
 
 
-@pytest.mark.parametrize("command", ["update", "rollback"])
+@pytest.mark.parametrize("command", ["rollback"])
 def test_optional_maintenance_commands_keep_focused_help(
     command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Moving maintenance out of primary help must not remove its explicit help."""
+    """Moving rollback out of primary help must not remove its explicit help."""
     assert main(["help", command]) == 0
     assert f"usage: xferry {command}" in capsys.readouterr().out
 
@@ -388,7 +513,6 @@ def test_optional_maintenance_commands_keep_focused_help(
 @pytest.mark.parametrize(
     ("command", "example"),
     [
-        ("update", f"sudo xferry update --version {__version__}"),
         ("rollback", f"sudo xferry rollback --to {__version__}"),
     ],
 )

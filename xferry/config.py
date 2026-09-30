@@ -29,6 +29,7 @@ HTTP_STATUS_MESSAGES: dict[int, str] = {
     403: "Forbidden",
     404: "Not Found",
     405: "Method Not Allowed",
+    421: "Misdirected Request",
     413: "Payload Too Large",
     429: "Too Many Requests",
     500: "Internal Server Error",

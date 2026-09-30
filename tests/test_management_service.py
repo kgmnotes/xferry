@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -475,6 +476,54 @@ def test_doctor_maps_platform_and_network_failures(
     assert run_doctor(DoctorOptions(), context).exit_code == expected
 
 
+def test_unsupported_platform_doctor_reports_detected_matrix_and_safe_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    facts = replace(
+        _facts(),
+        os_id="fedora",
+        os_version="40",
+        machine="aarch64",
+        has_systemd=False,
+    )
+    runner = FakeRunner()
+    context = _context(tmp_path, runner, facts=facts)
+    _install(context.layout)
+
+    report = run_doctor(DoctorOptions(deep=True), context)
+    payload = report.to_json()
+
+    assert report.exit_code == 4
+    assert payload["code"] == "unsupported-platform"
+    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
+    assert payload["detected"] == {
+        "architecture": "aarch64",
+        "os": "fedora",
+        "systemd": False,
+        "version": "40",
+    }
+    assert payload["supported_matrix"] == {
+        "architectures": ["x86_64", "aarch64"],
+        "distributions": {
+            "debian": ["12", "13"],
+            "ubuntu": ["22.04", "24.04", "26.04"],
+        },
+        "init_system": "systemd",
+    }
+    assert "systemd=absent" in payload["detail"]
+    assert any("pipx uninstall xferry" in action for action in payload["next_actions"])
+    assert "known-password" not in json.dumps(payload)
+
+    monkeypatch.setattr("xferry.management.service.default_service_context", lambda: context)
+    assert cli.main(["doctor", "--skip-network"]) == 4
+    output = capsys.readouterr().out
+    assert "Detected os=fedora, version=40, architecture=aarch64, systemd=absent" in output
+    assert "Next action:" in output
+    assert "pipx install xferry" in output
+
+
 def test_skip_network_skips_only_network_checks_and_keeps_local_diagnostics(tmp_path: Path) -> None:
     """Skipping network must not bypass configuration or service-state diagnostics."""
     runner = FakeRunner()
@@ -512,6 +561,10 @@ def test_cli_status_and_doctor_render_secret_free_stable_json(
 
     assert cli.main(["doctor", "--deep", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "doctor-ok"
+    assert payload["message"] == "Managed diagnostics passed."
+    assert payload["detail"] == "All requested managed checks passed."
+    assert payload["next_actions"] == []
     assert payload["checks"]["health"]["status"] == "healthy"
     assert "known-password" not in json.dumps(payload)
 

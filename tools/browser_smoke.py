@@ -169,7 +169,8 @@ def _write_cli_config(config_path: Path) -> None:
     """Write a minimal headless Playwright CLI config."""
     config = {
         "browser": {
-            "launchOptions": {"headless": True},
+            "browserName": "chromium",
+            "launchOptions": {"channel": "chromium", "headless": True},
             "contextOptions": {"viewport": {"width": 1440, "height": 1024}},
         }
     }

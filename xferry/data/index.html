@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <meta name="description" content="xferry: контролируемый HTTP-инструмент для проверки веб-шлюзов безопасности (SWG) через HTTP-пути передачи файлов и данных">
+    <meta name="description" content="xferry: controlled HTTP tool for testing secure web gateways and next-generation firewalls (SWG/NGFW) across file and data transfer paths">
     <meta name="theme-color" content="#111315">
     <title>xferry</title>
     <link rel="icon" href="/static/ui/xferry-mark.svg" type="image/svg+xml" id="appFavicon" data-theme-dark="/static/ui/xferry-mark.svg" data-theme-light="/static/ui/xferry-mark-light.svg">
@@ -23,27 +23,27 @@
                     <img class="brand-mark" src="/static/ui/xferry-mark.svg" alt="" aria-hidden="true" id="brandMark" data-theme-dark="/static/ui/xferry-mark.svg" data-theme-light="/static/ui/xferry-mark-light.svg">
                     <div class="brand-copy">
                         <h1>xferry</h1>
-                        <p data-i18n="brandTagline">Инструмент для тестирования SWG</p>
+                        <p data-i18n="brandTagline">SWG/NGFW testing tool</p>
                     </div>
                 </div>
             </div>
             <div class="topbar__actions">
                 <div class="lang-switcher">
-                    <button type="button" class="lang-btn active" data-lang="ru" id="langRu" title="Русский язык выбран" aria-label="Русский язык выбран" aria-pressed="true">RU</button>
-                    <button type="button" class="lang-btn" data-lang="en" id="langEn" title="Переключить на английский язык" aria-label="Переключить на английский язык" aria-pressed="false">EN</button>
-                    <button type="button" class="theme-btn" id="themeBtn" title="Тёмная тема включена. Переключить на светлую" aria-label="Тёмная тема включена. Переключить на светлую" aria-pressed="false">🌙</button>
+                    <button type="button" class="lang-btn active" data-lang="en" id="langEn" title="English language selected" aria-label="English language selected" aria-pressed="true">EN</button>
+                    <button type="button" class="lang-btn" data-lang="ru" id="langRu" title="Switch to Russian" aria-label="Switch to Russian" aria-pressed="false">RU</button>
+                    <button type="button" class="theme-btn" id="themeBtn" title="Dark theme is active. Switch to light theme" aria-label="Dark theme is active. Switch to light theme" aria-pressed="false">🌙</button>
                 </div>
             </div>
         </header>
 
         <main class="page-content">
             <section class="workspace-shell">
-                <div class="tabs mode-tabs" role="tablist" aria-label="Режимы сервера" data-i18n-aria-label="serverModesLabel">
-                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="tabUpload">Отправить</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="tabFiles">Файлы</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Запросы</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Расширенные</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="notepad-tab" tabindex="-1" id="tab-notepad" data-tool-entry="notepad" data-tab-target="notepad" data-i18n="tabNotepad">Блокнот</button>
+                <div class="tabs mode-tabs" role="tablist" aria-label="Server modes" data-i18n-aria-label="serverModesLabel">
+                    <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="topTabUpload">Upload</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="topTabFiles">Download</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Requests</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Advanced</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="notepad-tab" tabindex="-1" id="tab-notepad" data-tool-entry="notepad" data-tab-target="notepad" data-i18n="tabNotepad">Notepad</button>
                 </div>
 
                 <div class="workspace-stage">
@@ -150,9 +150,6 @@
                     </section>
 
                     <section id="upload-tab" class="tab-content active workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-upload">
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabUpload">Отправить</h2>
-                    </div>
                     <div class="tool-stack tool-stack--upload">
                         <div class="tool-card tool-card--workflow">
                             <section class="upload-method-section" aria-labelledby="uploadMethodTitle">
@@ -162,6 +159,21 @@
                                     <button type="button" class="btn-none upload-method-btn" data-upload-method="NONE" role="radio" aria-checked="false" tabindex="-1">NONE</button>
                                     <button type="button" class="btn-put upload-method-btn" data-upload-method="PUT" role="radio" aria-checked="false" tabindex="-1">PUT</button>
                                     <button type="button" class="btn-patch upload-method-btn" data-upload-method="PATCH" role="radio" aria-checked="false" tabindex="-1">PATCH</button>
+                                </div>
+                            </section>
+
+                            <section class="upload-target-path-section" aria-labelledby="uploadTargetPathTitle">
+                                <h3 id="uploadTargetPathTitle" data-i18n="uploadTargetPathLabel">Путь запроса</h3>
+                                <div
+                                    class="upload-target-path-group"
+                                    id="uploadTargetPathGroup"
+                                    role="radiogroup"
+                                    aria-labelledby="uploadTargetPathTitle"
+                                >
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/" role="radio" aria-checked="false" tabindex="-1">/</button>
+                                    <button type="button" class="upload-target-path-btn active" data-upload-target-path="/upload" role="radio" aria-checked="true" tabindex="0">/upload</button>
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/api" role="radio" aria-checked="false" tabindex="-1">/api</button>
+                                    <button type="button" class="upload-target-path-btn" data-upload-target-path="/file" role="radio" aria-checked="false" tabindex="-1">/file</button>
                                 </div>
                             </section>
 
@@ -177,12 +189,23 @@
                                     <button type="button" class="upload-profile-btn active" data-upload-profile="multipart" role="radio" aria-checked="true" tabindex="0" data-i18n="uploadProfileMultipart">Multipart</button>
                                     <button type="button" class="upload-profile-btn" data-upload-profile="raw-url" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileRawUrl">Raw URL</button>
                                     <button type="button" class="upload-profile-btn" data-upload-profile="raw-header" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileRawHeader">Raw Header</button>
+                                    <button type="button" class="upload-profile-btn" data-upload-profile="raw-generated" role="radio" aria-checked="false" tabindex="-1" data-i18n="uploadProfileNoFilename">No filename</button>
                                 </div>
                             </section>
 
                             <section class="response-options" id="responseOptions" aria-labelledby="responseOptionsTitle">
-                                <h3 id="responseOptionsTitle" data-i18n="responseOptionsTitle">Параметры ответа</h3>
+                                <h3 id="responseOptionsTitle" data-i18n="uploadOptionsTitle">Options</h3>
                                 <div class="response-options__controls">
+                                    <div class="upload-mime-control">
+                                        <label for="uploadMimeMode" data-i18n="uploadMimeModeLabel">Declared MIME</label>
+                                        <select id="uploadMimeMode" aria-describedby="uploadMimeHint">
+                                            <option value="auto" selected data-i18n="uploadMimeModeAuto">Auto</option>
+                                            <option value="octet-stream">application/octet-stream</option>
+                                            <option value="text-plain">text/plain</option>
+                                            <option value="pdf" data-i18n="uploadMimeModePdf">application/pdf</option>
+                                        </select>
+                                        <span class="field-hint" id="uploadMimeHint" data-i18n="uploadMimeHint">Multipart changes the file-part MIME; raw profiles change Content-Type.</span>
+                                    </div>
                                     <label class="checkbox-row" for="responseNoGzip">
                                         <input type="checkbox" id="responseNoGzip">
                                         <span data-i18n="responseOptionsNoGzipLabel">Не сжимать HTTP-ответ</span>
@@ -190,14 +213,29 @@
                                 </div>
                             </section>
 
-                            <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
-                                <label class="upload-label" for="fileInput">
-                                    <div class="upload-icon" aria-hidden="true">[+]</div>
-                                    <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
-                                    <div class="sr-only" id="uploadMethodHint">POST</div>
-                                </label>
-                                <input type="file" id="fileInput" multiple tabindex="-1">
+                            <div class="upload-picker-actions" id="uploadPickerActions" data-testid="send-primary-action">
+                                <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
+                                    <label class="upload-label" for="fileInput">
+                                        <div class="upload-icon" aria-hidden="true">[+]</div>
+                                        <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
+                                        <div class="sr-only" id="uploadMethodHint">POST</div>
+                                    </label>
+                                    <input type="file" id="fileInput" multiple tabindex="-1">
+                                </div>
+                                <button
+                                    class="btn-info"
+                                    id="uploadBtn"
+                                    disabled
+                                    title="Отправить"
+                                    aria-label="Отправить"
+                                    data-i18n="uploadAllBtn"
+                                    data-i18n-title="uploadAllBtn"
+                                    data-i18n-aria-label="uploadAllBtn"
+                                    data-testid="upload-btn"
+                                >Отправить</button>
                             </div>
+
+                            <div class="sr-only" id="uploadSelectionState" role="status" aria-live="polite" aria-atomic="true" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
 
                             <div class="file-list queue-list" id="fileList" data-testid="file-list"></div>
 
@@ -206,7 +244,7 @@
                                 <dl class="upload-request-summary__grid">
                                     <div>
                                         <dt data-i18n="uploadSummaryRequestLine">Строка запроса</dt>
-                                        <dd data-upload-summary="request-line">POST /uploads</dd>
+                                        <dd data-upload-summary="request-line">POST /upload</dd>
                                     </div>
                                     <div>
                                         <dt data-i18n="uploadSummaryBodyKind">Тело</dt>
@@ -223,31 +261,27 @@
                                 </dl>
                             </details>
 
-                            <div class="upload-primary-action" data-testid="send-primary-action">
-                                <div class="upload-selection" id="uploadSelectionState" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
-                                <div class="upload-primary-action__buttons">
-                                    <button
-                                        class="btn-info"
-                                        id="uploadBtn"
-                                        disabled
-                                        title="Отправить"
-                                        aria-label="Отправить"
-                                        data-i18n="uploadAllBtn"
-                                        data-i18n-title="uploadAllBtn"
-                                        data-i18n-aria-label="uploadAllBtn"
-                                        data-testid="upload-btn"
-                                    >Отправить</button>
+                            <div class="upload-comparison-actions" id="uploadComparisonActions" hidden>
                                     <button
                                         class="btn-ghost"
                                         id="uploadCompareBtn"
                                         disabled
-                                        title="Сравнить 3 профиля"
-                                        aria-label="Сравнить 3 профиля"
+                                        title="Compare profiles"
+                                        aria-label="Compare profiles"
                                         data-i18n="uploadCompareBtn"
                                         data-i18n-title="uploadCompareBtn"
                                         data-i18n-aria-label="uploadCompareBtn"
-                                    >Сравнить 3 профиля</button>
-                                </div>
+                                    >Compare profiles</button>
+                                    <button
+                                        class="btn-ghost"
+                                        id="uploadCompareMethodsBtn"
+                                        disabled
+                                        title="Compare methods"
+                                        aria-label="Compare methods"
+                                        data-i18n="uploadCompareMethodsBtn"
+                                        data-i18n-title="uploadCompareMethodsBtn"
+                                        data-i18n-aria-label="uploadCompareMethodsBtn"
+                                    >Compare methods</button>
                             </div>
 
                             <section
@@ -261,29 +295,38 @@
                             </section>
 
                             <div class="sr-only" id="uploadResponseAreaLive" role="status" aria-live="polite" aria-atomic="true"></div>
-                            <section
-                                class="tool-result tool-result--inline"
-                                data-testid="upload-result"
-                                data-tool-summary-visible-when-empty="true"
-                                data-tool-summary-scope="upload"
-                                data-tool-summary-idle-title-key="uploadResultIdleTitle"
-                                data-tool-summary-idle-body-key="uploadResultIdleBody"
-                                aria-labelledby="uploadResultTitle"
-                            >
-                                <div class="tool-result__header">
-                                    <p class="eyebrow" data-i18n="toolResultEyebrow">РЕЗУЛЬТАТ</p>
-                                    <span class="tool-result__badge" data-tool-summary-badge></span>
-                                </div>
-                                <h3 class="tool-result__title" id="uploadResultTitle" data-tool-summary-title></h3>
-                                <p class="tool-result__body" data-tool-summary-body></p>
-                                <div class="tool-result__meta" data-tool-summary-meta></div>
-                                <div class="tool-result__actions" data-tool-summary-actions hidden></div>
-                            </section>
                             <div class="http-error-host" id="uploadHttpErrorHost" data-http-error-host="upload"></div>
-                            <details class="tool-trace" data-tool-trace-scope="upload">
+                            <div class="upload-status" id="uploadStatus" data-tone="pending" hidden>
+                                <span class="upload-status__icon" aria-hidden="true">…</span>
+                                <div class="upload-status__content">
+                                    <p class="upload-status__message" id="uploadStatusMessage"></p>
+                                    <dl class="upload-status__meta" id="uploadStatusMeta" hidden>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="http">
+                                            <dt data-i18n="uploadStatusHttp">HTTP status</dt>
+                                            <dd id="uploadStatusHttpValue"></dd>
+                                        </div>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="path">
+                                            <dt data-i18n="uploadStatusPath">Server path</dt>
+                                            <dd id="uploadStatusPathValue"></dd>
+                                        </div>
+                                        <div class="upload-status__meta-item" data-upload-status-meta="size">
+                                            <dt data-i18n="uploadStatusSize">Size</dt>
+                                            <dd id="uploadStatusSizeValue"></dd>
+                                        </div>
+                                    </dl>
+                                </div>
+                                <button
+                                    class="btn-ghost btn--sm upload-status__details"
+                                    id="uploadStatusDetailsBtn"
+                                    type="button"
+                                    aria-controls="uploadTechnicalDetails"
+                                    aria-expanded="false"
+                                    data-i18n="uploadStatusDetails"
+                                >Детали</button>
+                            </div>
+                            <details class="tool-trace" id="uploadTechnicalDetails" data-tool-trace-scope="upload" data-tool-trace-visible-when-empty="true">
                                 <summary class="tool-trace__summary">
                                     <span class="tool-trace__label" data-i18n="toolTraceSummary">Технические детали</span>
-                                    <span class="tool-trace__phase" data-tool-trace-phase></span>
                                 </summary>
                                 <div class="exchange-inspector exchange-inspector--tool" data-exchange-scope="upload">
                                     <div class="exchange-inspector__scroll">
@@ -318,9 +361,6 @@
                     </section>
 
                     <section id="opsec-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-opsec" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabOpsec">Продвинутая загрузка</h2>
-                    </div>
                     <div class="tool-stack tool-stack--opsec">
                         <section
                             class="tool-card advanced-routing-panel"
@@ -674,9 +714,6 @@
                     </section>
 
                     <section id="files-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-files" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabFiles">Файлы</h2>
-                    </div>
                     <div class="tool-stack tool-stack--files">
                         <div class="tool-card tool-card--workflow">
                             <div class="file-browser__toolbar input-group">
@@ -814,17 +851,11 @@
                                 </div>
                                 <div class="uploaded-files file-browser__list" id="serverFiles" data-testid="server-files" role="list" aria-busy="false"></div>
                             </div>
-                            <div class="file-toast-region" id="filesToastRegion">
-                                <div class="sr-only" id="filesToastLive" role="status" aria-live="polite" aria-atomic="true"></div>
-                            </div>
                         </div>
                     </div>
                     </section>
 
                     <section id="notepad-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-notepad" hidden>
-                    <div class="workspace-view__header">
-                        <h2 data-i18n="tabNotepad">Блокнот</h2>
-                    </div>
                     <div class="tool-card note-shell">
                         <div class="notepad-toolbar">
                             <div class="notepad-title-field">
@@ -915,6 +946,10 @@
             </section>
         </main>
 
+        <div class="app-notification-region" id="appNotificationRegion"></div>
+        <div class="sr-only" id="appNotificationLive" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="sr-only" id="appNotificationAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
         <footer class="site-footer">
             <p id="appVersion" data-app-version="0.1.0">v0.1.0</p>
             <a href="https://t.me/kgmnotes" target="_blank" rel="noopener" id="telegramLink" class="telegram-link">@kgmnotes</a>
@@ -923,6 +958,7 @@
 
     <script src="/static/ui/bootstrap.js"></script>
     <script src="/static/ui/core.js"></script>
+    <script src="/static/ui/notifications.js"></script>
     <script src="/static/ui/dialogs.js"></script>
     <script src="/static/ui/inspector.js"></script>
     <script src="/static/ui/http-errors.js"></script>

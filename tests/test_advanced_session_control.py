@@ -580,7 +580,8 @@ def test_duplicate_control_headers_fail_closed_before_allocation(
         body=VALID_CREATE,
     )
 
-    _assert_error(response, status=400, code="invalid_field", field=field)
+    expected_code = "invalid_field" if field == "Content-Type" else "invalid_header"
+    _assert_error(response, status=400, code=expected_code, field=field)
     assert "allow" not in response.headers
     assert source.calls == []
 
@@ -594,14 +595,14 @@ def test_duplicate_control_headers_fail_closed_before_allocation(
     ],
 )
 @pytest.mark.parametrize("order", ["bad-then-good", "good-then-bad"])
-def test_remote_no_auth_duplicate_policy_headers_forbid_peer_before_header_oracle(
+def test_remote_no_auth_duplicate_policy_headers_fail_global_admission_first(
     temp_dir: Path,
     header_name: str,
     bad_value: str,
     good_value: str,
     order: str,
 ) -> None:
-    """Catches duplicate policy-header validation outranking no-auth peer rejection."""
+    """Catches remote Advanced routes bypassing the earliest global header gate."""
     clock = Clock()
     source = SequentialBytes(bytes(range(32)))
     server = _make_control_server(
@@ -642,7 +643,10 @@ def test_remote_no_auth_duplicate_policy_headers_forbid_peer_before_header_oracl
     expired = _send(server, "GET", CURRENT, headers=_current_headers(token))
 
     for response in (rejected_create, rejected_current):
-        _assert_error(response, status=403, code="forbidden_peer", field=None)
+        _assert_error(response, status=400, code="invalid_header", field=header_name)
+        assert response.headers["cache-control"] == "no-store"
+        assert "www-authenticate" not in response.headers
+        assert not any(name.startswith("access-control-allow-") for name in response.headers)
         assert "allow" not in response.headers
     assert source.calls == []
     _assert_error(expired, status=404, code="advanced_session_not_found", field=SESSION_HEADER)
@@ -650,7 +654,6 @@ def test_remote_no_auth_duplicate_policy_headers_forbid_peer_before_header_oracl
 
 def test_invalid_basic_and_rate_limited_control_requests_precede_all_other_checks(
     temp_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catches control auth being rerun or ordered after peer/origin/header/method disclosure."""
     calls: list[tuple[str, str]] = []
@@ -678,9 +681,26 @@ def test_invalid_basic_and_rate_limited_control_requests_precede_all_other_check
     assert "allow" not in invalid.headers
     assert calls == [("Mallory", "wrong")]
 
+    for _ in range(4):
+        rejected = _send(
+            server,
+            "POST",
+            CURRENT,
+            headers=_current_headers(
+                "bad token",
+                ("Origin", "https://evil.example"),
+                auth=_basic_header("Mallory", "wrong"),
+            ),
+            peer=REMOTE,
+        )
+        _assert_error(
+            rejected,
+            status=401,
+            code="authentication_required",
+            field="Authorization",
+        )
+
     calls.clear()
-    assert server._rate_limiter is not None  # type: ignore[attr-defined]
-    monkeypatch.setattr(server._rate_limiter, "is_blocked", lambda _ip: True)  # type: ignore[attr-defined]
     limited = _send(
         server,
         "POST",
@@ -694,6 +714,8 @@ def test_invalid_basic_and_rate_limited_control_requests_precede_all_other_check
     )
 
     _assert_error(limited, status=429, code="rate_limited", field="Authorization")
+    assert limited.headers["cache-control"] == "no-store"
+    assert limited.headers["retry-after"].isdigit()
     assert "www-authenticate" not in limited.headers
     assert "allow" not in limited.headers
     assert calls == []
@@ -720,6 +742,36 @@ def test_control_auth_logs_do_not_include_owner_names_or_session_tokens(
     assert "SensitiveOwner" not in caplog.text
     assert "wrong" not in caplog.text
     assert token not in caplog.text
+
+
+def test_inflight_request_keeps_atomic_basic_runtime_after_replacement(temp_dir: Path) -> None:
+    """A runtime change must not reinterpret an already verified request as no-auth."""
+    server = _make_control_server(temp_dir / "atomic-auth-runtime")
+
+    def verifier(username: str, password: str) -> bool:
+        server.set_authenticator(None)  # type: ignore[attr-defined]
+        return username == "Alice" and password == "secret"
+
+    server.set_authenticator(BasicAuthenticator(auth_callback=verifier))  # type: ignore[attr-defined]
+
+    created = _send(
+        server,
+        "POST",
+        COLLECTION,
+        headers=_create_headers(auth=_basic_header("Alice", "secret")),
+        body=VALID_CREATE,
+        peer=REMOTE,
+    )
+
+    assert created.status == 201
+    token = created.body["advanced_session"]["token"]  # type: ignore[index]
+    assert (
+        server.advanced_session_store.resolve(  # type: ignore[attr-defined]
+            str(token),
+            AdvancedSessionPrincipal("basic", "Alice"),
+        )
+        is not None
+    )
 
 
 def test_no_auth_remote_peer_cannot_use_forwarding_headers_and_basic_owner_can_be_remote(
@@ -1343,7 +1395,7 @@ def test_session_data_auth_origin_precede_header_grammar_and_touch(temp_dir: Pat
 
     _assert_error(remote_bad_token, status=403, code="forbidden_peer", field=None)
     _assert_error(wildcard_origin, status=403, code="forbidden_origin", field="Origin")
-    _assert_error(duplicate_origin, status=400, code="invalid_field", field="Origin")
+    _assert_error(duplicate_origin, status=400, code="invalid_header", field="Origin")
     _assert_error(expired, status=404, code="advanced_session_not_found", field=SESSION_HEADER)
 
 

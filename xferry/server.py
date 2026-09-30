@@ -16,13 +16,19 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
-from .extensions import HandlerContext, PluginMethodSpec, PluginSpec, coerce_plugin_specs
+from .extensions import (
+    HandlerContext,
+    PluginMethodSpec,
+    PluginServices,
+    PluginSpec,
+    coerce_plugin_specs,
+)
 from .features import (
     core_method_spec,
     cors_methods,
@@ -38,8 +44,14 @@ from .http.io import receive_request_result as _receive_request_result_io
 from .lifecycle import ServerLifecycle
 from .metrics import MetricsCollector
 from .notepad_service import DEFAULT_MAX_NOTES, NoteStoragePolicy
+from .request_admission import RequestAdmissionConfig, RequestAdmissionPolicy
 from .request_pipeline import RequestPipeline, ResponseBuildArgs
-from .security.auth import AuthRateLimiter, BasicAuthenticator, generate_random_credentials
+from .security.auth import (
+    AuthAdmissionController,
+    AuthAdmissionDenied,
+    BasicAuthenticator,
+    generate_random_credentials,
+)
 from .security.tls_manager import TLSManager
 from .server_config import ServerConfig, resolve_server_config, validate_plugin_specs
 from .smuggle.policy import SmuggleTempPolicy
@@ -64,12 +76,19 @@ _DEFAULT_ERROR_CODES = {
     409: "conflict",
     413: "payload_too_large",
     415: "unsupported_media_type",
+    421: "misdirected_request",
     429: "rate_limited",
     500: "internal_error",
     501: "feature_unavailable",
     503: "server_busy",
     507: "storage_quota_exceeded",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthRuntime:
+    authenticator: BasicAuthenticator | None
+    controller: AuthAdmissionController | None
 
 
 class _JSONLogFormatter(logging.Formatter):
@@ -145,6 +164,7 @@ class XFerryServer(HandlerMixin):
         self.cors_origins = config.cors_origins
         self.public_direct = config.public_direct
         self.runtime_posture = config.runtime_posture
+        self.allowed_hosts = tuple(config.allowed_hosts or ())
 
         # TLS settings (delegated to TLSManager; these fields stay as read-only
         # views used by status printing and request handling).
@@ -172,6 +192,16 @@ class XFerryServer(HandlerMixin):
         self.acme_server = tls_config.acme_server
         self.acme_http_address = tls_config.acme_http_address
         self.acme_http_port = tls_config.acme_http_port
+        self._request_admission_config = RequestAdmissionConfig(
+            bind_host=self.host,
+            server_port=self.port,
+            tls_enabled=tls_config.enabled,
+            allowed_hosts=self.allowed_hosts,
+            certificate_domain=tls_config.domain,
+        )
+        self.request_admission_policy = RequestAdmissionPolicy.from_config(
+            self._request_admission_config
+        )
 
         # Temporary SMUGGLE files (deleted after serving)
         self._temp_smuggle_files: set[str] = set()
@@ -179,6 +209,7 @@ class XFerryServer(HandlerMixin):
 
         # Notes lock for thread-safe notepad writes
         self._notes_lock = threading.Lock()
+        self._notepad_service_lock = threading.Lock()
 
         # ECDH key manager for Secure Notepad v2
         self._ecdh_manager = None
@@ -223,8 +254,11 @@ class XFerryServer(HandlerMixin):
         )
 
         # Basic Auth
-        self.authenticator: BasicAuthenticator | None = None
-        self._rate_limiter: AuthRateLimiter | None = None
+        self._auth_runtime_lock = threading.Lock()
+        self._auth_runtime = _AuthRuntime(None, None)
+        self._auth_event_log_lock = threading.Lock()
+        self._auth_event_log_last: float | None = None
+        self._auth_event_log_suppressed = 0
         self._setup_auth(
             auth_config.auth,
             str(auth_config.auth_file) if auth_config.auth_file else None,
@@ -287,6 +321,10 @@ class XFerryServer(HandlerMixin):
             )
 
         core_methods = set(registry_methods())
+        plugin_services = PluginServices(
+            upload_dir=self.upload_dir,
+            upload_storage=self.upload_storage,
+        )
         for plugin in coerce_plugin_specs(plugins, plugin_modules):
             for method_spec in plugin.methods:
                 method = method_spec.method
@@ -294,7 +332,7 @@ class XFerryServer(HandlerMixin):
                     raise ValueError(f"plugin method {method} would override a core method")
 
                 context = HandlerContext(
-                    server=self,
+                    services=plugin_services,
                     plugin_name=plugin.name,
                 )
                 self.method_handlers.register(
@@ -317,12 +355,31 @@ class XFerryServer(HandlerMixin):
         return _handle_plugin
 
     def set_authenticator(self, authenticator: BasicAuthenticator | None) -> None:
-        """Install an authenticator and keep auth rate limiting in sync."""
-        previous_mode_has_authenticator = self.authenticator is not None
-        self.authenticator = authenticator
-        self._rate_limiter = AuthRateLimiter() if authenticator else None
+        """Install one atomically paired authenticator/admission runtime."""
+        controller = (
+            AuthAdmissionController(workers=self.max_workers) if authenticator is not None else None
+        )
+        runtime = _AuthRuntime(authenticator, controller)
+        with self._auth_runtime_lock:
+            previous_mode_has_authenticator = self._auth_runtime.authenticator is not None
+            self._auth_runtime = runtime
         if previous_mode_has_authenticator != (authenticator is not None):
             self.advanced_session_store.invalidate_all()
+
+    def _current_auth_runtime(self) -> _AuthRuntime:
+        """Return the current Basic Auth runtime as one consistent snapshot."""
+        with self._auth_runtime_lock:
+            return self._auth_runtime
+
+    @property
+    def authenticator(self) -> BasicAuthenticator | None:
+        """Compatibility view of the authenticator in the current runtime."""
+        return self._current_auth_runtime().authenticator
+
+    @property
+    def _auth_controller(self) -> AuthAdmissionController | None:
+        """Compatibility view of the controller in the current runtime."""
+        return self._current_auth_runtime().controller
 
     def _setup_auth(self, auth: str | None, auth_file: str | None = None) -> None:
         """Set up Basic Auth."""
@@ -409,6 +466,15 @@ class XFerryServer(HandlerMixin):
     def _setup_tls(self) -> None:
         """Set up the TLS context (delegated to TLSManager)."""
         self._tls.setup()
+        self.request_admission_policy = RequestAdmissionPolicy.from_config(
+            RequestAdmissionConfig(
+                bind_host=self._request_admission_config.bind_host,
+                server_port=self._request_admission_config.server_port,
+                tls_enabled=self._request_admission_config.tls_enabled,
+                allowed_hosts=self._request_admission_config.allowed_hosts,
+                certificate_domain=self._tls.domain,
+            )
+        )
 
     @property
     def tls_enabled(self) -> bool:
@@ -677,7 +743,7 @@ class XFerryServer(HandlerMixin):
 
     def _should_keep_alive(self, request: HTTPRequest) -> bool:
         """Determine whether to keep the connection alive after this request."""
-        conn_header = request.headers.get("connection", "").lower()
+        conn_header = (request.admission_context.connection or "").lower()
         if conn_header == "close":
             return False
 
@@ -755,42 +821,82 @@ class XFerryServer(HandlerMixin):
 
         Returns an error HTTPResponse to send back, or None if auth passed.
         """
-        if not self.authenticator:
+        runtime = self._current_auth_runtime()
+        authenticator = runtime.authenticator
+        controller = runtime.controller
+        if authenticator is None or controller is None:
+            request.set_authentication_disabled()
             return None
 
+        auth_header = request.admission_context.authorization
         ip = client_address[0]
+        admission = controller.acquire(ip)
+        if isinstance(admission, AuthAdmissionDenied):
+            self._metrics.record_authentication_denial(admission.reason)
+            self._log_authentication_event()
+            return self._build_auth_rate_limited_response(admission)
 
-        if self._rate_limiter and self._rate_limiter.is_blocked(ip):
-            logger.warning(f"Rate limited: {ip}")
-            return self._build_error_response(
-                429,
-                "Too Many Requests",
-                code="rate_limited",
-                field="Authorization",
-            )
+        self._metrics.record_authentication_started()
+        try:
+            verified_principal = authenticator.verify(auth_header)
+        except BaseException as exc:
+            admission.finish("error")
+            self._metrics.record_authentication_finished("error")
+            self._log_authentication_event()
+            if not isinstance(exc, Exception):
+                raise
+            return self._build_auth_challenge_response(authenticator)
 
-        auth_header = request.headers.get("authorization")
-        verified_principal = self.authenticator.verify(auth_header)
         if verified_principal is None:
-            if self._rate_limiter:
-                self._rate_limiter.record_failure(ip)
-            logger.warning(f"Auth rejected: {ip}")
-            response = self._build_error_response(
-                401,
-                "Unauthorized",
-                code="authentication_required",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+            admission.finish("failed")
+            self._metrics.record_authentication_finished("failed")
+            self._log_authentication_event()
+            return self._build_auth_challenge_response(authenticator)
 
-        if self._rate_limiter:
-            self._rate_limiter.reset(ip)
+        admission.finish("succeeded")
+        self._metrics.record_authentication_finished("succeeded")
         request.set_verified_principal(verified_principal)
         return None
+
+    def _log_authentication_event(self) -> None:
+        """Emit one fixed aggregate warning per interval without identity data."""
+        now = time.monotonic()
+        with self._auth_event_log_lock:
+            last = self._auth_event_log_last
+            if last is not None and now - last < 5.0:
+                self._auth_event_log_suppressed += 1
+                return
+            suppressed = self._auth_event_log_suppressed
+            self._auth_event_log_suppressed = 0
+            self._auth_event_log_last = now
+        logger.warning("Authentication events observed (suppressed=%d)", suppressed)
+
+    def _build_auth_rate_limited_response(self, denial: AuthAdmissionDenied) -> HTTPResponse:
+        """Build the public response for bounded authentication admission denials."""
+        response = self._build_error_response(
+            429,
+            "Too Many Requests",
+            code="rate_limited",
+            field="Authorization",
+            no_store=True,
+        )
+        response.set_header("Retry-After", str(denial.retry_after))
+        return response
+
+    def _build_auth_challenge_response(self, authenticator: BasicAuthenticator) -> HTTPResponse:
+        """Build a private Basic Auth challenge response."""
+        response = self._build_error_response(
+            401,
+            "Unauthorized",
+            code="authentication_required",
+            field="Authorization",
+            no_store=True,
+        )
+        response.set_header(
+            "WWW-Authenticate",
+            authenticator.get_www_authenticate_header(),
+        )
+        return response
 
     def _send_response(
         self,
@@ -931,7 +1037,7 @@ class XFerryServer(HandlerMixin):
 
     def _resolve_cors_origin(self, request: HTTPRequest) -> str | None:
         """Resolve configured CORS origins against the request Origin header."""
-        request_origin = request.headers.get("origin")
+        request_origin = request.admission_context.origin
         if not request_origin or not self.cors_origins:
             return None
         if self.cors_origins == ("*",):
@@ -961,15 +1067,16 @@ class XFerryServer(HandlerMixin):
         if not self._is_browser_protected_mutation(request):
             return True
 
-        origin = request.headers.get("origin")
+        admission = request.admission_context
+        origin = admission.origin
         if origin:
             if (
-                fetch_site := request.headers.get("sec-fetch-site", "").strip().lower()
+                fetch_site := (admission.sec_fetch_site or "").strip().lower()
             ) and fetch_site not in _FETCH_METADATA_SAME_ORIGIN_VALUES:
                 return self._is_explicit_cors_origin(origin)
             return self._is_browser_origin_allowed_for_mutation(request, origin)
 
-        fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+        fetch_site = (admission.sec_fetch_site or "").strip().lower()
         if not fetch_site:
             return True
         return fetch_site in _FETCH_METADATA_SAME_ORIGIN_VALUES
@@ -997,7 +1104,10 @@ class XFerryServer(HandlerMixin):
         if not self._is_advanced_session_control_route(request):
             return None
 
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session control reached before authentication")
+        if auth_mode == "disabled":
             direct_peer = request.security_context.direct_peer
             if direct_peer is None or not self._is_loopback_peer(direct_peer[0]):
                 return self._control_error(
@@ -1007,32 +1117,16 @@ class XFerryServer(HandlerMixin):
                     field=None,
                 )
         elif request.security_context.verified_principal is None:
-            response = self._control_error(
-                401,
-                "authentication_required",
-                "Unauthorized",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+            raise RuntimeError("Basic Auth request has no verified principal")
 
-        host, header_error = self._advanced_session_control_singleton_header(request, "Host")
-        if header_error is not None:
-            return header_error
-        origin, header_error = self._advanced_session_control_singleton_header(request, "Origin")
-        if header_error is not None:
-            return header_error
-        fetch_site, header_error = self._advanced_session_control_singleton_header(
-            request,
-            "Sec-Fetch-Site",
-        )
-        if header_error is not None:
-            return header_error
+        admission = request.admission_context
+        origin = admission.origin
+        fetch_site = admission.sec_fetch_site
 
-        if origin is not None and not self._is_exact_control_origin(origin, host):
+        if origin is not None and not self.request_admission_policy.is_same_origin(
+            admission,
+            origin,
+        ):
             return self._control_error(
                 403,
                 "forbidden_origin",
@@ -1064,7 +1158,10 @@ class XFerryServer(HandlerMixin):
         ):
             return None
 
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session data reached before authentication")
+        if auth_mode == "disabled":
             direct_peer = request.security_context.direct_peer
             if direct_peer is None or not self._is_loopback_peer(direct_peer[0]):
                 return self._control_error(
@@ -1074,30 +1171,11 @@ class XFerryServer(HandlerMixin):
                     field=None,
                 )
         elif request.security_context.verified_principal is None:
-            response = self._control_error(
-                401,
-                "authentication_required",
-                "Unauthorized",
-                field="Authorization",
-            )
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            return response
+            raise RuntimeError("Basic Auth request has no verified principal")
 
-        host, header_error = self._advanced_session_control_singleton_header(request, "Host")
-        if header_error is not None:
-            return header_error
-        origin, header_error = self._advanced_session_control_singleton_header(request, "Origin")
-        if header_error is not None:
-            return header_error
-        fetch_site, header_error = self._advanced_session_control_singleton_header(
-            request,
-            "Sec-Fetch-Site",
-        )
-        if header_error is not None:
-            return header_error
+        admission = request.admission_context
+        origin = admission.origin
+        fetch_site = admission.sec_fetch_site
 
         fetch_site_value = fetch_site.strip().lower() if fetch_site is not None else ""
         if origin is not None:
@@ -1110,7 +1188,10 @@ class XFerryServer(HandlerMixin):
                     "Forbidden origin",
                     field="Sec-Fetch-Site",
                 )
-            if self._is_exact_control_origin(origin, host) or self._is_explicit_cors_origin(origin):
+            if self.request_admission_policy.is_same_origin(
+                admission,
+                origin,
+            ) or self._is_explicit_cors_origin(origin):
                 return None
             return self._control_error(
                 403,
@@ -1129,23 +1210,6 @@ class XFerryServer(HandlerMixin):
 
         return None
 
-    def _advanced_session_control_singleton_header(
-        self,
-        request: HTTPRequest,
-        header_name: str,
-    ) -> tuple[str | None, HTTPResponse | None]:
-        values = request.get_header_values(header_name)
-        if len(values) > 1:
-            return None, self._control_error(
-                400,
-                "invalid_field",
-                "Invalid field",
-                field=header_name,
-            )
-        if not values:
-            return None, None
-        return values[0], None
-
     @staticmethod
     def _is_loopback_peer(host: str) -> bool:
         try:
@@ -1155,19 +1219,15 @@ class XFerryServer(HandlerMixin):
 
     def _advanced_session_principal(self, request: HTTPRequest) -> AdvancedSessionPrincipal:
         """Bridge the already-verified auth context into the session store principal."""
-        if self.authenticator is None:
+        auth_mode = request.security_context.authentication_mode
+        if auth_mode == "disabled":
             return AdvancedSessionPrincipal("no_auth", None)
+        if auth_mode == "unchecked":
+            raise RuntimeError("advanced session principal requested before authentication")
         principal = request.security_context.verified_principal
         if principal is None:
             raise RuntimeError("advanced session control reached without verified principal")
         return AdvancedSessionPrincipal("basic", principal)
-
-    def _is_exact_control_origin(self, origin: str, host: str | None) -> bool:
-        """Strict control-plane origin: exactly effective scheme plus Host."""
-        if not host:
-            return False
-        expected_scheme = "https" if self.tls_enabled else "http"
-        return origin == f"{expected_scheme}://{host}"
 
     @staticmethod
     def _control_error(
@@ -1202,20 +1262,8 @@ class XFerryServer(HandlerMixin):
         return origin != "*" and origin in self.cors_origins
 
     def _is_same_http_origin(self, request: HTTPRequest, origin: str) -> bool:
-        """Compare Origin against the request Host and effective server scheme."""
-        host = request.headers.get("host", "")
-        if not host:
-            return False
-
-        expected_scheme = "https" if self.tls_enabled else "http"
-        parsed = urlsplit(origin)
-        expected_origin = f"{expected_scheme}://{host}"
-        return (
-            parsed.scheme.lower() == expected_scheme
-            and parsed.netloc.lower() == host.lower()
-            and parsed.path in ("", "/")
-            and origin.rstrip("/").lower() == expected_origin.lower()
-        )
+        """Compare Origin against the canonical admitted authority."""
+        return self.request_admission_policy.is_same_origin(request.admission_context, origin)
 
     def _build_error_response(
         self,
@@ -1239,26 +1287,15 @@ class XFerryServer(HandlerMixin):
 
     def _is_websocket_origin_allowed(self, request: HTTPRequest) -> bool:
         """Allow same-origin upgrades by default; cross-origin requires explicit opt-in."""
-        origin = request.headers.get("origin", "")
+        admission = request.admission_context
+        origin = admission.origin or ""
         if not origin:
             return True
 
         if self._is_explicit_cors_origin(origin):
             return True
 
-        host = request.headers.get("host", "")
-        if not host:
-            return False
-
-        expected_scheme = "https" if self.tls_enabled else "http"
-        parsed = urlsplit(origin)
-        expected_origin = f"{expected_scheme}://{host}"
-        return (
-            parsed.scheme == expected_scheme
-            and parsed.netloc == host
-            and parsed.path in ("", "/")
-            and expected_origin == origin.rstrip("/")
-        )
+        return self.request_admission_policy.is_same_origin(admission, origin)
 
     def _is_websocket_upgrade_attempt(self, request: HTTPRequest) -> bool:
         """Return True when the request appears to target the WebSocket handshake path."""
@@ -1268,13 +1305,14 @@ class XFerryServer(HandlerMixin):
             or not websocket_route_enabled(request.raw_path)
         ):
             return False
+        admission = request.admission_context
         return any(
             (
-                request.headers.get("upgrade"),
-                request.headers.get("connection"),
-                request.headers.get("sec-websocket-key"),
-                request.headers.get("sec-websocket-version"),
-                request.headers.get("origin"),
+                admission.upgrade,
+                admission.connection,
+                admission.websocket_key,
+                admission.websocket_version,
+                admission.origin,
             )
         )
 

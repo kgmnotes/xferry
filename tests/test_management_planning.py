@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from xferry.management.planning import (
     render_managed_config,
 )
 from xferry.management.platform import detect_host_facts
+from xferry.management.release_contract import platform_id_for_host
 from xferry.settings import load_settings_file
 
 
@@ -103,21 +105,67 @@ def test_unusable_automatic_host_capacity_is_rejected_before_planning(facts: Hos
 
 
 @pytest.mark.parametrize(
-    ("os_release", "machine", "systemd", "supported"),
+    "os_release",
     [
-        ('ID=ubuntu\nVERSION_ID="22.04"\n', "amd64", True, True),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "x86_64", True, True),
-        ('ID=ubuntu\nVERSION_ID="26.04"\n', "x86_64", True, True),
-        ('ID=debian\nVERSION_ID="12"\n', "x86_64", True, True),
-        ('ID=debian\nVERSION_ID="11"\n', "x86_64", True, False),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "aarch64", True, False),
-        ('ID=ubuntu\nVERSION_ID="24.04"\n', "x86_64", False, False),
+        'ID=ubuntu\nVERSION_ID="22.04"\n',
+        'ID=ubuntu\nVERSION_ID="24.04"\n',
+        'ID=ubuntu\nVERSION_ID="26.04"\n',
+        'ID=debian\nVERSION_ID="12"\n',
+        'ID=debian\nVERSION_ID="13"\n',
     ],
 )
-def test_host_detection_normalizes_supported_platforms(
-    os_release: str, machine: str, systemd: bool, supported: bool
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_host_detection_accepts_the_complete_managed_matrix(os_release: str, machine: str) -> None:
+    """Every confirmed distro/release pair must work on both canonical architectures."""
+    facts = detect_host_facts(
+        os_release_text=os_release,
+        machine=machine,
+        has_systemd=True,
+        page_size=1024 * 1024,
+        physical_pages=1024,
+        cpu_count=2,
+        disk_free_bytes=8 * 1024 * 1024 * 1024,
+    )
+
+    assert facts.machine == machine
+    assert facts.is_supported is True
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+    assert check_setup_preflight(plan, _probes()).ok
+
+
+@pytest.mark.parametrize(
+    ("machine", "normalized"),
+    [("amd64", "x86_64"), ("arm64", "aarch64")],
+)
+def test_host_detection_normalizes_managed_architecture_aliases(
+    machine: str, normalized: str
 ) -> None:
-    """Changing OS parsing, x86 normalization, or systemd detection must change support."""
+    facts = detect_host_facts(
+        os_release_text='ID=debian\nVERSION_ID="13"\n',
+        machine=machine,
+        has_systemd=True,
+        page_size=1024 * 1024,
+        physical_pages=1024,
+        cpu_count=2,
+        disk_free_bytes=8 * 1024 * 1024 * 1024,
+    )
+
+    assert facts.machine == normalized
+    assert facts.is_supported is True
+
+
+@pytest.mark.parametrize(
+    ("os_release", "machine", "systemd"),
+    [
+        ('ID=fedora\nVERSION_ID="40"\n', "x86_64", True),
+        ('ID=debian\nVERSION_ID="11"\n', "x86_64", True),
+        ('ID=ubuntu\nVERSION_ID="24.04"\n', "riscv64", True),
+        ('ID=ubuntu\nVERSION_ID="24.04"\n', "aarch64", False),
+    ],
+)
+def test_host_detection_rejects_each_unsupported_platform_dimension(
+    os_release: str, machine: str, systemd: bool
+) -> None:
     facts = detect_host_facts(
         os_release_text=os_release,
         machine=machine,
@@ -128,8 +176,24 @@ def test_host_detection_normalizes_supported_platforms(
         disk_free_bytes=8 * 1024 * 1024 * 1024,
     )
 
-    assert facts.machine == ("x86_64" if machine == "amd64" else machine)
-    assert facts.is_supported is supported
+    assert facts.is_supported is False
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("amd64", "linux-x86_64"),
+        ("x86_64", "linux-x86_64"),
+        ("aarch64", "linux-aarch64"),
+        ("arm64", "linux-aarch64"),
+        ("riscv64", None),
+    ],
+)
+def test_release_platform_contract_owns_host_aliases(
+    machine: str,
+    expected: str | None,
+) -> None:
+    assert platform_id_for_host("Linux", machine) == expected
 
 
 def test_host_detection_uses_the_existing_parent_for_a_clean_data_root(tmp_path: Path) -> None:
@@ -240,6 +304,53 @@ def test_preflight_reports_all_read_only_boundary_observations() -> None:
     assert preflight.ufw_active is True
 
 
+@pytest.mark.parametrize(
+    ("facts_builder", "detected_fragment"),
+    [
+        (lambda: replace(_facts(), os_id="fedora", os_version="40"), "os=fedora"),
+        (lambda: replace(_facts(), os_version="20.04"), "version=20.04"),
+        (lambda: replace(_facts(), machine="riscv64"), "architecture=riscv64"),
+        (lambda: replace(_facts(), has_systemd=False), "systemd=absent"),
+    ],
+)
+def test_unsupported_preflight_has_actionable_secret_free_host_diagnostics(
+    facts_builder: Callable[[], HostFacts], detected_fragment: str
+) -> None:
+    facts = facts_builder()
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+
+    preflight = check_setup_preflight(plan, _probes())
+
+    failure = next(item for item in preflight.failures if item.code == "unsupported-platform")
+    assert failure.message == "Managed commands are Linux/systemd-only on supported hosts."
+    assert detected_fragment in failure.detail
+    assert "Ubuntu 22.04/24.04/26.04 and Debian 12/13" in failure.detail
+    assert "x86_64/aarch64" in failure.detail
+    assert any("pipx install xferry" in action for action in failure.next_actions)
+
+
+def test_setup_cli_renders_stable_unsupported_host_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from xferry.management import cli
+
+    facts = replace(_facts(), os_id="fedora", os_version="40", machine="aarch64")
+    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
+    preflight = check_setup_preflight(plan, _probes())
+    monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, preflight))
+
+    assert main(["setup", "--private", "--dry-run", "--json"]) == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "unsupported-platform"
+    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
+    assert "os=fedora" in payload["detail"]
+    assert "version=40" in payload["detail"]
+    assert "architecture=aarch64" in payload["detail"]
+    assert "systemd=present" in payload["detail"]
+    assert any("pipx upgrade xferry" in action for action in payload["next_actions"])
+
+
 def test_preflight_requires_explicit_firewall_consent_even_when_interactive() -> None:
     """Allowing active UFW without an answer would cross the mutation gate without consent."""
     plan = build_setup_plan(SetupOptions(), _facts(), resolve_public_ip=lambda: "8.8.8.8")
@@ -313,9 +424,38 @@ def test_rendered_public_config_loads_with_finite_security_limits(tmp_path: Path
     assert settings.public_direct is True
     assert settings.sslip is True
     assert settings.auth_file == "/etc/xferry/auth"
+    assert settings.allowed_hosts == ("8-8-8-8.sslip.io",)
     assert settings.port == 443
     assert settings.upload_storage_limit_mb == 4096
     assert settings.body_memory_budget_mb == 256
+
+
+def test_managed_config_delegates_shape_and_serialization_to_settings_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed values stay dynamic while canonical INI metadata comes from the schema."""
+    plan = build_setup_plan(SetupOptions(), _facts(), resolve_public_ip=lambda: "8.8.8.8")
+    captured: dict[str, object] = {}
+
+    def capture_renderer(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "schema-rendered\n"
+
+    monkeypatch.setattr("xferry.management.planning.render_settings_ini", capture_renderer)
+
+    assert render_managed_config(plan) == "schema-rendered\n"
+    assert captured["target"] == "managed"
+    values = captured["values"]
+    field_names = captured["field_names"]
+    assert isinstance(values, dict)
+    assert isinstance(field_names, list)
+    assert set(field_names) == set(values)
+    assert values["root_dir"] == plan.layout.data_root
+    assert values["auth_file"] == plan.layout.auth_file
+    assert values["allowed_hosts"] == (plan.domain,)
+    assert values["public_direct"] is True
+    assert values["sslip"] is True
+    assert values["letsencrypt"] is False
 
 
 def test_rendered_private_config_loads_with_the_same_auth_and_quota_boundary(
@@ -331,6 +471,7 @@ def test_rendered_private_config_loads_with_the_same_auth_and_quota_boundary(
     assert settings.host == "127.0.0.1"
     assert settings.port == 8080
     assert settings.auth_file == "/etc/xferry/auth"
+    assert settings.allowed_hosts == ("127.0.0.1",)
     assert settings.upload_storage_limit_mb == 4096
     assert settings.body_memory_budget_mb == 256
     assert settings.effective_tls_enabled() is False
@@ -349,6 +490,7 @@ def test_rendered_domain_config_loads_with_acme_domain_tls(tmp_path: Path) -> No
 
     assert settings.letsencrypt is True
     assert settings.domain == "files.example.com"
+    assert settings.allowed_hosts == ("files.example.com",)
     assert settings.sslip is False
 
 

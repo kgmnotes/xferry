@@ -496,6 +496,39 @@ class TestCLIMain:
         assert '"effective_tls": true' in rendered
         assert '"tls_mode": "acme-sslip"' in rendered
 
+    def test_main_print_config_reports_repeatable_allowed_hosts_as_one_cli_layer(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        """Catch repeatable CLI hosts extending rather than replacing lower layers."""
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("server should not start for --print-config")
+
+        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
+        monkeypatch.setenv("XFERRY_ALLOWED_HOSTS", "env.example old.example")
+
+        assert (
+            cli.run_main(
+                [
+                    "--allowed-host",
+                    "CLI.EXAMPLE.",
+                    "--allowed-host",
+                    "127.0.0.1",
+                    "--print-config",
+                ]
+            )
+            == 0
+        )
+        rendered = json.loads(capsys.readouterr().out)
+        assert rendered["allowed_hosts"] == ["CLI.EXAMPLE.", "127.0.0.1"]
+        assert rendered["runtime_posture"]["allowed_hosts_mode"] == "explicit"
+        assert rendered["runtime_posture"]["allowed_hosts"] == [
+            "cli.example",
+            "127.0.0.1",
+        ]
+
     def test_main_check_and_print_use_same_runtime_posture(
         self,
         monkeypatch,

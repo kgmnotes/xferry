@@ -56,6 +56,8 @@ class RuntimePosture:
     auth_mode: Literal["disabled", "generated", "inline", "file"]
     public_direct: bool
     public_direct_validated: bool
+    allowed_hosts_mode: Literal["auto", "explicit"]
+    allowed_hosts: tuple[str, ...]
     max_upload_mb: int
     body_admission_budget_mb: int
     workers: int
@@ -101,6 +103,14 @@ class RuntimePosture:
             ),
             f"  TLS: {self.tls_mode}; Auth: {self.auth_mode}",
             f"  Public-direct validation: {public_validation}",
+            (
+                "  Request authorities: "
+                + (
+                    ", ".join(self.allowed_hosts)
+                    if self.allowed_hosts_mode == "explicit"
+                    else "auto (listener/certificate derived)"
+                )
+            ),
             (
                 f"  Body admission budget: {self.body_admission_budget_mb} MB; "
                 f"workers: {self.workers}; WebSockets: {self.max_websocket_connections}"
@@ -196,6 +206,9 @@ def derive_runtime_posture(
             )
         )
 
+    from .request_admission import normalize_allowed_hosts
+
+    allowed_hosts = normalize_allowed_hosts(tuple(settings.allowed_hosts))
     return RuntimePosture(
         preset=settings.preset,
         effective_url=effective_url,
@@ -208,6 +221,8 @@ def derive_runtime_posture(
         auth_mode=auth_mode,
         public_direct=settings.public_direct,
         public_direct_validated=settings.public_direct,
+        allowed_hosts_mode="explicit" if allowed_hosts else "auto",
+        allowed_hosts=allowed_hosts,
         max_upload_mb=settings.max_size_mb,
         body_admission_budget_mb=(
             settings.body_memory_budget_mb

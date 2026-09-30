@@ -13,15 +13,15 @@ async (page) => {
   const browserIssues = [];
   const rootUrl = String(baseUrl || "").replace(/#.*$/, "");
   const topTabContract = [
-    { id: "tab-upload", target: "upload", key: "tabUpload" },
-    { id: "tab-files", target: "files", key: "tabFiles" },
+    { id: "tab-upload", target: "upload", key: "topTabUpload" },
+    { id: "tab-files", target: "files", key: "topTabFiles" },
     { id: "tab-request", target: "request", key: "tabRequests" },
     { id: "tab-opsec", target: "opsec", key: "tabOpsec" },
     { id: "tab-notepad", target: "notepad", key: "tabNotepad" },
   ];
   const topTabLabels = {
-    ru: ["Отправить", "Файлы", "Запросы", "Расширенные", "Блокнот"],
-    en: ["Send", "Files", "Requests", "Advanced", "Notepad"],
+    ru: ["Отправить", "Получить", "Запросы", "Расширенные", "Блокнот"],
+    en: ["Upload", "Download", "Requests", "Advanced", "Notepad"],
   };
 
   function requestPathname(request) {
@@ -467,6 +467,53 @@ async (page) => {
     );
   }
 
+  async function assertDefaultPreferencesContract() {
+    await page.evaluate(() => {
+      localStorage.removeItem("lang");
+      localStorage.removeItem("theme");
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForSpaReady();
+    await waitForPageCondition(
+      "fresh browser defaults to English and dark theme",
+      () => {
+        const root = document.documentElement;
+        const enButton = document.getElementById("langEn");
+        const ruButton = document.getElementById("langRu");
+        const themeButton = document.getElementById("themeBtn");
+        const actionIds = Array.from(
+          document.querySelectorAll(".topbar__actions button")
+        ).map((button) => button.id);
+        return Boolean(
+          root.lang === "en" &&
+          root.getAttribute("data-theme") !== "light" &&
+          localStorage.getItem("lang") === null &&
+          localStorage.getItem("theme") === null &&
+          JSON.stringify(actionIds) === JSON.stringify(["langEn", "langRu", "themeBtn"]) &&
+          enButton?.classList.contains("active") &&
+          enButton?.getAttribute("aria-pressed") === "true" &&
+          ruButton?.getAttribute("aria-pressed") === "false" &&
+          themeButton?.getAttribute("aria-pressed") === "false" &&
+          themeButton?.textContent?.trim() === "🌙" &&
+          document.querySelector(".brand-copy p")?.textContent?.trim() ===
+            "SWG/NGFW testing tool" &&
+          document.getElementById("tab-upload")?.textContent?.trim() === "Upload" &&
+          document.getElementById("tab-files")?.textContent?.trim() === "Download"
+        );
+      },
+      null,
+      10000
+    );
+
+    return page.evaluate(() => ({
+      lang: document.documentElement.lang,
+      theme: document.documentElement.getAttribute("data-theme") || "dark",
+      actionButtonIds: Array.from(
+        document.querySelectorAll(".topbar__actions button")
+      ).map((button) => button.id),
+    }));
+  }
+
   async function assertUnsupportedStoredLanguageFallsBack() {
     await page.evaluate(() => {
       localStorage.setItem("lang", "unsupported-browser-smoke-locale");
@@ -474,17 +521,18 @@ async (page) => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForPageCondition(
-      "unsupported stored language falls back to Russian",
+      "unsupported stored language falls back to English",
       () => {
         const ruButton = document.getElementById("langRu");
         const enButton = document.getElementById("langEn");
         return Boolean(
-          document.documentElement.lang === "ru" &&
-          localStorage.getItem("lang") === "ru" &&
-          ruButton?.classList.contains("active") &&
-          ruButton?.getAttribute("aria-pressed") === "true" &&
-          enButton?.getAttribute("aria-pressed") === "false" &&
-          document.getElementById("tab-upload")?.textContent?.trim() === "Отправить"
+          document.documentElement.lang === "en" &&
+          localStorage.getItem("lang") === "en" &&
+          enButton?.classList.contains("active") &&
+          enButton?.getAttribute("aria-pressed") === "true" &&
+          ruButton?.getAttribute("aria-pressed") === "false" &&
+          document.getElementById("tab-upload")?.textContent?.trim() === "Upload" &&
+          document.getElementById("tab-files")?.textContent?.trim() === "Download"
         );
       },
       null,
@@ -804,7 +852,12 @@ async (page) => {
     await page.locator("#langEn").focus();
     await page.keyboard.press("Tab");
     await waitForPageCondition(
-      "focus ring reaches theme control",
+      "focus order reaches Russian control after English",
+      () => document.activeElement?.id === "langRu"
+    );
+    await page.keyboard.press("Tab");
+    await waitForPageCondition(
+      "focus order reaches theme control after Russian",
       () => document.activeElement?.id === "themeBtn"
     );
     const focusShadow = await page.locator("#themeBtn").evaluate((element) => getComputedStyle(element).boxShadow);
@@ -822,7 +875,7 @@ async (page) => {
         width: 1365,
         height: 768,
         lang: "ru",
-        expectedTagline: "Инструмент для тестирования SWG",
+        expectedTagline: "Инструмент для тестирования SWG/NGFW",
         maxTaglineLines: 1,
         minTitleSize: 45,
         maxTitleSize: 50,
@@ -832,7 +885,7 @@ async (page) => {
         width: 390,
         height: 844,
         lang: "en",
-        expectedTagline: "SWG testing tool",
+        expectedTagline: "SWG/NGFW testing tool",
         maxTaglineLines: 2,
         minTitleSize: 31,
         maxTitleSize: 34,
@@ -931,7 +984,7 @@ async (page) => {
 
     const valid = (
       snapshot.actionsPresent &&
-      JSON.stringify(snapshot.actionButtonIds) === JSON.stringify(["langRu", "langEn", "themeBtn"]) &&
+      JSON.stringify(snapshot.actionButtonIds) === JSON.stringify(["langEn", "langRu", "themeBtn"]) &&
       !snapshot.statusClusterPresent &&
       snapshot.statusChipCount === 0 &&
       !snapshot.serverAddressPresent
@@ -982,7 +1035,6 @@ async (page) => {
       upload: [
         "#dropZone",
         "#uploadBtn",
-        "#uploadCompareBtn",
         '#upload-tab [data-upload-method="POST"]',
         '#upload-tab [data-upload-profile="multipart"]',
       ],
@@ -1307,7 +1359,7 @@ async (page) => {
           "responseAreaLive",
           "uploadResponseAreaLive",
           "filesResponseAreaLive",
-          "filesToastLive",
+          "appNotificationLive",
           "opsecResponseAreaLive",
         ];
 
@@ -1334,6 +1386,14 @@ async (page) => {
           opsecWarning.getAttribute("aria-atomic") === "true"
         );
 
+        const notificationAlert = document.getElementById("appNotificationAlert");
+        const notificationAlertOk = Boolean(
+          notificationAlert &&
+          notificationAlert.getAttribute("role") === "alert" &&
+          notificationAlert.getAttribute("aria-live") === "assertive" &&
+          notificationAlert.getAttribute("aria-atomic") === "true"
+        );
+
         const notepadSaveIndicator = document.getElementById("notepadSaveIndicator");
         const notepadConnStatus = document.getElementById("notepadConnStatus");
         const notepadConnStatusText = document.getElementById("notepadConnStatusText");
@@ -1353,7 +1413,7 @@ async (page) => {
           !document.querySelector('[data-exchange-scope="files"]')
         );
 
-        return panelsOk && liveOk && filesSummaryOk && opsecWarningOk && notepadStatusOk;
+        return panelsOk && liveOk && notificationAlertOk && filesSummaryOk && opsecWarningOk && notepadStatusOk;
       },
       null,
       timeout
@@ -4088,6 +4148,9 @@ async (page) => {
           .map((item) => item.id);
         const expectedIds = expectedTabs.map((tab) => tab.id);
         const visibleOk = rects.every((rect) => rect.width > 0 && rect.height > 0);
+        const redundantHeadingsAbsent = ["upload", "files", "opsec", "notepad"].every(
+          (target) => !document.querySelector(`#${target}-tab > .workspace-view__header`)
+        );
         const activeOk = Boolean(
           activeTab &&
           activePanel &&
@@ -4097,7 +4160,13 @@ async (page) => {
           activePanel.classList.contains("active") &&
           activePanel.hidden === false
         );
-        return domOrderOk && visibleOk && visualOrder.join(",") === expectedIds.join(",") && activeOk;
+        return (
+          domOrderOk &&
+          visibleOk &&
+          redundantHeadingsAbsent &&
+          visualOrder.join(",") === expectedIds.join(",") &&
+          activeOk
+        );
       },
       [topTabContract, topTabLabels[lang], expectedActive],
       timeout
@@ -4341,36 +4410,39 @@ async (page) => {
     await waitForPageCondition(
       "upload Send empty state",
       () => {
-        const summary = document.querySelector('[data-tool-summary-scope="upload"]');
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
+        const status = document.getElementById("uploadStatus");
         const dropZone = document.getElementById("dropZone");
         const uploadButton = document.getElementById("uploadBtn");
+        const compareProfilesButton = document.getElementById("uploadCompareBtn");
+        const compareMethodsButton = document.getElementById("uploadCompareMethodsBtn");
+        const comparisonActions = document.getElementById("uploadComparisonActions");
+        const selection = document.getElementById("uploadSelectionState");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
-        const actions = summary?.querySelector("[data-tool-summary-actions]");
-        const text = (summary?.innerText || summary?.textContent || "").trim();
         const dropRect = dropZone?.getBoundingClientRect();
         const buttonRect = uploadButton?.getBoundingClientRect();
         return Boolean(
-          summary &&
-          summary.dataset.phase === "empty" &&
-          text.length > 0 &&
-          text.length <= 180 &&
-          /Choose|Выберите/.test(text) &&
-          /Send|Отправить/.test(text) &&
           trace &&
           trace.open === false &&
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          status &&
+          status.hidden &&
           dropZone &&
           dropRect &&
           dropRect.width > 0 &&
           dropRect.height > 0 &&
           uploadButton &&
           uploadButton.disabled &&
+          compareProfilesButton?.disabled &&
+          compareMethodsButton?.disabled &&
+          comparisonActions?.hidden === true &&
+          selection?.classList.contains("sr-only") &&
           buttonRect &&
           buttonRect.width > 0 &&
           buttonRect.height > 0 &&
           fileInputs.length === 1 &&
-          fileInputs[0].tabIndex === -1 &&
-          (!actions || actions.hidden || !(actions.innerText || "").trim())
+          fileInputs[0].tabIndex === -1
         );
       },
       null,
@@ -4431,28 +4503,56 @@ async (page) => {
     );
   }
 
-  async function assertUploadPrimaryActionDoesNotShiftAfterSelection() {
+  async function assertUploadPickerActionLayout() {
     await page.locator("#fileInput").setInputFiles([]);
     await assertUploadSendEmptyState();
-    const empty = await page.evaluate(() => {
-      const container = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector(
-        "#upload-tab .upload-primary-action__buttons"
-      );
+    const readGeometry = () => page.evaluate(() => {
+      const row = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
       const selection = document.getElementById("uploadSelectionState");
-      if (!container || !buttons || !selection) {
-        throw new Error("Upload primary action geometry targets are missing");
+      const comparisonActions = document.getElementById("uploadComparisonActions");
+      const mode = document.getElementById("uploadMimeMode");
+      if (!row || !dropZone || !button || !selection || !mode) {
+        throw new Error("Upload picker action geometry targets are missing");
       }
-      const containerRect = container.getBoundingClientRect();
-      const buttonsRect = buttons.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const dropRect = dropZone.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
       return {
-        containerRight: containerRect.right,
-        buttonsLeft: buttonsRect.left,
-        buttonsRight: buttonsRect.right,
-        selectionHidden: selection.hidden,
+        row: {
+          left: rowRect.left,
+          right: rowRect.right,
+          top: rowRect.top,
+          bottom: rowRect.bottom,
+        },
+        drop: {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          width: dropRect.width,
+          height: dropRect.height,
+        },
+        button: {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          width: buttonRect.width,
+          height: buttonRect.height,
+          disabled: button.disabled,
+        },
+        selectionVisuallyHidden: selection.classList.contains("sr-only"),
         selectionText: selection.textContent?.trim() || "",
+        comparisonsHidden: comparisonActions?.hidden === true,
+        customControlAbsent: !document.getElementById("uploadCustomMime"),
+        mimeOptions: Array.from(mode.options).map(option => option.value),
+        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+        uploadState: window.XferryApp?.getState("upload"),
       };
     });
+    const empty = await readGeometry();
 
     await page.locator("#fileInput").setInputFiles(uploadFilePath);
     await waitForPageCondition(
@@ -4460,37 +4560,37 @@ async (page) => {
       () => {
         const selection = document.getElementById("uploadSelectionState");
         const button = document.getElementById("uploadBtn");
-        return Boolean(selection && !selection.hidden && button && !button.disabled);
+        return Boolean(selection && selection.classList.contains("sr-only") && button && !button.disabled);
       }
     );
-    const selected = await page.evaluate(() => {
-      const container = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector(
-        "#upload-tab .upload-primary-action__buttons"
-      );
-      if (!container || !buttons) {
-        throw new Error("Upload primary action geometry targets are missing");
-      }
-      const containerRect = container.getBoundingClientRect();
-      const buttonsRect = buttons.getBoundingClientRect();
-      return {
-        containerRight: containerRect.right,
-        buttonsLeft: buttonsRect.left,
-        buttonsRight: buttonsRect.right,
-      };
-    });
+    const selected = await readGeometry();
 
     const tolerance = 1;
     if (
-      empty.selectionHidden ||
+      empty.selectionVisuallyHidden !== true ||
       !/^(No files selected|Файлы не выбраны)$/.test(empty.selectionText) ||
-      Math.abs(empty.containerRight - empty.buttonsRight) > tolerance ||
-      Math.abs(selected.containerRight - selected.buttonsRight) > tolerance ||
-      Math.abs(empty.buttonsLeft - selected.buttonsLeft) > tolerance ||
-      Math.abs(empty.buttonsRight - selected.buttonsRight) > tolerance
+      empty.comparisonsHidden !== true ||
+      empty.customControlAbsent !== true ||
+      empty.mimeOptions.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      empty.button.disabled !== true ||
+      empty.drop.right >= empty.button.left ||
+      Math.abs(empty.drop.top - empty.button.top) > tolerance ||
+      Math.abs(empty.drop.bottom - empty.button.bottom) > tolerance ||
+      Math.abs(empty.drop.height - empty.button.height) > tolerance ||
+      selected.selectionVisuallyHidden !== true ||
+      selected.comparisonsHidden !== true ||
+      selected.button.disabled !== false ||
+      Math.abs(selected.drop.top - selected.button.top) > tolerance ||
+      Math.abs(selected.drop.bottom - selected.button.bottom) > tolerance ||
+      Math.abs(selected.drop.height - selected.button.height) > tolerance ||
+      Math.abs(empty.drop.width - selected.drop.width) > tolerance ||
+      Math.abs(empty.button.width - selected.button.width) > tolerance ||
+      selected.technicalOpen !== true ||
+      selected.uploadState?.technicalDetailsAutoOpened !== true ||
+      selected.uploadState?.technicalDetailsUserToggled !== false
     ) {
       throw new Error(
-        `Upload primary action shifted after file selection: ${JSON.stringify({
+        `Upload picker action layout failed: ${JSON.stringify({
           empty,
           selected,
         })}`
@@ -4509,15 +4609,34 @@ async (page) => {
     await waitForAdvancedUploadReady();
     const desktop = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
-      const action = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
+      const technical = document.getElementById("uploadTechnicalDetails");
+      const picker = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
+      const dropRect = dropZone?.getBoundingClientRect();
+      const buttonRect = button?.getBoundingClientRect();
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
+        technicalVisible: Boolean(technical && getComputedStyle(technical).display !== "none"),
+        technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
-        actionDirection: action ? getComputedStyle(action).flexDirection : "",
-        buttonsColumns: buttons ? getComputedStyle(buttons).gridTemplateColumns : "",
+        pickerColumns: picker ? getComputedStyle(picker).gridTemplateColumns : "",
+        dropRect: dropRect ? {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          height: dropRect.height,
+        } : null,
+        buttonRect: buttonRect ? {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          height: buttonRect.height,
+        } : null,
       };
     });
     await page.screenshot({
@@ -4529,19 +4648,54 @@ async (page) => {
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForAdvancedUploadReady();
+    await page.locator("#fileInput").setInputFiles(uploadFilePath);
+    await waitForPageCondition(
+      "mobile request preview becomes ready without auto-opening details",
+      () => document.getElementById("uploadRequestArea")?.dataset.exchangePhase === "ready"
+    );
     const mobile = await page.evaluate(() => {
       const summary = document.getElementById("uploadRequestSummary");
-      const action = document.querySelector("#upload-tab .upload-primary-action");
-      const buttons = document.querySelector("#upload-tab .upload-primary-action__buttons");
+      const technical = document.getElementById("uploadTechnicalDetails");
+      const picker = document.getElementById("uploadPickerActions");
+      const dropZone = document.getElementById("dropZone");
+      const button = document.getElementById("uploadBtn");
       const panel = document.querySelector("#upload-tab .tool-card--workflow");
+      const targetPathGroup = document.getElementById("uploadTargetPathGroup");
+      const targetPathButtons = Array.from(
+        targetPathGroup?.querySelectorAll("[data-upload-target-path]") || []
+      );
+      const dropRect = dropZone?.getBoundingClientRect();
+      const buttonRect = button?.getBoundingClientRect();
+      const targetPathColumns = targetPathGroup
+        ? getComputedStyle(targetPathGroup).gridTemplateColumns.trim().split(/\s+/).length
+        : 0;
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
+        technicalVisible: Boolean(technical && getComputedStyle(technical).display !== "none"),
+        technicalOpen: technical?.open === true,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
-        actionDirection: action ? getComputedStyle(action).flexDirection : "",
-        buttonsColumns: buttons ? getComputedStyle(buttons).gridTemplateColumns : "",
+        pickerColumns: picker ? getComputedStyle(picker).gridTemplateColumns : "",
+        dropRect: dropRect ? {
+          left: dropRect.left,
+          right: dropRect.right,
+          top: dropRect.top,
+          bottom: dropRect.bottom,
+          height: dropRect.height,
+        } : null,
+        buttonRect: buttonRect ? {
+          left: buttonRect.left,
+          right: buttonRect.right,
+          top: buttonRect.top,
+          bottom: buttonRect.bottom,
+          height: buttonRect.height,
+        } : null,
         panelRight: panel?.getBoundingClientRect().right || 0,
+        targetPathColumns,
+        targetPathLabelsFit: targetPathButtons.length === 4 && targetPathButtons.every(
+          (targetButton) => targetButton.scrollWidth <= targetButton.clientWidth + 1
+        ),
       };
     });
     await page.screenshot({
@@ -4556,13 +4710,26 @@ async (page) => {
     if (
       !desktop.summaryIsDetails ||
       !desktop.summaryOpen ||
+      !desktop.technicalVisible ||
+      desktop.technicalOpen ||
       desktop.documentWidth > desktop.viewportWidth + 1 ||
+      !desktop.dropRect ||
+      !desktop.buttonRect ||
+      desktop.dropRect.right >= desktop.buttonRect.left ||
+      Math.abs(desktop.dropRect.height - desktop.buttonRect.height) > 1 ||
       !mobile.summaryIsDetails ||
       mobile.summaryOpen ||
-      mobile.actionDirection !== "column" ||
-      mobile.buttonsColumns.split(/\s+/).length !== 1 ||
+      !mobile.technicalVisible ||
+      mobile.technicalOpen ||
+      !mobile.dropRect ||
+      !mobile.buttonRect ||
+      mobile.buttonRect.top <= mobile.dropRect.bottom ||
+      mobile.buttonRect.height < 44 ||
+      mobile.buttonRect.height >= mobile.dropRect.height ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
-      mobile.panelRight > mobile.viewportWidth + 1
+      mobile.panelRight > mobile.viewportWidth + 1 ||
+      mobile.targetPathColumns !== 2 ||
+      !mobile.targetPathLabelsFit
     ) {
       throw new Error(
         `Responsive upload summary/action contract failed: ${JSON.stringify({ desktop, mobile })}`
@@ -4571,7 +4738,8 @@ async (page) => {
     return { desktop, mobile };
   }
 
-  async function uploadViaDom(name, filePath = uploadFilePath) {
+  async function uploadViaDom(name, filePath = uploadFilePath, options = {}) {
+    const { verifyStatusLifecycle = false } = options;
     await page.locator("#tab-upload").click();
     await waitForTabState("upload", { focused: true });
     await assertUploadChooserReady();
@@ -4588,69 +4756,68 @@ async (page) => {
       ([targetPath]) => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
         const area = document.getElementById("uploadRequestArea");
+        const status = document.getElementById("uploadStatus");
         return Boolean(
           trace &&
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          status &&
+          status.hidden &&
           area &&
           area.dataset.exchangePhase === "ready" &&
           area.dataset.exchangePath === targetPath
         );
       },
-      ["/uploads"],
+      ["/upload"],
       10000
     );
 
     await page.locator("#uploadBtn").click();
     await waitForLiveRegionText(
-      "uploadResponseAreaLive",
+      "appNotificationLive",
       /Загрузка завершена|Upload complete/,
       10000
     );
     await waitForPageCondition(
-      "upload success summary",
-      ([targetName, targetSize]) => {
-        const summary = document.querySelector('[data-tool-summary-scope="upload"]');
+      "upload success status and technical trace",
+      ([targetName]) => {
         const trace = document.querySelector('[data-tool-trace-scope="upload"]');
-        const status = summary?.querySelector('[data-upload-result-field="status"]');
-        const serverPath = summary?.querySelector('[data-upload-result-field="server-path"]');
-        const size = summary?.querySelector('[data-upload-result-field="size"]');
-        const statusValue = status?.querySelector(".tool-result__meta-value");
-        const serverPathValue = serverPath?.querySelector(".tool-result__meta-value");
-        const sizeValue = size?.querySelector(".tool-result__meta-value");
-        const traceAction = summary?.querySelector('[data-upload-response-action="show-trace"]');
-        const filesAction = summary?.querySelector('[data-upload-response-action="view-files"]');
-        const text = summary?.innerText || summary?.textContent || "";
-        const traceActionText = traceAction?.textContent || "";
+        const responseArea = document.getElementById("uploadResponseArea");
+        const status = document.getElementById("uploadStatus");
+        const message = document.getElementById("uploadStatusMessage")?.textContent || "";
         return Boolean(
-          summary &&
-          summary.dataset.phase === "complete" &&
           trace &&
-          text.includes(targetName) &&
-          statusValue &&
-          statusValue.textContent.includes("201") &&
-          serverPathValue &&
-          serverPathValue.textContent.trim() === `/uploads/${targetName}` &&
-          sizeValue &&
-          sizeValue.textContent.trim() === targetSize &&
-          traceAction &&
-          traceAction.getBoundingClientRect().width > 0 &&
-          /Inspect|technical details|технические детали/i.test(traceActionText) &&
-          filesAction &&
-          filesAction.getBoundingClientRect().width > 0 &&
-          /Files|Файлы/.test(filesAction.textContent || "")
+          !trace.querySelector("[data-tool-trace-phase]") &&
+          !document.querySelector('[data-tool-summary-scope="upload"]') &&
+          responseArea?.dataset.exchangePhase === "complete" &&
+          responseArea.textContent.includes("HTTP/1.1 201") &&
+          responseArea.textContent.includes(targetName) &&
+          status &&
+          !status.hidden &&
+          status.dataset.tone === "success" &&
+          /Загрузка завершена|Upload complete/.test(message) &&
+          /1/.test(message)
         );
       },
-      [name, selectedSizeText.trim()],
+      [name],
       15000
     );
-    await page.locator('[data-upload-response-action="show-trace"]').click();
+    await page.locator("#uploadStatusDetailsBtn").focus();
+    await page.keyboard.press("Enter");
     await waitForPageCondition(
-      "upload Inspect opens inline trace",
+      "upload Details opens inline trace and focuses its summary",
       () => {
-        const trace = document.querySelector('[data-tool-trace-scope="upload"]');
+        const trace = document.getElementById("uploadTechnicalDetails");
+        const detailsButton = document.getElementById("uploadStatusDetailsBtn");
+        const summary = trace?.querySelector(":scope > summary");
         const responseArea = document.getElementById("uploadResponseArea");
         return Boolean(
           trace &&
           trace.open &&
+          detailsButton?.getAttribute("aria-expanded") === "true" &&
+          detailsButton?.getAttribute("aria-controls") === "uploadTechnicalDetails" &&
+          summary &&
+          document.activeElement === summary &&
           responseArea &&
           responseArea.dataset.exchangePhase === "complete" &&
           responseArea.innerText.includes("HTTP/1.1 201")
@@ -4662,7 +4829,7 @@ async (page) => {
     await assertExchangeDownload(
       "uploadRequestArea",
       [
-        "POST /uploads HTTP/1.1",
+        "POST /upload HTTP/1.1",
         "Content-Type: multipart/form-data; boundary=<browser-generated>",
         "Content-Length: <browser-generated>",
       ],
@@ -4673,7 +4840,47 @@ async (page) => {
       ["HTTP/1.1 201"],
       /^xferry-upload-response-.*\.http$/
     );
-    await page.locator('[data-upload-response-action="view-files"]').click();
+    if (verifyStatusLifecycle) {
+      await page.waitForTimeout(5250);
+      await waitForPageCondition(
+        "upload success status remains after five seconds",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const message = document.getElementById("uploadStatusMessage")?.textContent || "";
+          return Boolean(
+            status &&
+            !status.hidden &&
+            status.dataset.tone === "success" &&
+            /Загрузка завершена|Upload complete/.test(message)
+          );
+        }
+      );
+
+      await page.locator("#fileInput").setInputFiles(unicodeUploadFilePath);
+      await waitForPageCondition(
+        "selecting another file hides the completed upload status",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const pendingRow = document.querySelector("#fileList [data-remove-index]");
+          return Boolean(status && status.hidden && pendingRow);
+        }
+      );
+      await page.locator("#fileList [data-remove-index]").click();
+      await waitForPageCondition(
+        "removing the replacement file keeps upload status hidden",
+        () => {
+          const status = document.getElementById("uploadStatus");
+          const uploadButton = document.getElementById("uploadBtn");
+          return Boolean(
+            status &&
+            status.hidden &&
+            uploadButton?.disabled &&
+            !document.querySelector("#fileList .file-item")
+          );
+        }
+      );
+    }
+    await page.locator("#tab-files").click();
     await waitForTabState("files", {}, 10000);
 
     return { selectedSizeText: selectedSizeText.trim() };
@@ -7325,12 +7532,12 @@ async (page) => {
     await page.locator("#smuggleEncryption").waitFor({ state: "attached", timeout: 10000 });
     await chooseSmuggleCombobox("smuggleEncryption", "none");
 
-    await page.locator("#smuggleDownloadName").fill("Quarterly-Report");
+    await page.locator("#smuggleDownloadName").fill("controlled-test-artifact");
     await chooseSmuggleCombobox("smuggleDownloadExt", "pdf");
     await chooseSmuggleCombobox("smugglePreset", "card_auto");
     await page.locator("#smugglePageSettings > summary").click();
-    await page.locator("#smuggleTitleInput").fill("Quarterly Report");
-    await page.locator("#smuggleMessageInput").fill("Internal SMUGGLING test");
+    await page.locator("#smuggleTitleInput").fill("Controlled research artifact");
+    await page.locator("#smuggleMessageInput").fill("Controlled transfer test");
     await page.locator("#smuggleDelayMs").fill("1200");
 
     await page.evaluate(() => {
@@ -7422,11 +7629,11 @@ async (page) => {
           modalNode === window.__smuggleModalIdentity &&
           modalNode.dataset.smugglePhase === "editing" &&
           modalNode.querySelector(".smuggle-dialog")?.getAttribute("aria-busy") === "false" &&
-          document.getElementById("smuggleDownloadName")?.value === "Quarterly-Report" &&
+          document.getElementById("smuggleDownloadName")?.value === "controlled-test-artifact" &&
           document.getElementById("smuggleDownloadExt")?.value === "pdf" &&
           document.getElementById("smugglePreset")?.value === "card_auto" &&
-          document.getElementById("smuggleTitleInput")?.value === "Quarterly Report" &&
-          document.getElementById("smuggleMessageInput")?.value === "Internal SMUGGLING test" &&
+          document.getElementById("smuggleTitleInput")?.value === "Controlled research artifact" &&
+          document.getElementById("smuggleMessageInput")?.value === "Controlled transfer test" &&
           document.getElementById("smuggleDelayMs")?.value === "1200" &&
           status.includes(localized) &&
           status.includes("invalid_smuggle_configuration") &&
@@ -7488,7 +7695,11 @@ async (page) => {
         : "HTML сгенерирован"
     ));
     await waitForFilesSummaryText(["SMUGGLE", `/uploads/${name}`, generatedSummary], 10000);
-    await waitForText(page.locator("#smuggleSuccessPanel"), "Quarterly-Report.pdf", 10000);
+    await waitForText(
+      page.locator("#smuggleSuccessPanel"),
+      "controlled-test-artifact.pdf",
+      10000
+    );
     await waitForText(page.locator("#smuggleSuccessPanel"), /\/uploads\/smuggle_[^/\s]+\.html/, 10000);
     const normalizedBaseUrl = String(baseUrl || "").replace(/\/$/, "");
     await waitForPageCondition(
@@ -7566,7 +7777,7 @@ async (page) => {
 
     const popupUrl = await openSmuggleArtifactPopupAndAssert(
       () => page.locator("#smuggleOpenBtn").click(),
-      "Quarterly-Report.pdf"
+      "controlled-test-artifact.pdf"
     );
     await page.locator("#smuggleCloseBtn").click();
     await modal.waitFor({ state: "detached", timeout: 10000 });
@@ -7611,7 +7822,7 @@ async (page) => {
     await chooseSmuggleCombobox("smugglePreset", "card_manual");
     await page.locator("#smugglePageSettings > summary").click();
     await page.locator("#smuggleTitleInput").fill("Request Panel SMUGGLING");
-    await page.locator("#smuggleMessageInput").fill("Request panel SMUGGLING test");
+    await page.locator("#smuggleMessageInput").fill("Request panel controlled transfer test");
     await page.locator("#smuggleCtaLabelInput").fill("Download from request panel");
     await page.locator("#smuggleSubmitBtn").click();
     await waitForPageCondition(
@@ -8625,7 +8836,7 @@ async (page) => {
         const filenameSource = summary?.querySelector('[data-upload-summary="filename-source"]');
         return Boolean(
           profiles.map((button) => button.dataset.uploadProfile).join(",") ===
-            "multipart,raw-url,raw-header" &&
+            "multipart,raw-url,raw-header,raw-generated" &&
           profiles[0]?.getAttribute("aria-checked") === "true" &&
           profiles[0]?.tabIndex === 0 &&
           profiles.slice(1).every((button) => (
@@ -9277,7 +9488,7 @@ async (page) => {
       const contract = { toastFocusEvents: [], listener: null };
       contract.listener = (event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest("[data-files-toast]")) {
+        if (target instanceof Element && target.closest("[data-app-notification]")) {
           contract.toastFocusEvents.push({
             tagName: target.tagName,
             className: target.className,
@@ -9306,9 +9517,9 @@ async (page) => {
       await waitForPageCondition(
         `selected upload success toast is stable (${name})`,
         ([expectedMessage]) => {
-          const toast = document.querySelector("#filesToastRegion [data-files-toast]");
-          const message = toast?.querySelector("[data-files-toast-message]");
-          const live = document.getElementById("filesToastLive");
+          const toast = document.querySelector('[data-app-notification="files-delete"]');
+          const message = toast?.querySelector("[data-app-notification-message]");
+          const live = document.getElementById("appNotificationLive");
           const summary = document.querySelector('[data-tool-summary-scope="files"]');
           const focusContract = window.__filesBulkDeleteToastFocusContract;
           return Boolean(
@@ -9326,10 +9537,10 @@ async (page) => {
       );
 
       const toastSnapshot = await page.evaluate(([expectedMessage]) => {
-        const region = document.getElementById("filesToastRegion");
-        const toast = region?.querySelector("[data-files-toast]");
-        const message = toast?.querySelector("[data-files-toast-message]");
-        const dismiss = toast?.querySelector("[data-files-toast-dismiss]");
+        const region = document.getElementById("appNotificationRegion");
+        const toast = region?.querySelector('[data-app-notification="files-delete"]');
+        const message = toast?.querySelector("[data-app-notification-message]");
+        const dismiss = toast?.querySelector("[data-app-notification-dismiss]");
         const summary = document.querySelector('[data-tool-summary-scope="files"]');
         const regionStyle = region ? getComputedStyle(region) : null;
         const toastRect = toast?.getBoundingClientRect();
@@ -9337,7 +9548,7 @@ async (page) => {
         return {
           expectedMessage,
           message: message?.textContent?.trim() || "",
-          liveMessage: document.getElementById("filesToastLive")?.textContent?.trim() || "",
+          liveMessage: document.getElementById("appNotificationLive")?.textContent?.trim() || "",
           regionPosition: regionStyle?.position || "",
           toastRect: toastRect ? {
             left: toastRect.left,
@@ -9407,11 +9618,11 @@ async (page) => {
           contract.listener = null;
         }
       });
-      const dismissButton = page.locator("#filesToastRegion [data-files-toast-dismiss]");
+      const dismissButton = page.locator('[data-app-notification="files-delete"] [data-app-notification-dismiss]');
       await dismissButton.focus();
       await waitForPageCondition(
         `selected upload toast dismiss target receives deliberate focus (${name})`,
-        () => document.activeElement?.matches("[data-files-toast-dismiss]") === true,
+        () => document.activeElement?.matches("[data-app-notification-dismiss]") === true,
         null,
         10000
       );
@@ -9421,7 +9632,7 @@ async (page) => {
         () => {
           const summary = document.querySelector('[data-tool-summary-scope="files"]');
           return Boolean(
-            !document.querySelector("#filesToastRegion [data-files-toast]") &&
+            !document.querySelector('[data-app-notification="files-delete"]') &&
             document.activeElement?.id === "browsePathInput" &&
             summary?.dataset.phase === "empty"
           );
@@ -9866,13 +10077,18 @@ async (page) => {
     await waitForPageCondition(
       "mobile upload profile summary fits viewport",
       () => {
+        const targetPath = document.getElementById("uploadTargetPathGroup")
+          ?.getBoundingClientRect();
         const profile = document.getElementById("uploadProfileGroup")?.getBoundingClientRect();
         const summary = document.getElementById("uploadRequestSummary")?.getBoundingClientRect();
         return Boolean(
+          targetPath &&
           profile &&
           summary &&
+          targetPath.left >= 0 &&
           profile.left >= 0 &&
           summary.left >= 0 &&
+          targetPath.right <= innerWidth &&
           profile.right <= innerWidth &&
           summary.right <= innerWidth
         );
@@ -10048,7 +10264,9 @@ async (page) => {
     });
 
     const uploadName = uploadFilePath.split(/[\\/]/).pop();
-    const upload = await uploadViaDom(uploadName);
+    const upload = await uploadViaDom(uploadName, uploadFilePath, {
+      verifyStatusLifecycle: true,
+    });
     await browseUploadsAndAssert(uploadName);
     await waitForLiveRegionText("filesResponseAreaLive", "INFO /uploads 200 OK", 10000);
     await fetchViaServerFilesAndAssert(uploadName);
@@ -10080,7 +10298,19 @@ async (page) => {
       const buttons = Array.from(
         document.querySelectorAll("#uploadProfileGroup [data-upload-profile]")
       );
+      const targetPathButtons = Array.from(
+        document.querySelectorAll("#uploadTargetPathGroup [data-upload-target-path]")
+      );
       return {
+        targetPaths: targetPathButtons.map((button) => button.dataset.uploadTargetPath),
+        targetPathChecked: targetPathButtons
+          .filter((button) => button.getAttribute("aria-checked") === "true")
+          .map((button) => button.dataset.uploadTargetPath),
+        targetPathTabbable: targetPathButtons
+          .filter((button) => button.tabIndex === 0)
+          .map((button) => button.dataset.uploadTargetPath),
+        targetPathLabel: document.getElementById("uploadTargetPathTitle")?.textContent?.trim(),
+        stateTargetPath: window.XferryApp.getState("upload").targetPath,
         profiles: buttons.map((button) => button.dataset.uploadProfile),
         checked: buttons.filter((button) => button.getAttribute("aria-checked") === "true")
           .map((button) => button.dataset.uploadProfile),
@@ -10092,24 +10322,186 @@ async (page) => {
           mime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
           filenameSource: document.querySelector('[data-upload-summary="filename-source"]')?.textContent,
         },
+        mime: {
+          mode: document.getElementById("uploadMimeMode")?.value,
+          options: Array.from(document.getElementById("uploadMimeMode")?.options || [])
+            .map(option => option.value),
+          labels: Array.from(document.getElementById("uploadMimeMode")?.options || [])
+            .map(option => option.textContent.trim()),
+          customAbsent: !document.getElementById("uploadCustomMime"),
+          errorAbsent: !document.getElementById("uploadMimeError"),
+        },
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
       };
     });
     if (
-      initialContract.profiles.join(",") !== "multipart,raw-url,raw-header" ||
+      initialContract.targetPaths.join(",") !== "/,/upload,/api,/file" ||
+      initialContract.targetPathChecked.join(",") !== "/upload" ||
+      initialContract.targetPathTabbable.join(",") !== "/upload" ||
+      initialContract.targetPathLabel !== "Request path" ||
+      initialContract.stateTargetPath !== "/upload" ||
+      initialContract.summary.requestLine !== "POST /upload" ||
+      initialContract.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
       initialContract.checked.join(",") !== "multipart" ||
-      initialContract.tabbable.join(",") !== "multipart"
+      initialContract.tabbable.join(",") !== "multipart" ||
+      initialContract.mime.mode !== "auto" ||
+      initialContract.mime.options.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      initialContract.mime.labels.join(",") !==
+        "Auto,application/octet-stream,text/plain,application/pdf" ||
+      initialContract.mime.customAbsent !== true ||
+      initialContract.mime.errorAbsent !== true ||
+      initialContract.comparisonsHidden !== true
     ) {
       throw new Error(`Basic profile radio contract failed: ${JSON.stringify(initialContract)}`);
     }
-    const primaryActionGeometry =
-      await assertUploadPrimaryActionDoesNotShiftAfterSelection();
+    const pickerActionGeometry = await assertUploadPickerActionLayout();
+
+    await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "handle-files", [
+        new File([new TextEncoder().encode("mime")], "mime-check.txt", {
+          type: "text/plain",
+        }),
+      ]);
+    });
+    await page.locator("#uploadMimeMode").selectOption("pdf");
+    await page.locator('[data-upload-target-path="/api"]').click();
+    await waitForPageCondition(
+      "Basic target path updates the live request preview",
+      () => {
+        const app = window.XferryApp;
+        return app.getState("upload").targetPath === "/api" &&
+          app.getState("upload").pendingCount === 1 &&
+          document.querySelector('[data-upload-summary="request-line"]')?.textContent ===
+            "POST /api" &&
+          app.service("inspector").getAreaRawText("uploadRequestArea").includes(
+            "POST /api HTTP/1.1"
+          );
+      }
+    );
+    await page.locator('[data-upload-target-path="/upload"]').click();
+    const mimePreset = await page.evaluate(() => {
+      const mode = document.getElementById("uploadMimeMode");
+      return {
+        sendDisabled: document.getElementById("uploadBtn")?.disabled,
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
+        modeInvalid: mode.getAttribute("aria-invalid"),
+        options: Array.from(mode?.options || []).map(option => option.value),
+        customAbsent: !document.getElementById("uploadCustomMime"),
+        errorAbsent: !document.getElementById("uploadMimeError"),
+        summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
+        technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+        requestText: document.getElementById("uploadRequestArea")?.textContent,
+      };
+    });
+    if (
+      mimePreset.sendDisabled !== false ||
+      mimePreset.comparisonsHidden !== true ||
+      mimePreset.modeInvalid !== "false" ||
+      mimePreset.options.join(",") !== "auto,octet-stream,text-plain,pdf" ||
+      mimePreset.customAbsent !== true ||
+      mimePreset.errorAbsent !== true ||
+      mimePreset.summaryMime !== "application/pdf" ||
+      mimePreset.technicalOpen !== false ||
+      !mimePreset.requestText.includes(
+        "Content-Type: multipart/form-data; boundary=<browser-generated>"
+      ) ||
+      !mimePreset.requestText.includes(
+        'Content-Disposition: form-data; name="file"; filename="mime-check.txt"'
+      ) ||
+      !mimePreset.requestText.includes(
+        "Content-Type: application/pdf"
+      )
+    ) {
+      throw new Error(`Upload MIME preset failed: ${JSON.stringify(mimePreset)}`);
+    }
+    await page.locator("#uploadTechnicalDetails > summary").click();
+    await page.locator("#uploadMimeMode").selectOption("text-plain");
+    const openPreview = await page.evaluate(() => ({
+      technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+      requestText: document.getElementById("uploadRequestArea")?.textContent || "",
+    }));
+    if (
+      openPreview.technicalOpen !== true ||
+      !openPreview.requestText.includes("Content-Type: text/plain")
+    ) {
+      throw new Error(
+        `Upload technical disclosure ignored open user state: ${JSON.stringify(openPreview)}`
+      );
+    }
+    const multipartPreviewTokens = [
+      "POST /upload HTTP/1.1",
+      "Content-Type: multipart/form-data; boundary=<browser-generated>",
+      "--<browser-generated>",
+      'Content-Disposition: form-data; name="file"; filename="mime-check.txt"',
+      "Content-Type: text/plain",
+    ];
+    await page.locator('[data-exchange-copy-area="uploadRequestArea"]').click();
+    await assertClipboardSnapshot("live multipart upload preview", multipartPreviewTokens);
+    await assertExchangeDownload(
+      "uploadRequestArea",
+      multipartPreviewTokens,
+      /^xferry-upload-request-.*\.http$/
+    );
+    await page.locator("#uploadTechnicalDetails > summary").click();
+    await page.locator("#uploadMimeMode").selectOption("octet-stream");
+    const closedPreview = await page.evaluate(() => ({
+      technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
+      requestText: document.getElementById("uploadRequestArea")?.textContent || "",
+    }));
+    if (
+      closedPreview.technicalOpen !== false ||
+      !closedPreview.requestText.includes("Content-Type: application/octet-stream")
+    ) {
+      throw new Error(
+        `Upload technical disclosure ignored closed user state: ${JSON.stringify(closedPreview)}`
+      );
+    }
+    await page.locator("#uploadMimeMode").selectOption("auto");
+    await page.locator('#fileList [data-remove-index="0"]').click();
+
+    await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "set-profile", "raw-generated");
+      app.invoke("upload", "handle-files", [
+        new File([new Uint8Array(1043).fill(65)], "large-preview.bin", {
+          type: "application/octet-stream",
+        }),
+      ]);
+    });
+    await waitForPageCondition(
+      "large Basic upload preview sample loads",
+      () => {
+        const request = window.XferryApp.service("inspector").getInspectorState("upload")?.request;
+        return request?.path === "/upload" && Object.keys(request.body?.bytes || {}).length === 513;
+      }
+    );
+    const largePreview = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const request = app.service("inspector").getInspectorState("upload")?.request;
+      return {
+        bodySize: request?.body?.size,
+        previewBytes: Object.keys(request?.body?.bytes || {}).length,
+        rawText: app.service("inspector").getAreaRawText("uploadRequestArea"),
+      };
+    });
+    if (
+      largePreview.bodySize !== 1043 ||
+      largePreview.previewBytes !== 513 ||
+      !largePreview.rawText.includes("Content-Length: 1043") ||
+      !largePreview.rawText.includes("truncated, remaining chars/bytes (531)")
+    ) {
+      throw new Error(`Large Basic preview size mismatch: ${JSON.stringify(largePreview)}`);
+    }
+    await page.locator('#fileList [data-remove-index="0"]').click();
+    await page.evaluate(() => window.XferryApp.invoke("upload", "set-profile", "multipart"));
 
     await page.locator('[data-upload-profile="multipart"]').focus();
     await page.keyboard.press("End");
     await waitForPageCondition(
-      "profile End key selects raw-header",
+      "profile End key selects raw-generated",
       () => (
-        document.activeElement?.getAttribute("data-upload-profile") === "raw-header" &&
+        document.activeElement?.getAttribute("data-upload-profile") === "raw-generated" &&
         document.activeElement?.getAttribute("aria-checked") === "true"
       )
     );
@@ -10122,17 +10514,51 @@ async (page) => {
       )
     );
 
+    await page.locator('[data-upload-target-path="/upload"]').focus();
+    await page.keyboard.press("End");
+    await waitForPageCondition(
+      "target path End key selects /file",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/file" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/file"
+      )
+    );
+    await page.keyboard.press("Home");
+    await waitForPageCondition(
+      "target path Home key selects root",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/"
+      )
+    );
+    await page.keyboard.press("ArrowRight");
+    await waitForPageCondition(
+      "target path ArrowRight returns to /upload",
+      () => (
+        document.activeElement?.getAttribute("data-upload-target-path") === "/upload" &&
+        document.activeElement?.getAttribute("aria-checked") === "true" &&
+        window.XferryApp.getState("upload").targetPath === "/upload"
+      )
+    );
+
     const compiler = await page.evaluate(() => {
       const app = window.XferryApp;
       const bytes = new TextEncoder().encode("abc");
       const file = new File([bytes], "кириллица #1.bin", {
         type: "application/x-profile-test",
       });
-      const serialize = (profile) => {
+      const serialize = (
+        profile,
+        mimeMode = "auto",
+        customMime = "",
+        targetPath = "/upload"
+      ) => {
         const plan = app.invoke(
           "upload",
           "compile-request",
-          { method: "PATCH", profile },
+          { method: "PATCH", targetPath, profile, mimeMode, customMime },
           file,
           bytes.buffer
         );
@@ -10154,11 +10580,16 @@ async (page) => {
           requestLine: `${plan.requestExchange.method} ${plan.requestExchange.path}`,
         };
       };
-      return ["multipart", "raw-url", "raw-header"].map(serialize);
+      return [
+        serialize("multipart"),
+        serialize("raw-url", "text-plain"),
+        serialize("raw-header", "pdf"),
+        serialize("raw-generated"),
+      ];
     });
-    const [multipart, rawUrl, rawHeader] = compiler;
+    const [multipart, rawUrl, rawHeader, rawGenerated] = compiler;
     if (
-      multipart.pathname !== "/uploads" ||
+      multipart.pathname !== "/upload" ||
       multipart.bodyType !== "FormData" ||
       multipart.formFile?.name !== "кириллица #1.bin" ||
       multipart.formFile?.type !== "application/x-profile-test" ||
@@ -10171,16 +10602,16 @@ async (page) => {
       throw new Error(`Multipart compiler wire mismatch: ${JSON.stringify(multipart)}`);
     }
     if (
-      rawUrl.pathname !== "/uploads/%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
-      rawUrl.wireHeaders["Content-Type"] !== "application/x-profile-test" ||
+      rawUrl.pathname !== "/upload/%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
+      rawUrl.wireHeaders["Content-Type"] !== "text/plain" ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "x-file-name") ||
       Object.keys(rawUrl.wireHeaders).some((name) => name.toLowerCase() === "content-length")
     ) {
       throw new Error(`Raw URL compiler wire mismatch: ${JSON.stringify(rawUrl)}`);
     }
     if (
-      rawHeader.pathname !== "/uploads" ||
-      rawHeader.wireHeaders["Content-Type"] !== "application/octet-stream" ||
+      rawHeader.pathname !== "/upload" ||
+      rawHeader.wireHeaders["Content-Type"] !== "application/pdf" ||
       rawHeader.wireHeaders["X-File-Name"] !==
         "%D0%BA%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0%20%231.bin" ||
       Object.keys(rawHeader.wireHeaders)
@@ -10188,6 +10619,17 @@ async (page) => {
       rawHeader.wireHeaders["X-File-Name"].includes("%25")
     ) {
       throw new Error(`Raw Header compiler wire mismatch: ${JSON.stringify(rawHeader)}`);
+    }
+    if (
+      rawGenerated.pathname !== "/upload" ||
+      rawGenerated.wireHeaders["Content-Type"] !== "application/octet-stream" ||
+      rawGenerated.filenameSource !== "generated" ||
+      rawGenerated.requestLine !== "PATCH /upload" ||
+      Object.keys(rawGenerated.wireHeaders).some((name) => (
+        name.toLowerCase() === "x-file-name"
+      ))
+    ) {
+      throw new Error(`No filename compiler wire mismatch: ${JSON.stringify(rawGenerated)}`);
     }
     const multipartFallbackMime = await page.evaluate(() => {
       const file = new File([new Uint8Array([1])], "untyped.bin");
@@ -10211,11 +10653,61 @@ async (page) => {
         `Multipart MIME fallback mismatch: ${JSON.stringify(multipartFallbackMime)}`
       );
     }
+    const normalizedMultipartMime = await page.evaluate(async () => {
+      const bytes = new TextEncoder().encode("normalized multipart MIME");
+      const file = new File([bytes], "normalized-mime.txt", { type: "text/plain" });
+      const plan = window.XferryApp.invoke(
+        "upload",
+        "compile-request",
+        {
+          method: "POST",
+          profile: "multipart",
+          mimeMode: "custom",
+          customMime: "Text/Plain; Boundary=ABCD",
+        },
+        file,
+        bytes.buffer
+      );
+      const part = plan.body.get("file");
+      const request = new Request("https://xferry.test/upload", {
+        method: "POST",
+        body: plan.body,
+      });
+      return {
+        planMime: plan.mime,
+        partMime: part instanceof File ? part.type : "",
+        exchangeMime: plan.requestExchange.body.contentType,
+        previewPrefix: plan.requestExchange.body.rawPrefix,
+        outerContentType: request.headers.get("content-type") || "",
+        wireBody: await request.text(),
+      };
+    });
+    if (
+      normalizedMultipartMime.planMime !== "text/plain; boundary=abcd" ||
+      normalizedMultipartMime.partMime !== "text/plain; boundary=abcd" ||
+      normalizedMultipartMime.exchangeMime !== "text/plain; boundary=abcd" ||
+      !normalizedMultipartMime.previewPrefix.includes(
+        "Content-Type: text/plain; boundary=abcd"
+      ) ||
+      !normalizedMultipartMime.outerContentType.startsWith(
+        "multipart/form-data; boundary="
+      ) ||
+      normalizedMultipartMime.outerContentType.includes("text/plain") ||
+      !normalizedMultipartMime.wireBody.includes(
+        "Content-Type: text/plain; boundary=abcd"
+      )
+    ) {
+      throw new Error(
+        `Multipart MIME normalization mismatch: ${JSON.stringify(normalizedMultipartMime)}`
+      );
+    }
 
     const queuedSend = await page.evaluate(async () => {
       const app = window.XferryApp;
       const http = app.service("http");
       const calls = [];
+      const multiFileCompareStates = [];
+      const batchStatusSnapshots = [];
       let active = 0;
       let maxActive = 0;
       const response = (payload) => ({
@@ -10235,7 +10727,7 @@ async (page) => {
           ? "multipart"
           : (Object.keys(headers).some((name) => name.toLowerCase() === "x-file-name")
             ? "raw-header"
-            : "raw-url");
+            : (pathname === "/api" ? "raw-generated" : "raw-url"));
         const formFile = body instanceof FormData ? body.get("file") : null;
         calls.push({
           method,
@@ -10244,14 +10736,20 @@ async (page) => {
           headers: { ...headers },
           bodyType: body?.constructor?.name || "",
           formName: formFile instanceof File ? formFile.name : "",
+          targetButtonsDisabled: Array.from(
+            document.querySelectorAll("[data-upload-target-path]")
+          ).every((button) => button.disabled),
         });
         await Promise.resolve();
         active -= 1;
-        const name = formFile instanceof File
+        const name = profile === "raw-generated"
+          ? "upload_generated.txt"
+          : (formFile instanceof File
           ? formFile.name
           : decodeURIComponent(
             headers["X-File-Name"] || pathname.split("/").pop() || "queued.bin"
-          );
+          ));
+        const serverProfile = profile === "raw-generated" ? "raw_url" : profile.replace("-", "_");
         return response({
           file: {
             name,
@@ -10264,9 +10762,11 @@ async (page) => {
           },
           upload: {
             kind: "basic",
-            profile,
+            profile: serverProfile,
             carrier: profile === "multipart" ? "multipart" : "body",
-            filename_source: profile === "multipart" ? "part" : (profile === "raw-header" ? "header" : "url"),
+            filename_source: profile === "multipart"
+              ? "part"
+              : (profile === "raw-header" ? "header" : (profile === "raw-generated" ? "generated" : "url")),
             normalized_name: name,
             collision_renamed: false,
             request_body_size: 1,
@@ -10275,10 +10775,12 @@ async (page) => {
         });
       });
 
+      app.invoke("upload", "set-target-path", "/api");
       const scenarios = [
         ["multipart", "POST"],
         ["raw-url", "PUT"],
         ["raw-header", "NONE"],
+        ["raw-generated", "PATCH"],
       ];
       for (const [profile, method] of scenarios) {
         app.invoke("upload", "set-profile", profile);
@@ -10289,40 +10791,200 @@ async (page) => {
           { type: "text/plain" }
         ));
         app.invoke("upload", "handle-files", files);
+        multiFileCompareStates.push({
+          profile,
+          compareProfilesDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+          compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+        });
         await app.invoke("upload", "send");
+        batchStatusSnapshots.push({
+          message: document.getElementById("uploadStatusMessage")?.textContent || "",
+          metaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+          http: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+          path: document.getElementById("uploadStatusPathValue")?.textContent || "",
+          size: document.getElementById("uploadStatusSizeValue")?.textContent || "",
+        });
       }
       http["reset-adapter"]();
       return {
         calls,
+        multiFileCompareStates,
+        batchStatusSnapshots,
         maxActive,
         state: app.getState("upload"),
+        targetButtonsEnabled: Array.from(
+          document.querySelectorAll("[data-upload-target-path]")
+        ).every((button) => !button.disabled),
       };
     });
     if (
-      queuedSend.calls.length !== 6 ||
+      queuedSend.calls.length !== 8 ||
       queuedSend.maxActive !== 1 ||
+      queuedSend.multiFileCompareStates.length !== 4 ||
+      queuedSend.multiFileCompareStates.some((state) => (
+        state.compareProfilesDisabled !== true || state.compareMethodsDisabled !== true
+      )) ||
+      queuedSend.batchStatusSnapshots.length !== 4 ||
+      queuedSend.batchStatusSnapshots.some((snapshot) => (
+        snapshot.metaHidden !== true ||
+        !snapshot.message.includes("2 success") ||
+        snapshot.http ||
+        snapshot.path ||
+        snapshot.size
+      )) ||
       queuedSend.calls.map((call) => call.profile).join(",") !==
-        "multipart,multipart,raw-url,raw-url,raw-header,raw-header" ||
+        "multipart,multipart,raw-url,raw-url,raw-header,raw-header,raw-generated,raw-generated" ||
       queuedSend.calls.map((call) => call.method).join(",") !==
-        "POST,POST,PUT,PUT,NONE,NONE" ||
+        "POST,POST,PUT,PUT,NONE,NONE,PATCH,PATCH" ||
+      queuedSend.calls.some((call) => call.targetButtonsDisabled !== true) ||
       queuedSend.calls.slice(0, 2).some((call) => (
-        call.pathname !== "/uploads" ||
+        call.pathname !== "/api" ||
         call.bodyType !== "FormData" ||
         Object.keys(call.headers).some((name) => name.toLowerCase() === "content-type")
       )) ||
       queuedSend.calls.slice(2, 4).some((call) => (
-        !call.pathname.startsWith("/uploads/raw-url-") ||
+        !call.pathname.startsWith("/api/raw-url-") ||
         Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
       )) ||
       queuedSend.calls.slice(4).some((call) => (
-        call.pathname !== "/uploads" ||
-        call.headers["Content-Type"] !== "application/octet-stream" ||
-        Object.keys(call.headers)
-          .filter((name) => name.toLowerCase() === "x-file-name").length !== 1
+        call.profile === "raw-header" && (
+          call.pathname !== "/api" ||
+          call.headers["Content-Type"] !== "application/octet-stream" ||
+          Object.keys(call.headers)
+            .filter((name) => name.toLowerCase() === "x-file-name").length !== 1
+        )
       )) ||
-      queuedSend.state.pendingCount !== 0
+      queuedSend.calls.slice(6).some((call) => (
+        call.pathname !== "/api" ||
+        call.headers["Content-Type"] !== "application/octet-stream" ||
+        Object.keys(call.headers).some((name) => name.toLowerCase() === "x-file-name")
+      )) ||
+      queuedSend.state.pendingCount !== 0 ||
+      queuedSend.state.targetPath !== "/api" ||
+      queuedSend.targetButtonsEnabled !== true
     ) {
       throw new Error(`Queued send/compiler reuse failed: ${JSON.stringify(queuedSend)}`);
+    }
+
+    const retryMimeSetup = await page.evaluate(async () => {
+      const app = window.XferryApp;
+      const http = app.service("http");
+      const mode = document.getElementById("uploadMimeMode");
+      app.invoke("upload", "set-method", "POST");
+      app.invoke("upload", "set-target-path", "/file");
+      app.invoke("upload", "set-profile", "raw-header");
+      mode.value = "pdf";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+
+      window.__xferryRetryMimeCalls = [];
+      window.__xferryRetryMimeOriginalAdapter = http["set-adapter"](
+        async (method, url, body, headers = {}) => {
+          window.__xferryRetryMimeCalls.push({
+            method,
+            pathname: new URL(url, location.href).pathname,
+            contentType: headers["Content-Type"] || "",
+          });
+          if (window.__xferryRetryMimeCalls.length === 1) {
+            return new Response(JSON.stringify({ error: {
+              code: "retry_probe",
+              message: "retry MIME probe",
+            } }), {
+              status: 415,
+              statusText: "Unsupported Media Type",
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify({
+            file: {
+              name: "retry-mime.bin",
+              path: "/uploads/retry-mime.bin",
+              size_bytes: 1,
+              size_human: "1 B",
+              content_type: headers["Content-Type"] || "",
+              uploaded_at: "2026-08-14T00:00:00+00:00",
+              sha256: "b".repeat(64),
+            },
+            upload: {
+              kind: "basic",
+              profile: "raw_header",
+              carrier: "body",
+              filename_source: "header",
+              normalized_name: "retry-mime.bin",
+              collision_renamed: false,
+              request_body_size: 1,
+              payload_size: 1,
+            },
+          }), {
+            status: 201,
+            statusText: "Created",
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      );
+      app.invoke("upload", "handle-files", [
+        new File([new Uint8Array([7])], "retry-mime.bin", {
+          type: "application/octet-stream",
+        }),
+      ]);
+      await app.invoke("upload", "send");
+      app.invoke("upload", "set-target-path", "/api");
+      return {
+        actionPhase: app.getState("upload").actionPhase,
+        currentTargetPath: app.getState("upload").targetPath,
+        retryPresent: Boolean(document.querySelector("[data-upload-retry-index]")),
+        calls: [...window.__xferryRetryMimeCalls],
+      };
+    });
+    if (
+      retryMimeSetup.actionPhase !== "idle" ||
+      retryMimeSetup.retryPresent !== true ||
+      retryMimeSetup.currentTargetPath !== "/api" ||
+      retryMimeSetup.calls.length !== 1 ||
+      retryMimeSetup.calls[0].contentType !== "application/pdf" ||
+      retryMimeSetup.calls[0].pathname !== "/file"
+    ) {
+      throw new Error(`Basic retry MIME setup failed: ${JSON.stringify(retryMimeSetup)}`);
+    }
+    await page.locator("[data-upload-retry-index]").click();
+    await waitForPageCondition(
+      "Basic retry preserves declared MIME",
+      () => (
+        window.__xferryRetryMimeCalls?.length === 2 &&
+        window.XferryApp.getState("upload").actionPhase === "idle"
+      )
+    );
+    const retryMime = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const calls = [...window.__xferryRetryMimeCalls];
+      const currentTargetPath = app.getState("upload").targetPath;
+      app.service("http")["set-adapter"](window.__xferryRetryMimeOriginalAdapter);
+      delete window.__xferryRetryMimeOriginalAdapter;
+      delete window.__xferryRetryMimeCalls;
+      document.getElementById("uploadMimeMode").value = "auto";
+      document.getElementById("uploadMimeMode").dispatchEvent(
+        new Event("change", { bubbles: true })
+      );
+      app.invoke("upload", "set-profile", "multipart");
+      app.invoke("upload", "set-target-path", "/upload");
+      return {
+        calls,
+        currentTargetPath,
+        pendingCount: app.getState("upload").pendingCount,
+        fileCount: app.getState("upload").fileCount,
+      };
+    });
+    if (
+      retryMime.calls.length !== 2 ||
+      retryMime.calls.some(call => (
+        call.method !== "POST" ||
+        call.pathname !== "/file" ||
+        call.contentType !== "application/pdf"
+      )) ||
+      retryMime.currentTargetPath !== "/api" ||
+      retryMime.pendingCount !== 0 ||
+      retryMime.fileCount !== 0
+    ) {
+      throw new Error(`Basic retry changed declared MIME: ${JSON.stringify(retryMime)}`);
     }
 
     const coexistenceSetup = await page.evaluate(async () => {
@@ -10330,6 +10992,7 @@ async (page) => {
       const session = app.service("advanced-session");
       await session.ensureActive();
       app.invoke("upload", "set-method", "POST");
+      app.invoke("upload", "set-target-path", "/api");
       app.invoke("upload", "set-profile", "multipart");
       app.invoke("upload", "handle-files", [
         new File([new TextEncoder().encode("basic")], "basic-coexists.txt", {
@@ -10338,14 +11001,18 @@ async (page) => {
       ]);
       return {
         sessionActive: session.getSnapshot().active,
+        targetPath: app.getState("upload").targetPath,
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
       };
     });
     if (
       coexistenceSetup.sessionActive !== true ||
+      coexistenceSetup.targetPath !== "/api" ||
       coexistenceSetup.sendDisabled !== false ||
-      coexistenceSetup.compareDisabled !== false
+      coexistenceSetup.compareDisabled !== false ||
+      coexistenceSetup.compareMethodsDisabled !== false
     ) {
       throw new Error(
         `Basic/Advanced session coexistence setup failed: ${JSON.stringify(coexistenceSetup)}`
@@ -10354,7 +11021,7 @@ async (page) => {
 
     const basicSendResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST" &&
-      requestPathname(response.request()) === "/uploads"
+      requestPathname(response.request()) === "/api"
     ), { timeout: 15000 });
     await page.locator("#uploadBtn").click();
     const basicSendResponse = await basicSendResponsePromise;
@@ -10380,6 +11047,43 @@ async (page) => {
         window.XferryApp.service("advanced-session").getSnapshot().active
       )),
     };
+    const readUploadStatusSnapshot = () => page.evaluate(() => {
+      const meta = document.getElementById("uploadStatusMeta");
+      const readField = (name) => {
+        const field = meta?.querySelector(`[data-upload-status-meta="${name}"]`);
+        return {
+          label: field?.querySelector("dt")?.textContent?.trim() || "",
+          value: field?.querySelector("dd")?.textContent?.trim() || "",
+        };
+      };
+      return {
+        message: document.getElementById("uploadStatusMessage")?.textContent?.trim() || "",
+        metaHidden: meta?.hidden,
+        http: readField("http"),
+        path: readField("path"),
+        size: readField("size"),
+      };
+    });
+    const singleStatusEn = await readUploadStatusSnapshot();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const singleStatusMobile = await page.evaluate(() => {
+      const status = document.getElementById("uploadStatus");
+      const meta = document.getElementById("uploadStatusMeta");
+      const statusRect = status?.getBoundingClientRect();
+      const metaRect = meta?.getBoundingClientRect();
+      return {
+        statusVisible: Boolean(status && !status.hidden && status.getClientRects().length > 0),
+        statusRight: statusRect?.right || 0,
+        metaRight: metaRect?.right || 0,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: innerWidth,
+      };
+    });
+    await page.setViewportSize({ width: 1440, height: 1024 });
+    await switchLanguage("ru");
+    const singleStatusRu = await readUploadStatusSnapshot();
+    const targetPathLabelRu = await page.locator("#uploadTargetPathTitle").textContent();
+    await switchLanguage("en");
 
     const compareSetup = await page.evaluate(() => {
       const app = window.XferryApp;
@@ -10394,8 +11098,11 @@ async (page) => {
       ]);
       return {
         pendingCount: app.getState("upload").pendingCount,
+        targetPath: app.getState("upload").targetPath,
         sessionActive: app.service("advanced-session").getSnapshot().active,
         compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
       };
     });
     const compareResponses = [];
@@ -10403,7 +11110,10 @@ async (page) => {
       const request = response.request();
       if (
         request.method() === "POST" &&
-        requestPathname(request).startsWith("/uploads")
+        (
+          requestPathname(request).startsWith("/api/") ||
+          requestPathname(request) === "/api"
+        )
       ) {
         compareResponses.push({
           status: response.status(),
@@ -10413,8 +11123,17 @@ async (page) => {
       }
     };
     page.on("response", captureCompareResponse);
+    await page.evaluate(() => {
+      document.getElementById("uploadComparisonActions").hidden = false;
+    });
     await page.locator("#uploadCompareBtn").click();
     await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
+    const profileConfirmation = await page.evaluate(() => ({
+      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
+      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
+      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
+        ?.textContent?.trim() || "",
+    }));
     await page.locator('#appDialog [data-dialog-action="confirm"]').click();
     await waitForPageCondition(
       "real Basic comparison settles while Advanced session stays active",
@@ -10422,7 +11141,7 @@ async (page) => {
         const app = window.XferryApp;
         const state = app.getState("upload");
         return state.actionPhase === "idle" &&
-          state.compareResults.length === 3 &&
+          state.compareResults.length === 4 &&
           state.compareResults.every((result) => result.verdict !== "not-run") &&
           app.service("advanced-session").getSnapshot().active === true;
       },
@@ -10438,9 +11157,15 @@ async (page) => {
       return {
         sessionActive: snapshot.active,
         sessionPhase: snapshot.phase,
+        axis: app.getState("upload").compareAxis,
         profiles: results.map((result) => result.profile),
         verdicts: results.map((result) => result.verdict),
         domProfiles: rows.map((row) => row.dataset.uploadCompareResult),
+        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
+        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
+        requestTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-request]")?.textContent || ""
+        )),
         requestTracesPresent: rows.every((row) => Boolean(
           row.querySelector("[data-upload-compare-request]")?.textContent
         )),
@@ -10449,12 +11174,96 @@ async (page) => {
         )),
       };
     });
+
+    const methodCompareSetup = await page.evaluate(() => {
+      const app = window.XferryApp;
+      app.invoke("upload", "set-profile", "raw-header");
+      const mode = document.getElementById("uploadMimeMode");
+      if (!mode) throw new Error("Upload MIME controls are missing");
+      mode.value = "pdf";
+      mode.dispatchEvent(new Event("change", { bubbles: true }));
+      return {
+        profile: app.getState("upload").profile,
+        summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
+        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
+      };
+    });
+    const methodCompareResponses = [];
+    const expectedMethods = ["POST", "NONE", "PUT", "PATCH"];
+    const captureMethodCompareResponse = (response) => {
+      const request = response.request();
+      if (
+        expectedMethods.includes(request.method()) &&
+        requestPathname(request) === "/api"
+      ) {
+        methodCompareResponses.push({
+          method: request.method(),
+          status: response.status(),
+          path: requestPathname(request),
+          sessionHeaderAbsent: !request.headers()["x-xferry-advanced-session"],
+        });
+      }
+    };
+    page.on("response", captureMethodCompareResponse);
+    await page.locator("#uploadCompareMethodsBtn").click();
+    await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
+    const methodConfirmation = await page.evaluate(() => ({
+      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
+      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
+      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
+        ?.textContent?.trim() || "",
+    }));
+    await page.locator('#appDialog [data-dialog-action="confirm"]').click();
+    await waitForPageCondition(
+      "real Basic method comparison settles while Advanced session stays active",
+      () => {
+        const app = window.XferryApp;
+        const state = app.getState("upload");
+        return state.actionPhase === "idle" &&
+          state.compareAxis === "method" &&
+          state.compareResults.length === 4 &&
+          state.compareResults.every((result) => result.verdict !== "not-run") &&
+          app.service("advanced-session").getSnapshot().active === true;
+      },
+      null,
+      15000
+    );
+    page.off("response", captureMethodCompareResponse);
+    const actualMethodCompare = await page.evaluate(() => {
+      const app = window.XferryApp;
+      const results = app.getState("upload").compareResults;
+      const rows = Array.from(document.querySelectorAll("[data-upload-compare-result]"));
+      return {
+        axis: app.getState("upload").compareAxis,
+        methods: results.map((result) => result.method),
+        profiles: results.map((result) => result.profile),
+        verdicts: results.map((result) => result.verdict),
+        domValues: rows.map((row) => row.dataset.uploadCompareResult),
+        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
+        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
+        requestTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-request]")?.textContent || ""
+        )),
+        responseTraces: rows.map((row) => (
+          row.querySelector("[data-upload-compare-response]")?.textContent || ""
+        )),
+      };
+    });
     const basicAdvancedCoexistence = {
       ...coexistenceSetup,
       actualBasicSend,
+      singleStatusEn,
+      singleStatusRu,
+      targetPathLabelRu,
+      singleStatusMobile,
       compareSetup,
+      profileConfirmation,
       actualBasicCompare,
       compareResponses,
+      methodCompareSetup,
+      methodConfirmation,
+      actualMethodCompare,
+      methodCompareResponses,
     };
     if (
       actualBasicSend.status !== 201 ||
@@ -10462,21 +11271,83 @@ async (page) => {
       actualBasicSend.profile !== "multipart" ||
       actualBasicSend.sessionHeaderAbsent !== true ||
       actualBasicSend.sessionActive !== true ||
+      singleStatusEn.metaHidden !== false ||
+      singleStatusEn.http.label !== "HTTP status" ||
+      singleStatusEn.http.value !== "201 Created" ||
+      singleStatusEn.path.label !== "Server path" ||
+      singleStatusEn.path.value !== "/uploads/basic-coexists.txt" ||
+      singleStatusEn.size.label !== "Size" ||
+      singleStatusEn.size.value !== "5 B" ||
+      singleStatusRu.metaHidden !== false ||
+      singleStatusRu.http.label !== "HTTP-статус" ||
+      singleStatusRu.http.value !== "201 Created" ||
+      singleStatusRu.path.label !== "Путь на сервере" ||
+      singleStatusRu.path.value !== "/uploads/basic-coexists.txt" ||
+      singleStatusRu.size.label !== "Размер" ||
+      singleStatusRu.size.value !== "5 B" ||
+      targetPathLabelRu?.trim() !== "Путь запроса" ||
+      singleStatusMobile.statusVisible !== true ||
+      singleStatusMobile.documentWidth > singleStatusMobile.viewportWidth + 1 ||
+      singleStatusMobile.statusRight > singleStatusMobile.viewportWidth + 1 ||
+      singleStatusMobile.metaRight > singleStatusMobile.viewportWidth + 1 ||
       compareSetup.pendingCount !== 1 ||
+      compareSetup.targetPath !== "/api" ||
       compareSetup.sessionActive !== true ||
       compareSetup.compareDisabled !== false ||
-      compareResponses.length !== 3 ||
+      compareSetup.compareMethodsDisabled !== false ||
+      compareSetup.comparisonsHidden !== true ||
+      profileConfirmation.action !== "Create 4 files" ||
+      !profileConfirmation.message.includes("Multipart") ||
+      !profileConfirmation.message.includes("No filename") ||
+      compareResponses.length !== 4 ||
       compareResponses.some((response) => (
         response.status !== 201 || response.sessionHeaderAbsent !== true
       )) ||
       actualBasicCompare.sessionActive !== true ||
       actualBasicCompare.sessionPhase !== "active" ||
-      actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header" ||
-      actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header" ||
-      actualBasicCompare.verdicts.join(",") !==
-        "delivered,metadata-changed,metadata-changed" ||
+      actualBasicCompare.axis !== "profile" ||
+      actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
+      actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
+      actualBasicCompare.domAxes.some((axis) => axis !== "profile") ||
+      actualBasicCompare.title !== "Profile comparison" ||
+      actualBasicCompare.verdicts.some((verdict) => verdict !== "delivered") ||
       actualBasicCompare.requestTracesPresent !== true ||
-      actualBasicCompare.responseTracesPresent !== true
+      actualBasicCompare.responseTracesPresent !== true ||
+      actualBasicCompare.requestTraces.some((trace, index) => {
+        const expectedPaths = [
+          "/api",
+          "/api/basic-compare-coexists.txt",
+          "/api",
+          "/api",
+        ];
+        return !trace.includes(`POST ${expectedPaths[index]} HTTP/1.1`);
+      }) ||
+      methodCompareSetup.profile !== "raw-header" ||
+      methodCompareSetup.summaryMime !== "application/pdf" ||
+      methodCompareSetup.compareMethodsDisabled !== false ||
+      methodConfirmation.action !== "Create 4 files" ||
+      !expectedMethods.every((method) => methodConfirmation.message.includes(method)) ||
+      methodCompareResponses.length !== 4 ||
+      methodCompareResponses.map((response) => response.method).join(",") !==
+        expectedMethods.join(",") ||
+      methodCompareResponses.some((response) => (
+        response.status !== 201 ||
+        response.path !== "/api" ||
+        response.sessionHeaderAbsent !== true
+      )) ||
+      actualMethodCompare.axis !== "method" ||
+      actualMethodCompare.methods.join(",") !== expectedMethods.join(",") ||
+      actualMethodCompare.profiles.some((profile) => profile !== "raw-header") ||
+      actualMethodCompare.verdicts.some((verdict) => verdict !== "delivered") ||
+      actualMethodCompare.domValues.join(",") !== expectedMethods.join(",") ||
+      actualMethodCompare.domAxes.some((axis) => axis !== "method") ||
+      actualMethodCompare.title !== "Method comparison" ||
+      actualMethodCompare.requestTraces.some((trace, index) => (
+        !trace.includes(`${expectedMethods[index]} /api HTTP/1.1`) ||
+        !trace.includes("Content-Type: application/pdf") ||
+        !trace.includes("X-File-Name: basic-compare-coexists.txt")
+      )) ||
+      actualMethodCompare.responseTraces.some((trace) => !trace.includes("HTTP/1.1 201"))
     ) {
       throw new Error(
         `Real Basic/Advanced session coexistence failed: ${JSON.stringify(basicAdvancedCoexistence)}`
@@ -10486,6 +11357,8 @@ async (page) => {
       const app = window.XferryApp;
       await app.service("advanced-session").revoke();
       app.invoke("upload", "handle-files", []);
+      document.getElementById("uploadComparisonActions").hidden = true;
+      document.getElementById("uploadCompareResults").hidden = true;
     });
 
     await page.screenshot({
@@ -10499,11 +11372,13 @@ async (page) => {
     });
     const mobile = await page.evaluate(() => {
       const group = document.getElementById("uploadProfileGroup");
+      const targetPathGroup = document.getElementById("uploadTargetPathGroup");
       const results = document.getElementById("uploadCompareResults");
       return {
         viewportWidth: innerWidth,
         documentWidth: document.documentElement.scrollWidth,
         groupWidth: group?.getBoundingClientRect().width || 0,
+        targetPathGroupWidth: targetPathGroup?.getBoundingClientRect().width || 0,
         resultsWidth: results?.getBoundingClientRect().width || 0,
       };
     });
@@ -10511,6 +11386,7 @@ async (page) => {
     if (
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.groupWidth > mobile.viewportWidth ||
+      mobile.targetPathGroupWidth > mobile.viewportWidth ||
       mobile.resultsWidth > mobile.viewportWidth
     ) {
       throw new Error(`Basic upload mobile layout overflowed: ${JSON.stringify(mobile)}`);
@@ -10520,8 +11396,12 @@ async (page) => {
       compiler,
       responsiveUpload,
       multipartFallbackMime,
-      primaryActionGeometry,
+      normalizedMultipartMime,
+      largePreview,
+      mimePreset,
+      pickerActionGeometry,
       queuedSend,
+      retryMime,
       basicAdvancedCoexistence,
       mobile,
       screenshots: [
@@ -10703,9 +11583,13 @@ async (page) => {
       const basicSuccess = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
-        serverPath: document.querySelector(
-          '[data-upload-result-field="server-path"] .tool-result__meta-value'
-        )?.textContent || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
+        statusMetaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+        statusHttp: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+        statusPath: document.getElementById("uploadStatusPathValue")?.textContent || "",
+        statusSize: document.getElementById("uploadStatusSizeValue")?.textContent || "",
       };
 
       state.phase = "basic-error";
@@ -10714,6 +11598,13 @@ async (page) => {
       const basicError = {
         phase: app.service("inspector").getInspectorState("upload")?.response?.phase || "",
         summary: app.service("inspector").getInspectorState("upload")?.response?.summaryText || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
+        statusMetaHidden: document.getElementById("uploadStatusMeta")?.hidden,
+        statusHttp: document.getElementById("uploadStatusHttpValue")?.textContent || "",
+        statusPath: document.getElementById("uploadStatusPathValue")?.textContent || "",
+        statusSize: document.getElementById("uploadStatusSizeValue")?.textContent || "",
         card: document.querySelector("#uploadHttpErrorHost .http-error-card")?.textContent || "",
       };
       app.service("http-errors").close("uploadHttpErrorHost", { restore: false });
@@ -10759,8 +11650,22 @@ async (page) => {
       if (
         setup.basicSuccess.phase !== "complete" ||
         !setup.basicSuccess.summary.includes("/uploads/basic-final-server.txt") ||
-        setup.basicSuccess.serverPath !== "/uploads/basic-final-server.txt" ||
+        setup.basicSuccess.statusTone !== "success" ||
+        !setup.basicSuccess.statusVisible ||
+        !/Upload complete|Загрузка завершена/.test(setup.basicSuccess.statusText) ||
+        setup.basicSuccess.statusMetaHidden !== false ||
+        setup.basicSuccess.statusHttp !== "201 Created" ||
+        setup.basicSuccess.statusPath !== "/uploads/basic-final-server.txt" ||
+        setup.basicSuccess.statusSize !== "8 B" ||
         setup.basicError.phase !== "error" ||
+        setup.basicError.statusTone !== "error" ||
+        !setup.basicError.statusVisible ||
+        !/Upload complete|Загрузка завершена/.test(setup.basicError.statusText) ||
+        !/1 error|1 ошиб/.test(setup.basicError.statusText) ||
+        setup.basicError.statusMetaHidden !== true ||
+        setup.basicError.statusHttp ||
+        setup.basicError.statusPath ||
+        setup.basicError.statusSize ||
         !setup.basicError.card.includes("Basic nested contract error") ||
         setup.advancedSuccess.phase !== "complete" ||
         !setup.advancedSuccess.summary.includes("/uploads/advanced-final-server.txt") ||
@@ -11002,6 +11907,8 @@ async (page) => {
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
     await waitForSpaReady();
     await waitForAdvancedUploadReady();
+    const defaultPreferences = await assertDefaultPreferencesContract();
+    await waitForAdvancedUploadReady();
     await assertUnsupportedStoredLanguageFallsBack();
     await waitForAdvancedUploadReady();
     const headerStateControls = await assertHeaderStateControls();
@@ -11034,6 +11941,7 @@ async (page) => {
       locales: ["ru", "en"],
       liveRegions: true,
       dialogs: true,
+      defaultPreferences,
       headerStateControls,
       headerBrand,
       headerActions,
@@ -11538,11 +12446,14 @@ async (page) => {
         new File(["denied"], "single-403.txt", { type: "text/plain" }),
       ]);
       await app.invoke("upload", "send");
+      const inspectorState = app.service("inspector").getInspectorState("upload");
       const result = {
         responseText: document.getElementById("uploadResponseArea")?.textContent || "",
-        summaryStatus: document.querySelector(
-          '[data-tool-summary-scope="upload"] [data-tool-summary-field="status"] .tool-result__meta-value'
-        )?.textContent || "",
+        responseStatus: inspectorState?.response?.status ?? null,
+        responseStatusText: inspectorState?.response?.statusText || "",
+        statusTone: document.getElementById("uploadStatus")?.dataset.tone || "",
+        statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+        statusVisible: document.getElementById("uploadStatus")?.hidden === false,
         state: app.getState("upload"),
         calls,
       };
@@ -11550,7 +12461,14 @@ async (page) => {
       return result;
     });
 
-    if (basicInitial.summaryStatus !== "403 Forbidden") {
+    if (
+      basicInitial.responseStatus !== 403 ||
+      basicInitial.responseStatusText !== "Forbidden" ||
+      basicInitial.statusTone !== "error" ||
+      !basicInitial.statusVisible ||
+      !basicInitial.statusText.includes("Upload complete") ||
+      !basicInitial.statusText.includes("1 error")
+    ) {
       throw new Error(`Basic single 403 did not retain the real status: ${JSON.stringify(basicInitial)}`);
     }
 
@@ -11730,14 +12648,14 @@ async (page) => {
       findUploadRow("single-403.txt")?.querySelector("[data-remove-index]")?.click();
 
       const getUploadSummary = () => {
-        const value = document.querySelector(
-          '[data-tool-summary-scope="upload"] [data-tool-summary-field="status"] .tool-result__meta-value'
-        );
         const inspectorState = app.service("inspector").getInspectorState("upload");
+        const status = document.getElementById("uploadStatus");
         return {
-          phase: document.querySelector('[data-tool-summary-scope="upload"]')?.dataset.phase || "",
-          status: value?.textContent || "",
-          danger: Boolean(value?.classList.contains("tool-result__meta-value--danger")),
+          phase: inspectorState?.response?.phase || "",
+          status: inspectorState?.response?.statusText || "",
+          danger: status?.dataset.tone === "error",
+          statusText: document.getElementById("uploadStatusMessage")?.textContent || "",
+          statusVisible: status?.hidden === false,
           responseStatus: inspectorState?.response?.status ?? null,
         };
       };
@@ -11922,10 +12840,16 @@ async (page) => {
       recovery.pureStatusZero.responseStatus !== 0 ||
       recovery.pureStatusZero.status === "201 Error" ||
       !recovery.pureStatusZero.danger ||
+      !recovery.pureStatusZero.statusVisible ||
+      !recovery.pureStatusZero.statusText.includes("Upload complete") ||
+      !recovery.pureStatusZero.statusText.includes("1 error") ||
       recovery.mixedStatusZeroAndForbidden.phase !== "error" ||
       recovery.mixedStatusZeroAndForbidden.responseStatus !== 403 ||
-      recovery.mixedStatusZeroAndForbidden.status !== "403 Forbidden" ||
-      !recovery.mixedStatusZeroAndForbidden.danger
+      recovery.mixedStatusZeroAndForbidden.status !== "Forbidden" ||
+      !recovery.mixedStatusZeroAndForbidden.danger ||
+      !recovery.mixedStatusZeroAndForbidden.statusVisible ||
+      !recovery.mixedStatusZeroAndForbidden.statusText.includes("Upload complete") ||
+      !recovery.mixedStatusZeroAndForbidden.statusText.includes("2 errors")
     ) {
       throw new Error(`Basic recovery controls/regression failed: ${JSON.stringify(recovery)}`);
     }
@@ -12991,11 +13915,11 @@ async (page) => {
     await switchLanguage("ru");
     await assertLocaleSnapshot({
       uploadTabText: "Отправить",
-      filesTabText: "Файлы",
+      filesTabText: "Получить",
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",
-      brandTaglineText: "Инструмент для тестирования SWG",
+      brandTaglineText: "Инструмент для тестирования SWG/NGFW",
       heroTitleText: "Проверяйте HTTP-пути передачи данных",
       mismatchLabelText: "Не работает",
       smuggleActionLabelText: "HTML Smuggling",
@@ -13024,12 +13948,12 @@ async (page) => {
     });
     await switchLanguage("en");
     await assertLocaleSnapshot({
-      uploadTabText: "Send",
-      filesTabText: "Files",
+      uploadTabText: "Upload",
+      filesTabText: "Download",
       requestTabText: "Requests",
       opsecTabText: "Advanced",
       notepadTabText: "Notepad",
-      brandTaglineText: "SWG testing tool",
+      brandTaglineText: "SWG/NGFW testing tool",
       heroTitleText: "Test HTTP data-transfer paths",
       mismatchLabelText: "Mismatches",
       smuggleActionLabelText: "HTML smuggling",
@@ -13060,11 +13984,11 @@ async (page) => {
     await switchLanguage("ru");
     await assertLocaleSnapshot({
       uploadTabText: "Отправить",
-      filesTabText: "Файлы",
+      filesTabText: "Получить",
       requestTabText: "Запросы",
       opsecTabText: "Расширенные",
       notepadTabText: "Блокнот",
-      brandTaglineText: "Инструмент для тестирования SWG",
+      brandTaglineText: "Инструмент для тестирования SWG/NGFW",
       heroTitleText: "Проверяйте HTTP-пути передачи данных",
       mismatchLabelText: "Не работает",
       smuggleActionLabelText: "HTML Smuggling",

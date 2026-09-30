@@ -10,10 +10,8 @@ from pathlib import Path
 
 from ..config import HTTP_STATUS_MESSAGES, __version__
 from .cors import (
-    CORS_ALLOW_HEADERS_HEADER,
     CORS_ALLOW_METHODS_HEADER,
     CORS_EXPOSE_HEADERS_HEADER,
-    CORS_WILDCARD_ALLOW_HEADERS_HEADER,
     normalize_cors_header_origin,
 )
 
@@ -157,14 +155,6 @@ class HTTPResponse:
                 "Access-Control-Allow-Methods",
                 cors_allow_methods or CORS_ALLOW_METHODS_HEADER,
             )
-
-        if "Access-Control-Allow-Headers" not in self.headers:
-            allow_headers = (
-                CORS_WILDCARD_ALLOW_HEADERS_HEADER
-                if cors_origin == "*"
-                else CORS_ALLOW_HEADERS_HEADER
-            )
-            self.set_header("Access-Control-Allow-Headers", allow_headers)
 
         if "Access-Control-Expose-Headers" not in self.headers:
             exposed = CORS_EXPOSE_HEADERS_HEADER

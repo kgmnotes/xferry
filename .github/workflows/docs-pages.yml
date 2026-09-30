@@ -41,6 +41,8 @@ jobs:
       - name: Validate documentation contracts
         run: |
           set -euo pipefail
+          python tools/render_settings.py --check
+          python tools/render_contracts.py --check
           python tools/sync_docs.py --check
           python tools/check_stale_docs.py
           mkdocs build --strict

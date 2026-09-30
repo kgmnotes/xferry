@@ -6,17 +6,27 @@ import importlib
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from .http import HTTPRequest, HTTPResponse
+from .storage import UploadStorageService
 
 _METHOD_RE = re.compile(r"^[A-Z][A-Z0-9_-]*$")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class PluginServices:
+    """Narrow services available to explicitly enabled plugin handlers."""
+
+    upload_dir: Path
+    upload_storage: UploadStorageService
+
+
+@dataclass(frozen=True, slots=True)
 class HandlerContext:
     """Context passed to plugin HTTP method handlers."""
 
-    server: object
+    services: PluginServices
     plugin_name: str
 
 
@@ -107,6 +117,7 @@ __all__ = [
     "HandlerContext",
     "PluginHandler",
     "PluginMethodSpec",
+    "PluginServices",
     "PluginSpec",
     "coerce_plugin_specs",
     "load_plugin_specs",

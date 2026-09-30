@@ -9,10 +9,12 @@ import socket
 import struct
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from tests.server_factory import make_server
 from xferry.http import HTTPResponse
+from xferry.security.auth import BasicAuthenticator
 from xferry.websocket import WS_CLOSE, WS_TEXT, parse_ws_frame
 
 
@@ -64,6 +66,18 @@ def _recv_http_response(sock: socket.socket) -> tuple[str, dict[str, str], bytes
         body += chunk
 
     return status_line, headers, body[:content_length]
+
+
+def _send_live_request(
+    port: int,
+    request: str,
+    *,
+    timeout: float = 2.0,
+) -> tuple[str, dict[str, str], bytes]:
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(request.encode("ascii"))
+        return _recv_http_response(sock)
 
 
 def _recv_until(sock: socket.socket, marker: bytes) -> bytes:
@@ -192,6 +206,121 @@ class _TimeoutAfterHeadersSocket:
 
 
 class TestLiveRequestHandling:
+    def test_trusted_admission_rejects_forged_and_ambiguous_requests_on_socket(
+        self,
+        temp_dir: Path,
+    ) -> None:
+        """Catch the real listener routing forged/duplicate authorities into handlers."""
+        with _LiveServer(temp_dir) as live:
+            requests = (
+                (
+                    "PING / HTTP/1.1\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "PING / HTTP/1.1\r\nHost:   \r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "PING / HTTP/1.1\r\nHost: example.test:0\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"PING / HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    " folded\r\nConnection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    "POST /forged.txt HTTP/1.1\r\n"
+                    "Host: attacker.example\r\n"
+                    "Origin: http://attacker.example\r\n"
+                    "Content-Length: 6\r\n"
+                    "Connection: close\r\n\r\n"
+                    "forged",
+                    421,
+                    "misdirected_request",
+                ),
+                (
+                    f"PING / HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{live.port}\r\n"
+                    "Authorization: Basic bad\r\n"
+                    "Authorization: Basic Zm9vOmJhcg==\r\n"
+                    "Connection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"POST /origin.txt HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    f"Origin: http://127.0.0.1:{live.port}\r\n"
+                    f"Origin: http://127.0.0.1:{live.port}\r\n"
+                    "Content-Length: 6\r\nConnection: close\r\n\r\norigin",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"GET /notes/ws HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+                (
+                    f"OPTIONS / HTTP/1.1\r\nHost: 127.0.0.1:{live.port}\r\n"
+                    "Access-Control-Request-Method: STEALTH\r\n"
+                    "Access-Control-Request-Method: STEALTH\r\n"
+                    "Connection: close\r\n\r\n",
+                    400,
+                    "invalid_header",
+                ),
+            )
+            for raw_request, expected_status, expected_code in requests:
+                with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                    sock.settimeout(2.0)
+                    sock.sendall(raw_request.encode("ascii"))
+                    status, headers, body = _recv_http_response(sock)
+
+                assert status.startswith(f"HTTP/1.1 {expected_status}")
+                assert headers["connection"] == "close"
+                assert headers["cache-control"] == "no-store"
+                assert "access-control-allow-origin" not in headers
+                assert "www-authenticate" not in headers
+                assert json.loads(body)["error"]["code"] == expected_code
+
+            with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                sock.settimeout(2.0)
+                sock.sendall(b"PING / HTTP/1.0\r\n\r\n")
+                status, headers, body = _recv_http_response(sock)
+
+            assert status.startswith("HTTP/1.1 200")
+            assert headers["connection"] == "close"
+            assert json.loads(body)["health"] == "ready"
+
+        assert not (temp_dir / "uploads" / "forged.txt").exists()
+        assert not (temp_dir / "uploads" / "origin.txt").exists()
+
+        with _LiveServer(temp_dir, cors_origin="http://attacker.example") as live:
+            with socket.create_connection(("127.0.0.1", live.port), timeout=2.0) as sock:
+                sock.settimeout(2.0)
+                sock.sendall(
+                    b"POST /cors-forged.txt HTTP/1.1\r\n"
+                    b"Host: attacker.example\r\n"
+                    b"Origin: http://attacker.example\r\n"
+                    b"Content-Length: 6\r\n\r\nforged"
+                )
+                status, headers, body = _recv_http_response(sock)
+
+            assert status.startswith("HTTP/1.1 421")
+            assert "access-control-allow-origin" not in headers
+            assert json.loads(body)["error"]["code"] == "misdirected_request"
+
+        assert not (temp_dir / "uploads" / "cors-forged.txt").exists()
+
     def test_info_and_fetch_use_canonical_contracts_over_live_socket(
         self,
         temp_dir: Path,
@@ -506,6 +635,7 @@ class TestLiveRequestHandling:
                 status, headers, body = _recv_http_response(sock)
                 assert status.startswith("HTTP/1.1 401")
                 assert headers["www-authenticate"] == 'Basic realm="Restricted Area"'
+                assert headers["cache-control"] == "no-store"
                 assert headers["x-request-id"] == "live-note-auth"
                 assert json.loads(body) == {
                     "error": {
@@ -530,6 +660,123 @@ class TestLiveRequestHandling:
                 status, _headers, body = _recv_http_response(sock)
                 assert status.startswith("HTTP/1.1 200")
                 assert json.loads(body)["health"] == "ready"
+
+    def test_basic_auth_allows_six_valid_root_and_static_requests(
+        self,
+        temp_dir: Path,
+    ) -> None:
+        lock = threading.Lock()
+        release = threading.Event()
+        two_started = threading.Event()
+        active = 0
+        maximum_active = 0
+
+        def verifier(_username: str, _password: str) -> bool:
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                if active == 2:
+                    two_started.set()
+            assert release.wait(1.0)
+            with lock:
+                active -= 1
+            return True
+
+        credentials = base64.b64encode(b"admin:secret123").decode("ascii")
+        live_server = _LiveServer(temp_dir, max_workers=8)
+        live_server.server.set_authenticator(BasicAuthenticator(auth_callback=verifier))
+
+        with live_server as live:
+            requests = [
+                (
+                    f"GET {path} HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{live.port}\r\n"
+                    f"Authorization: Basic {credentials}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                for path in (
+                    "/",
+                    "/static/ui/app.js",
+                    "/",
+                    "/static/ui/app.js",
+                    "/",
+                    "/static/ui/app.js",
+                )
+            ]
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = [
+                    executor.submit(_send_live_request, live.port, request) for request in requests
+                ]
+                assert two_started.wait(1.0)
+                release.set()
+                responses = [future.result(timeout=2.0) for future in futures]
+
+        assert [status for status, _headers, _body in responses] == ["HTTP/1.1 200 OK"] * 6
+        assert maximum_active == 2
+        assert all(body for _status, _headers, body in responses)
+        assert live_server.server.get_metrics()["authentication"]["succeeded"] == 6
+
+    def test_basic_auth_caps_six_invalid_live_requests_at_five_verifications(
+        self,
+        temp_dir: Path,
+    ) -> None:
+        lock = threading.Lock()
+        release = threading.Event()
+        two_started = threading.Event()
+        calls = 0
+        active = 0
+
+        def verifier(_username: str, _password: str) -> bool:
+            nonlocal active, calls
+            with lock:
+                calls += 1
+                active += 1
+                if active == 2:
+                    two_started.set()
+            assert release.wait(1.0)
+            with lock:
+                active -= 1
+            return False
+
+        credentials = base64.b64encode(b"admin:wrong").decode("ascii")
+        live_server = _LiveServer(temp_dir, max_workers=8)
+        live_server.server.set_authenticator(BasicAuthenticator(auth_callback=verifier))
+
+        with live_server as live:
+            request = (
+                "GET /static/ui/app.js HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{live.port}\r\n"
+                f"Authorization: Basic {credentials}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = [
+                    executor.submit(_send_live_request, live.port, request) for _ in range(6)
+                ]
+                assert two_started.wait(1.0)
+                release.set()
+                responses = [future.result(timeout=2.0) for future in futures]
+
+        status_codes = sorted(int(status.split()[1]) for status, _headers, _body in responses)
+        assert status_codes == [401, 401, 401, 401, 401, 429]
+        assert calls == 5
+        for status, headers, body in responses:
+            assert headers["cache-control"] == "no-store"
+            if status.startswith("HTTP/1.1 401"):
+                assert headers["www-authenticate"] == 'Basic realm="Restricted Area"'
+            else:
+                assert headers["retry-after"].isdigit()
+                assert "www-authenticate" not in headers
+                assert b"cooldown" not in body
+
+        authentication = live_server.server.get_metrics()["authentication"]
+        assert authentication["active"] == 0
+        assert authentication["attempts"] == 5
+        assert authentication["failed"] == 5
+        assert authentication["denial_reasons"]["cooldown"] == 1
 
     def test_get_streamed_text_file_ignores_gzip_without_buffering(self, temp_dir: Path) -> None:
         payload = ("streamed live payload\n" * 200).encode("utf-8")

@@ -2,7 +2,10 @@ name: xferry-public-direct
 
 services:
   xferry:
-    image: "${XFERRY_IMAGE:?Set XFERRY_IMAGE to a full immutable image reference such as ghcr.io/kgmnotes/xferry@sha256:<digest>}"
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: xferry:public-direct-local
     restart: unless-stopped
     init: true
     read_only: true

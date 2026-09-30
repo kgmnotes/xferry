@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import configparser
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +21,7 @@ from .http.io import (
     DEFAULT_MAX_HEADER_SIZE,
 )
 from .notepad_service import DEFAULT_MAX_NOTE_STORAGE_BYTES, DEFAULT_MAX_NOTES
+from .request_admission import is_unspecified_host, normalize_allowed_hosts
 from .runtime_posture import (
     BODY_ADMISSION_BUDGET_NOTE,
     WEBSOCKET_WORKER_NOTE,
@@ -39,6 +42,18 @@ from .server_config import (
     TLSConfig,
     WebSocketConfig,
     resolve_server_config,
+)
+from .settings_schema import (
+    SETTING_SPEC_BY_NAME,
+    SETTING_SPECS,
+    SampleProfile,
+    SampleTarget,
+    env_to_setting_map,
+    get_sample_profile,
+    get_sample_target,
+    render_ini_entry,
+    sample_specs,
+    section_key_map,
 )
 
 _MIB = 1024 * 1024
@@ -98,6 +113,7 @@ class ServerSettings:
 
     auth: str | None = None
     auth_file: str | None = None
+    allowed_hosts: tuple[str, ...] = ()
     cors_origin: str = ""
 
     plugin_allowlist: tuple[str, ...] = ()
@@ -191,6 +207,15 @@ class ServerSettings:
         if self.auth_file == "":
             raise SettingsError("--auth-file value must not be empty")
 
+        try:
+            normalized_allowed_hosts = normalize_allowed_hosts(tuple(self.allowed_hosts))
+        except (TypeError, ValueError) as exc:
+            raise SettingsError(str(exc)) from None
+        if self.domain and normalized_allowed_hosts:
+            certificate_domain = normalize_allowed_hosts((self.domain,))[0]
+            if certificate_domain not in normalized_allowed_hosts:
+                raise SettingsError("certificate domain must be included in allowed_hosts")
+
         if self.public_direct:
             self._validate_public_direct()
 
@@ -224,6 +249,16 @@ class ServerSettings:
         if self.plugin_allowlist and not self.plugins_allow_public_direct:
             raise SettingsError(
                 "public_direct disables plugins unless plugins_allow_public_direct is true"
+            )
+        wildcard_bind = is_unspecified_host(self.host)
+        if (
+            wildcard_bind
+            and self.cert_file
+            and self.key_file
+            and not normalize_allowed_hosts(tuple(self.allowed_hosts))
+        ):
+            raise SettingsError(
+                "public_direct wildcard bind with certificate files requires explicit allowed_hosts"
             )
 
     def to_server_config(self) -> ServerConfig:
@@ -297,6 +332,7 @@ class ServerSettings:
                     allow_public_direct=self.plugins_allow_public_direct,
                 ),
                 cors_origin=self.cors_origin,
+                allowed_hosts=self.allowed_hosts,
                 public_direct=self.public_direct,
                 runtime_posture=self.runtime_posture(),
             )
@@ -311,8 +347,9 @@ class ServerSettings:
         data = asdict(self)
         data.pop("_explicit_fields", None)
         data["preset"] = self.preset.value if self.preset is not None else None
-        if data.get("auth"):
-            data["auth"] = "***"
+        for spec in SETTING_SPECS:
+            if spec.redaction == "secret" and data.get(spec.name):
+                data[spec.name] = "***"
         data["effective_tls"] = self.effective_tls_enabled()
         return data
 
@@ -346,73 +383,8 @@ _PRESET_EXCLUSIVE_GROUPS = (
 )
 
 
-_SECTION_KEYS: dict[str, dict[str, str]] = {
-    "server": {
-        "preset": "preset",
-        "host": "host",
-        "port": "port",
-        "root_dir": "root_dir",
-        "quiet": "quiet",
-        "debug": "debug",
-        "open_browser": "open_browser",
-        "json_log": "json_log",
-        "public_direct": "public_direct",
-        "workers": "workers",
-    },
-    "limits": {
-        "max_size_mb": "max_size_mb",
-        "upload_storage_limit_mb": "upload_storage_limit_mb",
-        "upload_file_limit": "upload_file_limit",
-        "upload_reserve_free_mb": "upload_reserve_free_mb",
-        "upload_quota_externally_managed": "upload_quota_externally_managed",
-        "note_storage_limit_mb": "note_storage_limit_mb",
-        "note_count_limit": "note_count_limit",
-        "smuggle_temp_age": "smuggle_temp_age",
-        "smuggle_temp_file_limit": "smuggle_temp_file_limit",
-        "smuggle_temp_storage_limit_mb": "smuggle_temp_storage_limit_mb",
-        "max_header_size_kb": "max_header_size_kb",
-        "body_memory_budget_mb": "body_memory_budget_mb",
-        "body_idle_timeout": "body_idle_timeout",
-        "body_timeout": "body_timeout",
-        "body_min_rate": "body_min_rate",
-        "stream_send_idle_timeout": "stream_send_idle_timeout",
-        "stream_send_timeout": "stream_send_timeout",
-        "max_websocket_connections": "max_websocket_connections",
-        "websocket_frame_idle_timeout": "websocket_frame_idle_timeout",
-    },
-    "tls": {
-        "tls": "tls",
-        "cert_file": "cert_file",
-        "key_file": "key_file",
-        "letsencrypt": "letsencrypt",
-        "domain": "domain",
-        "email": "email",
-        "sslip": "sslip",
-        "public_ip": "public_ip",
-        "acme_staging": "acme_staging",
-        "acme_server": "acme_server",
-        "acme_http_address": "acme_http_address",
-        "acme_http_port": "acme_http_port",
-    },
-    "security": {
-        "auth": "auth",
-        "auth_file": "auth_file",
-    },
-    "cors": {
-        "cors_origin": "cors_origin",
-    },
-    "plugins": {
-        "plugin_allowlist": "plugin_allowlist",
-        "plugins_allow_public_direct": "plugins_allow_public_direct",
-        "plugins_override_core": "plugins_override_core",
-    },
-}
-
-_ENV_KEYS: dict[str, str] = {
-    f"XFERRY_{settings_field.name.upper()}": settings_field.name
-    for settings_field in fields(ServerSettings)
-    if not settings_field.name.startswith("_")
-}
+_SECTION_KEYS: Mapping[str, Mapping[str, str]] = section_key_map()
+_ENV_KEYS: Mapping[str, str] = env_to_setting_map()
 
 
 def load_settings_file(
@@ -506,123 +478,157 @@ def resolve_settings(
     return settings
 
 
+def render_settings_ini(
+    *,
+    target: SampleTarget | str,
+    values: Mapping[str, object],
+    field_names: Iterable[str] | None = None,
+    comments: Mapping[str, Iterable[str]] | None = None,
+) -> str:
+    """Render a deterministic schema-backed INI fragment.
+
+    ``field_names`` lets managed setup select a validated dynamic subset while
+    retaining the schema's section/key order. Every selected field must be
+    present on the chosen target; callers cannot use this helper to bypass a
+    target's explicit omission policy.
+    """
+    resolved_target = get_sample_target(target)
+    defaults = ServerSettings()
+    requested = (
+        {spec.name for spec in sample_specs(resolved_target)}
+        if field_names is None
+        else set(field_names)
+    )
+    unknown = requested - set(SETTING_SPEC_BY_NAME)
+    if unknown:
+        raise ValueError(f"unknown settings fields for rendering: {sorted(unknown)}")
+    omitted = {
+        name
+        for name in requested
+        if SETTING_SPEC_BY_NAME[name].sample_disposition(resolved_target.name) == "omitted"
+    }
+    if omitted:
+        raise ValueError(
+            f"settings fields are omitted from {resolved_target.name}: {sorted(omitted)}"
+        )
+
+    comment_overrides = dict(resolved_target.comment_map())
+    if comments is not None:
+        comment_overrides.update(
+            {name: tuple(field_comments) for name, field_comments in comments.items()}
+        )
+    lines: list[str] = []
+    for section in resolved_target.section_order:
+        section_specs = [
+            spec
+            for spec in sample_specs(resolved_target)
+            if spec.section == section and spec.name in requested
+        ]
+        if not section_specs:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(f"[{section}]")
+        for spec in section_specs:
+            field_comments = comment_overrides.get(
+                spec.name,
+                spec.sample_comments if resolved_target.include_setting_comments else (),
+            )
+            for comment in field_comments:
+                lines.append(f"# {comment}")
+            value = values.get(spec.name, getattr(defaults, spec.name))
+            disposition = spec.sample_disposition(resolved_target.name)
+            lines.append(
+                render_ini_entry(
+                    spec.name,
+                    value,
+                    commented=disposition == "commented",
+                )
+            )
+    return "\n".join(lines) + "\n"
+
+
+def render_sample_profile(profile: SampleProfile | str) -> str:
+    """Render one complete static sample profile without a human preamble."""
+    resolved = get_sample_profile(profile)
+    return render_settings_ini(target=resolved.target, values=resolved.value_map())
+
+
+def public_direct_sample_ini(
+    *,
+    root_dir: str = "/var/lib/xferry",
+    port: int = 8443,
+    auth_file: str = "/etc/xferry/auth",
+    acme_http_port: int | None = None,
+    allowed_hosts_comment: str | None = None,
+    tls_comments: tuple[str, ...] | None = None,
+) -> str:
+    """Return the main or deployment public-direct INI body.
+
+    The main generated sample omits ``acme_http_port`` and therefore follows
+    the runtime default. Passing a port selects the deployment surface, where
+    that listener mapping must be explicit (Docker uses 8080; systemd uses 80).
+    """
+    base_profile = get_sample_profile("public-direct")
+    values: dict[str, object] = {
+        **base_profile.value_map(),
+        "root_dir": root_dir,
+        "port": port,
+        "auth_file": auth_file,
+    }
+    target = "public-direct"
+    if acme_http_port is not None:
+        values["acme_http_port"] = acme_http_port
+        # Docker and systemd share the same field layout. Callers replace the
+        # target-specific comments below, so the Docker layout is sufficient
+        # for this parameterized compatibility API.
+        target = "docker"
+    comments: dict[str, tuple[str, ...]] = {}
+    if allowed_hosts_comment is not None:
+        comments["allowed_hosts"] = (allowed_hosts_comment,)
+    if tls_comments is not None:
+        comments["sslip"] = tls_comments
+    return render_settings_ini(
+        target=target,
+        values=values,
+        comments=comments,
+    )
+
+
 def sample_config_text() -> str:
     """Return a public-direct sample configuration."""
-    return """# xferry public-direct sample configuration
-[server]
-preset = public-direct
-host = 0.0.0.0
-port = 8443
-root_dir = /var/lib/xferry
-public_direct = true
-json_log = true
-workers = 10
-
-[security]
-auth_file = /etc/xferry/auth
-
-[tls]
-# Runtime TLS becomes active through sslip/letsencrypt/cert+key even if
-# the explicit self-signed `tls` flag remains false in normalized output.
-# Use sslip for first-run public IPv4 deployments, or replace with:
-# letsencrypt = true
-# domain = files.example.com
-sslip = true
-# public_ip = 203.0.113.10
-# acme_staging = true
-
-[limits]
-max_size_mb = 100
-body_memory_budget_mb = 512
-body_idle_timeout = 5
-body_timeout = 300
-body_min_rate = 0
-stream_send_idle_timeout = 5
-stream_send_timeout = 300
-upload_storage_limit_mb = 4096
-upload_file_limit = 4096
-upload_reserve_free_mb = 1024
-upload_quota_externally_managed = false
-
-[cors]
-cors_origin =
-
-[plugins]
-plugin_allowlist =
-plugins_allow_public_direct = false
-plugins_override_core = false
-"""
+    return "# xferry public-direct sample configuration\n" + public_direct_sample_ini()
 
 
 def _parse_field_value(field_name: str, raw_value: object) -> object:
     if raw_value is None:
         return None
     value = str(raw_value).strip()
-    if field_name == "preset":
+    value_kind = SETTING_SPEC_BY_NAME[field_name].value_kind
+    if value_kind == "preset":
         try:
             return parse_launch_preset(value)
         except ValueError as exc:
             raise SettingsError(str(exc)) from None
-    if field_name in {
-        "quiet",
-        "debug",
-        "open_browser",
-        "json_log",
-        "public_direct",
-        "upload_quota_externally_managed",
-        "tls",
-        "letsencrypt",
-        "sslip",
-        "acme_staging",
-        "plugins_allow_public_direct",
-        "plugins_override_core",
-    }:
+    if value_kind == "boolean":
         return _parse_bool(field_name, value)
-    if field_name in {
-        "port",
-        "max_size_mb",
-        "upload_storage_limit_mb",
-        "upload_file_limit",
-        "upload_reserve_free_mb",
-        "note_storage_limit_mb",
-        "note_count_limit",
-        "smuggle_temp_age",
-        "smuggle_temp_file_limit",
-        "smuggle_temp_storage_limit_mb",
-        "max_header_size_kb",
-        "body_memory_budget_mb",
-        "max_websocket_connections",
-        "workers",
-        "acme_http_port",
-    }:
-        if value == "" and field_name in {"body_memory_budget_mb", "max_websocket_connections"}:
+    if value_kind in {"integer", "optional_integer"}:
+        if value == "" and value_kind == "optional_integer":
             return None
         try:
             return int(value, 10)
         except ValueError:
             raise SettingsError(f"{field_name} must be an integer") from None
-    if field_name in {
-        "body_idle_timeout",
-        "body_timeout",
-        "body_min_rate",
-        "stream_send_idle_timeout",
-        "stream_send_timeout",
-        "websocket_frame_idle_timeout",
-    }:
+    if value_kind == "number":
         try:
             return float(value)
         except ValueError:
             raise SettingsError(f"{field_name} must be a number") from None
-    if field_name == "plugin_allowlist":
+    if value_kind == "plugin_allowlist":
         return tuple(part.strip() for part in value.split(",") if part.strip())
-    if value == "" and field_name in {
-        "domain",
-        "email",
-        "public_ip",
-        "acme_server",
-        "auth",
-        "auth_file",
-    }:
+    if value_kind == "allowed_hosts":
+        return tuple(part for part in re.split(r"[ \t\r\n\f\v]+", value) if part)
+    if value == "" and value_kind == "optional_string":
         return None
     return value
 
@@ -697,6 +703,9 @@ __all__ = [
     "derive_runtime_posture",
     "load_settings_file",
     "load_settings_text",
+    "public_direct_sample_ini",
+    "render_sample_profile",
+    "render_settings_ini",
     "resolve_settings",
     "sample_config_text",
 ]

@@ -304,6 +304,27 @@ def test_inspect_file_uses_extension_only_as_fallback_and_flags_a_mismatch(temp_
     assert mismatch_result.reasons == ("extension_mismatch",)
 
 
+def test_inspect_file_accepts_msdos_program_alias_for_pe_executable(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches a valid PE .exe being reported as an extension mismatch."""
+    path = temp_dir / "program.exe"
+    path.write_bytes(b"MZ" + b"\x00" * 58 + b"\x40\x00\x00\x00" + b"PE\x00\x00")
+    monkeypatch.setattr(
+        "xferry.file_inspection._extension_mime",
+        lambda _filename: "application/x-msdos-program",
+    )
+
+    result = inspect_file(path)
+
+    assert result.mime_type == "application/vnd.microsoft.portable-executable"
+    assert result.mime_source == "signature"
+    assert result.content_state == "recognized"
+    assert result.warning is None
+    assert result.reasons == ()
+
+
 def test_inspect_file_treats_short_and_unavailable_content_as_unknown(temp_dir: Path) -> None:
     short_path = temp_dir / "short.bin"
     short_path.write_bytes(b"\x01\x02")

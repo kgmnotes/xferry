@@ -1,8 +1,8 @@
 # Examples
 
-These examples exercise the current source checkout. Start with the root
-[README](../README.md#install-from-source); no released package or container
-image is available.
+These examples exercise a reviewed source checkout. Start with the root
+[README](../README.md#install-from-source); packages, release binaries, and
+registry images are not supported distribution channels.
 
 | Path | Scenario |
 | --- | --- |
