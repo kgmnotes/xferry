@@ -1745,8 +1745,7 @@ async (page) => {
     }, [singleName, bulkNames]);
 
     try {
-      await page.locator("#tab-files").click();
-      await waitForTabState("files", { focused: true });
+      await activateFilesAndWaitForSettledBrowse();
       await page.locator("#browsePathInput").fill("/delete-wire-contract");
       await page.locator("#browseBtn").click();
       await waitForPageCondition(

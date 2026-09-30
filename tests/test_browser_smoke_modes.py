@@ -646,6 +646,22 @@ def test_mobile_files_snapshot_serializes_automatic_browse_before_explicit_uploa
     assert "headerRect.height > 0" in explicit_wait
 
 
+def test_delete_contract_waits_for_automatic_browse_before_explicit_browse() -> None:
+    """Catches the delete smoke racing its explicit browse with tab auto-browse."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    start = script.index("async function assertFilesDeleteTargetEncodingContract(")
+    end = script.index("async function assertFilesInfoLastResultWinsContract(", start)
+    delete_contract = script[start:end]
+
+    settled_browse = "await activateFilesAndWaitForSettledBrowse();"
+    explicit_path_fill = 'await page.locator("#browsePathInput").fill("/delete-wire-contract");'
+    explicit_browse_click = 'await page.locator("#browseBtn").click();'
+
+    assert settled_browse in delete_contract
+    assert delete_contract.index(settled_browse) < delete_contract.index(explicit_path_fill)
+    assert delete_contract.index(explicit_path_fill) < delete_contract.index(explicit_browse_click)
+
+
 def test_full_smoke_locale_snapshots_use_exact_smuggle_labels_and_nonempty_actions() -> None:
     """The full locale oracle must match each localized Files action exactly."""
     script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
