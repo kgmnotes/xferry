@@ -83,11 +83,12 @@ def _put_chunk(
     ciphertext: bytes,
     *,
     resume_mac: bytes = b"r" * 32,
+    index: int = 0,
 ):
     return server._dispatch_handler(
         make_request(
             "PUT",
-            f"/_xferry/encrypted-uploads/{manifest.file_id}/chunks/0",
+            f"/_xferry/encrypted-uploads/{manifest.file_id}/chunks/{index}",
             headers={
                 "Content-Type": "application/octet-stream",
                 "X-XFerry-Chunk-MAC": b64url_encode(resume_mac),
@@ -120,6 +121,7 @@ def _error(response) -> dict[str, object]:
         ("GET", f"/_xferry/encrypted-files/{FILE_ID}"),
         ("DELETE", f"/_xferry/encrypted-files/{FILE_ID}"),
         ("GET", f"/_xferry/encrypted-files/{FILE_ID}/data"),
+        ("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0"),
         ("POST", f"/_xferry/encrypted-files/{FILE_ID}/decrypt"),
     ],
 )
@@ -151,7 +153,14 @@ def test_create_get_and_list_partial_uploads_have_a_stable_wire_shape(tmp_path: 
     created_payload = json.loads(created.body)["encrypted_upload"]
     assert created_payload == json.loads(repeated.body)["encrypted_upload"]
     assert created_payload == json.loads(item.body)["encrypted_upload"]
-    assert json.loads(listing.body) == {"encrypted_uploads": [created_payload]}
+    listed_payload = json.loads(listing.body)
+    storage = listed_payload.pop("storage")
+    assert storage["used_bytes"] == 21
+    assert storage["file_count"] == 1
+    assert listed_payload == {
+        "encrypted_uploads": [created_payload],
+        "incomplete_ttl_seconds": 86400,
+    }
     assert created_payload == {
         "id": FILE_ID,
         "version": 1,
@@ -168,6 +177,30 @@ def test_create_get_and_list_partial_uploads_have_a_stable_wire_shape(tmp_path: 
         "updated_at": created_payload["updated_at"],
     }
     assert created.headers["Cache-Control"] == "no-store"
+
+
+def test_partial_list_exposes_configured_retention_without_changing_record_shape(
+    tmp_path: Path,
+) -> None:
+    server = make_server(
+        root_dir=str(tmp_path),
+        quiet=True,
+        encrypted_uploads=True,
+        encrypted_upload_incomplete_ttl=604800,
+    )
+
+    response = server._dispatch_handler(make_request("GET", "/_xferry/encrypted-uploads"))
+
+    assert response.status_code == 200
+    listed_payload = json.loads(response.body)
+    storage = listed_payload.pop("storage")
+    assert storage["used_bytes"] == 0
+    assert storage["file_count"] == 0
+    assert listed_payload == {
+        "encrypted_uploads": [],
+        "incomplete_ttl_seconds": 604800,
+    }
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_create_conflict_and_strict_json_errors_are_stable(tmp_path: Path) -> None:
@@ -353,6 +386,215 @@ def test_partial_delete_and_route_method_errors_are_stable(tmp_path: Path) -> No
     assert malformed_path.status_code == 404
 
 
+def test_complete_chunk_downloads_are_bounded_and_do_not_cross_chunk_boundaries(
+    tmp_path: Path,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    manifest = _manifest(plaintext_size=EUF_CHUNK_SIZE + 5)
+    assert _create(server, manifest).status_code == 201
+    first = b"a" * (EUF_CHUNK_SIZE + 16)
+    last = b"b" * 21
+    assert _put_chunk(server, manifest, first).status_code == 201
+    assert _put_chunk(server, manifest, last, index=1).status_code == 201
+    assert _complete(server).status_code == 200
+
+    for index, expected in enumerate((first, last)):
+        response = server._dispatch_handler(
+            make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/{index}")
+        )
+        assert response.status_code == 200
+        assert response.body == b""
+        assert response.stream_path is None
+        assert response.stream_iterator is not None
+        assert response.headers["Content-Length"] == str(len(expected))
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Cache-Control"] == "no-store"
+        parts = list(response.stream_iterator)
+        assert all(0 < len(part) <= 65536 for part in parts)
+        assert b"".join(parts) == expected
+
+
+@pytest.mark.parametrize("state", ["missing", "partial", "empty"])
+def test_chunk_download_hides_missing_incomplete_and_empty_files(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    if state != "missing":
+        assert (
+            _create(server, _manifest(plaintext_size=0 if state == "empty" else 5)).status_code
+            == 201
+        )
+    if state == "empty":
+        assert _complete(server).status_code == 200
+
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "resource_not_found"
+
+
+@pytest.mark.parametrize("index", ["1", "256", "9" * 4500, "-1", "00", "01", "1.0"])
+def test_chunk_download_rejects_noncanonical_and_out_of_range_indices(
+    tmp_path: Path,
+    index: str,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _prepare_encrypted_file(server)
+
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/{index}")
+    )
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "resource_not_found"
+
+
+@pytest.mark.parametrize("suffix", ["?download=1", "#fragment", "/", "/../0"])
+def test_chunk_download_rejects_noncanonical_targets(tmp_path: Path, suffix: str) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _prepare_encrypted_file(server)
+
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0{suffix}")
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("method", ["HEAD", "PUT", "POST", "DELETE"])
+def test_chunk_download_allows_only_get(tmp_path: Path, method: str) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+
+    response = server._dispatch_handler(
+        make_request(method, f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+
+    assert response.status_code == 405
+    assert response.headers["Allow"] == "GET"
+    assert _error(response)["code"] == "method_not_allowed"
+
+
+def test_chunk_download_rejects_get_body_and_early_body_allocation(tmp_path: Path) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    path = f"/_xferry/encrypted-files/{FILE_ID}/chunks/0"
+
+    response = server._dispatch_handler(make_request("GET", path, body=b"x"))
+    sock = _HeaderOnlySocket(
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Length: 1\r\n\r\n".encode("ascii")
+    )
+    received = server._receive_request_result(sock)
+
+    assert response.status_code == 400
+    assert _error(response)["field"] == "body"
+    assert received.rejection_reason == "body_too_large"
+    assert sock.calls == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "truncated", "oversized", "symlink"])
+def test_chunk_download_rejects_unsafe_or_incorrect_ciphertext_files(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _manifest_value, _content_key, _plaintext, ciphertext = _prepare_encrypted_file(server)
+    assert server.encrypted_storage is not None
+    path = server.encrypted_storage.data_dir / f"{FILE_ID}.xfr"
+    if mutation == "missing":
+        path.unlink()
+    elif mutation == "truncated":
+        path.write_bytes(ciphertext[:-1])
+    elif mutation == "oversized":
+        path.write_bytes(ciphertext + b"x")
+    else:
+        foreign = tmp_path / "foreign.bin"
+        foreign.write_bytes(ciphertext)
+        path.unlink()
+        path.symlink_to(foreign)
+
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+
+    assert response.status_code == 404
+    assert response.stream_iterator is None
+
+
+def test_chunk_download_keeps_open_descriptor_if_path_is_replaced(tmp_path: Path) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _manifest_value, _content_key, _plaintext, ciphertext = _prepare_encrypted_file(server)
+    assert server.encrypted_storage is not None
+
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+    assert response.status_code == 200
+    path = server.encrypted_storage.data_dir / f"{FILE_ID}.xfr"
+    path.unlink()
+    path.write_bytes(b"x" * len(ciphertext))
+
+    assert response.stream_iterator is not None
+    assert b"".join(response.stream_iterator) == ciphertext
+
+
+@pytest.mark.parametrize("fail_at", [None, 0, 1])
+def test_chunk_download_closes_descriptor_on_success_and_send_failure(
+    tmp_path: Path,
+    fail_at: int | None,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _prepare_encrypted_file(server)
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+    assert response.status_code == 200
+    assert response.stream_cleanup is not None
+    stream = response.stream_cleanup.__self__
+
+    class FailingSocket(_PipelineSocket):
+        def sendall(self, payload: bytes) -> None:
+            if fail_at is not None and len(self.sent) == fail_at:
+                raise TimeoutError("simulated stalled receiver")
+            super().sendall(payload)
+
+    sock = FailingSocket()
+    server._send_response(response, sock, {})
+
+    assert stream.closed
+    assert response.stream_iterator is None
+    assert response.stream_cleanup is None
+    if fail_at is None:
+        assert len(sock.sent) == 2
+        assert len(sock.sent[1]) == 36
+    else:
+        assert len(sock.sent) == fail_at
+
+
+def test_chunk_download_aborts_and_closes_descriptor_if_truncated_after_open(
+    tmp_path: Path,
+) -> None:
+    server = make_server(root_dir=str(tmp_path), quiet=True, encrypted_uploads=True)
+    _prepare_encrypted_file(server)
+    assert server.encrypted_storage is not None
+    response = server._dispatch_handler(
+        make_request("GET", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0")
+    )
+    assert response.status_code == 200
+    assert response.stream_cleanup is not None
+    stream = response.stream_cleanup.__self__
+    path = server.encrypted_storage.data_dir / f"{FILE_ID}.xfr"
+    path.write_bytes(b"x")
+    sock = _PipelineSocket()
+
+    server._send_response(response, sock, {})
+
+    assert stream.closed
+    assert sock.sent[1:] == [b"x"]
+    assert b"Content-Length: 36\r\n" in sock.sent[0]
+
+
 def _prepare_encrypted_file(server) -> tuple[EncryptedTransferManifest, bytes, bytes, bytes]:
     content_key = b"k" * 32
     placeholder = _manifest(plaintext_size=20)
@@ -475,7 +717,10 @@ def _raw_request(
     return "\r\n".join(lines).encode("ascii") + b"\r\n\r\n" + body
 
 
-def test_reserved_api_uses_normal_basic_auth(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path", ["/_xferry/encrypted-files", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0"]
+)
+def test_reserved_api_uses_normal_basic_auth(tmp_path: Path, path: str) -> None:
     server = make_server(
         root_dir=str(tmp_path),
         quiet=True,
@@ -484,9 +729,10 @@ def test_reserved_api_uses_normal_basic_auth(tmp_path: Path) -> None:
     )
     missing_socket = _PipelineSocket()
     valid_socket = _PipelineSocket()
+    _prepare_encrypted_file(server)
 
     server._process_request(
-        _raw_request("GET", "/_xferry/encrypted-files"),
+        _raw_request("GET", path),
         missing_socket,
         ("127.0.0.1", 43210),
         1,
@@ -495,7 +741,7 @@ def test_reserved_api_uses_normal_basic_auth(tmp_path: Path) -> None:
     server._process_request(
         _raw_request(
             "GET",
-            "/_xferry/encrypted-files",
+            path,
             headers={"Authorization": f"Basic {credentials}"},
         ),
         valid_socket,
@@ -508,8 +754,12 @@ def test_reserved_api_uses_normal_basic_auth(tmp_path: Path) -> None:
     assert valid_socket.sent[0].startswith(b"HTTP/1.1 200")
 
 
+@pytest.mark.parametrize(
+    "path", ["/_xferry/encrypted-files", f"/_xferry/encrypted-files/{FILE_ID}/chunks/0"]
+)
 def test_reserved_api_rejects_cross_origin_even_when_general_cors_allows_it(
     tmp_path: Path,
+    path: str,
 ) -> None:
     server = make_server(
         root_dir=str(tmp_path),
@@ -519,11 +769,12 @@ def test_reserved_api_rejects_cross_origin_even_when_general_cors_allows_it(
     )
     cross_site = _PipelineSocket()
     same_site = _PipelineSocket()
+    _prepare_encrypted_file(server)
 
     server._process_request(
         _raw_request(
             "GET",
-            "/_xferry/encrypted-files",
+            path,
             headers={
                 "Origin": "https://app.example",
                 "Sec-Fetch-Site": "cross-site",
@@ -536,7 +787,7 @@ def test_reserved_api_rejects_cross_origin_even_when_general_cors_allows_it(
     server._process_request(
         _raw_request(
             "GET",
-            "/_xferry/encrypted-files",
+            path,
             headers={
                 "Origin": "http://127.0.0.1:8080",
                 "Sec-Fetch-Site": "same-origin",

@@ -40,6 +40,7 @@
             <section class="workspace-shell">
                 <div class="tabs mode-tabs" role="tablist" aria-label="Server modes" data-i18n-aria-label="serverModesLabel">
                     <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="upload-tab" tabindex="0" id="tab-upload" data-tool-entry="upload" data-tab-target="upload" data-i18n="topTabUpload">Upload</button>
+                    <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="large-files-tab" aria-hidden="true" tabindex="-1" id="tab-large-files" data-tool-entry="large-files" data-tab-target="large-files" data-i18n="topTabLargeFiles" hidden>Large files</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="files-tab" tabindex="-1" id="tab-files" data-tool-entry="files" data-tab-target="files" data-i18n="topTabFiles">Download</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="request-tab" tabindex="-1" id="tab-request" data-tool-entry="request" data-tab-target="request" data-i18n="tabRequests">Requests</button>
                     <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="opsec-tab" tabindex="-1" id="tab-opsec" data-tool-entry="opsec" data-tab-target="opsec" data-i18n="tabOpsec">Advanced</button>
@@ -357,7 +358,11 @@
                                 </div>
                             </details>
                         </div>
+                    </div>
+                    </section>
 
+                    <section id="large-files-tab" class="tab-content workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-large-files" hidden>
+                    <div class="tool-stack tool-stack--large-files">
                         <section
                             class="tool-card encrypted-transfer"
                             id="encryptedTransferPanel"
@@ -370,17 +375,24 @@
                                     <p class="eyebrow" data-i18n="encryptedTransferEyebrow">БОЛЬШИЕ ФАЙЛЫ</p>
                                     <h3 id="encryptedTransferTitle" data-i18n="encryptedTransferTitle">Потоковая зашифрованная загрузка</h3>
                                 </div>
-                                <span class="encrypted-transfer__badge">AES-256-GCM · EUF v1</span>
+                                <span class="encrypted-transfer__badge" data-i18n="encryptedPrivacyBadge">Шифрование на устройстве</span>
                             </div>
-                            <p class="inline-hint" id="encryptedTransferDescription" data-i18n="encryptedTransferDescription">Файл шифруется в браузере чанками по 8 МиБ. Пароль и ключи не сохраняются и по умолчанию не отправляются серверу.</p>
+                            <p class="inline-hint" id="encryptedTransferDescription" data-i18n="encryptedTransferDescription">Отправляйте большие файлы и скачивайте их с расшифровкой на вашем устройстве. Пароль и ключи не сохраняются.</p>
+                            <p class="encrypted-transfer__browser-support inline-hint" id="encryptedBrowserSupport" role="status" aria-live="polite" hidden></p>
 
                             <form class="encrypted-transfer__form" id="encryptedUploadForm" novalidate aria-describedby="encryptedTransferDescription">
+                                <div class="encrypted-transfer__file-picker">
+                                    <label class="field-label" for="encryptedFileInput" data-i18n="encryptedFileLabel">Файлы</label>
+                                    <label class="encrypted-transfer__drop-zone" id="encryptedFileDropZone" for="encryptedFileInput">
+                                        <span class="encrypted-transfer__drop-icon" aria-hidden="true">↑</span>
+                                        <span class="encrypted-transfer__drop-title" data-i18n="encryptedFilePickerTitle">Выберите файлы или перетащите сюда</span>
+                                        <span class="field-hint" id="encryptedFileHint">Размер ограничен доступным местом. Файлы отправляются последовательно.</span>
+                                        <input type="file" id="encryptedFileInput" multiple aria-describedby="encryptedFileHint">
+                                    </label>
+                                </div>
+                                <p class="field-hint encrypted-transfer__capacity" id="encryptedCapacityHint" role="status" hidden></p>
+                                <p class="field-hint encrypted-transfer__capacity-error" id="encryptedSelectionHint" role="status" hidden></p>
                                 <div class="encrypted-transfer__fields">
-                                    <div class="field-stack">
-                                        <label class="field-label" for="encryptedFileInput" data-i18n="encryptedFileLabel">Файл</label>
-                                        <input type="file" id="encryptedFileInput" aria-describedby="encryptedFileHint">
-                                        <span class="field-hint" id="encryptedFileHint" data-i18n="encryptedFileHint">До 2 ГиБ; файл читается только отдельными чанками.</span>
-                                    </div>
                                     <div class="field-stack">
                                         <label class="field-label" for="encryptedPasswordInput" data-i18n="encryptedPasswordLabel">Пароль шифрования</label>
                                         <input type="password" id="encryptedPasswordInput" autocomplete="new-password" minlength="14" maxlength="1024" aria-describedby="encryptedPasswordHint">
@@ -393,16 +405,31 @@
                                 </div>
                                 <div class="encrypted-transfer__actions">
                                     <button type="submit" class="btn-info" id="encryptedUploadStartBtn" data-i18n="encryptedUploadStart">Зашифровать и отправить</button>
-                                    <button type="button" class="btn-ghost" id="encryptedUploadPauseBtn" data-i18n="encryptedUploadPause" disabled>Пауза</button>
-                                    <button type="button" class="btn-ghost" id="encryptedUploadResumeBtn" data-i18n="encryptedUploadResume" disabled>Продолжить</button>
-                                    <button type="button" class="btn-danger" id="encryptedUploadCancelBtn" data-i18n="encryptedUploadCancel" disabled>Отменить и удалить</button>
+                                    <button type="button" class="btn-ghost" id="encryptedUploadPauseBtn" data-i18n="encryptedUploadPause" disabled hidden>Пауза</button>
+                                    <button type="button" class="btn-ghost" id="encryptedUploadResumeBtn" data-i18n="encryptedUploadResume" disabled hidden>Продолжить</button>
+                                    <button type="button" class="btn-danger" id="encryptedUploadCancelBtn" data-i18n="encryptedUploadCancel" disabled hidden>Отменить и удалить</button>
                                 </div>
                             </form>
 
+                            <section class="encrypted-transfer__queue" aria-labelledby="encryptedQueueTitle">
+                                <div class="encrypted-transfer__list-header">
+                                    <h4 id="encryptedQueueTitle" data-i18n="encryptedQueueTitle">Очередь передачи</h4>
+                                </div>
+                                <div class="encrypted-transfer__list" id="encryptedQueueList" role="list" aria-labelledby="encryptedQueueTitle"></div>
+                            </section>
+
                             <div class="encrypted-transfer__progress" id="encryptedProgressRegion">
-                                <label for="encryptedUploadProgress" data-i18n="encryptedProgressLabel">Прогресс зашифрованной загрузки</label>
+                                <div class="encrypted-transfer__progress-heading">
+                                    <label for="encryptedUploadProgress" data-i18n="encryptedProgressLabel">Прогресс передачи</label>
+                                    <output id="encryptedProgressPercent" for="encryptedUploadProgress">0%</output>
+                                </div>
                                 <progress id="encryptedUploadProgress" max="100" value="0">0%</progress>
                                 <p id="encryptedTransferStatus" role="status" aria-live="polite" aria-atomic="true" data-i18n="encryptedStatusIdle">Готово к выбору файла</p>
+                                <dl class="encrypted-transfer__metrics">
+                                    <div><dt data-i18n="encryptedTransferBytes">Передано</dt><dd id="encryptedProgressBytes">—</dd></div>
+                                    <div><dt data-i18n="encryptedTransferSpeed">Скорость</dt><dd id="encryptedProgressSpeed">—</dd></div>
+                                    <div><dt data-i18n="encryptedTransferEta">Осталось</dt><dd id="encryptedProgressEta">—</dd></div>
+                                </dl>
                             </div>
 
                             <form class="encrypted-transfer__secondary-form" id="encryptedResumeForm" hidden novalidate>
@@ -444,6 +471,7 @@
                                         <button type="button" class="btn-ghost btn--sm" id="encryptedRefreshBtn" data-i18n="encryptedRefresh">Обновить</button>
                                     </div>
                                     <div class="encrypted-transfer__list" id="encryptedPartialList" role="list" aria-labelledby="encryptedPartialTitle"></div>
+                                    <p class="field-hint" id="encryptedRetentionHint" hidden></p>
                                 </section>
                                 <section aria-labelledby="encryptedFilesTitle">
                                     <div class="encrypted-transfer__list-header">
@@ -452,6 +480,24 @@
                                     <div class="encrypted-transfer__list" id="encryptedFileList" role="list" aria-labelledby="encryptedFilesTitle"></div>
                                 </section>
                             </div>
+
+                            <section class="encrypted-transfer__cache" id="encryptedCacheRegion" aria-labelledby="encryptedCacheTitle">
+                                <div class="encrypted-transfer__list-header">
+                                    <h4 id="encryptedCacheTitle" data-i18n="encryptedCacheTitle">Докачка на этом устройстве</h4>
+                                    <div class="encrypted-transfer__cache-actions">
+                                        <output id="encryptedCacheSize" aria-label="Объём локального кэша" data-i18n-aria-label="encryptedCacheSizeLabel">0 B</output>
+                                        <button type="button" class="btn-ghost btn--sm" id="encryptedCacheClearBtn" data-i18n="encryptedCacheClear">Очистить кэш</button>
+                                    </div>
+                                </div>
+                                <p class="inline-hint" data-i18n="encryptedCacheDescription">Для докачки браузер хранит только зашифрованные блоки — без имён, паролей и ключей. Нужно дополнительное место примерно размером файла.</p>
+                                <div class="encrypted-transfer__list" id="encryptedCacheList" role="list" aria-labelledby="encryptedCacheTitle"></div>
+                                <p class="field-hint" data-i18n="encryptedCacheCleanupHint">Кэш удаляется после успешного сохранения или вручную. Неактивный кэш старше 7 дней очищается при следующем открытии сайта; при закрытом сайте очистка не выполняется.</p>
+                            </section>
+
+                            <details class="encrypted-transfer__details">
+                                <summary data-i18n="encryptedTechnicalDetails">Как защищены файлы</summary>
+                                <p class="inline-hint" data-i18n="encryptedTechnicalDescription">AES-256-GCM, формат EUF v1. Блоки по 8 МиБ, два параллельных запроса. Содержимое и имя файла шифруются на устройстве до отправки; пароль расшифровки потребуется снова после закрытия страницы.</p>
+                            </details>
                         </section>
                     </div>
                     </section>
@@ -1063,6 +1109,8 @@
     <script src="/static/ui/upload.js"></script>
     <script src="/static/ui/requests.js"></script>
     <script src="/static/ui/encrypted-transfer-crypto.js"></script>
+    <script src="/static/ui/encrypted-transfer-persistence.js"></script>
+    <script src="/static/ui/encrypted-transfer-network.js"></script>
     <script src="/static/ui/encrypted-transfer.js"></script>
     <script src="/static/ui/smuggle.js"></script>
     <script src="/static/ui/files.js"></script>

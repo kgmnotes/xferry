@@ -7,7 +7,6 @@ import binascii
 import hashlib
 import hmac
 import json
-import math
 import re
 import struct
 from dataclasses import dataclass
@@ -22,7 +21,10 @@ _FILE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 EUF_VERSION = 1
 EUF_CHUNK_SIZE = 8 * 1024 * 1024
-EUF_MAX_FILE_SIZE = 2048 * 1024 * 1024
+# Bound per-chunk journals well below the 1 MiB sidecar read limit. This is a
+# storage/recovery safety boundary, not an operator's per-file quota.
+EUF_MAX_CHUNK_COUNT = 4096
+EUF_MAX_FILE_SIZE = EUF_MAX_CHUNK_COUNT * EUF_CHUNK_SIZE
 EUF_PBKDF2_ITERATIONS = 600_000
 EUF_GCM_TAG_SIZE = 16
 EUF_MAX_METADATA_SIZE = 4096
@@ -64,7 +66,7 @@ class EncryptedTransferManifest:
             )
         if self.chunk_size != EUF_CHUNK_SIZE:
             raise EncryptedTransferValidationError(f"chunk_size must be exactly {EUF_CHUNK_SIZE}")
-        expected_count = math.ceil(self.plaintext_size / self.chunk_size)
+        expected_count = (self.plaintext_size + self.chunk_size - 1) // self.chunk_size
         if self.chunk_count != expected_count:
             raise EncryptedTransferValidationError(f"chunk_count must be exactly {expected_count}")
         if not isinstance(self.salt, bytes) or len(self.salt) != 16:

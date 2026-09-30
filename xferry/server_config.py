@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE
+from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE, EUF_MAX_FILE_SIZE
 from .extensions import PluginSpec
 from .features import registry_methods
 from .request_admission import is_unspecified_host, normalize_allowed_hosts, parse_http_origin
@@ -26,7 +26,7 @@ class ServerLimits:
     """Request, storage, and worker limits used by one server instance."""
 
     max_upload_size: int = 100 * 1024 * 1024
-    encrypted_upload_max_size: int = 2048 * 1024 * 1024
+    encrypted_upload_max_size: int = EUF_MAX_FILE_SIZE
     encrypted_upload_incomplete_ttl: float = 86400
     upload_storage_limit: int | None = None
     upload_file_limit: int | None = None
@@ -137,8 +137,8 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
     _require_int(
         "encrypted_upload_max_size",
         limits.encrypted_upload_max_size,
-        minimum=1,
-        maximum=2048 * 1024 * 1024,
+        minimum=0,
+        maximum=EUF_MAX_FILE_SIZE,
     )
     _require_number(
         "encrypted_upload_incomplete_ttl",
@@ -188,6 +188,7 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
             )
     limits = replace(
         limits,
+        encrypted_upload_max_size=limits.encrypted_upload_max_size or EUF_MAX_FILE_SIZE,
         upload_storage_limit=limits.upload_storage_limit or None,
         upload_file_limit=limits.upload_file_limit or None,
         note_storage_limit=limits.note_storage_limit or None,

@@ -313,9 +313,9 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
             metavar="MB",
             parser_kind="integer",
             parser_label="encrypted upload max size",
-            minimum=1,
-            maximum=2048,
-            help="Max encrypted-upload plaintext size in MB (default: {default})",
+            minimum=0,
+            maximum=32768,
+            help="Max encrypted-upload plaintext size in MB; 0 = automatic (default: {default})",
         ),
     ),
     (

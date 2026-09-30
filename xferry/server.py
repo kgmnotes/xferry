@@ -337,7 +337,7 @@ class XFerryServer(HandlerMixin):
         return {
             "enabled": True,
             "version": EUF_VERSION,
-            "max_plaintext_size": self.encrypted_upload_max_size,
+            "max_plaintext_size": self.encrypted_storage.capacity()["max_plaintext_size"],
             "chunk_size": EUF_CHUNK_SIZE,
             "parallel_chunks": 2,
             "browser_decryption": True,

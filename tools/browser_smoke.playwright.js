@@ -14,14 +14,15 @@ async (page) => {
   const rootUrl = String(baseUrl || "").replace(/#.*$/, "");
   const topTabContract = [
     { id: "tab-upload", target: "upload", key: "topTabUpload" },
+    { id: "tab-large-files", target: "large-files", key: "topTabLargeFiles", optional: true },
     { id: "tab-files", target: "files", key: "topTabFiles" },
     { id: "tab-request", target: "request", key: "tabRequests" },
     { id: "tab-opsec", target: "opsec", key: "tabOpsec" },
     { id: "tab-notepad", target: "notepad", key: "tabNotepad" },
   ];
   const topTabLabels = {
-    ru: ["Отправить", "Получить", "Запросы", "Расширенные", "Блокнот"],
-    en: ["Upload", "Download", "Requests", "Advanced", "Notepad"],
+    ru: ["Отправить", "Большие файлы", "Получить", "Запросы", "Расширенные", "Блокнот"],
+    en: ["Upload", "Large files", "Download", "Requests", "Advanced", "Notepad"],
   };
 
   function requestPathname(request) {
@@ -1125,6 +1126,9 @@ async (page) => {
       await waitForUploadMethodState("POST", { focused: true });
 
       for (const tab of topTabContract) {
+        if (await page.locator(`#${tab.id}`).isHidden()) {
+          continue;
+        }
         await page.locator(`#${tab.id}`).click();
         await waitForTabState(tab.target, { focused: true });
         const originalDisclosureState = await page.evaluate((target) => {
@@ -4130,9 +4134,13 @@ async (page) => {
             tab.dataset.toolEntry === expectedTabs[index].target &&
             tab.dataset.i18n === expectedTabs[index].key &&
             tab.textContent.trim() === expectedLabels[index] &&
-            !tab.hidden
+            (expectedTabs[index].optional || !tab.hidden)
           ));
-        const rects = tabs.map((tab) => {
+        const visibleTabs = tabs.filter((tab) => !tab.hidden);
+        const encryptedState = window.XferryApp?.getState("encrypted-transfer");
+        const largeFilesTab = document.getElementById("tab-large-files");
+        const gatingOk = largeFilesTab.hidden === !Boolean(encryptedState?.enabled);
+        const rects = visibleTabs.map((tab) => {
           const rect = tab.getBoundingClientRect();
           return {
             id: tab.id,
@@ -4146,7 +4154,9 @@ async (page) => {
           .slice()
           .sort((a, b) => (a.top - b.top) || (a.left - b.left))
           .map((item) => item.id);
-        const expectedIds = expectedTabs.map((tab) => tab.id);
+        const expectedIds = expectedTabs.filter((tab) => (
+          !tab.optional || !document.getElementById(tab.id).hidden
+        )).map((tab) => tab.id);
         const visibleOk = rects.every((rect) => rect.width > 0 && rect.height > 0);
         const redundantHeadingsAbsent = ["upload", "files", "opsec", "notepad"].every(
           (target) => !document.querySelector(`#${target}-tab > .workspace-view__header`)
@@ -4162,6 +4172,7 @@ async (page) => {
         );
         return (
           domOrderOk &&
+          gatingOk &&
           visibleOk &&
           redundantHeadingsAbsent &&
           visualOrder.join(",") === expectedIds.join(",") &&
@@ -4183,7 +4194,12 @@ async (page) => {
       null,
       timeout
     );
-    for (const target of ["files", "request", "opsec", "notepad"]) {
+    const keyboardTargets = await page.evaluate(() => (
+      Array.from(document.querySelectorAll('.mode-tabs .tab[role="tab"][data-tab-target]'))
+        .filter((tab) => !tab.hidden && tab.dataset.tabTarget !== "upload")
+        .map((tab) => tab.dataset.tabTarget)
+    ));
+    for (const target of keyboardTargets) {
       await page.keyboard.press("ArrowRight");
       await waitForTabState(target, { focused: true }, timeout);
     }
@@ -4196,7 +4212,9 @@ async (page) => {
       await page.goto(`${rootUrl}#${tab.target}`, { waitUntil: "domcontentloaded" });
       await waitForSpaReady();
       await waitForAdvancedUploadReady();
-      await waitForTabState(tab.target, {}, timeout);
+      const expectedTarget = tab.optional && await page.locator(`#${tab.id}`).isHidden()
+        ? "upload" : tab.target;
+      await waitForTabState(expectedTarget, {}, timeout);
     }
   }
 
@@ -4329,7 +4347,7 @@ async (page) => {
     }
     await waitForPageCondition("mode tabs are ordered", () => {
       const ids = Array.from(document.querySelectorAll('.tab[role="tab"][data-tab-target]')).map((tab) => tab.id);
-      return ids.join(",") === "tab-upload,tab-files,tab-request,tab-opsec,tab-notepad";
+      return ids.join(",") === "tab-upload,tab-large-files,tab-files,tab-request,tab-opsec,tab-notepad";
     });
     await waitForText(page.locator("#notepadNoteList"), noteListText);
     await waitForText(page.locator("#notepadCharCount"), charCountText);
@@ -11907,6 +11925,8 @@ async (page) => {
     page.on("request", recordEncryptedRequest);
 
     try {
+      await page.locator("#tab-large-files").waitFor({ state: "visible", timeout: 30000 });
+      await page.locator("#tab-large-files").click();
       await page.locator("#encryptedTransferPanel").waitFor({ state: "visible", timeout: 30000 });
       await waitForPageCondition(
         "encrypted transfer capability is ready",
@@ -12040,6 +12060,12 @@ async (page) => {
         throw new Error(`Client-side decrypted bytes differ: ${JSON.stringify(downloadedBytes)}`);
       }
 
+      await page.locator('[data-encrypted-action="unlock"]').click();
+      await page.locator('#encryptedUnlockPasswordInput').fill(password);
+      await page.locator('#encryptedUnlockSelectedBtn').click();
+      await waitForPageCondition("unlock again after keys were cleared", ([id]) =>
+        window.XferryApp.getState("encrypted-transfer").encryptedFiles.some(file => file.id === id && file.unlocked), [fileId], 30000);
+      await page.locator('details').filter({ has: page.locator('[data-encrypted-action="download-server"]') }).locator(':scope > summary').click();
       await page.locator('[data-encrypted-action="download-server"]').click();
       await confirmAppDialog(/decrypt|расшифр/i, 30000);
       await waitForPageCondition(
@@ -12072,7 +12098,7 @@ async (page) => {
       ));
       const ciphertextRequest = encryptedRequests.find((request) => (
         request.method === "GET" &&
-        request.path === `/_xferry/encrypted-files/${fileId}/data`
+        request.path === `/_xferry/encrypted-files/${fileId}/chunks/0`
       ));
       const decryptRequest = encryptedRequests.find((request) => (
         request.method === "POST" &&

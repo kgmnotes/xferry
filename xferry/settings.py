@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
 
+from .encrypted_transfer import EUF_MAX_FILE_SIZE
 from .handlers.smuggle import (
     DEFAULT_SMUGGLE_TEMP_MAX_AGE_SECONDS,
     DEFAULT_SMUGGLE_TEMP_MAX_BYTES,
@@ -79,7 +80,7 @@ class ServerSettings:
     encrypted_uploads: bool = False
 
     max_size_mb: int = 100
-    encrypted_upload_max_size_mb: int = 2048
+    encrypted_upload_max_size_mb: int = 0
     encrypted_upload_incomplete_ttl_seconds: int = 86400
     upload_storage_limit_mb: int = 0
     upload_file_limit: int = 0
@@ -142,8 +143,8 @@ class ServerSettings:
         _require_int_range(
             "encrypted_upload_max_size_mb",
             self.encrypted_upload_max_size_mb,
-            minimum=1,
-            maximum=2048,
+            minimum=0,
+            maximum=EUF_MAX_FILE_SIZE // _MIB,
         )
         _require_int_range(
             "encrypted_upload_incomplete_ttl_seconds",

@@ -49,6 +49,9 @@ _UPLOAD_CHUNK_RE = re.compile(
 _UPLOAD_COMPLETE_RE = re.compile(rf"^{ENCRYPTED_UPLOADS_PATH}/({_FILE_ID_PATTERN})/complete$")
 _FILE_ITEM_RE = re.compile(rf"^{ENCRYPTED_FILES_PATH}/({_FILE_ID_PATTERN})$")
 _FILE_DATA_RE = re.compile(rf"^{ENCRYPTED_FILES_PATH}/({_FILE_ID_PATTERN})/data$")
+_FILE_CHUNK_RE = re.compile(
+    rf"^{ENCRYPTED_FILES_PATH}/({_FILE_ID_PATTERN})/chunks/(0|[1-9][0-9]*)$"
+)
 _FILE_DECRYPT_RE = re.compile(rf"^{ENCRYPTED_FILES_PATH}/({_FILE_ID_PATTERN})/decrypt$")
 _CREATE_FIELDS = (
     "version",
@@ -176,6 +179,13 @@ class EncryptedFileHandlersMixin(BaseHandler):
                 return self._encrypted_invalid_field("body")
             return self._download_encrypted_file(storage, match.group(1))
 
+        if match := _FILE_CHUNK_RE.fullmatch(path):
+            if request.method != "GET":
+                return self._encrypted_method_not_allowed(request.method, ("GET",))
+            if request.body:
+                return self._encrypted_invalid_field("body")
+            return self._download_encrypted_chunk(storage, match.group(1), match.group(2))
+
         if match := _FILE_DECRYPT_RE.fullmatch(path):
             if request.method != "POST":
                 return self._encrypted_method_not_allowed(request.method, ("POST",))
@@ -278,7 +288,7 @@ class EncryptedFileHandlersMixin(BaseHandler):
                 "storage_quota_exceeded",
                 "Upload storage quota exceeded",
                 field="plaintext_size",
-                details={"scope": "uploads"},
+                details={"scope": "uploads", "reason": exc.reason, "storage": storage.capacity()},
             )
         except EncryptedTransferValidationError:
             return self._encrypted_invalid_field("plaintext_size")
@@ -375,7 +385,9 @@ class EncryptedFileHandlersMixin(BaseHandler):
                 "encrypted_uploads": [
                     self._encrypted_record_payload(record)
                     for record in storage.list_files(status="partial")
-                ]
+                ],
+                "incomplete_ttl_seconds": storage.incomplete_ttl,
+                "storage": storage.capacity(),
             },
             no_store=True,
         )
@@ -410,6 +422,59 @@ class EncryptedFileHandlersMixin(BaseHandler):
         response.set_header("Content-Disposition", f'attachment; filename="{file_id}.xfr"')
         response.set_header("Cache-Control", "no-store")
         return response
+
+    def _download_encrypted_chunk(
+        self,
+        storage: EncryptedStorageService,
+        file_id: str,
+        raw_index: str,
+    ) -> HTTPResponse:
+        record = storage.get(file_id)
+        if record is None or record.status != "complete":
+            return self._encrypted_not_found()
+        manifest = record.manifest
+        # Bound conversion even for a canonical but arbitrarily long decimal path.
+        if len(raw_index) > len(str(manifest.chunk_count)):
+            return self._encrypted_not_found()
+        index = int(raw_index)
+        if index >= manifest.chunk_count:
+            return self._encrypted_not_found()
+        plaintext_length = min(
+            manifest.chunk_size,
+            manifest.plaintext_size - index * manifest.chunk_size,
+        )
+        ciphertext_length = plaintext_length + EUF_GCM_TAG_SIZE
+        ciphertext_stream = self._open_complete_ciphertext(storage, record)
+        if ciphertext_stream is None:
+            return self._encrypted_not_found()
+        chunks = self._iter_ciphertext_range(
+            ciphertext_stream,
+            offset=index * (manifest.chunk_size + EUF_GCM_TAG_SIZE),
+            length=ciphertext_length,
+        )
+        response = HTTPResponse(200)
+        response.set_iterator(
+            chunks,
+            "application/octet-stream",
+            content_length=ciphertext_length,
+            stream_cleanup=ciphertext_stream.close,
+        )
+        response.set_header("Cache-Control", "no-store")
+        return response
+
+    @staticmethod
+    def _iter_ciphertext_range(stream: BinaryIO, *, offset: int, length: int) -> Iterator[bytes]:
+        try:
+            stream.seek(offset)
+            remaining = length
+            while remaining:
+                block = stream.read(min(65536, remaining))
+                if not block:
+                    raise OSError("encrypted data is truncated")
+                remaining -= len(block)
+                yield block
+        finally:
+            stream.close()
 
     def _decrypt_encrypted_file(
         self,
@@ -540,7 +605,7 @@ class EncryptedFileHandlersMixin(BaseHandler):
         if (
             isinstance(plaintext_size, bool)
             or not isinstance(plaintext_size, int)
-            or not 0 <= plaintext_size <= min(EUF_MAX_FILE_SIZE, storage.max_plaintext_size)
+            or not 0 <= plaintext_size <= EUF_MAX_FILE_SIZE
         ):
             return None, self._encrypted_invalid_field("plaintext_size")
         chunk_size = payload["chunk_size"]

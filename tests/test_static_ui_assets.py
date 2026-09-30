@@ -581,6 +581,7 @@ def test_russian_locale_uses_russian_swg_tool_copy() -> None:
 
     assert extract_top_tab_buttons(html) == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -690,6 +691,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
 
     expected_ru_labels = {
         "topTabUpload": "Отправить",
+        "topTabLargeFiles": "Большие файлы",
         "topTabFiles": "Получить",
         "tabRequests": "Запросы",
         "tabOpsec": "Расширенные",
@@ -697,6 +699,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
     }
     expected_en_labels = {
         "topTabUpload": "Upload",
+        "topTabLargeFiles": "Large files",
         "topTabFiles": "Download",
         "tabRequests": "Requests",
         "tabOpsec": "Advanced",
@@ -709,6 +712,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
 
     assert extract_top_tab_buttons(html) == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -726,7 +730,7 @@ def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_head
         encoding="utf-8"
     )
 
-    assert extract_top_tab_buttons(html)[:2] == [
+    assert [tab for tab in extract_top_tab_buttons(html) if tab[0] != "tab-large-files"][:2] == [
         ("tab-upload", "topTabUpload", "Upload"),
         ("tab-files", "topTabFiles", "Download"),
     ]
@@ -735,7 +739,7 @@ def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_head
     assert 'topTabUpload: "Upload"' in core_js
     assert 'topTabFiles: "Download"' in core_js
 
-    for panel_id in ("upload-tab", "files-tab", "opsec-tab", "notepad-tab"):
+    for panel_id in ("upload-tab", "large-files-tab", "files-tab", "opsec-tab", "notepad-tab"):
         panel = extract_workspace_panel(html, panel_id)
         assert 'class="workspace-view__header"' not in panel
 
@@ -1598,6 +1602,7 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
     top_tabs = extract_top_tab_buttons(html)
     assert top_tabs == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -1676,6 +1681,8 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "/static/ui/upload.js",
         "/static/ui/requests.js",
         "/static/ui/encrypted-transfer-crypto.js",
+        "/static/ui/encrypted-transfer-persistence.js",
+        "/static/ui/encrypted-transfer-network.js",
         "/static/ui/encrypted-transfer.js",
         "/static/ui/smuggle.js",
         "/static/ui/files.js",
@@ -1701,6 +1708,8 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "upload.js": "initializeUpload",
         "requests.js": "initializeRequests",
         "encrypted-transfer-crypto.js": "initializeEncryptedTransferCrypto",
+        "encrypted-transfer-persistence.js": "initializeEncryptedTransferPersistence",
+        "encrypted-transfer-network.js": "initializeEncryptedTransferNetwork",
         "encrypted-transfer.js": "initializeEncryptedTransfer",
         "smuggle.js": "initializeSmuggle",
         "files.js": "initializeFiles",

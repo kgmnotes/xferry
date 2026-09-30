@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Literal
 
 from .encrypted_transfer import (
+    EUF_CHUNK_SIZE,
     EUF_GCM_TAG_SIZE,
+    EUF_MAX_FILE_SIZE,
     EncryptedTransferManifest,
     EncryptedTransferValidationError,
     b64url_decode,
@@ -161,7 +163,7 @@ class EncryptedStorageService:
 
         self.root_dir = Path(root_dir)
         self.upload_storage = upload_storage
-        self.max_plaintext_size = max_plaintext_size
+        self.max_plaintext_size = min(max_plaintext_size or EUF_MAX_FILE_SIZE, EUF_MAX_FILE_SIZE)
         self.incomplete_ttl = float(incomplete_ttl)
         self._clock = clock or time.time
         self._lock = threading.RLock()
@@ -193,6 +195,26 @@ class EncryptedStorageService:
             raise EncryptedTransferValidationError(
                 f"plaintext_size exceeds configured maximum {self.max_plaintext_size}"
             )
+
+    def capacity(self) -> dict[str, int | None]:
+        """Advertise the largest new file after tags, quota and disk headroom."""
+        with self._lock:
+            self._expire_incomplete_locked(self._now())
+            snapshot = self.upload_storage.capacity()
+            available = snapshot["available_bytes"]
+            assert available is not None
+            low, high = 0, min(self.max_plaintext_size, available)
+            while low < high:
+                middle = (low + high + 1) // 2
+                chunks = (middle + EUF_CHUNK_SIZE - 1) // EUF_CHUNK_SIZE
+                if middle + chunks * EUF_GCM_TAG_SIZE <= available:
+                    low = middle
+                else:
+                    high = middle - 1
+            snapshot["max_plaintext_size"] = 0 if snapshot["remaining_files"] == 0 else low
+            snapshot["technical_max_plaintext_size"] = EUF_MAX_FILE_SIZE
+            snapshot["configured_max_plaintext_size"] = self.max_plaintext_size
+            return snapshot
 
     def _state_path(self, file_id: str) -> Path:
         file_id_bytes(file_id)
@@ -251,7 +273,8 @@ class EncryptedStorageService:
         except OSError as exc:
             if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
                 raise UploadStorageQuotaExceeded(
-                    "Upload storage has insufficient disk space."
+                    "Upload storage has insufficient disk space.",
+                    reason="free_space",
                 ) from exc
             raise
         finally:
@@ -294,6 +317,8 @@ class EncryptedStorageService:
 
     def _write_state(self, record: EncryptedStoredFile) -> None:
         payload = self._record_to_json(record)
+        if len(payload) > _MAX_STATE_BYTES:
+            raise EncryptedTransferValidationError("encrypted recovery journal exceeds its limit")
         target = self._state_path(record.file_id)
         temporary = self.state_dir / f".{record.file_id}.{secrets.token_hex(12)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
@@ -364,7 +389,8 @@ class EncryptedStorageService:
                     field="encrypted_metadata",
                 ),
             )
-            self._validate_manifest(manifest)
+            # The operator's new-upload limit must not hide existing files or
+            # invalidate their recovery journal after a configuration change.
         except (EncryptedTransferValidationError, TypeError, ValueError) as exc:
             raise EncryptedStorageCorrupt("invalid manifest") from exc
         return manifest
@@ -493,7 +519,8 @@ class EncryptedStorageService:
 
     def create(self, manifest: EncryptedTransferManifest) -> EncryptedCreateResult:
         """Create a pre-sized partial file, or validate an identical retry."""
-        self._validate_manifest(manifest)
+        if not isinstance(manifest, EncryptedTransferManifest):
+            raise TypeError("manifest must be an EncryptedTransferManifest")
         with self._lock:
             self._expire_incomplete_locked(self._now())
             existing = self.get(manifest.file_id)
@@ -501,6 +528,8 @@ class EncryptedStorageService:
                 if existing.manifest != manifest:
                     raise EncryptedStorageConflict("encrypted file ID already has another manifest")
                 return EncryptedCreateResult(existing, created=False)
+
+            self._validate_manifest(manifest)
 
             part_path = self._part_path(manifest.file_id)
             complete_path = self._complete_path(manifest.file_id)
@@ -583,7 +612,7 @@ class EncryptedStorageService:
             raise EncryptedTransferValidationError("chunk ciphertext must be bytes")
         if not isinstance(resume_mac, bytes) or len(resume_mac) != 32:
             raise EncryptedTransferValidationError("resume MAC must contain exactly 32 bytes")
-        with self._lock:
+        with self._lock, self.upload_storage.mutation():
             record = self._require_file(file_id)
             expected_length = self._expected_chunk_length(record.manifest, index)
             if len(ciphertext) != expected_length:
@@ -651,6 +680,10 @@ class EncryptedStorageService:
             raise EncryptedStorageCorrupt("encrypted data has an unexpected type or size")
 
     def _finish_committing(self, record: EncryptedStoredFile) -> EncryptedStoredFile:
+        with self.upload_storage.mutation():
+            return self._publish_committing_locked(record)
+
+    def _publish_committing_locked(self, record: EncryptedStoredFile) -> EncryptedStoredFile:
         part_path = self._part_path(record.file_id)
         complete_path = self._complete_path(record.file_id)
         part_exists = part_path.exists() and not part_path.is_symlink()
@@ -724,14 +757,16 @@ class EncryptedStorageService:
         state_path = self._state_path(file_id)
         part_path = self._part_path(file_id)
         complete_path = self._complete_path(file_id)
-        existed = any(
-            path.exists() or path.is_symlink() for path in (state_path, part_path, complete_path)
-        )
-        for path in (part_path, complete_path, state_path):
-            path.unlink(missing_ok=True)
-        if existed:
-            self._fsync_directory(self.data_dir)
-            self._fsync_directory(self.state_dir)
+        with self.upload_storage.mutation():
+            existed = any(
+                path.exists() or path.is_symlink()
+                for path in (state_path, part_path, complete_path)
+            )
+            for path in (part_path, complete_path, state_path):
+                path.unlink(missing_ok=True)
+            if existed:
+                self._fsync_directory(self.data_dir)
+                self._fsync_directory(self.state_dir)
         return existed
 
     def _expire_incomplete_locked(self, current: float) -> tuple[str, ...]:
@@ -778,7 +813,7 @@ class EncryptedStorageService:
 
     def reconcile(self) -> None:
         """Recover interrupted commits and remove unowned/corrupt artifacts."""
-        with self._lock:
+        with self._lock, self.upload_storage.mutation():
             expected_data_names: set[str] = set()
             for temporary in self.state_dir.glob("*.tmp"):
                 temporary.unlink(missing_ok=True)

@@ -12,6 +12,19 @@ UI_ROOT = REPO_ROOT / "xferry" / "data" / "static" / "ui"
 
 
 def _run_node(script: str, *paths: Path) -> subprocess.CompletedProcess[str]:
+    if paths and paths[0].name == "encrypted-transfer.js":
+        install = """
+const { installTransferServices } = require('./tests/encrypted_workflow_harness.js');
+const transferServices = installTransferServices(
+  app, require('node:path').dirname(process.argv[1]),
+  typeof transferFixtureOptions === 'undefined' ? {} : transferFixtureOptions
+);
+"""
+        script = script.replace(
+            "vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8')",
+            install + "vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8')",
+            1,
+        )
     return subprocess.run(
         ["node", "-e", script, *(str(path) for path in paths)],
         cwd=REPO_ROOT,
@@ -280,6 +293,142 @@ process.stdout.write(JSON.stringify({
         assert observed[key]["ariaHidden"] == "true"
 
 
+def test_encrypted_transfer_ui_loads_remote_lists_when_it_first_becomes_available() -> None:
+    """A fresh page must not claim that the encrypted store is empty before refreshing it."""
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+const CHUNK_SIZE = 8 * 1024 * 1024;
+const FILE_ID = '00112233445566778899aabbccddeeff';
+const workflows = new Map();
+const fetchCalls = [];
+const capability = {
+  enabled: true,
+  version: 1,
+  max_plaintext_size: 2147483648,
+  chunk_size: CHUNK_SIZE,
+  parallel_chunks: 2,
+  browser_decryption: true,
+  server_decryption: true,
+};
+const record = {
+  id: FILE_ID,
+  version: 1,
+  plaintext_size: 5,
+  ciphertext_size: 21,
+  chunk_size: CHUNK_SIZE,
+  chunk_count: 1,
+  salt: Buffer.alloc(16, 1).toString('base64url'),
+  nonce_prefix: Buffer.alloc(8, 2).toString('base64url'),
+  encrypted_metadata: Buffer.alloc(32, 3).toString('base64url'),
+  status: 'complete',
+  received_chunks: [{
+    index: 0,
+    resume_mac: Buffer.alloc(32, 4).toString('base64url'),
+  }],
+  created_at: 1,
+  updated_at: 2,
+};
+const panel = {
+  hidden: true,
+  setAttribute() {},
+};
+const refreshButton = {
+  disabled: true,
+  addEventListener() {},
+};
+const core = {
+  t: key => key,
+  formatSize: String,
+  serverUrl: '',
+  announceLiveRegion() {},
+  getState: () => ({
+    serverDiscoveryStatus: 'ready',
+    encryptedUploadCapabilities: capability,
+  }),
+};
+const app = {
+  events: {
+    SERVER_METHODS_CHANGED: 'server.methods.changed',
+    LOCALE_CHANGED: 'locale.changed',
+  },
+  service(name) {
+    if (name === 'core') return core;
+    if (name === 'encrypted-transfer-crypto') {
+      return {
+        chunkSize: CHUNK_SIZE,
+        decodeBase64Url: value => new Uint8Array(Buffer.from(value, 'base64url')),
+      };
+    }
+    if (name === 'notifications') return { show() {}, update() {}, dismiss() {} };
+    if (name === 'dialogs') return { confirm: async () => false, notice: async () => {} };
+    throw new Error(`Unexpected service: ${name}`);
+  },
+  registerWorkflow(name, definition) { workflows.set(name, definition); },
+  on() {},
+  getState(name) { return workflows.get(name).getState(); },
+};
+globalThis.window = { XferryApp: app };
+globalThis.document = {
+  getElementById(id) {
+    if (id === 'encryptedTransferPanel') return panel;
+    if (id === 'encryptedRefreshBtn') return refreshButton;
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+globalThis.indexedDB = undefined;
+globalThis.fetch = async url => {
+  fetchCalls.push(url);
+  if (url.endsWith('/encrypted-uploads')) {
+    return { ok: true, status: 200, json: async () => ({ encrypted_uploads: [] }) };
+  }
+  if (url.endsWith('/encrypted-files')) {
+    return { ok: true, status: 200, json: async () => ({ encrypted_files: [record] }) };
+  }
+  throw new Error(`Unexpected URL: ${url}`);
+};
+
+vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: process.argv[1] });
+
+(async () => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (app.getState('encrypted-transfer').encryptedFiles.length === 1) break;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  process.stdout.write(JSON.stringify({
+    fetchCalls,
+    state: app.getState('encrypted-transfer'),
+  }));
+})().catch(error => {
+  process.stderr.write(String(error.stack || error));
+  process.exitCode = 1;
+});
+"""
+
+    completed = _run_node(script, UI_ROOT / "encrypted-transfer.js")
+
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert observed["fetchCalls"] == [
+        "/_xferry/encrypted-uploads",
+        "/_xferry/encrypted-files",
+    ]
+    assert observed["state"]["partialUploads"] == []
+    assert observed["state"]["encryptedFiles"] == [
+        {
+            "id": "00112233445566778899aabbccddeeff",
+            "plaintextSize": 5,
+            "chunkCount": 1,
+            "unlocked": False,
+            "name": "",
+            "contentType": "",
+            "lastModifiedMs": None,
+        }
+    ]
+
+
 def test_core_retains_encrypted_upload_capability_from_ping() -> None:
     """Dropping the PING field in core would keep the encrypted UI permanently hidden."""
     script = r"""
@@ -405,6 +554,10 @@ const workflows = new Map();
 const listeners = new Map();
 const persisted = [];
 const deletedProgress = [];
+const transferFixtureOptions = {
+  onWrite: record => persisted.push(record),
+  onDelete: id => deletedProgress.push(id),
+};
 const fetchCalls = [];
 const pendingChunks = [];
 const sliceCalls = [];
@@ -412,45 +565,7 @@ let activeChunks = 0;
 let maxActiveChunks = 0;
 let randomCall = 0;
 
-function idbRequest(result) {
-  const request = {};
-  queueMicrotask(() => {
-    request.result = result;
-    if (request.onsuccess) request.onsuccess({ target: request });
-  });
-  return request;
-}
-
-globalThis.indexedDB = {
-  open() {
-    const request = {};
-    queueMicrotask(() => {
-      const db = {
-        objectStoreNames: { contains: () => true },
-        transaction() {
-          return {
-            objectStore() {
-              return {
-                put(value) {
-                  persisted.push(structuredClone(value));
-                  return idbRequest(undefined);
-                },
-                delete(id) {
-                  deletedProgress.push(id);
-                  return idbRequest(undefined);
-                },
-                getAll() { return idbRequest([]); },
-              };
-            },
-          };
-        },
-      };
-      request.result = db;
-      if (request.onsuccess) request.onsuccess({ target: request });
-    });
-    return request;
-  },
-};
+globalThis.indexedDB = undefined;
 
 const capability = {
   enabled: true,
@@ -577,7 +692,7 @@ const file = {
   arrayBuffer() { throw new Error('whole-file arrayBuffer() must never be called'); },
   slice(start, end) {
     sliceCalls.push([start, end]);
-    return { arrayBuffer: async () => Uint8Array.from([sliceCalls.length]).buffer };
+    return { arrayBuffer: async () => new Uint8Array(end - start).fill(sliceCalls.length).buffer };
   },
 };
 
@@ -662,13 +777,24 @@ async function waitFor(predicate) {
     }
     assert observed["persisted"]
     assert all(
-        set(record) <= {"id", "receivedIndexes", "status", "updatedAt"}
+        set(record)
+        <= {
+            "id",
+            "schemaVersion",
+            "manifest",
+            "attemptedMacs",
+            "receivedIndexes",
+            "status",
+            "updatedAt",
+        }
         for record in observed["persisted"]
     )
     assert all(
         not ({"password", "contentKey", "resumeKey", "name", "encryptedMetadata"} & set(record))
         for record in observed["persisted"]
     )
+    assert all(record["schemaVersion"] == 2 for record in observed["persisted"])
+    assert any(len(record["attemptedMacs"]) == 3 for record in observed["persisted"])
     assert observed["deletedProgress"] == ["101112131415161718191a1b1c1d1e1f"]
     assert observed["state"]["phase"] == "complete"
 
@@ -683,6 +809,7 @@ const CHUNK_SIZE = 8 * 1024 * 1024;
 const workflows = new Map();
 const pending = [];
 const calls = [];
+const remoteRecords = new Map();
 let immediateChunks = false;
 let randomSeed = 0;
 const capability = {
@@ -757,6 +884,10 @@ globalThis.fetch = async (url, options = {}) => {
   if (url.includes('/chunks/')) {
     const index = Number(url.split('/').pop());
     if (immediateChunks) {
+      const id = url.split('/').at(-3);
+      const record = remoteRecords.get(id);
+      record.received_chunks = record.received_chunks.filter(chunk => chunk.index !== index);
+      record.received_chunks.push({ index, resume_mac: options.headers['X-XFerry-Chunk-MAC'] });
       return response({ encrypted_chunk: { index, stored: true } }, 201);
     }
     return new Promise((resolve, reject) => {
@@ -770,10 +901,16 @@ globalThis.fetch = async (url, options = {}) => {
     return response({ encrypted_file: { status: 'complete', completed: true } });
   }
   if (options.method === 'DELETE') {
+    remoteRecords.delete(url.split('/').pop());
     return response({ deleted_encrypted_upload: { id: url.split('/').pop() } });
   }
   if (options.method === 'PUT') {
-    return response(createRecord(url, JSON.parse(options.body)), 201);
+    const created = createRecord(url, JSON.parse(options.body));
+    remoteRecords.set(created.encrypted_upload.id, created.encrypted_upload);
+    return response(created, 201);
+  }
+  if ((options.method || 'GET') === 'GET' && remoteRecords.has(url.split('/').pop())) {
+    return response({ encrypted_upload: structuredClone(remoteRecords.get(url.split('/').pop())) });
   }
   throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`);
 };
@@ -784,7 +921,9 @@ function file(name, chunks) {
     type: 'application/octet-stream',
     size: CHUNK_SIZE * chunks,
     lastModified: 1,
-    slice: () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }),
+    slice: (start, end) => ({
+      arrayBuffer: async () => new Uint8Array(end - start).fill(1).buffer,
+    }),
   };
 }
 const overlappingRecord = {
@@ -933,7 +1072,10 @@ const codec = {
   deriveKeys: async () => ({
     contentKey: new Uint8Array(32).fill(1), resumeKey: new Uint8Array(32).fill(2),
   }),
-  encryptMetadata: async () => encryptedMetadata.slice(),
+  encryptMetadata: async () => { throw new Error('resuming must never re-encrypt metadata'); },
+  decryptMetadata: async () => ({
+    name: 'resume.bin', content_type: 'application/octet-stream', last_modified_ms: 123,
+  }),
   encryptChunk: async (_bytes, _key, _manifest, index) => Uint8Array.from([index]),
   computeResumeMac: async (bytes) => new Uint8Array(32).fill(bytes[0]),
 };
@@ -978,6 +1120,20 @@ const record = {
   created_at: 1,
   updated_at: 2,
 };
+const transferFixtureOptions = {
+  uploads: new Map([[FILE_ID, {
+    id: FILE_ID,
+    schemaVersion: 2,
+    manifest: {
+      id: FILE_ID, version: record.version, plaintext_size: record.plaintext_size,
+      chunk_size: record.chunk_size, chunk_count: record.chunk_count,
+      salt: record.salt, nonce_prefix: record.nonce_prefix,
+      encrypted_metadata: record.encrypted_metadata,
+    },
+    attemptedMacs: { 0: Buffer.alloc(32, 7).toString('base64url') },
+    receivedIndexes: [0], status: 'partial', updatedAt: Date.now(),
+  }]]),
+};
 globalThis.fetch = async (url, options = {}) => {
   calls.push([options.method || 'GET', url]);
   if (url.includes('/chunks/1')) {
@@ -986,7 +1142,7 @@ globalThis.fetch = async (url, options = {}) => {
   if (url.endsWith('/complete')) {
     return response({ encrypted_file: { status: 'complete', completed: true } });
   }
-  if (options.method === 'PUT' && url.endsWith(FILE_ID)) {
+  if ((options.method || 'GET') === 'GET' && url.endsWith(FILE_ID)) {
     return response({ encrypted_upload: record });
   }
   throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`);
@@ -999,7 +1155,7 @@ function selectedFile(marker) {
     arrayBuffer() { throw new Error('whole-file read'); },
     slice(start, end) {
       sliceCalls.push([marker, start, end]);
-      return { arrayBuffer: async () => Uint8Array.from([marker]).buffer };
+      return { arrayBuffer: async () => new Uint8Array(end - start).fill(marker).buffer };
     },
   };
 }
@@ -1038,10 +1194,11 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
     assert completed.returncode == 0, completed.stderr
     observed = json.loads(completed.stdout)
     assert "does not match" in observed["mismatch"]
-    assert observed["callsAfterMismatch"] == 0
+    assert observed["callsAfterMismatch"] == 1
     assert observed["result"] == {"id": "00112233445566778899aabbccddeeff", "status": "complete"}
     assert observed["calls"] == [
-        ["PUT", "/_xferry/encrypted-uploads/00112233445566778899aabbccddeeff"],
+        ["GET", "/_xferry/encrypted-uploads/00112233445566778899aabbccddeeff"],
+        ["GET", "/_xferry/encrypted-uploads/00112233445566778899aabbccddeeff"],
         ["PUT", "/_xferry/encrypted-uploads/00112233445566778899aabbccddeeff/chunks/1"],
         ["POST", "/_xferry/encrypted-uploads/00112233445566778899aabbccddeeff/complete"],
     ]
@@ -1282,7 +1439,7 @@ function dataResponse() {
 globalThis.fetch = async url => {
   if (url.endsWith('/encrypted-uploads')) return jsonResponse({ encrypted_uploads: [] });
   if (url.endsWith('/encrypted-files')) return jsonResponse({ encrypted_files: [record] });
-  if (url.endsWith(`/${FILE_ID}/data`)) return dataResponse();
+  if (url.endsWith(`/${FILE_ID}/chunks/0`)) return dataResponse();
   throw new Error(`Unexpected URL: ${url}`);
 };
 function fileHandle() {
@@ -1308,6 +1465,9 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
     id: FILE_ID, fileHandle: fileHandle(),
   });
   tampered = true;
+  await app.invoke('encrypted-transfer', 'unlock', {
+    id: FILE_ID, password: 'correct horse battery staple',
+  });
   let failure = '';
   try {
     await app.invoke('encrypted-transfer', 'download-client', {
@@ -1468,6 +1628,9 @@ vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: proces
     id: FILE_ID, fileHandle: fileHandle(),
   });
   failNetwork = true;
+  await app.invoke('encrypted-transfer', 'unlock', {
+    id: FILE_ID, password: 'correct horse battery staple',
+  });
   let failure = '';
   try {
     await app.invoke('encrypted-transfer', 'download-server', {

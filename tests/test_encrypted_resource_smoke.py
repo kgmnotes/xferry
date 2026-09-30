@@ -76,6 +76,18 @@ def test_64_mib_encrypted_streaming_round_trip_is_bounded() -> None:
     _assert_round_trip(result, 64)
 
 
+def test_large_smoke_requires_explicit_disk_cost_acknowledgement() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(RESOURCE_SMOKE), "--size-mib", "3072", "--json"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 2
+    assert "requires --allow-large" in completed.stderr
+
+
 @pytest.mark.skipif(
     os.environ.get("XFERRY_RUN_2GIB_SMOKE") != "1",
     reason="set XFERRY_RUN_2GIB_SMOKE=1 to allocate and round-trip 2 GiB",

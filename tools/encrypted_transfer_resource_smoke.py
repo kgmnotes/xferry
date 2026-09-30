@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from xferry import XFerryServer  # noqa: E402
 from xferry.encrypted_transfer import (  # noqa: E402
     EUF_CHUNK_SIZE,
+    EUF_MAX_FILE_SIZE,
     EncryptedFileMetadata,
     EncryptedTransferManifest,
     b64url_encode,
@@ -32,7 +33,7 @@ from xferry.http import HTTPRequest, HTTPResponse  # noqa: E402
 from xferry.server_config import LoggingConfig, ServerConfig, ServerLimits  # noqa: E402
 
 MIB = 1024 * 1024
-MAX_SIZE_MIB = 2048
+MAX_SIZE_MIB = EUF_MAX_FILE_SIZE // MIB
 FILE_ID = "00112233445566778899aabbccddeeff"
 PASSWORD = "resource smoke password"
 
@@ -257,14 +258,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--size-mib", type=int, default=64)
     parser.add_argument(
+        "--allow-large",
         "--allow-2gib",
+        dest="allow_large",
         action="store_true",
-        help="acknowledge the disk/time cost when --size-mib=2048",
+        help="acknowledge the disk/time cost for tests of 2 GiB or larger",
     )
     parser.add_argument("--json", action="store_true", help="emit one JSON result object")
     args = parser.parse_args(argv)
-    if args.size_mib == MAX_SIZE_MIB and not args.allow_2gib:
-        parser.error("--size-mib=2048 requires --allow-2gib")
+    if not 1 <= args.size_mib <= MAX_SIZE_MIB:
+        parser.error(f"--size-mib must be between 1 and {MAX_SIZE_MIB}")
+    if args.size_mib >= 2048 and not args.allow_large:
+        parser.error("--size-mib >= 2048 requires --allow-large (--allow-2gib is an alias)")
 
     with tempfile.TemporaryDirectory(prefix="xferry-encrypted-resource-smoke-") as temp_dir:
         result = run_resource_smoke(args.size_mib, Path(temp_dir))

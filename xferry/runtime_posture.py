@@ -99,6 +99,11 @@ class RuntimePosture:
             public_validation = "disabled by explicit configuration"
         else:
             public_validation = "not requested"
+        encrypted_max = (
+            f"{self.encrypted_upload_max_size_mb} MB"
+            if self.encrypted_upload_max_size_mb
+            else "automatic (quota/free space)"
+        )
 
         lines = [
             "Runtime posture:",
@@ -127,7 +132,7 @@ class RuntimePosture:
             (
                 "  Encrypted uploads: "
                 + (
-                    f"enabled (max: {self.encrypted_upload_max_size_mb} MB; "
+                    f"enabled (max: {encrypted_max}; "
                     f"incomplete TTL: {self.encrypted_upload_incomplete_ttl_seconds}s)"
                     if self.encrypted_uploads
                     else "disabled"

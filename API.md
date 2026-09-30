@@ -776,8 +776,11 @@ liveness is sufficient, if storage grows too large for frequent exact scans.
 
 ## Encrypted Streaming Transfers (EUF v1)
 
-Encrypted transfers are an opt-in, same-origin API for resumable files up to
-the configured 2048 MiB ceiling. The browser encrypts metadata and file bytes
+Encrypted transfers are an opt-in, same-origin API for resumable files admitted
+by remaining shared quota and free space. `encrypted_upload_max_size_mb = 0`
+(the default) selects automatic admission; a positive value sets a lower per-file
+limit. The recovery implementation has a 4096-chunk / 32 GiB technical boundary,
+independent of the operator's shared quota. The browser encrypts metadata and file bytes
 before upload; the server stores only ciphertext and resumability records. The
 feature is disabled by default and does not change Basic or Advanced upload
 routes.
@@ -788,8 +791,8 @@ When disabled, `PING.encrypted_uploads` is exactly:
 {"enabled": false}
 ```
 
-When enabled, it has this closed shape (the maximum is the effective configured
-value in bytes):
+When enabled, it has this closed shape (the maximum is the currently admissible
+plaintext size in bytes, bounded by remaining quota, disk space and file slots):
 
 ```json
 {
@@ -881,7 +884,7 @@ empty file. `ciphertext_size` is `plaintext_size + chunk_count * 16`.
 
 | Request | Success response |
 | --- | --- |
-| `GET /_xferry/encrypted-uploads` | `200 {"encrypted_uploads": [...]}` |
+| `GET /_xferry/encrypted-uploads` | `200 {"encrypted_uploads": [...], "incomplete_ttl_seconds": 86400, "storage": {...}}`; retention and capacity reflect server configuration |
 | `PUT /_xferry/encrypted-uploads/{id}` | `201` when created, `200` for an identical retry; body contains `encrypted_upload` |
 | `GET /_xferry/encrypted-uploads/{id}` | `200 {"encrypted_upload": {...}}` for a partial upload |
 | `DELETE /_xferry/encrypted-uploads/{id}` | `200 {"deleted_encrypted_upload": {"id": "..."}}` |
@@ -891,6 +894,7 @@ empty file. `ciphertext_size` is `plaintext_size + chunk_count * 16`.
 | `GET /_xferry/encrypted-files/{id}` | `200 {"encrypted_file": {...}}` for a complete file |
 | `DELETE /_xferry/encrypted-files/{id}` | `200 {"deleted_encrypted_file": {"id": "..."}}` |
 | `GET /_xferry/encrypted-files/{id}/data` | `200 application/octet-stream`, the concatenated EUF ciphertext |
+| `GET /_xferry/encrypted-files/{id}/chunks/{index}` | `200 application/octet-stream`, exactly one complete file's ciphertext chunk and GCM tag |
 | `POST /_xferry/encrypted-files/{id}/decrypt` | `200`, a streaming plaintext attachment |
 
 All targets are canonical paths with no query or fragment. `{id}` is the
@@ -919,14 +923,56 @@ for an acknowledged chunk is a conflict. Completion succeeds only after every
 chunk is durably acknowledged and transitions `partial -> committing ->
 complete`.
 
-The browser resumes by fetching the partial record, reselecting the original
-local file, re-entering the password, authenticating the encrypted metadata,
-and recomputing every acknowledged `resume_mac` before sending a missing
-chunk. The server never accepts a filename or password in this API.
+The browser stores the original encrypted manifest and a non-secret IndexedDB
+nonce journal. Before first encrypting each content chunk it durably commits
+that chunk's plaintext `K_resume` HMAC to the journal. Resume reselects the
+original local file, re-enters the password, authenticates the metadata, and
+checks every journaled chunk, including chunks whose acknowledgement was lost,
+as well as the server's acknowledged `resume_mac` values. The same file ID,
+content key and nonce must never encrypt changed bytes. If the journal is
+missing, including for legacy incomplete uploads, start a new session with a
+new ID and keys; do not automatically delete the old partial. The server never
+accepts a filename or password in this API.
 
-`GET /_xferry/encrypted-files/{id}/data` supports client-side streaming
-decryption. The client authenticates one chunk at a time and aborts the output
-file on a tag or network failure.
+The partial-list envelope's `incomplete_ttl_seconds` reports the configured
+inactivity retention as a positive number of seconds, separately from the
+closed per-record shape. The project default remains 86400 seconds; operators
+may configure 604800 seconds for seven days. Completed files have no automatic
+expiry.
+
+The additive `storage` object contains `used_bytes`, `quota_bytes` (nullable),
+`disk_free_bytes`, `reserved_free_bytes`, `available_bytes`, `file_count`,
+`file_limit` (nullable), `remaining_files` (nullable), `max_plaintext_size`,
+`configured_max_plaintext_size`, and `technical_max_plaintext_size`. Available
+bytes concern ciphertext, including reservations and unallocated sparse partials;
+the maximum plaintext size subtracts GCM tags and is zero when no file slots remain.
+The seven-field PING capability shape is unchanged, but its `max_plaintext_size`
+is now the current capacity-derived maximum (example values are not defaults).
+Neither snapshot reserves space. Create atomically rechecks admission and returns
+`507 storage_quota_exceeded` with `details.scope = uploads`, `details.reason`
+(`bytes`, `files`, `free_space`, or `storage`) and a fresh `details.storage` snapshot.
+
+`GET /_xferry/encrypted-files/{id}/data` remains the concatenated ciphertext
+download. The chunk GET endpoint allows resumable browser downloads without
+changing EUF v1: an index must be less than `chunk_count`, and empty or partial
+files have no downloadable chunks. The response has exact `Content-Length`
+`min(chunk_size, plaintext_size - index * chunk_size) + 16`, at most
+`8 MiB + 16 bytes`, and `Cache-Control: no-store`. Only GET with an empty body
+is allowed; authentication and same-origin checks remain unchanged. The server
+streams from an opened, size-checked regular-file descriptor and stops at the
+chunk boundary.
+
+The browser authenticates fetched chunks before retaining ciphertext in its
+private Origin Private File System (OPFS) cache. A restored download requires
+the password and an output location again, verifies cached chunks, and fetches
+only missing chunks. Plaintext is written through the File System Access API
+and is never stored in the recovery cache. Network or filesystem failure aborts
+the output stream while keeping verified ciphertext for retry. Success is
+reported after the output stream closes; then its recovery cache is deleted.
+Inactive cache entries older than seven days are deleted when the app next
+opens, or manually through the cache-clear action. Cleanup is not guaranteed
+while the site is closed. The encrypted cache needs roughly one additional
+file's worth of browser storage.
 
 One-shot server decryption requires an explicit UI confirmation and this exact
 JSON body:

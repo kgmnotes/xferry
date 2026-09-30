@@ -79,9 +79,10 @@ class UploadStoragePolicy:
 class UploadStorageQuotaExceeded(Exception):
     """Raised when an upload cannot be committed under the storage policy."""
 
-    def __init__(self, message: str, *, status_code: int = 507) -> None:
+    def __init__(self, message: str, *, status_code: int = 507, reason: str = "storage") -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.reason = reason
 
 
 class UploadStorageService:
@@ -145,6 +146,61 @@ class UploadStorageService:
             parts.append(f"reserve {_format_bytes(self.policy.reserved_free_bytes)} free")
         return ", ".join(parts)
 
+    def _unallocated_encrypted_bytes(self) -> int:
+        """Account for partial-file promises on filesystems without fallocate."""
+        remaining = 0
+        for path in (self.upload_dir / ".xferry-encrypted").glob("*.part"):
+            if path.is_symlink():
+                continue
+            try:
+                metadata = path.stat()
+            except FileNotFoundError:
+                # Concurrent encrypted expiry/delete/commit can remove or
+                # rename a globbed part while ordinary admission holds its
+                # own lock. Do not acquire the encrypted lock in reverse order.
+                continue
+            # Without allocation accounting, conservatively reserve the whole
+            # partial; a sparse file must not defeat the free-space reserve.
+            allocated = getattr(metadata, "st_blocks", 0) * 512
+            remaining += max(0, metadata.st_size - allocated)
+        return remaining
+
+    def capacity(self) -> dict[str, int | None]:
+        """Return an advisory snapshot; atomic reservations remain authoritative."""
+        with self._lock:
+            usage = self.current_usage()
+            free = shutil.disk_usage(self.upload_dir).free
+            available = max(
+                0,
+                free
+                - self.policy.reserved_free_bytes
+                - self._reserved_bytes
+                - self._unallocated_encrypted_bytes(),
+            )
+            if self.policy.max_total_bytes is not None:
+                available = min(
+                    available,
+                    max(
+                        0,
+                        self.policy.max_total_bytes - usage.total_bytes - self._reserved_bytes,
+                    ),
+                )
+            remaining_files = (
+                max(0, self.policy.max_file_count - usage.file_count - self._reserved_files)
+                if self.policy.max_file_count is not None
+                else None
+            )
+            return {
+                "used_bytes": usage.total_bytes,
+                "quota_bytes": self.policy.max_total_bytes,
+                "disk_free_bytes": free,
+                "reserved_free_bytes": self.policy.reserved_free_bytes,
+                "available_bytes": available,
+                "file_count": usage.file_count,
+                "file_limit": self.policy.max_file_count,
+                "remaining_files": remaining_files,
+            }
+
     def publish_bytes(
         self,
         file_path: Path,
@@ -174,6 +230,16 @@ class UploadStorageService:
                 self._release(size)
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+
+    @contextmanager
+    def mutation(self) -> Iterator[None]:
+        """Keep quota scans consistent with existing-file mutations.
+
+        This does not reserve another file. Callers owning an encrypted-storage
+        lock must acquire it before this lock, never the other way around.
+        """
+        with self._lock:
+            yield
 
     @contextmanager
     def reservation(self, size: int) -> Iterator[None]:
@@ -221,7 +287,8 @@ class UploadStorageService:
                     "Upload storage quota exceeded. "
                     f"Current usage: {_format_bytes(usage.total_bytes)}; "
                     f"attempted upload: {_format_bytes(size)}; "
-                    f"limit: {_format_bytes(self.policy.max_total_bytes)}."
+                    f"limit: {_format_bytes(self.policy.max_total_bytes)}.",
+                    reason="bytes",
                 )
 
             if (
@@ -232,22 +299,23 @@ class UploadStorageService:
                     self._metrics.record_quota_denial("uploads", "files")
                 raise UploadStorageQuotaExceeded(
                     "Upload file count quota exceeded. "
-                    f"Current files: {usage.file_count}; limit: {self.policy.max_file_count}."
+                    f"Current files: {usage.file_count}; limit: {self.policy.max_file_count}.",
+                    reason="files",
                 )
 
-        if self.policy.reserved_free_bytes:
-            required_free = self.policy.reserved_free_bytes
-            if require_free_for_size:
-                required_free += self._reserved_bytes + size
-            free_bytes = shutil.disk_usage(self.upload_dir).free
-            if free_bytes < required_free:
-                if self._metrics is not None:
-                    self._metrics.record_quota_denial("uploads", "free_space")
-                raise UploadStorageQuotaExceeded(
-                    "Upload storage free-space reserve would be exceeded. "
-                    f"Available: {_format_bytes(free_bytes)}; "
-                    f"required reserve: {_format_bytes(self.policy.reserved_free_bytes)}."
-                )
+        required_free = self.policy.reserved_free_bytes + self._unallocated_encrypted_bytes()
+        if require_free_for_size:
+            required_free += self._reserved_bytes + size
+        free_bytes = shutil.disk_usage(self.upload_dir).free
+        if free_bytes < required_free:
+            if self._metrics is not None:
+                self._metrics.record_quota_denial("uploads", "free_space")
+            raise UploadStorageQuotaExceeded(
+                "Upload storage free-space reserve would be exceeded. "
+                f"Available: {_format_bytes(free_bytes)}; "
+                f"required reserve: {_format_bytes(self.policy.reserved_free_bytes)}.",
+                reason="free_space",
+            )
 
     def _write_temp_file(self, directory: Path, data: bytes) -> Path:
         last_error: FileExistsError | None = None

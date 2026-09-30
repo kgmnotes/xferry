@@ -31,7 +31,7 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert not hasattr(settings, "profile")
     assert settings.max_size_mb == 100
     assert settings.encrypted_uploads is False
-    assert settings.encrypted_upload_max_size_mb == 2048
+    assert settings.encrypted_upload_max_size_mb == 0
     assert settings.encrypted_upload_incomplete_ttl_seconds == 86400
     assert settings.upload_quota_externally_managed is False
     assert settings.workers == 10
@@ -42,7 +42,7 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert config.root_dir == Path().resolve()
     assert config.limits.max_upload_size == 100 * 1024 * 1024
     assert config.encrypted_uploads is False
-    assert config.limits.encrypted_upload_max_size == 2048 * 1024 * 1024
+    assert config.limits.encrypted_upload_max_size == 32 * 1024 * 1024 * 1024
     assert config.limits.encrypted_upload_incomplete_ttl == 86400
     assert config.limits.max_workers == 10
 

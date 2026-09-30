@@ -26,6 +26,7 @@ def test_api_documents_exact_euf_v1_wire_and_error_contract() -> None:
         "GET /_xferry/encrypted-files/{id}",
         "DELETE /_xferry/encrypted-files/{id}",
         "GET /_xferry/encrypted-files/{id}/data",
+        "GET /_xferry/encrypted-files/{id}/chunks/{index}",
         "POST /_xferry/encrypted-files/{id}/decrypt",
     ):
         assert route in api
@@ -42,6 +43,7 @@ def test_api_documents_exact_euf_v1_wire_and_error_contract() -> None:
         "`received_chunks`",
         "`resume_mac`",
         "`content_key`",
+        "`incomplete_ttl_seconds`",
     ):
         assert field in api
 
@@ -89,8 +91,8 @@ def test_operations_document_configuration_recovery_and_resource_smoke() -> None
 
     for snippet in (
         "encrypted_uploads = true",
-        "encrypted_upload_max_size_mb = 2048",
-        "encrypted_upload_incomplete_ttl_seconds = 86400",
+        "encrypted_upload_max_size_mb = 0",
+        "encrypted_upload_incomplete_ttl_seconds = 604800",
         "uploads/.xferry-encrypted/",
         ".xferry/encrypted-uploads/",
         "partial -> committing -> complete",
@@ -117,7 +119,7 @@ def test_frontend_and_threat_model_document_key_boundaries() -> None:
         "two chunks",
     ):
         assert snippet in frontend
-    assert "passwords, keys, salts, encrypted metadata, or filenames" in frontend
+    assert "passwords, keys, plaintext filenames or plaintext" in frontend
 
     for snippet in (
         "client-encrypted file ciphertext",
