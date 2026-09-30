@@ -1,0 +1,261 @@
+name: GHCR Candidate Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_ghcr:
+        description: Promote the immutable STAGE-009 xferry 0.1.0 OCI candidate to GHCR staging
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ghcr-xferry-0.1.0
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    if: ${{ inputs.confirm_ghcr && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.staged-oci.outputs.artifact-id }}
+      publish-digest: ${{ steps.receipt.outputs.publish-digest }}
+      image-ref: ${{ steps.receipt.outputs.image-ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Require protected rehearsal branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-011-ghcr-rehearsal")"
+          test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
+          test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
+      - name: Verify fixed producer identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/kgmnotes/xferry/actions/artifacts/11095067140 > artifact.json
+          gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
+          python tools/ghcr_publish.py identity --artifact-metadata artifact.json --run-metadata run.json
+      - name: Download immutable STAGE-009 candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          repository: kgmnotes/xferry
+          run-id: 36712344792
+          artifact-ids: 11095067140
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: downloaded
+      - name: Authenticate candidate and prepare unchanged OCI graph
+        run: |
+          set -euo pipefail
+          mkdir staged
+          python tools/ghcr_publish.py prepare --artifact-metadata artifact.json --run-metadata run.json \
+            --archive downloaded/release-candidate.tar --candidate-dir promoted \
+            --oci-dir staged/oci --receipt staged/ghcr-candidate-receipt.json
+      - name: Record staged GHCR identity
+        id: receipt
+        run: |
+          set -euo pipefail
+          publish_digest="$(python -c 'import json; print(json.load(open("staged/ghcr-candidate-receipt.json"))["oci"]["publish_digest"])')"
+          image_ref="ghcr.io/kgmnotes/xferry@${publish_digest}"
+          echo "publish-digest=${publish_digest}" >> "$GITHUB_OUTPUT"
+          echo "image-ref=${image_ref}" >> "$GITHUB_OUTPUT"
+      - name: Preserve authenticated OCI graph for the package job
+        id: staged-oci
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: authenticated-ghcr-oci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staged/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: identity
+    runs-on: ubuntu-24.04
+    environment: ghcr-staging
+    permissions:
+      actions: read
+      packages: write
+    outputs:
+      digest: ${{ steps.registry.outputs.digest }}
+    steps:
+      - name: Download authenticated OCI graph
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.identity.outputs.artifact-id }}
+          merge-multiple: true
+          path: staged
+      - name: Install registry copier
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y skopeo=1.13.3+ds1-2ubuntu0.24.04.3
+          skopeo --version
+      - name: Promote exact OCI graph to GHCR
+        id: registry
+        env:
+          GHCR_IMAGE: ghcr.io/kgmnotes/xferry
+          GHCR_TAG: v0.1.0
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_DIGEST: ${{ needs.identity.outputs.publish-digest }}
+        run: |
+          set -euo pipefail
+          manifest_is_absent() {
+            grep -Eiq '(manifest unknown|MANIFEST_UNKNOWN)' "$1"
+          }
+          printf '%s' "$GH_TOKEN" | skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:latest" > latest-index.json 2> latest-inspect.err; then
+            echo "latest tag must not exist for the GHCR staging package" >&2
+            exit 1
+          elif ! manifest_is_absent latest-inspect.err; then
+            echo "unable to confirm GHCR latest tag absence" >&2
+            cat latest-inspect.err >&2
+            exit 1
+          fi
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:${GHCR_TAG}" > existing-index.json 2> existing-inspect.err; then
+            existing_digest="sha256:$(sha256sum existing-index.json | cut -d ' ' -f 1)"
+            test "$existing_digest" = "$EXPECTED_DIGEST"
+          else
+            inspect_status=$?
+            if ! manifest_is_absent existing-inspect.err; then
+              echo "unable to confirm GHCR version tag absence" >&2
+              cat existing-inspect.err >&2
+              exit "$inspect_status"
+            fi
+            skopeo copy --all --preserve-digests "oci:staged/oci" "docker://${GHCR_IMAGE}:${GHCR_TAG}"
+          fi
+          skopeo inspect --raw "docker://${GHCR_IMAGE}:${GHCR_TAG}" > registry-index.json
+          registry_digest="sha256:$(sha256sum registry-index.json | cut -d ' ' -f 1)"
+          test "$registry_digest" = "$EXPECTED_DIGEST"
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:latest" > latest-index.json 2> latest-inspect.err; then
+            echo "latest tag must not exist for the GHCR staging package" >&2
+            exit 1
+          elif ! manifest_is_absent latest-inspect.err; then
+            echo "unable to confirm GHCR latest tag absence" >&2
+            cat latest-inspect.err >&2
+            exit 1
+          fi
+          echo "digest=${registry_digest}" >> "$GITHUB_OUTPUT"
+      - name: Refuse mutable latest tag
+        env:
+          GHCR_IMAGE: ghcr.io/kgmnotes/xferry
+        run: |
+          set -euo pipefail
+          manifest_is_absent() {
+            grep -Eiq '(manifest unknown|MANIFEST_UNKNOWN)' "$1"
+          }
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:latest" > latest-index.json 2> latest-inspect.err; then
+            echo "latest tag must not exist for the GHCR staging package" >&2
+            exit 1
+          elif ! manifest_is_absent latest-inspect.err; then
+            echo "unable to confirm GHCR latest tag absence" >&2
+            cat latest-inspect.err >&2
+            exit 1
+          fi
+      - name: Preserve GHCR publication receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: ghcr-publish-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            staged/ghcr-candidate-receipt.json
+            registry-index.json
+          if-no-files-found: error
+          retention-days: 14
+
+  registry-verify:
+    needs: [identity, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download authenticated OCI receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.identity.outputs.artifact-id }}
+          merge-multiple: true
+          path: staged
+      - name: Copy registry graph and verify digests, SBOM, and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y skopeo=1.13.3+ds1-2ubuntu0.24.04.3
+          printf '%s' "$GH_TOKEN" | skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          skopeo copy --all --preserve-digests "docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" "oci:registry/oci"
+          python tools/ghcr_publish.py verify-registry-layout \
+            --receipt staged/ghcr-candidate-receipt.json --registry-oci-dir registry/oci
+
+  pull-smoke:
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Pull GHCR image by digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull --platform "linux/${{ matrix.arch }}" "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}"
+          docker tag "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" "xferry:ghcr-${{ matrix.arch }}"
+      - name: Install Chromium for hosted image first-run
+        run: npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
+      - name: Hosted GHCR image lifecycle smoke
+        run: |
+          set -euo pipefail
+          python tools/verify_docker_image.py --image "xferry:ghcr-${{ matrix.arch }}"
+          docker run --rm --entrypoint python "xferry:ghcr-${{ matrix.arch }}" \
+            -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+          docker run --rm "xferry:ghcr-${{ matrix.arch }}" --version
+          docker run --rm "xferry:ghcr-${{ matrix.arch }}" run --print-config
+          python tools/docker_image_smoke.py --image "xferry:ghcr-${{ matrix.arch }}" --browser-first-run \
+            --browser-artifacts-dir "$RUNNER_TEMP/browser-smoke-artifacts/ghcr-first-run"

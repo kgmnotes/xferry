@@ -1237,6 +1237,169 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
     return findings
 
 
+def ghcr_workflow_policy_findings(text: str) -> list[Finding]:
+    """Keep the fixed GHCR rehearsal separate from production release policy."""
+    path = Path(".github/workflows/ghcr.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if _workflow_events(text)[0] != frozenset({"workflow_dispatch"}):
+        reject("GHCR rehearsal must be manual-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("GHCR actions must be commit-SHA pinned")
+    permissions_found, permission_entries = _permission_entries(text, 0)
+    permissions = {scope: access for scope, access, _ in permission_entries}
+    if (
+        not permissions_found
+        or len(permission_entries) != 2
+        or permissions != {"contents": "read", "actions": "read"}
+    ):
+        reject("GHCR workflow permissions must explicitly grant only read access")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    if set(jobs) != {"identity", "publish", "registry-verify", "pull-smoke"}:
+        reject("GHCR rehearsal requires identity, publish, registry-verify and pull-smoke jobs")
+        return findings
+    expected_gate = (
+        "    if: ${{ inputs.confirm_ghcr && github.repository == 'kgmnotes/xferry' "
+        "&& github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal' }}"
+    )
+    if expected_gate not in jobs["identity"].text.splitlines():
+        reject("GHCR identity gate must enforce the exact confirmation/repository/ref")
+    protected_branch_contract = (
+        "Require protected rehearsal branch",
+        'branches/codex%2Fstage-011-ghcr-rehearsal")',
+        '.commit.sha\' <<<"${branch_json}"',
+        '.protected\' <<<"${branch_json}"',
+    )
+    if any(item not in jobs["identity"].text for item in protected_branch_contract):
+        reject("GHCR identity must verify the exact protected rehearsal branch")
+    if "stage-011-ghcr-rehearsal/protection" in jobs["identity"].text:
+        reject("GHCR cannot call the Administration-only branch protection endpoint")
+    required = {
+        "identity": (
+            "inputs.confirm_ghcr",
+            "github.repository == 'kgmnotes/xferry'",
+            "github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal'",
+            "artifact-id: ${{ steps.staged-oci.outputs.artifact-id }}",
+            "ghcr_publish.py identity",
+            "repository: kgmnotes/xferry",
+            "run-id: 36712344792",
+            "artifact-ids: 11095067140",
+            "github-token: ${{ github.token }}",
+            "merge-multiple: true",
+            "ghcr_publish.py prepare",
+            "--archive downloaded/release-candidate.tar",
+            "--candidate-dir promoted",
+            "--oci-dir staged/oci",
+            "--receipt staged/ghcr-candidate-receipt.json",
+            "authenticated-ghcr-oci-${{ github.run_id }}-${{ github.run_attempt }}",
+            "if-no-files-found: error",
+        ),
+        "publish": (
+            "needs: identity",
+            "environment: ghcr-staging",
+            "artifact-ids: ${{ needs.identity.outputs.artifact-id }}",
+            "merge-multiple: true",
+            "path: staged",
+            "skopeo=1.13.3+ds1-2ubuntu0.24.04.3",
+            "GHCR_IMAGE: ghcr.io/kgmnotes/xferry",
+            "GHCR_TAG: v0.1.0",
+            'test "$existing_digest" = "$EXPECTED_DIGEST"',
+            'test "$registry_digest" = "$EXPECTED_DIGEST"',
+            'skopeo copy --all --preserve-digests "oci:staged/oci" "docker://${GHCR_IMAGE}:${GHCR_TAG}"',
+            "docker://${GHCR_IMAGE}:${GHCR_TAG}",
+            "Refuse mutable latest tag",
+            "docker://${GHCR_IMAGE}:latest",
+        ),
+        "registry-verify": (
+            "needs: [identity, publish]",
+            "skopeo=1.13.3+ds1-2ubuntu0.24.04.3",
+            (
+                "skopeo copy --all --preserve-digests "
+                '"docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" "oci:registry/oci"'
+            ),
+            "ghcr_publish.py verify-registry-layout",
+        ),
+        "pull-smoke": (
+            "needs: publish",
+            "runner: ubuntu-24.04-arm",
+            "test \"$(uname -m)\" = '${{ matrix.machine }}'",
+            "docker pull --platform",
+            "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}",
+            "verify_docker_image.py",
+            "docker_image_smoke.py",
+            "--browser-first-run",
+        ),
+    }
+    for name, job in jobs.items():
+        if any(item not in job.text for item in required[name]):
+            reject(f"GHCR {name} job lost its fixed staging contract")
+    latest_check = 'skopeo inspect --raw "docker://${GHCR_IMAGE}:latest"'
+    publish_copy = (
+        'skopeo copy --all --preserve-digests "oci:staged/oci" "docker://${GHCR_IMAGE}:${GHCR_TAG}"'
+    )
+    latest_check_index = jobs["publish"].text.find(latest_check)
+    publish_copy_index = jobs["publish"].text.find(publish_copy)
+    if (
+        latest_check_index == -1
+        or publish_copy_index == -1
+        or latest_check_index > publish_copy_index
+    ):
+        reject("GHCR publish must refuse mutable latest before any registry write")
+    if jobs["publish"].text.count("GHCR_IMAGE: ghcr.io/kgmnotes/xferry") != 2:
+        reject("GHCR publish must pin both image references to ghcr.io/kgmnotes/xferry")
+    if PUBLISH_JOB_REBUILD_PATTERN.search(jobs["publish"].text) or any(
+        item in text
+        for item in (
+            "docker/build-push-action",
+            "docker/login-action",
+            "docker push",
+            "--push",
+            "actions/attest",
+            "gh release",
+            "gh-action-pypi-publish",
+            "${{ secrets.",
+        )
+    ):
+        reject("GHCR rehearsal must not rebuild, use unrelated publishers, or consume secrets")
+    publish_permissions = {
+        scope: access for scope, access, _ in _permission_entries(jobs["publish"].text, 4)[1]
+    }
+    if publish_permissions != {"actions": "read", "packages": "write"}:
+        reject("Only GHCR publish may grant job-scoped package write access")
+    for name, job in jobs.items():
+        permissions = {scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]}
+        if name != "publish" and any(access not in {"read"} for access in permissions.values()):
+            reject("GHCR non-publish jobs must remain read-only")
+    if (
+        "actions/checkout@" in jobs["publish"].text
+        or "tools/ghcr_publish.py" in jobs["publish"].text
+    ):
+        reject("GHCR package write job must not checkout or execute repository code")
+    for name, job in jobs.items():
+        if name != "publish":
+            writes_registry = any(
+                re.search(r'skopeo\s+copy[^\n]*\s"[^"]+"\s+"docker://', line)
+                for line in job.text.splitlines()
+            )
+            if writes_registry or re.search(
+                r"(?:packages:\s*write|docker\s+push|docker/build-push-action)",
+                job.text,
+            ):
+                reject("GHCR writes must be isolated to the publish job")
+    if "environment: production" in text or "refs/heads/main" in text:
+        reject("GHCR staging cannot target production or main directly")
+    return findings
+
+
 def find_release_policy_issues(
     repo_root: Path = REPO_ROOT,
     targets: Sequence[str] = DEFAULT_TARGETS,
@@ -1254,6 +1417,9 @@ def find_release_policy_issues(
         findings.extend(
             testpypi_workflow_policy_findings(read_contract_text(repo_root / staging) or "")
         )
+    ghcr = Path(".github/workflows/ghcr.yml")
+    if targets_cover_path(ghcr, repo_root, targets) and (repo_root / ghcr).is_file():
+        findings.extend(ghcr_workflow_policy_findings(read_contract_text(repo_root / ghcr) or ""))
     return findings
 
 
