@@ -10,7 +10,7 @@
 | STAGE-006 | two SCIE bundles; checksum/manifest/install tests; distro base smoke | native arm64/systemd smoke | arm64 runner/QEMU fidelity | Existing x86_64 SCIE smoke |
 | STAGE-007 | canonicalization/signature/tamper/key rotation/downgrade tests | offline verifier interoperability | None; enrollment and protected custody confirmed | Existing checksum/rollback cases |
 | STAGE-008 | built-wheel install matrix; pipx-style commands; portable subset; CLI contracts | actual TestPyPI install deferred to 010 | Hosted OS runner availability | Existing editable 3.12 matrix |
-| STAGE-009 | tag/version/changelog preflight; exact artifact digest equality; no external writes | workflow dry run | GitHub Actions runner | Current verification workflow |
+| STAGE-009 | tag/version/changelog preflight; exact artifact digest equality; no external writes | workflow dry run | Hosted candidate run pending wrapper push; unchanged public-tree source gate fails on tracked internal plan/analysis and ADR text | Current verification workflow |
 | STAGE-010 | TestPyPI Trusted Publishing; exact-version pipx smoke on three OSes | manual metadata review | Namespace/publisher ownership | Stage 008 wheel matrix |
 | STAGE-011 | Buildx amd64+arm64; image verifier; pull/run by digest; SBOM/provenance | native arm64 smoke | GHCR permissions/visibility | Existing local Docker smoke |
 | STAGE-012 | complete draft/staging Release assets; signature verification; no rebuild | GitHub attestation verify | Signing key and contents permission | Stage 009 candidate digests |

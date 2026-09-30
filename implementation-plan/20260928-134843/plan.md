@@ -24,7 +24,7 @@ STAGE-010, STAGE-011, and STAGE-012 are parallelizable after STAGE-009. All othe
 | STAGE-006 | HIGH | CLOSED | Build and verify multi-arch SCIE installers | 004, 005 | x86_64/aarch64 bundle and base-image smoke | SCIE builder, installer template, CI/tests |
 | STAGE-007 | HIGH | CLOSED | Establish signed release metadata trust | 004, 006 | signature/tamper/key-rotation/update tests | signing/verifier code, manifest builder, threat model/tests |
 | STAGE-008 | HIGH | CLOSED | Prove portable packaged CLI journeys | 003 | built-wheel/pipx-style OS/Python matrix | CLI, artifact verifier, CI/tests |
-| STAGE-009 | HIGH | OPEN | Create build-once candidate promotion pipeline | 006, 007, 008 | preflight, promoted artifact identity, no-publish guards | release workflow/tools/tests |
+| STAGE-009 | HIGH | PARTIALLY_CLOSED | Create build-once candidate promotion pipeline | 006, 007, 008 | preflight, promoted artifact identity, no-publish guards | release workflow/tools/tests |
 | STAGE-010 | HIGH | OPEN | Add PyPI Trusted Publishing path | 008, 009 | TestPyPI/pipx exact-version smoke | release workflow, package metadata/tests |
 | STAGE-011 | HIGH | OPEN | Add multi-arch GHCR publication path | 009 | pull/smoke amd64+arm64, digest/SBOM/provenance | release workflow, Docker examples/tests |
 | STAGE-012 | HIGH | OPEN | Publish signed GitHub Release assets | 007, 009 | draft/staging asset set and signature verification | release workflow, release tools/tests |

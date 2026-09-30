@@ -686,9 +686,10 @@ def test_ci_gates_source_wheel_image_and_preserves_diagnostics() -> None:
     assert "python -m xferry \\\n            run \\\n            --host 127.0.0.1" in ci
     assert (
         'xferry-browser-wheel-venv/bin/xferry" \\\n'
-        "              run \\\n"
-        "              --host 127.0.0.1"
+        "                run \\\n"
+        "                --host 127.0.0.1"
     ) in ci
+    assert 'if [ "${CANDIDATE_GATES}" != "true" ]; then' in ci
     assert "Full browser aggregate on main" in ci
     assert "--mode full" in ci
     assert "Upload browser journey diagnostics" in ci

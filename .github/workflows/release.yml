@@ -2,12 +2,17 @@ name: Release Verification
 
 on:
   workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Candidate identity vX.Y.Z; does not create or activate a tag
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
-  PIP_CONSTRAINT: constraints/ci.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
   SCIENCE_NET_TIMEOUT: "60"
 
 concurrency:
@@ -15,12 +20,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Enforce candidate release identity
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: python tools/check_release_preflight.py --tag "$CANDIDATE_TAG"
+
+  quality-gates:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      candidate-gates: true
+
+  security-gates:
+    needs: preflight
+    uses: ./.github/workflows/security.yml
+
   build:
     name: Verify Python build products
     runs-on: ubuntu-latest
+    needs: [preflight, quality-gates, security-gates]
     permissions:
       contents: read
 
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      archive-sha256: ${{ steps.archive.outputs.sha256 }}
+      wheel-sha256: ${{ steps.archive.outputs.wheel-sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
@@ -40,17 +74,6 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install build pip-audit
-
-      - name: Check source version
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from xferry.config import __version__
-          from xferry.management.versions import is_supported_release_version
-
-          if not is_supported_release_version(__version__):
-              raise SystemExit(f"unsupported XFerry source release line: {__version__}")
-          PY
 
       - name: Build wheel and sdist
         run: python -m build --sdist --wheel --outdir dist
@@ -97,167 +120,335 @@ jobs:
             -f cyclonedx-json \
             -o dist/xferry-dependency-sbom.cdx.json
 
-  image-verify:
-    name: Verify local Docker image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+      - name: Preserve exact Python candidate
+        id: archive
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+          python tools/check_release_preflight.py --tag "$CANDIDATE_TAG"
+          mkdir -p candidate/python
+          cp dist/xferry-* candidate/python/
+          wheel="candidate/python/xferry-${CANDIDATE_TAG#v}-py3-none-any.whl"
+          wheel_sha256="$(sha256sum "$wheel" | cut -d ' ' -f 1)"
+          echo "wheel-sha256=$wheel_sha256" >> "$GITHUB_OUTPUT"
+          archive_sha256="$(python tools/candidate_inventory.py pack --candidate-dir candidate --archive python-candidate.tar)"
+          echo "sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
 
+      - name: Upload Python candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: python-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: python-candidate.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  scie-x86_64:
+    needs: build
+    uses: ./.github/workflows/candidate-scie.yml
+    with:
+      platform: linux-x86_64
+      runner: ubuntu-24.04
+      machine: x86_64
+      docker_platform: linux/amd64
+      tag: ${{ inputs.candidate_tag }}
+      python-artifact-id: ${{ needs.build.outputs.artifact-id }}
+      python-archive-sha256: ${{ needs.build.outputs.archive-sha256 }}
+      wheel-sha256: ${{ needs.build.outputs.wheel-sha256 }}
+
+  scie-aarch64:
+    needs: build
+    uses: ./.github/workflows/candidate-scie.yml
+    with:
+      platform: linux-aarch64
+      runner: ubuntu-24.04-arm
+      machine: aarch64
+      docker_platform: linux/arm64
+      tag: ${{ inputs.candidate_tag }}
+      python-artifact-id: ${{ needs.build.outputs.artifact-id }}
+      python-archive-sha256: ${{ needs.build.outputs.archive-sha256 }}
+      wheel-sha256: ${{ needs.build.outputs.wheel-sha256 }}
+
+  image-verify:
+    name: Construct one multiarch OCI candidate
+    runs-on: ubuntu-24.04
+    needs: build
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      archive-sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
         with:
-          node-version: "22"
-
-      - name: Install Chromium for image first-run
+          python-version: "3.12"
+      - name: Download exact Python candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded
+      - name: Verify Python producer archive
+        env:
+          ARCHIVE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
         run: |
           set -euo pipefail
-          npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
-
-      - name: Build local image for lifecycle smoke
-        run: docker build --tag xferry:release-smoke .
-
-      - name: Hardened local image lifecycle smoke
+          python tools/candidate_inventory.py unpack --archive downloaded/python-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir python-input
+      - name: Set up QEMU for candidate construction
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # docker/setup-buildx-action@v3
+      - name: Build OCI layout once with SBOM and provenance
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: |
           set -euo pipefail
-          python tools/docker_image_smoke.py \
-            --image xferry:release-smoke \
-            --browser-first-run \
-            --browser-artifacts-dir "$RUNNER_TEMP/browser-smoke-artifacts/image-first-run"
+          mkdir -p candidate
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --file packaging/Dockerfile.candidate \
+            --build-context wheel=python-input/python \
+            --build-arg RELEASE_VERSION="${CANDIDATE_TAG#v}" \
+            --build-arg SOURCE_COMMIT="$GITHUB_SHA" \
+            --sbom=true --provenance=mode=max \
+            --output type=oci,dest=candidate/oci,tar=false .
+      - name: Archive exact OCI outputs
+        id: archive
+        run: |
+          set -euo pipefail
+          archive_sha256="$(python tools/candidate_inventory.py pack --candidate-dir candidate --archive oci-candidate.tar)"
+          echo "sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload OCI candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: oci-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: oci-candidate.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-  scie-verify:
-    name: Verify local SCIE build products (${{ matrix.platform }}, native)
+  image-smoke:
+    name: Verify exact OCI candidate (${{ matrix.arch }}, native)
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
+    needs: image-verify
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
+          - arch: amd64
             machine: x86_64
-            docker_platform: linux/amd64
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04
+          - arch: arm64
             machine: aarch64
-            docker_platform: linux/arm64
-
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            constraints/ci.txt
-
-      - name: Install SCIE verification toolchain
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]" build pex==2.99.0
-
-      - name: Confirm native build architecture
+      - name: Download exact OCI candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.image-verify.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded
+      - name: Verify OCI archive and load a local test representation
+        env:
+          ARCHIVE_SHA256: ${{ needs.image-verify.outputs.archive-sha256 }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = '${{ matrix.machine }}'
-          printf 'platform=%s runner_machine=%s evidence=native\n' \
-            '${{ matrix.platform }}' "$(uname -m)"
-
-      - name: Build deterministic SCIE release bundle
+          python tools/candidate_inventory.py unpack --archive downloaded/oci-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir image-input
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          skopeo --insecure-policy copy --override-os linux --override-arch '${{ matrix.arch }}' \
+            oci:image-input/oci docker-daemon:xferry:candidate
+      - name: Set up Node.js for native image first-run
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install Chromium for image first-run
+        run: npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
+      - name: Hardened local image lifecycle smoke
         run: |
           set -euo pipefail
-          python tools/build_scie_release.py \
-            --platform '${{ matrix.platform }}' \
-            --output-dir 'dist/scie-${{ matrix.platform }}'
+          python tools/verify_docker_image.py --image xferry:candidate
+          docker run --rm --entrypoint python xferry:candidate \
+            -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+          docker run --rm xferry:candidate --version
+          python tools/docker_image_smoke.py --image xferry:candidate --browser-first-run \
+            --browser-artifacts-dir "$RUNNER_TEMP/browser-smoke-artifacts/image-first-run"
 
-      - name: Verify SCIE manifest and checksums
+  portable-smoke:
+    runs-on: ${{ matrix.os }}
+    needs: build
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+        python: ["3.10", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install verifier bootstrap
+        run: python -m pip install setuptools
+      - name: Download exact Python candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded
+      - name: Verify archive and isolated packaged journeys
+        shell: bash
         env:
-          SCIE_PLATFORM: ${{ matrix.platform }}
+          ARCHIVE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
+          WHEEL_SHA256: ${{ needs.build.outputs.wheel-sha256 }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import hashlib
-          import os
-          from pathlib import Path
+          python tools/candidate_inventory.py unpack --archive downloaded/python-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir python-input
+          python tools/verify_python_artifacts.py portable-smoke \
+            --workspace "$GITHUB_WORKSPACE" \
+            --wheel "python-input/python/xferry-${CANDIDATE_TAG#v}-py3-none-any.whl" \
+            --wheel-sha256 "$WHEEL_SHA256" \
+            --fresh-root "$RUNNER_TEMP/xferry-portable-app" \
+            --constraints "$GITHUB_WORKSPACE/constraints/ci.txt"
 
-          from xferry.management.release_contract import ReleaseManifest
-
-          platform = os.environ["SCIE_PLATFORM"]
-          bundle = Path(f"dist/scie-{platform}")
-          manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json").read_bytes())
-          executable = bundle / manifest.executable_name
-          digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-          assert manifest.schema_version == 2
-          assert manifest.platform == platform
-          assert executable.stat().st_size == manifest.executable_size
-          assert digest == manifest.executable_sha256
-          assert (bundle / "SHA256SUMS").read_text(encoding="utf-8") == (
-              f"{digest}  {executable.name}\n"
-          )
-          assert {path.name for path in bundle.iterdir()} == {
-              "SHA256SUMS",
-              "install.sh",
-              "xferry-release.json",
-              executable.name,
-          }
-          PY
-
-      - name: Smoke SCIE without host Python
+  inventory:
+    name: Preserve complete digest-indexed candidate
+    runs-on: ubuntu-latest
+    needs: [build, scie-x86_64, scie-aarch64, image-verify, image-smoke, portable-smoke]
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      archive-sha256: ${{ steps.inventory.outputs.archive-sha256 }}
+      inventory-sha256: ${{ steps.inventory.outputs.inventory-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download producer python
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded/python
+      - name: Verify producer python before collecting
+        env:
+          ARCHIVE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
         run: |
           set -euo pipefail
-          executable="$(find "$PWD/dist/scie-${{ matrix.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
-          PATH=/nonexistent "$executable" run --version
-          PATH=/nonexistent "$executable" --help > /dev/null
-          PATH=/nonexistent "$executable" run --check-config
+          python tools/candidate_inventory.py unpack --archive downloaded/python/python-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir parts/python
 
-      - name: Smoke SCIE on every supported Linux base
+      - name: Download producer x86
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.scie-x86_64.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded/x86
+      - name: Verify producer x86 before collecting
+        env:
+          ARCHIVE_SHA256: ${{ needs.scie-x86_64.outputs.archive-sha256 }}
         run: |
           set -euo pipefail
-          bundle="$PWD/dist/scie-${{ matrix.platform }}"
-          executable="$(basename "$(find "$bundle" -maxdepth 1 -type f -name 'xferry-*-linux-*')")"
-          for image in ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12 debian:13; do
-            printf 'platform=%s image=%s evidence=native\n' '${{ matrix.platform }}' "$image"
-            docker run --rm \
-              --platform '${{ matrix.docker_platform }}' \
-              --volume "$bundle:/release:ro" \
-              "$image" \
-              /bin/sh -eu -c '
-                test "$(uname -m)" = "$1"
-                candidate="/release/$2"
-                "$candidate" run --version
-                "$candidate" --help > /dev/null
-                "$candidate" run --check-config
-              ' sh '${{ matrix.machine }}' "$executable"
-          done
+          python tools/candidate_inventory.py unpack --archive downloaded/x86/scie-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir parts/x86
 
-      - name: Exercise isolated managed lifecycle and failure paths
+      - name: Download producer arm
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.scie-aarch64.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded/arm
+      - name: Verify producer arm before collecting
+        env:
+          ARCHIVE_SHA256: ${{ needs.scie-aarch64.outputs.archive-sha256 }}
         run: |
           set -euo pipefail
-          python -m pytest -q \
-            tests/test_scie_release.py \
-            tests/test_management_setup.py::test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes \
-            tests/test_management_service.py::test_cli_status_and_doctor_render_secret_free_stable_json \
-            tests/test_management_releases.py::test_default_rollback_selects_previous_verified_release_and_keeps_old_current \
-            tests/test_management_releases.py::test_default_uninstall_removes_only_managed_runtime_and_preserves_state
+          python tools/candidate_inventory.py unpack --archive downloaded/arm/scie-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir parts/arm
+
+      - name: Download producer oci
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.image-verify.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded/oci
+      - name: Verify producer oci before collecting
+        env:
+          ARCHIVE_SHA256: ${{ needs.image-verify.outputs.archive-sha256 }}
+        run: |
+          set -euo pipefail
+          python tools/candidate_inventory.py unpack --archive downloaded/oci/oci-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir parts/oci
+
+      - name: Create canonical inventory and preserve exact candidate bytes
+        id: inventory
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+          mkdir candidate
+          cp -a parts/python/python parts/x86/scie-linux-x86_64 parts/arm/scie-linux-aarch64 parts/oci/oci candidate/
+          inventory_sha256="$(python tools/candidate_inventory.py create --candidate-dir candidate \
+            --tag "$CANDIDATE_TAG" --source-commit "$GITHUB_SHA" --workflow-run "$GITHUB_RUN_ID")"
+          echo "inventory-sha256=$inventory_sha256" >> "$GITHUB_OUTPUT"
+          archive_sha256="$(python tools/candidate_inventory.py pack --candidate-dir candidate --archive release-candidate.tar)"
+          echo "archive-sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload digest-indexed release candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-candidate.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   release-gate:
-    name: Confirm verification lanes
+    name: Download and verify candidate without publication
     runs-on: ubuntu-latest
-    needs: [build, image-verify, scie-verify]
-    permissions:
-      contents: read
-
+    needs: inventory
     steps:
-      - name: Confirm local verification outputs
-        run: echo "Python, Docker, and SCIE build products were verified without publication."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download immutable candidate by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.inventory.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded
+      - name: Verify exact producer bytes and complete digest inventory
+        env:
+          ARCHIVE_SHA256: ${{ needs.inventory.outputs.archive-sha256 }}
+          INVENTORY_SHA256: ${{ needs.inventory.outputs.inventory-sha256 }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+          python tools/candidate_inventory.py unpack --archive downloaded/release-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir promoted
+          python tools/candidate_inventory.py verify --candidate-dir promoted \
+            --tag "$CANDIDATE_TAG" --source-commit "$GITHUB_SHA" --workflow-run "$GITHUB_RUN_ID" \
+            --expected-sha256 "$INVENTORY_SHA256"

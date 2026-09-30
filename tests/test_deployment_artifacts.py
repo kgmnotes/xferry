@@ -133,7 +133,11 @@ def _workflow_job(workflow: str, job_name: str) -> str:
 def _assert_manual_only_release_trigger(workflow: str) -> None:
     trigger_header = workflow.split("\npermissions:", maxsplit=1)[0]
 
-    assert trigger_header == "name: Release Verification\n\non:\n  workflow_dispatch:\n"
+    events, _ = check_stale_docs._workflow_events(workflow)
+    assert events == frozenset({"workflow_dispatch"})
+    assert "candidate_tag:" in trigger_header
+    assert "required: true" in trigger_header
+    assert "type: string" in trigger_header
 
 
 def _workflow_named_step(workflow: str, name: str) -> str:
@@ -412,86 +416,103 @@ def test_source_only_docs_publish_the_supported_operator_contract() -> None:
 
 
 def test_release_verification_workflow_is_manual_read_only_and_non_publishing() -> None:
-    """Manual build checks must not become a package, registry, or release channel."""
+    """Candidate transfer preserves release identity without enabling publishers."""
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
+    scie = (REPO_ROOT / ".github/workflows/candidate-scie.yml").read_text(encoding="utf-8")
     assert check_stale_docs.release_workflow_policy_findings(workflow) == []
     _assert_manual_only_release_trigger(workflow)
-    assert "needs: [build, image-verify, scie-verify]" in workflow
-
     build = _workflow_job(workflow, "build")
-    image_verify = _workflow_job(workflow, "image-verify")
-    scie_verify = _workflow_job(workflow, "scie-verify")
-    gate = _workflow_job(workflow, "release-gate")
-
-    assert "Build wheel and sdist" in build
+    assert "needs: [preflight, quality-gates, security-gates]" in build
+    assert "uses: ./.github/workflows/ci.yml" in workflow
+    assert "candidate-gates: true" in workflow
+    assert "uses: ./.github/workflows/security.yml" in workflow
     assert "python -m build --sdist --wheel --outdir dist" in build
-    assert "Validate wheel and sdist contents" in build
     assert "Offline wheel and sdist smoke" in build
-    assert "Hardened local image lifecycle smoke" in image_verify
-    assert "docker build --tag xferry:release-smoke ." in image_verify
-    assert "python tools/docker_image_smoke.py" in image_verify
-    assert "--image xferry:release-smoke" in image_verify
-    assert image_verify.index("Build local image for lifecycle smoke") < image_verify.index(
-        "Hardened local image lifecycle smoke"
-    )
-    assert "Build deterministic SCIE release bundle" in scie_verify
-    assert "--platform '${{ matrix.platform }}'" in scie_verify
-    assert "--output-dir 'dist/scie-${{ matrix.platform }}'" in scie_verify
-    assert "linux-x86_64" in scie_verify
-    assert "linux-aarch64" in scie_verify
-    assert "runner: ubuntu-24.04" in scie_verify
-    assert "runner: ubuntu-24.04-arm" in scie_verify
-    assert 'manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json")' in scie_verify
-    assert "assert manifest.schema_version == 2" in scie_verify
-    assert "executable.stat().st_size == manifest.executable_size" in scie_verify
-    assert "hashlib.sha256(executable.read_bytes()).hexdigest()" in scie_verify
-    assert 'bundle / "SHA256SUMS"' in scie_verify
-    assert 'PATH=/nonexistent "$executable" run --version' in scie_verify
-    assert 'PATH=/nonexistent "$executable" --help' in scie_verify
-    assert 'PATH=/nonexistent "$executable" run --check-config' in scie_verify
-    assert "Smoke SCIE on every supported Linux base" in scie_verify
-    for image in (
-        "ubuntu:22.04",
-        "ubuntu:24.04",
-        "ubuntu:26.04",
-        "debian:12",
-        "debian:13",
-    ):
-        assert image in scie_verify
-    assert "--platform '${{ matrix.docker_platform }}'" in scie_verify
-    assert "evidence=native" in scie_verify
-    assert "Exercise isolated managed lifecycle and failure paths" in scie_verify
-    for lifecycle in ("setup", "status", "doctor", "rollback", "uninstall"):
-        assert lifecycle in scie_verify
-    assert (
-        scie_verify.index("Build deterministic SCIE release bundle")
-        < scie_verify.index("Verify SCIE manifest and checksums")
-        < scie_verify.index("Smoke SCIE without host Python")
-        < scie_verify.index("Smoke SCIE on every supported Linux base")
-    )
-    assert "without publication" in gate
+    assert workflow.count("python -m build") == 1
+    assert "--platform linux/amd64,linux/arm64" in workflow
+    assert "--output type=oci,dest=candidate/oci,tar=false" in workflow
+    assert "--sbom=true --provenance=mode=max" in workflow
+    assert "skopeo --insecure-policy copy" in workflow
+    assert "Hardened local image lifecycle smoke" in workflow
+    assert "--image xferry:candidate" in workflow
+    assert "runner: ubuntu-24.04-arm" in workflow
+    for platform in ("linux-x86_64", "linux-aarch64"):
+        assert f"platform: {platform}" in workflow
+    assert "--wheel-sha256" in scie and "--wheel" in scie
+    assert "python -m build" not in scie
+    for lane in ("Smoke SCIE without host Python", "Smoke SCIE on every supported Linux base"):
+        assert lane in scie
+    for image in ("ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12", "debian:13"):
+        assert image in scie
+    assert "Exercise isolated managed lifecycle and failure paths" in scie
+    for text in (workflow, scie):
+        for checkout_step in text.split("uses: actions/checkout@")[1:]:
+            assert "persist-credentials: false" in checkout_step.split("\n      -", 1)[0]
+        for forbidden in (
+            "actions/attest",
+            "docker/login-action",
+            "docker push",
+            "--push",
+            "gh release",
+            "gh-action-pypi-publish",
+            "packages: write",
+            "contents: write",
+            "id-token: write",
+            "attestations: write",
+            "permissions: write-all",
+            "${{ secrets.",
+            "ghcr.io/kgmnotes/xferry",
+            "hatch publish",
+            "twine upload",
+        ):
+            assert forbidden not in text
 
-    for forbidden in (
-        "actions/upload-artifact",
-        "actions/download-artifact",
-        "actions/attest",
-        "docker/login-action",
-        "docker push",
-        "gh release",
-        "gh-action-pypi-publish",
-        "packages: write",
-        "contents: write",
-        "id-token: write",
-        "attestations: write",
-        "permissions: write-all",
-        "${{ secrets.",
-        "ghcr.io/kgmnotes/xferry",
-        "pypi.org",
-        "hatch publish",
-        "twine upload",
-    ):
-        assert forbidden not in workflow
+
+def test_candidate_consumers_verify_independent_producer_digests_without_rebuilding() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    for name in ("image-smoke", "portable-smoke", "inventory", "release-gate"):
+        job = _workflow_job(workflow, name)
+        assert "actions/download-artifact@" in job
+        assert "artifact-ids:" in job
+        assert "merge-multiple: true" in job
+        assert "--expected-sha256" in job
+        assert "candidate_inventory.py unpack" in job
+        for rebuild in ("python -m build", "pip wheel", "docker build", "build_scie_release.py"):
+            assert rebuild not in job
+    gate = _workflow_job(workflow, "release-gate")
+    assert "candidate_inventory.py verify" in gate
+    assert "needs.inventory.outputs.inventory-sha256" in gate
+    assert "needs.inventory.outputs.archive-sha256" in gate
+    dockerfile = (REPO_ROOT / "packaging/Dockerfile.candidate").read_text(encoding="utf-8")
+    assert "COPY --from=wheel" in dockerfile
+    assert "python -m build" not in dockerfile
+    assert "org.opencontainers.image.version=$RELEASE_VERSION" in dockerfile
+    assert "org.opencontainers.image.revision=$SOURCE_COMMIT" in dockerfile
+
+
+def test_candidate_artifact_id_downloads_use_the_expected_flat_archive_path() -> None:
+    for path in ("release.yml", "candidate-scie.yml"):
+        workflow = (REPO_ROOT / ".github/workflows" / path).read_text(encoding="utf-8")
+        for block in workflow.split("uses: actions/download-artifact@")[1:]:
+            step = block.split("\n      -", 1)[0]
+            assert "artifact-ids:" in step
+            assert "merge-multiple: true" in step
+
+
+def test_reusable_candidate_source_gates_preserve_normal_ci_checks() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "workflow_call:" in workflow
+    assert "candidate-gates:" in workflow
+    assert "group: ci-${{ github.workflow }}-${{ github.ref }}" in workflow
+    for job_name in ("test", "docs", "risk-lanes", "smoke"):
+        job = _workflow_job(workflow, job_name)
+        assert "if: ${{ !inputs.candidate-gates }}" not in job.split("    steps:", 1)[0]
+    for job_name in ("python314-readiness", "cross-platform", "scie-verify"):
+        assert "if: ${{ !inputs.candidate-gates }}" in _workflow_job(workflow, job_name)
+    security = (REPO_ROOT / ".github/workflows/security.yml").read_text(encoding="utf-8")
+    assert "workflow_call:" in security
+    assert "python -m pip_audit --strict --no-deps -r constraints/ci.txt" in security
+    assert "bandit -r xferry -ll" in security
 
 
 @pytest.mark.parametrize(

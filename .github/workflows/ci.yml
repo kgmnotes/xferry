@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      candidate-gates:
+        description: Run source gates before the release workflow constructs candidates
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -14,7 +20,7 @@ env:
   SCIENCE_NET_TIMEOUT: "60"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,6 +34,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -79,6 +87,7 @@ jobs:
           path: coverage.xml
 
   python314-readiness:
+    if: ${{ !inputs.candidate-gates }}
     name: Python 3.14 package and security smoke
     runs-on: ubuntu-latest
     outputs:
@@ -86,6 +95,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.14
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -173,6 +184,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -208,6 +221,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -257,6 +272,7 @@ jobs:
             tests/test_security/test_websocket_upgrade.py
 
   cross-platform:
+    if: ${{ !inputs.candidate-gates }}
     name: Portable wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     needs: python314-readiness
@@ -269,6 +285,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -315,6 +333,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -335,7 +355,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,lint,test]"
 
+      - name: Source static UI gate
+        if: inputs.candidate-gates
+        run: |
+          set -euo pipefail
+          python tools/check_static_ui_assets.py
+          node --check tools/browser_smoke.playwright.js
+
       - name: Static UI release gates
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           wheel_dir="${RUNNER_TEMP}/xferry-browser-wheel"
@@ -346,6 +374,7 @@ jobs:
           node --check tools/browser_smoke.playwright.js
 
       - name: Prepare installed-wheel browser target
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           wheel_venv="${RUNNER_TEMP}/xferry-browser-wheel-venv"
@@ -367,6 +396,8 @@ jobs:
           python tools/check_stale_docs.py
 
       - name: Compact source and wheel browser journeys
+        env:
+          CANDIDATE_GATES: ${{ inputs.candidate-gates }}
         run: |
           set -euo pipefail
           artifacts="${RUNNER_TEMP}/browser-smoke-artifacts"
@@ -427,25 +458,27 @@ jobs:
             --target-url "http://127.0.0.1:${source_port}/" \
             --artifacts-dir "${artifacts}/source-ui-contracts"
 
-          wheel_port="$(allocate_port)"
-          mkdir -p "${RUNNER_TEMP}/xferry-browser-wheel-root"
-          (
-            cd "${RUNNER_TEMP}"
-            exec "${RUNNER_TEMP}/xferry-browser-wheel-venv/bin/xferry" \
-              run \
-              --host 127.0.0.1 \
-              --port "${wheel_port}" \
-              --dir "${RUNNER_TEMP}/xferry-browser-wheel-root" \
-              --quiet
-          ) >"${artifacts}/wheel-server.log" 2>&1 &
-          wheel_pid="$!"
-          wait_for_target \
-            "http://127.0.0.1:${wheel_port}/" \
-            "${artifacts}/wheel-server.log"
-          python tools/browser_smoke.py \
-            --mode first-run \
-            --target-url "http://127.0.0.1:${wheel_port}/" \
-            --artifacts-dir "${artifacts}/wheel-first-run"
+          if [ "${CANDIDATE_GATES}" != "true" ]; then
+            wheel_port="$(allocate_port)"
+            mkdir -p "${RUNNER_TEMP}/xferry-browser-wheel-root"
+            (
+              cd "${RUNNER_TEMP}"
+              exec "${RUNNER_TEMP}/xferry-browser-wheel-venv/bin/xferry" \
+                run \
+                --host 127.0.0.1 \
+                --port "${wheel_port}" \
+                --dir "${RUNNER_TEMP}/xferry-browser-wheel-root" \
+                --quiet
+            ) >"${artifacts}/wheel-server.log" 2>&1 &
+            wheel_pid="$!"
+            wait_for_target \
+              "http://127.0.0.1:${wheel_port}/" \
+              "${artifacts}/wheel-server.log"
+            python tools/browser_smoke.py \
+              --mode first-run \
+              --target-url "http://127.0.0.1:${wheel_port}/" \
+              --artifacts-dir "${artifacts}/wheel-first-run"
+          fi
 
       - name: Full browser aggregate on main
         if: github.event_name == 'push'
@@ -456,6 +489,7 @@ jobs:
             --artifacts-dir "${RUNNER_TEMP}/browser-smoke-artifacts/source-full"
 
       - name: Docker smoke
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           http_cid=""
@@ -558,6 +592,7 @@ jobs:
           retention-days: 14
 
   scie-verify:
+    if: ${{ !inputs.candidate-gates }}
     name: Build and verify SCIE bundle (${{ matrix.platform }}, native)
     runs-on: ${{ matrix.runner }}
     needs: test

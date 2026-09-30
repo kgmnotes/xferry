@@ -879,6 +879,56 @@ def test_release_builder_passes_the_wheel_as_a_positional_pex_requirement(tmp_pa
     assert any(argument.endswith(".whl") for argument in lock_command)
 
 
+def test_release_builder_consumes_the_exact_promoted_wheel_without_rebuilding(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "xferry-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("xferry/__init__.py", "")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    runner = FakeRunner(b"scie")
+    build_release_bundle(
+        REPO_ROOT,
+        tmp_path / "bundle",
+        "0.1.0",
+        runner,
+        platform_id=LINUX_X86_64,
+        wheel=wheel,
+        wheel_sha256=digest,
+    )
+    assert not any(command[:3] == ("python", "-m", "build") for command, _ in runner.commands)
+    lock = next(
+        command for command, _ in runner.commands if command[:3] == ("pex3", "lock", "create")
+    )
+    assert str(wheel.resolve()) in lock
+    assert hashlib.sha256(wheel.read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("case", ["digest", "name", "missing-digest", "missing-wheel"])
+def test_promoted_scie_wheel_is_validated_before_build_commands(tmp_path: Path, case: str) -> None:
+    wheel = tmp_path / (
+        "xferry-0.2.0-py3-none-any.whl" if case == "name" else "xferry-0.1.0-py3-none-any.whl"
+    )
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("xferry/__init__.py", "")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    runner = FakeRunner(b"scie")
+    with pytest.raises(ValueError):
+        build_release_bundle(
+            REPO_ROOT,
+            tmp_path / "bundle",
+            "0.1.0",
+            runner,
+            platform_id=LINUX_X86_64,
+            wheel=None if case == "missing-wheel" else wheel,
+            wheel_sha256=None
+            if case == "missing-digest"
+            else ("0" * 64 if case == "digest" else digest),
+        )
+    assert runner.commands == []
+    assert not (tmp_path / "bundle").exists()
+
+
 def test_rendered_installer_verifies_before_installing(tmp_path: Path) -> None:
     payload = b"scie"
     bundle = _render_bundle(tmp_path, payload)

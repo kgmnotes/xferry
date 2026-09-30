@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -157,6 +158,8 @@ def build_release_bundle(
     source_commit: str | None = None,
     workflow_run: str | None = None,
     signing_key_id: str | None = None,
+    wheel: Path | None = None,
+    wheel_sha256: str | None = None,
 ) -> ReleaseBundle:
     """Build one native pinned-CPython SCIE and its bootstrap metadata."""
 
@@ -179,6 +182,19 @@ def build_release_bundle(
     selected_signing_key_ids = (
         () if signing_key_id is None else (require_signing_key_id(signing_key_id),)
     )
+    if (wheel is None) != (wheel_sha256 is None):
+        raise ValueError("promoted wheel and its producer SHA256 must be supplied together")
+    if wheel is not None:
+        if wheel.is_symlink() or not wheel.is_file():
+            raise ValueError("promoted wheel must be a regular file")
+        wheel = wheel.resolve()
+        if wheel.name != f"xferry-{version}-py3-none-any.whl":
+            raise ValueError("promoted wheel filename does not match release version")
+        if not re.fullmatch(r"[0-9a-f]{64}", wheel_sha256 or "") or (
+            hashlib.sha256(wheel.read_bytes()).hexdigest() != wheel_sha256
+        ):
+            raise ValueError("promoted wheel does not match producer SHA256")
+        _validate_scie_wheel(wheel)
     output_dir = output_dir.resolve()
     if output_dir.is_symlink() or output_dir.exists():
         raise ValueError("SCIE output directory must not already exist")
@@ -191,11 +207,12 @@ def build_release_bundle(
         bundle_dir = staging_dir / "bundle"
         bundle_dir.mkdir()
         executable = bundle_dir / executable_name
-        runner(
-            ["python", "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
-            repo_root,
-        )
-        wheel = _single_wheel(wheel_dir)
+        if wheel is None:
+            runner(
+                ["python", "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
+                repo_root,
+            )
+            wheel = _single_wheel(wheel_dir)
         _validate_scie_wheel(wheel)
         runner(
             [
@@ -285,6 +302,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-commit")
     parser.add_argument("--workflow-run")
     parser.add_argument("--signing-key-id")
+    parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--wheel-sha256")
     arguments = parser.parse_args(argv)
     version = arguments.version
     if version is None:
@@ -300,6 +319,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_commit=arguments.source_commit,
         workflow_run=arguments.workflow_run,
         signing_key_id=arguments.signing_key_id,
+        wheel=arguments.wheel,
+        wheel_sha256=arguments.wheel_sha256,
     )
     for asset in (bundle.executable, bundle.installer, bundle.manifest, bundle.checksums):
         print(asset)

@@ -73,3 +73,12 @@
 - Verification: the hosted producer and nine portable consumers, 54 focused tests, all 3,335 Python 3.12 tests, strict mypy, repository Ruff lint/format, actionlint, pytest collection policy, real external-wheel acceptance, diff integrity, and independent review passed.
 - Known unrelated gate: the aggregate CI conclusion remains red only at the documented pre-existing public-tree policy before the full Linux jobs; shipping artifact validation and all STAGE-008 jobs are green.
 - Report: `stage-reports/STAGE-008-20260930-102812.md`
+
+## 2026-09-30 12:50:07 +0300 — STAGE-009
+- Status: PARTIALLY_CLOSED
+- Files changed: `.github/workflows/ci.yml`, `security.yml`, `release.yml`, `candidate-scie.yml`; `packaging/Dockerfile.candidate`; `tools/check_release_preflight.py`, `candidate_inventory.py`, `build_scie_release.py`; `tests/test_candidate_promotion.py`, `test_deployment_artifacts.py`, `test_scie_release.py`, `test_browser_smoke_modes.py`; selected stage, plan overview/status/matrix, this log, and closure report.
+- Implementation: manual strict-version candidate orchestration, source/docs/security gates before construction, exact-wheel native SCIE/image builds, OCI SBOM/provenance closure, SHA-pinned immutable artifact-ID transfers, canonical per-file/platform digest inventory, and fail-closed downstream byte verification without rebuild.
+- Verification: 458 focused and all 3,476 final repository tests passed; strict mypy, compile, Ruff lint/format (174 files), actionlint, generated/strict docs, tooling/dependency policies, real wheel/sdist/offline/312-test portable journeys, native SCIE across five bases, native OCI export/load lifecycle, 26-file authenticated byte/mode equality and independent final review passed. Reproduced and fixed the SLSA junk-predicate gap test-first.
+- Remaining evidence: successful complete hosted candidate run and exact downloaded-artifact digest verification after wrapper commit/push. Unchanged HEAD reproduces the existing public shipping-tree policy failure; its gate was preserved.
+- Boundary: no commit/push, production publication/tag activation, production Environment, or private-key access; later publishers remain staging/draft/rehearsal until STAGE-015.
+- Report: `stage-reports/STAGE-009-20260930-121326.md`

@@ -1,7 +1,7 @@
 # STAGE-009 - Create build-once candidate promotion pipeline
 
 ## Status
-OPEN
+PARTIALLY_CLOSED
 
 ## Priority
 HIGH
@@ -50,13 +50,13 @@ Turn release verification into a non-publishing candidate pipeline that checks r
 6. Keep the workflow manual/reusable and externally non-publishing until STAGE-015.
 
 ## Acceptance criteria
-- [ ] Preflight rejects malformed/mismatched tag, version, changelog, manifest, or filename data.
-- [ ] Candidate jobs run only after normal CI/security/docs gates pass.
-- [ ] One digest inventory covers every promoted file and OCI manifest/platform image.
+- [x] Preflight rejects malformed/mismatched tag, version, changelog, manifest, or filename data.
+- [x] Candidate jobs run only after normal CI/security/docs gates pass.
+- [x] One digest inventory covers every promoted file and OCI manifest/platform image.
 - [ ] Downloaded workflow artifacts match producer digests byte-for-byte.
-- [ ] No downstream/publisher job rebuilds candidates.
-- [ ] Workflow/actions are commit-SHA pinned, checkout credentials are not persisted, and default permissions remain read-only.
-- [ ] No external package, registry, or Release write occurs in this stage.
+- [x] No downstream/publisher job rebuilds candidates.
+- [x] Workflow/actions are commit-SHA pinned, checkout credentials are not persisted, and default permissions remain read-only.
+- [x] No external package, registry, or Release write occurs in this stage.
 
 ## Verification plan
 | Check | Command or method | Expected result |
@@ -77,4 +77,9 @@ Turn release verification into a non-publishing candidate pipeline that checks r
 - Rollback: retain the existing verification-only workflow and keep all publisher stages disabled until digest identity is proven.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Implemented strict source/changelog preflight; reusable source/security/docs gates; once-built wheel/sdist; exact-wheel native SCIE builders and image Dockerfile; OCI SBOM/provenance export; safe producer archive transfer by immutable artifact ID and SHA256; complete canonical file/platform digest inventory and downstream revalidation.
+- Local verification covers adversarial release/archive/OCI metadata fixtures, 458 focused and 3,476 full repository tests, real wheel/sdist offline installs, exact-wheel native x86_64 SCIE and all five Linux base probes, native OCI export/load/hardened lifecycle, and byte/mode equality for 26 real native candidate files. See the report for final command counts and independent review.
+- Still required: a successful manual candidate run after the wrapper commits/pushes the changes, including both native SCIE/image jobs, all portable consumers, producer artifact IDs/digests and final hosted download-and-verify gate. No new hosted run or GitHub artifact download is claimed.
+- The existing public-tree CI guard remains failing on unchanged tracked internal plan/analysis files and ADR text; unchanged HEAD fixtures reproduce it. The required source gate remains fail-closed. Public shipping-tree preparation is a separate prerequisite before a complete green hosted candidate run.
+- No commit/push, production tag activation, registry/package/Release publication, production Environment access, or private-key access occurred. STAGE-010/011/012 remain staging/draft/rehearsal only; STAGE-015 retains every protected approval, identity, namespace and immutable-version gate.
+- Result: PARTIALLY_CLOSED. Report: `stage-reports/STAGE-009-20260930-121326.md`.
