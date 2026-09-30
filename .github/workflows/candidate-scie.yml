@@ -1,0 +1,192 @@
+name: Native SCIE Candidate
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      machine:
+        required: true
+        type: string
+      docker_platform:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      python-artifact-id:
+        required: true
+        type: string
+      python-archive-sha256:
+        required: true
+        type: string
+      wheel-sha256:
+        required: true
+        type: string
+    outputs:
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+      archive-sha256:
+        value: ${{ jobs.build.outputs.archive-sha256 }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
+
+jobs:
+  build:
+    name: Verify local SCIE build products (${{ inputs.platform }}, native)
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      archive-sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/ci.txt
+
+      - name: Install SCIE verification toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]" build pex==2.99.0
+
+      - name: Download exact Python candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ inputs.python-artifact-id }}
+          merge-multiple: true
+          path: downloaded
+
+      - name: Verify Python producer archive before use
+        env:
+          ARCHIVE_SHA256: ${{ inputs.python-archive-sha256 }}
+        run: |
+          set -euo pipefail
+          python tools/candidate_inventory.py unpack --archive downloaded/python-candidate.tar \
+            --expected-sha256 "$ARCHIVE_SHA256" --candidate-dir python-input
+
+      - name: Confirm native build architecture
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = '${{ inputs.machine }}'
+          printf 'platform=%s runner_machine=%s evidence=native\n' \
+            '${{ inputs.platform }}' "$(uname -m)"
+
+      - name: Build deterministic SCIE release bundle
+        env:
+          CANDIDATE_TAG: ${{ inputs.tag }}
+          WHEEL_SHA256: ${{ inputs.wheel-sha256 }}
+        run: |
+          set -euo pipefail
+          python tools/build_scie_release.py \
+            --platform '${{ inputs.platform }}' \
+            --output-dir 'dist/scie-${{ inputs.platform }}' \
+            --version "${CANDIDATE_TAG#v}" \
+            --wheel "python-input/python/xferry-${CANDIDATE_TAG#v}-py3-none-any.whl" \
+            --wheel-sha256 "$WHEEL_SHA256"
+
+      - name: Verify SCIE manifest and checksums
+        env:
+          SCIE_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          from xferry.management.release_contract import ReleaseManifest
+
+          platform = os.environ["SCIE_PLATFORM"]
+          bundle = Path(f"dist/scie-{platform}")
+          manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json").read_bytes())
+          executable = bundle / manifest.executable_name
+          digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+          assert manifest.schema_version == 2
+          assert manifest.platform == platform
+          assert executable.stat().st_size == manifest.executable_size
+          assert digest == manifest.executable_sha256
+          assert (bundle / "SHA256SUMS").read_text(encoding="utf-8") == (
+              f"{digest}  {executable.name}\n"
+          )
+          assert {path.name for path in bundle.iterdir()} == {
+              "SHA256SUMS",
+              "install.sh",
+              "xferry-release.json",
+              executable.name,
+          }
+          PY
+
+      - name: Smoke SCIE without host Python
+        run: |
+          set -euo pipefail
+          executable="$(find "$PWD/dist/scie-${{ inputs.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
+          PATH=/nonexistent "$executable" run --version
+          PATH=/nonexistent "$executable" --help > /dev/null
+          PATH=/nonexistent "$executable" run --check-config
+
+      - name: Smoke SCIE on every supported Linux base
+        run: |
+          set -euo pipefail
+          bundle="$PWD/dist/scie-${{ inputs.platform }}"
+          executable="$(basename "$(find "$bundle" -maxdepth 1 -type f -name 'xferry-*-linux-*')")"
+          for image in ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12 debian:13; do
+            printf 'platform=%s image=%s evidence=native\n' '${{ inputs.platform }}' "$image"
+            docker run --rm \
+              --platform '${{ inputs.docker_platform }}' \
+              --volume "$bundle:/release:ro" \
+              "$image" \
+              /bin/sh -eu -c '
+                test "$(uname -m)" = "$1"
+                candidate="/release/$2"
+                "$candidate" run --version
+                "$candidate" --help > /dev/null
+                "$candidate" run --check-config
+              ' sh '${{ inputs.machine }}' "$executable"
+          done
+
+      - name: Exercise isolated managed lifecycle and failure paths
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_scie_release.py \
+            tests/test_management_setup.py::test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes \
+            tests/test_management_service.py::test_cli_status_and_doctor_render_secret_free_stable_json \
+            tests/test_management_releases.py::test_default_rollback_selects_previous_verified_release_and_keeps_old_current \
+            tests/test_management_releases.py::test_default_uninstall_removes_only_managed_runtime_and_preserves_state
+
+      - name: Archive exact SCIE outputs
+        id: archive
+        run: |
+          set -euo pipefail
+          archive_sha256="$(python tools/candidate_inventory.py pack --candidate-dir dist --archive scie-candidate.tar)"
+          echo "sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SCIE candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: scie-${{ inputs.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: scie-candidate.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

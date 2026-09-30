@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .model import HostFacts
+from .release_contract import normalize_machine
 
 _MIB = 1024 * 1024
 
@@ -49,9 +50,7 @@ def detect_host_facts(
     raw_release = os_release_text if os_release_text is not None else read(os_release_path)
     release = parse_os_release(raw_release)
     detected_machine = machine if machine is not None else os.uname().machine
-    normalized_machine = detected_machine.casefold()
-    if normalized_machine in {"amd64", "x86_64"}:
-        normalized_machine = "x86_64"
+    normalized_machine = normalize_machine(detected_machine)
     selected_page_size = page_size if page_size is not None else os.sysconf("SC_PAGE_SIZE")
     selected_physical_pages = (
         physical_pages if physical_pages is not None else os.sysconf("SC_PHYS_PAGES")

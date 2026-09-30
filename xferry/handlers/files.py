@@ -60,6 +60,7 @@ DELETE_ERROR_PATH_DETAIL_MAX_CHARS = 1024
 FETCH_ERROR_PATH_DETAIL_MAX_CHARS = 1024
 CLEAR_QUERY_ALLOWED_VALUES = ("true", "false")
 DELETE_QUERY_ALLOWED_FIELDS = frozenset({"clear"})
+BASIC_UPLOAD_COLLECTION_PATHS = frozenset({"/", "/upload", "/api", "/file"})
 
 
 class FileHandlersMixin(BaseHandler):
@@ -266,7 +267,12 @@ class FileHandlersMixin(BaseHandler):
     @staticmethod
     def _should_force_download(content_type: str) -> bool:
         """Return True for browser-executable uploaded content."""
-        return content_type.startswith("text/html") or content_type == "image/svg+xml"
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        return (
+            media_type.startswith("text/html")
+            or media_type == "image/svg+xml"
+            or media_type == "application/xhtml+xml"
+        )
 
     @staticmethod
     def _safe_download_filename(filename: str) -> str:
@@ -367,6 +373,7 @@ class FileHandlersMixin(BaseHandler):
         try:
             deleted_name = file_path.name
             file_path.unlink()
+            self._get_handler_context().smuggle_temp.discard(file_path)
             logger.debug(f"DELETE {deleted_name}")
             return json_response(
                 {
@@ -509,6 +516,11 @@ class FileHandlersMixin(BaseHandler):
                     }
                 )
 
+        coordinator = self._get_handler_context().smuggle_temp
+        for registered_path in coordinator.snapshot():
+            if not Path(registered_path).exists():
+                coordinator.discard(registered_path)
+
         if failures:
             return self._error_response(
                 500,
@@ -559,7 +571,7 @@ class FileHandlersMixin(BaseHandler):
         if not getattr(self, "cors_origin", None):
             return response
 
-        requested_method = request.headers.get("access-control-request-method", "")
+        requested_method = request.admission_context.preflight_method or ""
         logger.debug(f"OPTIONS preflight: {requested_method}")
         response.set_header(
             "Access-Control-Allow-Methods",
@@ -569,7 +581,7 @@ class FileHandlersMixin(BaseHandler):
             ),
         )
 
-        requested_headers = request.headers.get("access-control-request-headers", "")
+        requested_headers = request.admission_context.preflight_headers or ""
         allowed_headers = resolve_preflight_allow_headers(
             requested_headers,
             allow_advanced=getattr(self, "cors_origins", ()) != ("*",),
@@ -748,7 +760,7 @@ class FileHandlersMixin(BaseHandler):
             )
 
         try:
-            file_path = self._get_upload_storage().publish_bytes(
+            file_path = self._publish_ordinary_upload(
                 self.upload_dir / safe_filename,
                 payload,
             )
@@ -852,7 +864,9 @@ class FileHandlersMixin(BaseHandler):
 
     @staticmethod
     def _basic_url_filename(path: str, *, multipart: bool) -> str | None:
-        """Resolve a URL filename, treating multipart `/uploads` as a collection."""
+        """Resolve a URL filename while preserving explicit collection paths."""
+        if path in BASIC_UPLOAD_COLLECTION_PATHS:
+            return None
         normalized = path.rstrip("/") or "/"
         if multipart and normalized == "/uploads":
             return None

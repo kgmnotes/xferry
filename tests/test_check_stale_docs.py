@@ -18,6 +18,45 @@ def write_minimal_docs(root: Path) -> None:
     (root / "examples" / "basic.sh").write_text("#!/bin/sh\n", encoding="utf-8")
 
 
+SAFE_CONTROLLED_PUBLISH_WORKFLOW = """name: Controlled release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - run: python -m build
+      - uses: actions/upload-artifact@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        with:
+          name: release-candidate
+          path: dist/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@cccccccccccccccccccccccccccccccccccccccc
+        with:
+          name: release-candidate
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dddddddddddddddddddddddddddddddddddddddd
+"""
+
+
 def test_repository_documentation_contract_is_clean() -> None:
     targets = check_stale_docs.DEFAULT_TARGETS
     findings = check_stale_docs.find_stale_references(check_stale_docs.REPO_ROOT, targets)
@@ -25,6 +64,7 @@ def test_repository_documentation_contract_is_clean() -> None:
     findings += check_stale_docs.find_ordered_contract_issues(check_stale_docs.REPO_ROOT, targets)
     findings += check_stale_docs.find_source_first_issues(check_stale_docs.REPO_ROOT, targets)
     findings += check_stale_docs.find_adr_navigation_issues(check_stale_docs.REPO_ROOT, targets)
+    findings += check_stale_docs.find_release_policy_issues(check_stale_docs.REPO_ROOT, targets)
     findings += check_stale_docs.find_contributor_command_issues(
         check_stale_docs.REPO_ROOT, targets
     )
@@ -45,8 +85,22 @@ def test_repository_documentation_contract_is_clean() -> None:
         ("SMUGGLE is profile-gated.\n", "profile-gated availability"),
         ("pip install xferry[crypto,dev]\n", "crypto-extra guidance"),
         ("SMUGGLE supports DLP/proxy bypass.\n", "avoid bypass wording"),
+        (
+            "Download Quarterly-Report.pdf.\n",
+            "neutral controlled-test artifact",
+        ),
         ("python -m src --help\n", "python -m xferry"),
         ("from src import XFerryServer\n", "from xferry"),
+        ("No release artifact is currently public.\n", "temporal publication wording"),
+        (
+            "No GitHub Release,\nPyPI package, or GHCR image has been published.\n",
+            "temporal publication wording",
+        ),
+        (
+            "There is no published binary or container image to use as a rollback target at\n"
+            "this time.\n",
+            "temporal publication wording",
+        ),
     ),
 )
 def test_stale_contract_families_are_reported(
@@ -62,6 +116,205 @@ def test_stale_contract_families_are_reported(
     assert any(message in finding.message for finding in findings)
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The accepted design reserves `xferry update` for a later stage.\n",
+        "Production publication requires an immutable version tag.\n",
+        "PyPI uses pypa/gh-action-pypi-publish with trusted publishing.\n",
+        "The image name will be ghcr.io/kgmnotes/xferry.\n",
+        "GitHub Release assets are promoted without rebuilding.\n",
+    ),
+)
+def test_future_distribution_contract_language_is_not_unconditionally_stale(
+    tmp_path: Path,
+    text: str,
+) -> None:
+    """Policy documents may describe guarded channels before user activation."""
+    write_minimal_docs(tmp_path)
+    policy = tmp_path / "docs" / "ADR" / "ADR-099-future-distribution.md"
+    policy.parent.mkdir()
+    policy.write_text(text, encoding="utf-8")
+
+    assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        "https://github.com/kgmnotes/xferry/releases/latest",
+        "ghcr.io/kgmnotes/xferry:v1.2.3",
+        "pip install xferry==1.2.3",
+        "pip install --upgrade xferry",
+        "python -m pip install --upgrade xferry",
+        "pip install -U xferry",
+        "xferry update --version 1.2.3",
+    ),
+)
+@pytest.mark.parametrize(
+    "path",
+    (
+        Path("README.md"),
+        Path("docs/quick-start.md"),
+        Path("docs/operations.md"),
+        Path("docs/public-direct.md"),
+    ),
+)
+def test_current_user_install_docs_reject_unavailable_distribution_routes(
+    tmp_path: Path,
+    route: str,
+    path: Path,
+) -> None:
+    document = tmp_path / path
+    document.parent.mkdir(parents=True, exist_ok=True)
+    document.write_text(f"Install with `{route}`.\n", encoding="utf-8")
+
+    findings = check_stale_docs.find_source_first_issues(tmp_path, (str(path),))
+
+    assert any("unsupported distribution channel" in item.message for item in findings)
+
+
+def test_safe_future_controlled_publisher_workflow_is_expressible() -> None:
+    findings = check_stale_docs.release_workflow_policy_findings(SAFE_CONTROLLED_PUBLISH_WORKFLOW)
+
+    assert findings == []
+
+
+def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> None:
+    workflow = SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+        "permissions:\n  contents: read",
+        "permissions: {contents: read}",
+        1,
+    ).replace(
+        "    permissions:\n      contents: read\n      id-token: write",
+        "    permissions: {contents: read, id-token: write}",
+    )
+
+    assert check_stale_docs.release_workflow_policy_findings(workflow) == []
+
+
+@pytest.mark.parametrize(
+    ("workflow", "message"),
+    (
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                '    tags:\n      - "v[0-9]+.[0-9]+.[0-9]+"',
+                "    branches:\n      - main",
+            ),
+            "version-tag-only push",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                '  push:\n    tags:\n      - "v[0-9]+.[0-9]+.[0-9]+"',
+                "  pull_request:",
+            ),
+            "pull-request publication",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "      - uses: pypa/gh-action-pypi-publish",
+                "      - env:\n          password: ${{ secrets.PYPI_API_TOKEN }}\n"
+                "        uses: pypa/gh-action-pypi-publish",
+            ),
+            "static PyPI credential",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "pypa/gh-action-pypi-publish@dddddddddddddddddddddddddddddddddddddddd",
+                "pypa/gh-action-pypi-publish@release/v1",
+            ),
+            "external actions must use a lowercase 40-hex commit SHA",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "      - uses: pypa/gh-action-pypi-publish@"
+                "dddddddddddddddddddddddddddddddddddddddd",
+                '      - "uses": pypa/gh-action-pypi-publish@release/v1',
+            ),
+            "external actions must use a lowercase 40-hex commit SHA",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "permissions:\n  contents: read", "permissions: write-all", 1
+            ),
+            "workflow-level write permission",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "permissions:\n  contents: read",
+                "permissions: {contents: write}",
+                1,
+            ),
+            "workflow-level write permission",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "permissions:\n  contents: read",
+                '"permissions": {contents: write}',
+                1,
+            ),
+            "workflow-level write permission",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "      - uses: actions/download-artifact@",
+                "      - run: python -m build\n      - uses: actions/download-artifact@",
+            ),
+            "must not rebuild release artifacts",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    environment: production\n", ""),
+            "protected `production` environment",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                '      - "v[0-9]+.[0-9]+.[0-9]+"', '      - "*"'
+            ),
+            "exact `vX.Y.Z` version tag filters",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    tags:\n", "    tags-ignore:\n"),
+            "exact `vX.Y.Z` version tag filters",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("  publish-pypi:", "  _publish-pypi:").replace(
+                "    environment: production\n", ""
+            ),
+            "protected `production` environment",
+        ),
+        (
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "  publish-pypi:", '  "publish-pypi":'
+            ).replace("    environment: production\n", ""),
+            "protected `production` environment",
+        ),
+    ),
+    ids=(
+        "branch",
+        "pull-request",
+        "static-pypi-token",
+        "unpinned-action",
+        "quoted-unpinned-action",
+        "broad-permissions",
+        "inline-broad-permissions",
+        "quoted-inline-broad-permissions",
+        "publisher-rebuild",
+        "unprotected-production",
+        "wildcard-tag",
+        "tags-ignore",
+        "underscore-job-id",
+        "quoted-job-id",
+    ),
+)
+def test_controlled_publisher_policy_rejects_unsafe_workflows(
+    workflow: str,
+    message: str,
+) -> None:
+    findings = check_stale_docs.release_workflow_policy_findings(workflow)
+
+    assert any(message in finding.message for finding in findings)
+
+
 def test_current_managed_and_compose_profile_flags_are_allowed(tmp_path: Path) -> None:
     write_minimal_docs(tmp_path)
     (tmp_path / "README.md").write_text(
@@ -70,6 +323,74 @@ def test_current_managed_and_compose_profile_flags_are_allowed(tmp_path: Path) -
     )
     (tmp_path / "examples" / "compose.md").write_text(
         "docker compose --profile auth-tls up xferry-auth-tls\n",
+        encoding="utf-8",
+    )
+
+    assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+@pytest.mark.parametrize("forbidden", ('"dlp"', '"red-team"'))
+def test_package_metadata_rejects_non_neutral_security_keywords(
+    tmp_path: Path,
+    forbidden: str,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "keywords = [\n"
+        '  "security-research",\n'
+        '  "authorized-testing",\n'
+        '  "controlled-testing",\n'
+        '  "http-testing",\n'
+        f"  {forbidden},\n"
+        "]\n",
+        encoding="utf-8",
+    )
+
+    findings = check_stale_docs.find_semantic_contract_issues(
+        tmp_path,
+        ("pyproject.toml",),
+    )
+
+    assert any("authorized, controlled security research" in item.message for item in findings)
+
+
+def test_package_metadata_accepts_neutral_authorized_research_keywords(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "keywords = [\n"
+        '  "security-research",\n'
+        '  "authorized-testing",\n'
+        '  "controlled-testing",\n'
+        '  "http-testing",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        check_stale_docs.find_semantic_contract_issues(
+            tmp_path,
+            ("pyproject.toml",),
+        )
+        == []
+    )
+
+
+def test_unrelated_storage_publication_wording_remains_allowed(tmp_path: Path) -> None:
+    """Distribution guards must not flag ordinary atomic file-publication terminology."""
+    write_minimal_docs(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "Upload publication remains atomic inside the local storage transaction.\n",
+        encoding="utf-8",
+    )
+
+    assert check_stale_docs.find_stale_references(tmp_path) == []
+
+
+def test_unrelated_markdown_tags_frontmatter_remains_allowed(tmp_path: Path) -> None:
+    """Manual workflow guards must not reserve an ordinary documentation key."""
+    write_minimal_docs(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "---\ntags:\n  - security-research\n---\n",
         encoding="utf-8",
     )
 

@@ -196,6 +196,15 @@ class TestHTTPResponse:
         assert b"Access-Control-Allow-Origin: https://app.example\r\n" in built
         assert b"Vary: Origin\r\n" in built
 
+    def test_non_preflight_cors_response_omits_preflight_allow_headers(self):
+        """Catches ordinary CORS responses exceeding reverse-proxy header limits."""
+        response = HTTPResponse(200)
+        response.set_body("OK", "text/plain")
+
+        built = response.build(cors_origin="https://app.example")
+
+        assert b"Access-Control-Allow-Headers:" not in built
+
     def test_cors_multi_origin_config_is_not_emitted_as_single_header(self):
         response = HTTPResponse(200)
         response.set_body("OK", "text/plain")
@@ -231,65 +240,6 @@ class TestHTTPResponse:
             }
             & exposed
         )
-
-    def test_cors_headers_allow_implemented_request_headers(self):
-        response = HTTPResponse(200)
-        response.set_body("OK", "text/plain")
-        built = response.build(cors_origin="https://app.example")
-
-        allow_header = next(
-            line
-            for line in built.split(b"\r\n")
-            if line.startswith(b"Access-Control-Allow-Headers:")
-        )
-        assert b"Authorization" in allow_header
-        assert b"If-None-Match" in allow_header
-        assert b"X-Request-Id" in allow_header
-        assert b"X-XFerry-No-Gzip" in allow_header
-        assert b"X-Exphttp-No-Gzip" in allow_header
-        assert b"X-Session-Id" not in allow_header
-
-    def test_exact_origin_cors_advertises_canonical_advanced_headers(self):
-        response = HTTPResponse(200)
-        response.set_body("OK", "text/plain")
-        built = response.build(cors_origin="https://app.example")
-
-        allow_header = next(
-            line
-            for line in built.split(b"\r\n")
-            if line.startswith(b"Access-Control-Allow-Headers:")
-        )
-        assert b"X-XFerry-Advanced-Session" in allow_header
-        assert b"X-XFerry-Data-255" in allow_header
-        assert b"X-XFerry-Method-Override" in allow_header
-        for legacy in (
-            b"X-D",
-            b"X-E",
-            b"X-K",
-            b"X-Kb64",
-            b"X-N",
-            b"X-H",
-            b"X-Encoding",
-            b"X-HTTP-Method-Override",
-            b"X-Payload-In-Path",
-        ):
-            assert legacy not in allow_header.split(b":", maxsplit=1)[1].split(b", ")
-
-    def test_wildcard_cors_never_advertises_advanced_headers(self):
-        response = HTTPResponse(200)
-        response.set_body("OK", "text/plain")
-        built = response.build(cors_origin="*")
-
-        allow_header = next(
-            line
-            for line in built.split(b"\r\n")
-            if line.startswith(b"Access-Control-Allow-Headers:")
-        )
-        assert b"Authorization" in allow_header
-        assert b"Content-Type" in allow_header
-        assert b"X-XFerry-Advanced-Session" not in allow_header
-        assert b"X-XFerry-Data" not in allow_header
-        assert b"X-XFerry-Encryption" not in allow_header
 
     def test_cors_headers_include_smuggle_method(self):
         response = HTTPResponse(200)

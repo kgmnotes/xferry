@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from tools import render_contracts  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,11 @@ def render_target(spec: MirrorSpec) -> bytes:
 
 
 def sync(check: bool) -> int:
-    """Sync or check every configured mirror."""
+    """Render canonical contracts first, then sync or check every mirror."""
+    contract_result = render_contracts.render_all(check=check, repo_root=REPO_ROOT)
+    if contract_result != 0:
+        return contract_result
+
     drifted: list[str] = []
     updated: list[str] = []
 

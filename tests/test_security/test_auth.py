@@ -218,7 +218,7 @@ class TestGenerateRandomCredentials:
 class TestServerAuthConfiguration:
     """Tests for server-level auth configuration helpers."""
 
-    def test_auth_file_trims_newline_and_configures_rate_limiter(self, temp_dir: Path):
+    def test_auth_file_trims_newline_and_configures_auth_admission(self, temp_dir: Path):
         auth_file = temp_dir / "auth.txt"
         auth_file.write_text("admin:secret:with:colon\n", encoding="utf-8")
 
@@ -230,7 +230,8 @@ class TestServerAuthConfiguration:
         credentials = base64.b64encode(b"admin:secret:with:colon").decode("ascii")
         request = make_request("GET", "/", headers={"Authorization": f"Basic {credentials}"})
 
-        assert server._rate_limiter is not None
+        assert server._auth_runtime.authenticator is not None
+        assert server._auth_runtime.controller is not None
         assert server._authenticate_request(request, ("127.0.0.1", 12345)) is None
 
     @pytest.mark.parametrize(
@@ -297,22 +298,29 @@ class TestServerAuthConfiguration:
                 auth_file=str(auth_file),
             )
 
-    def test_set_authenticator_refreshes_rate_limiter(self, temp_dir: Path):
+    def test_set_authenticator_refreshes_auth_runtime_atomically(self, temp_dir: Path):
         server = make_server(root_dir=str(temp_dir), quiet=True)
         assert server.authenticator is None
-        assert server._rate_limiter is None
+        assert server._auth_runtime.authenticator is None
+        assert server._auth_runtime.controller is None
 
         server.set_authenticator(BasicAuthenticator({"admin": "secret"}))
         assert server.authenticator is not None
-        assert server._rate_limiter is not None
+        assert server._auth_runtime.authenticator is server.authenticator
+        assert server._auth_runtime.controller is not None
 
         failed_request = make_request("GET", "/")
         address = ("127.0.0.1", 12345)
         for _ in range(5):
-            server._authenticate_request(failed_request, address)
+            response = server._authenticate_request(failed_request, address)
+            assert response is not None
+            assert response.status_code == 401
 
-        assert server._rate_limiter.is_blocked(address[0])
+        blocked = server._authenticate_request(failed_request, address)
+        assert blocked is not None
+        assert blocked.status_code == 429
 
         server.set_authenticator(None)
         assert server.authenticator is None
-        assert server._rate_limiter is None
+        assert server._auth_runtime.authenticator is None
+        assert server._auth_runtime.controller is None

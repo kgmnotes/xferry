@@ -21,8 +21,15 @@ _ENVIRONMENT_LANGUAGE_KEYS = ("XFERRY_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE"
 _MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "root_description": "Manage an installed XFerry service or run the server with xferry run.",
-        "commands_heading": "Management commands:",
+        "portable_heading": "Portable commands (Windows, macOS, Linux):",
+        "commands_heading": "Managed Linux/systemd commands:",
         "maintenance_heading": "Optional maintenance:",
+        "portable_lifecycle": (
+            "Portable lifecycle: pipx upgrade xferry; pipx uninstall xferry.\n"
+            "Managed commands and optional maintenance require a supported Linux/systemd host."
+        ),
+        "root_options": "Root options: --help, --version, --lang LANG.",
+        "unknown_command": "Unknown command '{command}'. Run `xferry help` for available commands.",
         "examples_heading": "Examples:",
         "root_examples": (
             "  xferry run --preset local\n"
@@ -57,7 +64,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Restart the managed service.",
         "command_doctor": "Check the managed installation.",
         "command_credentials": "Manage service credentials.",
-        "command_update": "Optionally update a long-lived installation from the verified channel.",
         "command_rollback": "Restore a verified release on a long-lived installation.",
         "command_uninstall": "Remove the managed installation safely.",
         "command_examples": "Print copy-paste management command examples.",
@@ -68,6 +74,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "service_action_done": "Managed service {action} completed.",
         "service_action_failed": "Managed service {action} failed.",
         "doctor_check_text": "Doctor {name}: {status} ({detail})",
+        "next_action_text": "Next action: {action}",
         "operation_failure": "Management operation failed.",
         "purge_prompt": (
             "Permanently delete XFerry config, data, credentials, and ACME state? [y/N] "
@@ -78,8 +85,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "root_description": (
             "Управляйте установленной службой XFerry или запускайте сервер через xferry run."
         ),
-        "commands_heading": "Команды управления:",
+        "portable_heading": "Переносимые команды (Windows, macOS, Linux):",
+        "commands_heading": "Команды Linux/systemd:",
         "maintenance_heading": "Необязательное обслуживание:",
+        "portable_lifecycle": (
+            "Переносимая установка: pipx upgrade xferry; pipx uninstall xferry.\n"
+            "Команды управления и обслуживания требуют поддерживаемой системы Linux/systemd."
+        ),
+        "root_options": "Общие параметры: --help, --version, --lang LANG.",
+        "unknown_command": "Неизвестная команда '{command}'. Список команд: `xferry help`.",
         "examples_heading": "Примеры:",
         "root_examples": (
             "  xferry run --preset local\n"
@@ -114,9 +128,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Перезапустить управляемую службу.",
         "command_doctor": "Проверить управляемую установку.",
         "command_credentials": "Управлять учётными данными службы.",
-        "command_update": (
-            "При необходимости обновить долгоживущую установку из проверенного канала."
-        ),
         "command_rollback": "Восстановить проверенный выпуск долгоживущей установки.",
         "command_uninstall": "Безопасно удалить управляемую установку.",
         "command_examples": "Показать готовые к копированию примеры команд управления.",
@@ -127,6 +138,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "service_action_done": "Операция службы {action} выполнена.",
         "service_action_failed": "Операция службы {action} не выполнена.",
         "doctor_check_text": "Проверка {name}: {status} ({detail})",
+        "next_action_text": "Следующее действие: {action}",
         "operation_failure": "Операция управления не выполнена.",
         "purge_prompt": (
             "Безвозвратно удалить настройки, данные, учётные данные и состояние ACME XFerry? [y/N] "
@@ -139,6 +151,7 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
     "en": {
         "update_complete": "XFerry {version} was verified and activated.",
         "update_dry_run": "XFerry {version} passed update verification; no managed state changed.",
+        "remote_updates_disabled": ("Remote updates are disabled; use a reviewed source checkout."),
         "rollback_complete": "XFerry rolled back to verified release {version}.",
         "rollback_dry_run": (
             "XFerry {version} passed rollback verification; no managed state changed."
@@ -154,7 +167,17 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
         "release_platform_unsupported": "The release platform does not match this host.",
         "release_download_failed": "The release download failed.",
         "release_manifest_invalid": "The release manifest is invalid.",
+        "release_manifest_unsigned": "The remote release manifest is not signed.",
+        "release_manifest_noncanonical": "The signed release manifest is not canonical.",
+        "release_signature_download_failed": "The release signature download failed.",
+        "release_signature_invalid": "The release signature is invalid.",
+        "release_signing_key_unknown": "The release signing key is not trusted.",
+        "release_signing_key_revoked": "The release signing key has been revoked.",
         "release_manifest_mismatch": "The release manifest does not match the requested version.",
+        "release_downgrade_blocked": (
+            "Managed update requires the exact current or a newer version; "
+            "use rollback for another non-newer release."
+        ),
         "release_integrity_failed": "The release size or checksum verification failed.",
         "candidate_config_invalid": "The candidate cannot load the managed configuration.",
         "candidate_restart_failed": (
@@ -197,6 +220,9 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
     "ru": {
         "update_complete": "XFerry {version} проверен и активирован.",
         "update_dry_run": "XFerry {version} прошёл проверку обновления; состояние не изменено.",
+        "remote_updates_disabled": (
+            "Удалённые обновления отключены; используйте проверенную копию исходного кода."
+        ),
         "rollback_complete": "XFerry возвращён к проверенному выпуску {version}.",
         "rollback_dry_run": "XFerry {version} прошёл проверку отката; состояние не изменено.",
         "uninstall_complete": "Файлы запуска XFerry удалены; настройки, данные и ACME сохранены.",
@@ -208,7 +234,17 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
         "release_platform_unsupported": "Платформа выпуска не соответствует этому серверу.",
         "release_download_failed": "Не удалось загрузить выпуск.",
         "release_manifest_invalid": "Манифест выпуска недействителен.",
+        "release_manifest_unsigned": "Удалённый манифест выпуска не подписан.",
+        "release_manifest_noncanonical": "Подписанный манифест выпуска неканоничен.",
+        "release_signature_download_failed": "Не удалось загрузить подпись выпуска.",
+        "release_signature_invalid": "Подпись выпуска недействительна.",
+        "release_signing_key_unknown": "Ключ подписи выпуска не является доверенным.",
+        "release_signing_key_revoked": "Ключ подписи выпуска отозван.",
         "release_manifest_mismatch": "Манифест не соответствует запрошенной версии.",
+        "release_downgrade_blocked": (
+            "Управляемое обновление требует текущую точную или более новую версию; "
+            "для другого не более нового выпуска используйте откат."
+        ),
         "release_integrity_failed": "Проверка размера или контрольной суммы не пройдена.",
         "candidate_config_invalid": "Новая версия не может загрузить управляемую конфигурацию.",
         "candidate_restart_failed": "Новая служба не запустилась; предыдущий выпуск восстановлен.",

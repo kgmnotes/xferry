@@ -75,6 +75,15 @@ class Finding:
     message: str
 
 
+@dataclass(frozen=True)
+class WorkflowJob:
+    """One top-level GitHub Actions job extracted from workflow text."""
+
+    name: str
+    start_line: int
+    text: str
+
+
 SMUGGLE_REQUIRED_ERROR_CODES: tuple[str, ...] = (
     "invalid_smuggle_locale",
     "invalid_smuggle_extension",
@@ -160,6 +169,52 @@ SERVER_COMMAND_ARRAY_EXPANSION_PATTERN = re.compile(
 )
 ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version"})
 
+WORKFLOW_ACTION_PATTERN = re.compile(
+    r"^\s*(?:-\s+)?(?P<quote>[\"']?)uses(?P=quote):\s*(?P<reference>\S+)",
+    re.MULTILINE,
+)
+WORKFLOW_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+RELEASE_TAG_FILTER_PATTERN = re.compile(
+    r"^v(?:[0-9]+|\[0-9\][+*])\."
+    r"(?:[0-9]+|\[0-9\][+*])\."
+    r"(?:[0-9]+|\[0-9\][+*])$"
+)
+PUBLISHER_CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "pypi",
+        re.compile(
+            r"(?:pypa/gh-action-pypi-publish|twine\s+upload|"
+            r"(?:uv|hatch)\s+publish)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "ghcr",
+        re.compile(
+            r"(?:docker/(?:login|build-push)-action|docker\s+push|"
+            r"ghcr\.io/kgmnotes/xferry)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "github-release",
+        re.compile(
+            r"(?:softprops/action-gh-release|actions/upload-release-asset|"
+            r"gh\s+release\s+(?:create|upload))",
+            re.IGNORECASE,
+        ),
+    ),
+)
+PUBLISH_JOB_REBUILD_PATTERN = re.compile(
+    r"(?:python(?:3)?\s+-m\s+build|docker\s+(?:build|buildx\s+build)|"
+    r"docker/build-push-action|tools/build_scie_release\.py)",
+    re.IGNORECASE,
+)
+PYPI_STATIC_CREDENTIAL_PATTERN = re.compile(
+    r"(?:\$\{\{\s*secrets\.|PYPI(?:_API)?_TOKEN|TWINE_(?:PASSWORD|USERNAME))",
+    re.IGNORECASE,
+)
+
 SMUGGLE_LEGACY_ASSERTION_PATHS = frozenset({Path("tools/browser_smoke.playwright.js")})
 STALE_PATTERNS: tuple[StalePattern, ...] = (
     StalePattern(re.compile(r"--root\b"), "legacy CLI flag `--root`; use `--dir`"),
@@ -240,6 +295,10 @@ STALE_PATTERNS: tuple[StalePattern, ...] = (
         "stale SMUGGLE framing; avoid bypass wording",
     ),
     StalePattern(
+        re.compile(r"\bQuarterly[- ]Report\b", re.IGNORECASE),
+        "replace lure-style document naming with a neutral controlled-test artifact",
+    ),
+    StalePattern(
         re.compile(
             r"(?:via\s+email\s+and\s+messengers|email(?:,|\s+and)\s+messengers)", re.IGNORECASE
         ),
@@ -311,7 +370,20 @@ STALE_PATTERNS: tuple[StalePattern, ...] = (
     ),
 )
 
-REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 11))
+STALE_DOCUMENT_PATTERNS: tuple[StalePattern, ...] = (
+    StalePattern(
+        re.compile(
+            r"(?:tag-triggered\s+publication|release\s+artifact\s+is\s+currently\s+public|"
+            r"no\s+GitHub\s+Release,\s*PyPI|"
+            r"no\s+published\s+(?:binary|container\s+image)[\s\S]{0,120}?at\s+this\s+time|"
+            r"(?:before|until)\s+publication\s+exists)",
+            re.IGNORECASE,
+        ),
+        "temporal publication wording must use the stage-owned availability contract",
+    ),
+)
+
+REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 12))
 
 ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
     OrderedMarkersRequirement(
@@ -343,7 +415,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("README.md"),
         re.compile(
-            r"\A(?=[\s\S]*No GitHub Release, PyPI[\s\S]*GHCR[\s\S]*published)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*workflows[\s\S]*do\s+not\s+publish)"
             r"(?=[\s\S]*python -m pip install \.)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
@@ -357,8 +430,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("docs/quick-start.md"),
         re.compile(
-            r"\A(?=[\s\S]*installed from source)"
-            r"(?=[\s\S]*No GitHub Release, PyPI package[\s\S]*GHCR image)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*do\s+not\s+publish[\s\S]*GitHub Release[\s\S]*PyPI package)"
             r"(?=[\s\S]*git clone https://github\.com/kgmnotes/xferry\.git)"
             r"(?=[\s\S]*python -m pip install \.)"
             r"(?=[\s\S]*xferry run --preset local --open)"
@@ -370,7 +443,9 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("SECURITY.md"),
         re.compile(
-            r"\A(?=[\s\S]*authoriz\w*[\s\S]*test data)"
+            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*automation[\s\S]*does\s+not\s+publish)"
+            r"(?=[\s\S]*authoriz\w*[\s\S]*test data)"
             r"(?=[\s\S]*## External exposure baseline)"
             r"(?=[\s\S]*TLS[\s\S]*Basic Auth[\s\S]*finite[\s\S]*quota)"
             r"(?=[\s\S]*server does not retain[\s\S]*client-derived AES key)[\s\S]*",
@@ -379,22 +454,90 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         "SECURITY must preserve authorized-use, external-exposure, and Notepad recovery boundaries",
     ),
     SemanticRequirement(
+        Path("SECURITY.md"),
+        re.compile(
+            r"\A(?=[\s\S]*## Release and update supply chain)"
+            r"(?=[\s\S]*protected `vX\.Y\.Z` tag)"
+            r"(?=[\s\S]*exact[\s\S]*verified bytes or OCI digests)"
+            r"(?=[\s\S]*full commit-SHA pins)"
+            r"(?=[\s\S]*PyPI uses OIDC trusted publishing)"
+            r"(?=[\s\S]*Designated release maintainers own signing-key custody)"
+            r"(?=[\s\S]*Verification fails closed)[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "SECURITY must preserve controlled-publication and signing-key ownership controls",
+    ),
+    SemanticRequirement(
+        Path("docs/threat-model.md"),
+        re.compile(
+            r"\A(?=[\s\S]*protected release tags and workflow definitions)"
+            r"(?=[\s\S]*publisher identities[\s\S]*signing keys)"
+            r"(?=[\s\S]*Branch or pull-request publication)"
+            r"(?=[\s\S]*Candidate substitution or publish-job rebuild)"
+            r"(?=[\s\S]*Installer or update metadata tampering)"
+            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*Rollback[\s\S]*previously verified)[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "threat model must preserve release, publisher, signing, installer, and update boundaries",
+    ),
+    SemanticRequirement(
         Path("CONTRIBUTING.md"),
         re.compile(
             r"\A(?=[\s\S]*python -m pip install -e)"
             r"(?=[\s\S]*python tools/sync_docs\.py --check)"
             r"(?=[\s\S]*python tools/check_stale_docs\.py)"
-            r"(?=[\s\S]*No release artifact is currently public)"
-            r"(?=[\s\S]*source installation first)[\s\S]*",
+            r"(?=[\s\S]*supported distribution[\s\S]*source checkout)"
+            r"(?=[\s\S]*do not upload or[\s\S]*publish)"
+            r"(?=[\s\S]*documentation and[\s\S]*examples source-only)[\s\S]*",
             re.IGNORECASE,
         ),
         "CONTRIBUTING must preserve local checks, documentation sync, and source-first "
         "release status",
     ),
     SemanticRequirement(
+        Path("CONTRIBUTING.md"),
+        re.compile(
+            r"\A(?=[\s\S]*PluginServices\(upload_dir, upload_storage\))"
+            r"(?=[\s\S]*HandlerContext\(services, plugin_name\))"
+            r"(?=[\s\S]*context\.server[\s\S]*without[\s\S]*compatibility shim)"
+            r"(?=[\s\S]*upload_storage\.publish_bytes)"
+            r"(?=[\s\S]*ordinary XHTML[\s\S]*attachment)"
+            r"(?=[\s\S]*admission[\s\S]*authentication[\s\S]*before plugin dispatch)"
+            r"[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "CONTRIBUTING must document the exact narrow plugin API and provenance boundary",
+    ),
+    SemanticRequirement(
+        Path("docs/architecture.md"),
+        re.compile(
+            r"\A(?=[\s\S]*PluginServices\(upload_dir, upload_storage\))"
+            r"(?=[\s\S]*HandlerContext\(services, plugin_name\))"
+            r"(?=[\s\S]*no `context\.server` compatibility path)"
+            r"(?=[\s\S]*admission[\s\S]*authentication[\s\S]*before[\s\S]*plugin dispatch)"
+            r"(?=[\s\S]*ordinary XHTML[\s\S]*attachment)[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "architecture docs must preserve least-authority plugin services and provenance",
+    ),
+    SemanticRequirement(
+        Path("pyproject.toml"),
+        re.compile(
+            r'\A(?![\s\S]*"(?:dlp|red-team)")'
+            r'(?=[\s\S]*"security-research")'
+            r'(?=[\s\S]*"authorized-testing")'
+            r'(?=[\s\S]*"controlled-testing")'
+            r'(?=[\s\S]*"http-testing")[\s\S]*',
+            re.IGNORECASE,
+        ),
+        "package keywords must describe authorized, controlled security research",
+    ),
+    SemanticRequirement(
         Path("docs/operations.md"),
         re.compile(
-            r"\A(?=[\s\S]*public distribution[\s\S]*source-only)"
+            r"\A(?=[\s\S]*distribution[\s\S]*source-only)"
+            r"(?=[\s\S]*remote updates[\s\S]*not[\s\S]*exposed[\s\S]*public CLI)"
             r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
             r"(?=[\s\S]*body-memory-budget[\s\S]*not an[\s\S]*RSS ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
@@ -410,7 +553,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*--write-sample-config)"
             r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
             r"(?=[\s\S]*direct TCP peer)"
-            r"(?=[\s\S]*no published binary or container image)[\s\S]*",
+            r"(?=[\s\S]*no supported binary or container distribution)[\s\S]*",
             re.IGNORECASE,
         ),
         "public-direct must defer to security policy and preserve validation and proxy boundaries",
@@ -516,12 +659,35 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             (3, "ADR-003-runtime-crypto-acme.md"),
             (4, "ADR-004-upload-containment.md"),
             (5, "ADR-005-thread-pool.md"),
-            (6, "ADR-006-release-artifacts.md"),
             (7, "ADR-007-trusted-proxy-identity.md"),
             (8, "ADR-008-notepad-recovery.md"),
             (9, "ADR-009-api-client-compatibility.md"),
             (10, "ADR-010-methods-and-presets.md"),
+            (11, "ADR-011-controlled-distribution.md"),
         )
+    ),
+    SemanticRequirement(
+        Path("docs/ADR/ADR-006-release-artifacts.md"),
+        re.compile(r"\*\*Status:\*\*\s+superseded by ADR-011", re.IGNORECASE),
+        "ADR-006 must remain recorded as superseded by ADR-011",
+    ),
+    SemanticRequirement(
+        Path("docs/ADR/ADR-011-controlled-distribution.md"),
+        re.compile(
+            r"\A(?=[\s\S]*\*\*Supersedes:\*\* ADR-006)"
+            r"(?=[\s\S]*Portable CLI[\s\S]*PyPI)"
+            r"(?=[\s\S]*Container[\s\S]*GHCR)"
+            r"(?=[\s\S]*Managed Linux[\s\S]*GitHub Release)"
+            r"(?=[\s\S]*protected version-tag refs)"
+            r"(?=[\s\S]*publisher jobs must not rebuild)"
+            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*OIDC trusted publishing)"
+            r"(?=[\s\S]*Signing and key ownership)"
+            r"(?=[\s\S]*Rollback and incident response)"
+            r"(?=[\s\S]*Documentation ownership)[\s\S]*",
+            re.IGNORECASE,
+        ),
+        "ADR-011 must preserve all controlled-distribution journeys and launch invariants",
     ),
 )
 
@@ -573,6 +739,496 @@ def read_contract_text(path: Path) -> str | None:
 
 def contract_finding(path: Path, message: str, line: str = "<contract mismatch>") -> Finding:
     return Finding(path=path, line_number=1, line=line, message=message)
+
+
+def _workflow_jobs(text: str) -> tuple[WorkflowJob, ...]:
+    jobs_marker = re.search(
+        r"^(?P<quote>[\"']?)jobs(?P=quote):\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if jobs_marker is None:
+        return ()
+    matches = tuple(
+        match
+        for match in re.finditer(
+            r"^  (?P<quote>[\"']?)(?P<name>[A-Za-z_][A-Za-z0-9_-]*)"
+            r"(?P=quote):\s*(?:#.*)?$",
+            text[jobs_marker.end() :],
+            re.MULTILINE,
+        )
+    )
+    jobs: list[WorkflowJob] = []
+    offset = jobs_marker.end()
+    for index, match in enumerate(matches):
+        start = offset + match.start()
+        end = offset + matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        jobs.append(
+            WorkflowJob(
+                name=match.group("name"),
+                start_line=text.count("\n", 0, start) + 1,
+                text=text[start:end],
+            )
+        )
+    return tuple(jobs)
+
+
+def _permission_entries(
+    text: str,
+    indent: int,
+) -> tuple[bool, tuple[tuple[str, str, int], ...]]:
+    lines = text.splitlines()
+    marker = re.compile(
+        rf"^ {{{indent}}}(?P<quote>[\"']?)permissions(?P=quote):\s*"
+        r"(?P<value>[^#]*?)\s*(?:#.*)?$"
+    )
+    for index, line in enumerate(lines):
+        match = marker.match(line)
+        if match is None:
+            continue
+        inline_value = match.group("value").strip().strip("\"'")
+        if inline_value:
+            if inline_value.startswith("{") and inline_value.endswith("}"):
+                entries: list[tuple[str, str, int]] = []
+                body = inline_value[1:-1].strip()
+                if not body:
+                    return True, ()
+                for item in body.split(","):
+                    scope, separator, access = item.partition(":")
+                    if not separator:
+                        return True, (("*", inline_value, index + 1),)
+                    entries.append(
+                        (
+                            scope.strip().strip("\"'"),
+                            access.strip().strip("\"'"),
+                            index + 1,
+                        )
+                    )
+                return True, tuple(entries)
+            return True, (("*", inline_value, index + 1),)
+
+        entries: list[tuple[str, str, int]] = []
+        for child_index in range(index + 1, len(lines)):
+            child = lines[child_index]
+            stripped = child.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= indent:
+                break
+            if child_indent != indent + 2:
+                continue
+            entry = re.match(
+                r"^[A-Za-z0-9_-]+:\s*[^#]+",
+                stripped,
+            )
+            if entry is None:
+                continue
+            scope, access = stripped.split(":", maxsplit=1)
+            entries.append((scope, access.split("#", maxsplit=1)[0].strip(), child_index + 1))
+        return True, tuple(entries)
+    return False, ()
+
+
+def _workflow_events(text: str) -> tuple[frozenset[str], str]:
+    lines = text.splitlines()
+    try:
+        on_index = lines.index("on:")
+    except ValueError:
+        return frozenset(), ""
+
+    event_lines: list[str] = []
+    for line in lines[on_index + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) == 0:
+            break
+        event_lines.append(line)
+
+    events: set[str] = set()
+    push_lines: list[str] = []
+    in_push = False
+    for line in event_lines:
+        indent = len(line) - len(line.lstrip())
+        event = re.match(
+            r"^  (?P<quote>[\"']?)(?P<name>[A-Za-z0-9_-]+)(?P=quote):",
+            line,
+        )
+        if event is not None:
+            name = event.group("name")
+            events.add(name)
+            in_push = name == "push"
+            if in_push:
+                push_lines.append(line)
+            continue
+        if in_push:
+            if line.strip() and indent <= 2:
+                in_push = False
+            else:
+                push_lines.append(line)
+    return frozenset(events), "\n".join(push_lines)
+
+
+def _push_tag_filters(push_block: str) -> tuple[str, ...]:
+    lines = push_block.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(
+            r"^    (?P<quote>[\"']?)tags(?P=quote):\s*"
+            r"(?P<value>[^#]*?)\s*(?:#.*)?$",
+            line,
+        )
+        if match is None:
+            continue
+        inline = match.group("value").strip()
+        if inline:
+            if inline.startswith("[") and inline.endswith("]"):
+                inline = inline[1:-1]
+                return tuple(
+                    item.strip().strip("\"'") for item in inline.split(",") if item.strip()
+                )
+            return (inline.strip("\"'"),)
+
+        filters: list[str] = []
+        for child in lines[index + 1 :]:
+            if not child.strip() or child.lstrip().startswith("#"):
+                continue
+            indent = len(child) - len(child.lstrip())
+            if indent <= 4:
+                break
+            item = re.match(r"^      -\s*(?P<value>[^#]+?)\s*(?:#.*)?$", child)
+            if item is not None:
+                filters.append(item.group("value").strip().strip("\"'"))
+        return tuple(filters)
+    return ()
+
+
+def _publisher_channels(job: WorkflowJob) -> frozenset[str]:
+    return frozenset(
+        channel for channel, pattern in PUBLISHER_CHANNEL_PATTERNS if pattern.search(job.text)
+    )
+
+
+def _uses_production_environment(job: WorkflowJob) -> bool:
+    if re.search(
+        r"^    (?P<quote>[\"']?)environment(?P=quote):\s*"
+        r"[\"']?production[\"']?\s*(?:#.*)?$",
+        job.text,
+        re.MULTILINE,
+    ):
+        return True
+    match = re.search(
+        r"^    (?P<quote>[\"']?)environment(?P=quote):\s*$",
+        job.text,
+        re.MULTILINE,
+    )
+    if match is None:
+        return False
+    environment_block = job.text[match.end() :]
+    end = re.search(r"^    \S", environment_block, re.MULTILINE)
+    if end is not None:
+        environment_block = environment_block[: end.start()]
+    return (
+        re.search(
+            r"^      name:\s*[\"']?production[\"']?\s*(?:#.*)?$",
+            environment_block,
+            re.MULTILINE,
+        )
+        is not None
+    )
+
+
+def release_workflow_policy_findings(
+    text: str,
+    path: Path = Path(".github/workflows/release.yml"),
+) -> list[Finding]:
+    """Validate both the current no-publish and future controlled-publish modes."""
+    findings: list[Finding] = []
+    lines = text.splitlines()
+
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if reference.startswith("./"):
+            continue
+        action, separator, revision = reference.partition("@")
+        if separator and WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(revision):
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        received = revision if separator else "(missing ref)"
+        findings.append(
+            Finding(
+                path,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                f"external actions must use a lowercase 40-hex commit SHA; "
+                f"{action} uses {received}",
+            )
+        )
+
+    _, workflow_permissions = _permission_entries(text, 0)
+    for _scope, access, line_number in workflow_permissions:
+        if access.casefold() == "write-all" or access.casefold() == "write":
+            findings.append(
+                Finding(
+                    path,
+                    line_number,
+                    lines[line_number - 1].strip() if lines else "",
+                    "workflow-level write permission is forbidden; scope writes to one "
+                    "protected publisher job",
+                )
+            )
+
+    publishers = tuple(
+        (job, _publisher_channels(job)) for job in _workflow_jobs(text) if _publisher_channels(job)
+    )
+    if not publishers:
+        return findings
+
+    events, push_block = _workflow_events(text)
+    if "pull_request" in events or "pull_request_target" in events:
+        findings.append(contract_finding(path, "pull-request publication is forbidden"))
+    tag_filters = _push_tag_filters(push_block)
+    if (
+        events != frozenset({"push"})
+        or not tag_filters
+        or any(RELEASE_TAG_FILTER_PATTERN.fullmatch(item) is None for item in tag_filters)
+        or re.search(r"^    [\"']?tags-ignore[\"']?:", push_block, re.MULTILINE)
+        or re.search(r"^    [\"']?branches(?:-ignore)?[\"']?:", push_block, re.MULTILINE)
+    ):
+        findings.append(
+            contract_finding(
+                path,
+                "publisher workflows require exact `vX.Y.Z` version tag filters on a "
+                "version-tag-only push trigger",
+            )
+        )
+
+    for job, channels in publishers:
+        line = job.text.splitlines()[0].strip()
+
+        if not _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} must use the protected `production` environment",
+                )
+            )
+        if re.search(r"^    [\"']?needs[\"']?:", job.text, re.MULTILINE) is None or (
+            "actions/download-artifact@" not in job.text
+        ):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} must consume an exact previously built artifact",
+                )
+            )
+        if PUBLISH_JOB_REBUILD_PATTERN.search(job.text):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} must not rebuild release artifacts",
+                )
+            )
+
+        has_permissions, job_permissions = _permission_entries(job.text, 4)
+        if not has_permissions:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} must declare explicit least-privilege permissions",
+                )
+            )
+            job_permissions = ()
+        granted_writes = {
+            scope
+            for scope, access, _ in job_permissions
+            if access.casefold() in {"write", "write-all"}
+        }
+        required_writes: set[str] = set()
+        if "pypi" in channels:
+            required_writes.add("id-token")
+        if "ghcr" in channels:
+            required_writes.add("packages")
+        if "github-release" in channels:
+            required_writes.add("contents")
+        if re.search(r"(?:actions/attest|sigstore|cosign)", job.text, re.IGNORECASE):
+            required_writes.add("id-token")
+        if "actions/attest" in job.text:
+            required_writes.add("attestations")
+
+        if "*" in granted_writes or granted_writes - required_writes:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} grants broad or unrelated write permissions",
+                )
+            )
+        if required_writes - granted_writes:
+            missing = ", ".join(sorted(required_writes - granted_writes))
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"publisher job {job.name!r} is missing required write permissions: {missing}",
+                )
+            )
+
+        if "pypi" in channels:
+            if PYPI_STATIC_CREDENTIAL_PATTERN.search(job.text):
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        f"publisher job {job.name!r} must not use a static PyPI credential",
+                    )
+                )
+            if "pypa/gh-action-pypi-publish" not in job.text:
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        f"publisher job {job.name!r} must use PyPI trusted publishing",
+                    )
+                )
+    return findings
+
+
+def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
+    """Keep the fixed staging rehearsal separate from production release policy."""
+    path = Path(".github/workflows/testpypi.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    # A commented safety check provides no execution boundary. Ignore comments
+    # before examining both YAML fields and commands inside run blocks.
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if _workflow_events(text)[0] != frozenset({"workflow_dispatch"}):
+        reject("TestPyPI rehearsal must be manual-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("TestPyPI actions must be commit-SHA pinned")
+    permissions_found, permission_entries = _permission_entries(text, 0)
+    permissions = {scope: access for scope, access, _ in permission_entries}
+    if (
+        not permissions_found
+        or len(permission_entries) != 2
+        or permissions != {"contents": "read", "actions": "read"}
+    ):
+        reject("TestPyPI workflow permissions must explicitly grant only read access")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    if set(jobs) != {"identity", "publish", "pipx-smoke"}:
+        reject("TestPyPI rehearsal requires exactly identity, publish and pipx-smoke jobs")
+        return findings
+    expected_gate = (
+        "    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' "
+        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}"
+    )
+    if expected_gate not in jobs["identity"].text.splitlines():
+        reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
+    for job_name, command in (("identity", "identity"), ("publish", "prepare")):
+        if (
+            re.search(
+                rf"^          python tools/testpypi_publish\.py {command} ",
+                jobs[job_name].text,
+                re.MULTILINE,
+            )
+            is None
+        ):
+            reject(f"TestPyPI {job_name} must execute its identity verifier")
+    if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
+        jobs["publish"]
+    ) != frozenset({"pypi"}):
+        reject("TestPyPI requires exactly one official publisher and no other write channel")
+    if re.search(r"(?:twine\s+upload|(?:uv|hatch)\s+publish)", text):
+        reject("TestPyPI uploads must use only the official publisher step")
+    required = {
+        "identity": (
+            "inputs.confirm_testpypi",
+            "github.repository == 'kgmnotes/xferry'",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal'",
+            "testpypi_publish.py identity",
+        ),
+        "publish": (
+            "needs: identity",
+            "environment: testpypi",
+            "repository: kgmnotes/xferry",
+            "run-id: 36712344792",
+            "artifact-ids: 11095067140",
+            "github-token: ${{ github.token }}",
+            "merge-multiple: true",
+            "testpypi_publish.py prepare",
+            "--archive downloaded/release-candidate.tar",
+            "--candidate-dir promoted --packages-dir dist",
+            "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+            "repository-url: https://test.pypi.org/legacy/",
+            "packages-dir: dist/",
+            "verify-metadata: true",
+            "skip-existing: false",
+            "attestations: true",
+        ),
+        "pipx-smoke": (
+            "needs: publish",
+            "os: [ubuntu-latest, macos-15, windows-latest]",
+            "testpypi_publish.py smoke",
+        ),
+    }
+    for name, job in jobs.items():
+        if any(item not in job.text for item in required[name]):
+            reject(f"TestPyPI {name} job lost its fixed staging contract")
+        permissions = {scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]}
+        expected = {"contents": "read", "actions": "read", "id-token": "write"}
+        if name == "publish" and permissions != expected:
+            reject("Only TestPyPI publish may grant job-scoped OIDC and read scopes")
+        if name != "publish" and any(access != "read" for access in permissions.values()):
+            reject("TestPyPI verification jobs must remain read-only")
+    for block in text.split("uses: actions/checkout@")[1:]:
+        if "persist-credentials: false" not in block.split("\n      -", 1)[0]:
+            reject("TestPyPI checkout credentials must not persist")
+    if PUBLISH_JOB_REBUILD_PATTERN.search(jobs["publish"].text):
+        reject("TestPyPI publisher must not rebuild candidates")
+    if PYPI_STATIC_CREDENTIAL_PATTERN.search(text) or "${{ secrets." in text:
+        reject("TestPyPI must not consume static credentials or signing secrets")
+    if any(value in text for value in ("upload.pypi.org", "production", "--extra-index-url")):
+        reject("TestPyPI cannot target production or mix package indexes")
+    if any(_publisher_channels(job) for name, job in jobs.items() if name != "publish"):
+        reject("TestPyPI writes must be isolated to the publish job")
+    return findings
+
+
+def find_release_policy_issues(
+    repo_root: Path = REPO_ROOT,
+    targets: Sequence[str] = DEFAULT_TARGETS,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    path = Path(".github/workflows/release.yml")
+    if targets_cover_path(path, repo_root, targets):
+        text = read_contract_text(repo_root / path)
+        if text is None:
+            findings.append(contract_finding(path, "release workflow policy file is missing"))
+        else:
+            findings.extend(release_workflow_policy_findings(text, path))
+    staging = Path(".github/workflows/testpypi.yml")
+    if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
+        findings.extend(
+            testpypi_workflow_policy_findings(read_contract_text(repo_root / staging) or "")
+        )
+    return findings
 
 
 def is_superseded_adr(path: Path, text: str) -> bool:
@@ -647,6 +1303,24 @@ def scan_file(path: Path, repo_root: Path) -> list[Finding]:
                 continue
             if pattern.regex.search(line):
                 findings.append(Finding(relative, line_number, line.strip(), pattern.message))
+
+    for pattern in STALE_DOCUMENT_PATTERNS:
+        if relative in pattern.ignored_paths:
+            continue
+        if superseded_adr and pattern.allow_in_superseded_adr:
+            continue
+        match = pattern.regex.search(text)
+        if match is None:
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        findings.append(
+            Finding(
+                relative,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                pattern.message,
+            )
+        )
 
     if superseded_adr:
         return findings
@@ -783,12 +1457,45 @@ def find_source_first_issues(
     repo_root: Path = REPO_ROOT,
     targets: Sequence[str] = DEFAULT_TARGETS,
 ) -> list[Finding]:
+    findings: list[Finding] = []
+    unsupported_route = re.compile(
+        r"(?:releases/latest|ghcr\.io/kgmnotes/xferry|"
+        r"(?<![\w.-])(?:python\s+-m\s+)?pip\s+install\b[^\n`]{0,160}?"
+        r"(?<!\S)xferry(?:\b|\[)|"
+        r"(?<![\w-])xferry\s+update\b)",
+        re.IGNORECASE,
+    )
+    for path in (
+        Path("README.md"),
+        Path("docs/quick-start.md"),
+        Path("docs/operations.md"),
+        Path("docs/public-direct.md"),
+    ):
+        if not targets_cover_path(path, repo_root, targets):
+            continue
+        text = read_contract_text(repo_root / path)
+        if text is None:
+            continue
+        match = unsupported_route.search(text)
+        if match is None:
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        lines = text.splitlines()
+        findings.append(
+            Finding(
+                path,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                "current user install docs must exclude an unsupported distribution channel",
+            )
+        )
+
     path = Path("docs/quick-start.md")
     if not targets_cover_path(path, repo_root, targets):
-        return []
+        return findings
     text = read_contract_text(repo_root / path)
     if text is None:
-        return []
+        return findings
     folded = text.casefold()
     markers = (
         "git clone https://github.com/kgmnotes/xferry.git",
@@ -796,18 +1503,13 @@ def find_source_first_issues(
         "xferry run --preset local --open",
     )
     offsets = tuple(folded.find(marker) for marker in markers)
-    forbidden_routes = ("releases/latest", "ghcr.io/kgmnotes/xferry", "pip install xferry")
-    if (
-        any(offset < 0 for offset in offsets)
-        or offsets != tuple(sorted(offsets))
-        or any(marker in folded for marker in forbidden_routes)
-    ):
-        return [
+    if any(offset < 0 for offset in offsets) or offsets != tuple(sorted(offsets)):
+        findings.append(
             contract_finding(
-                path, "source install must precede launch and exclude unpublished artifacts"
+                path, "source install must precede launch and exclude unsupported channels"
             )
-        ]
-    return []
+        )
+    return findings
 
 
 def find_adr_navigation_issues(
@@ -936,6 +1638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings.extend(find_ordered_contract_issues(REPO_ROOT, targets))
     findings.extend(find_source_first_issues(REPO_ROOT, targets))
     findings.extend(find_adr_navigation_issues(REPO_ROOT, targets))
+    findings.extend(find_release_policy_issues(REPO_ROOT, targets))
     findings.extend(find_contributor_command_issues(REPO_ROOT, targets))
     findings.extend(find_version_consistency_issues(REPO_ROOT, targets))
 

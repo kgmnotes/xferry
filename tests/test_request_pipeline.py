@@ -17,6 +17,7 @@ from xferry.advanced_sessions import (
     AdvancedSessionStore,
 )
 from xferry.http import HTTPRequest, HTTPResponse
+from xferry.request_admission import RequestAdmissionConfig, RequestAdmissionPolicy
 from xferry.request_pipeline import RequestPipeline
 
 
@@ -28,6 +29,8 @@ def _make_raw_request(
 ) -> bytes:
     """Build raw HTTP request bytes for pipeline tests."""
     header_lines = [f"{method} {path} HTTP/1.1"]
+    if not headers or not any(key.lower() == "host" for key in headers):
+        header_lines.append("Host: example.test")
     if headers:
         for key, value in headers.items():
             header_lines.append(f"{key}: {value}")
@@ -58,6 +61,14 @@ class _PipelineServerStub:
         self.cors_origin: str | None = None
         self.resolved_cors_origin: str | None = None
         self._ecdh_manager: object | None = object()
+        self.request_admission_policy = RequestAdmissionPolicy.from_config(
+            RequestAdmissionConfig(
+                bind_host="127.0.0.1",
+                server_port=8080,
+                tls_enabled=False,
+                allowed_hosts=("example.test",),
+            )
+        )
         self.use_keep_alive = False
         self.remaining_requests = 0
         self.auth_error: HTTPResponse | None = None
@@ -198,6 +209,145 @@ class _PipelineServerStub:
 
 
 class TestRequestPipeline:
+    @pytest.mark.parametrize(
+        "raw_headers",
+        [
+            "User-Agent: test",
+            "Host:   ",
+            "Host: example.test:0",
+            "Host: example.test\r\nHost: example.test",
+            "Host: example.test\r\n folded",
+            "Host: example.test\r\nAuthorization: Basic bad\r\nAuthorization: Basic good",
+            "Host: example.test\r\nAuthorization: Basic bad\r\n folded",
+            ("Host: example.test\r\nOrigin: http://example.test\r\nOrigin: http://example.test"),
+            "Host: example.test\r\nOrigin: http://example.test\r\n folded",
+            ("Host: example.test\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Site: same-origin"),
+            "Host: example.test\r\nSec-Fetch-Site: same-origin\r\n folded",
+            "Host: example.test\r\nConnection: keep-alive\r\nConnection: close",
+            "Host: example.test\r\nConnection: keep-alive\r\n folded",
+            (
+                "Host: example.test\r\nUpgrade: websocket\r\nUpgrade: websocket\r\n"
+                "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13"
+            ),
+            "Host: example.test\r\nUpgrade: websocket\r\n folded",
+            (
+                "Host: example.test\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+            ),
+            ("Host: example.test\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n folded"),
+            ("Host: example.test\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Version: 13"),
+            "Host: example.test\r\nSec-WebSocket-Version: 13\r\n folded",
+            (
+                "Host: example.test\r\nAccess-Control-Request-Method: STEALTH\r\n"
+                "Access-Control-Request-Method: STEALTH"
+            ),
+            "Host: example.test\r\nAccess-Control-Request-Method: STEALTH\r\n folded",
+            (
+                "Host: example.test\r\n"
+                "Access-Control-Request-Headers: Content-Type, X-XFerry-Data\r\n"
+                "Access-Control-Request-Headers: Content-Type, X-XFerry-Data"
+            ),
+            (
+                "Host: example.test\r\n"
+                "Access-Control-Request-Headers: Content-Type, X-XFerry-Data\r\n folded"
+            ),
+        ],
+    )
+    def test_admission_rejects_ambiguous_security_fields_before_all_side_effects(
+        self,
+        raw_headers: str,
+    ) -> None:
+        """Catch protected duplicates/folding reaching auth, sessions, WS, or handlers."""
+        server = _PipelineServerStub()
+        server.websocket_attempt = True
+        pipeline = RequestPipeline(server)
+        sock = _SocketStub()
+        raw = f"POST / HTTP/1.1\r\n{raw_headers}\r\n\r\n".encode("ascii")
+
+        keep_alive = pipeline.process(raw, sock, ("198.51.100.7", 12345), 1)
+
+        assert keep_alive is False
+        assert len(sock.sent) == 1
+        head, body = sock.sent[0].split(b"\r\n\r\n", 1)
+        assert head.startswith(b"HTTP/1.1 400")
+        assert b"Cache-Control: no-store" in head
+        assert b"Connection: close" in head
+        assert b"Access-Control-Allow-" not in head
+        assert b"WWW-Authenticate:" not in head
+        assert json.loads(body)["error"]["code"] == "invalid_header"
+        assert server.resolve_calls == []
+        assert server.auth_calls == []
+        assert server.session_admission_calls == []
+        assert server.websocket_upgrade_calls == 0
+        assert server.dispatch_calls == []
+        assert server.cors_resolve_calls == []
+
+    def test_admission_rejects_forged_host_before_matching_origin_can_authorize(self) -> None:
+        """Catch forged Host plus matching Origin reaching browser mutation authorization."""
+        server = _PipelineServerStub()
+        pipeline = RequestPipeline(server)
+        sock = _SocketStub()
+
+        keep_alive = pipeline.process(
+            (
+                b"POST /upload HTTP/1.1\r\n"
+                b"Host: attacker.example\r\n"
+                b"Origin: http://attacker.example\r\n\r\n"
+            ),
+            sock,
+            ("127.0.0.1", 12345),
+            1,
+        )
+
+        assert keep_alive is False
+        head, body = sock.sent[0].split(b"\r\n\r\n", 1)
+        assert head.startswith(b"HTTP/1.1 421 Misdirected Request")
+        assert b"Cache-Control: no-store" in head
+        assert json.loads(body) == {
+            "error": {
+                "code": "misdirected_request",
+                "message": "Misdirected Request",
+                "field": "Host",
+                "details": {},
+            }
+        }
+        assert server.resolve_calls == []
+        assert server.auth_calls == []
+        assert server.browser_mutation_calls == []
+        assert server.dispatch_calls == []
+
+    def test_admission_attaches_singleton_context_before_legitimate_dispatch(self) -> None:
+        """Catch successful requests dispatching without immutable admitted security facts."""
+        server = _PipelineServerStub()
+        pipeline = RequestPipeline(server)
+        sock = _SocketStub()
+
+        pipeline.process(
+            _make_raw_request(
+                "OPTIONS",
+                "/",
+                {
+                    "Host": "EXAMPLE.TEST.:8080",
+                    "Origin": "http://example.test:8080",
+                    "Connection": "keep-alive, Upgrade",
+                    "Access-Control-Request-Method": "STEALTH",
+                    "Access-Control-Request-Headers": "Content-Type, X-XFerry-Data",
+                },
+            ),
+            sock,
+            ("127.0.0.1", 12345),
+            1,
+        )
+
+        context = server.dispatched_security_contexts[0].admission
+        assert context is not None
+        assert context.authority.host == "example.test"
+        assert context.authority.port == 8080
+        assert context.connection == "keep-alive, Upgrade"
+        assert context.preflight_method == "STEALTH"
+        assert context.preflight_headers == "Content-Type, X-XFerry-Data"
+
     @pytest.mark.parametrize(
         ("prefix", "path", "expected_path"),
         [
@@ -1094,6 +1244,7 @@ class TestRequestPipeline:
 
         assert result is False
         assert sock.sent == []
+        assert server.auth_calls == [("/notes/ws", ("127.0.0.1", 12345))]
         assert server.handled_websocket_paths == ["/notes/ws"]
         assert server.websocket_upgrade_calls == 1
         assert server.record_calls == []

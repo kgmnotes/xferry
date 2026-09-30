@@ -44,6 +44,18 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: settings-samples-check
+        name: settings samples check
+        entry: python tools/render_settings.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: public-contracts-check
+        name: public contracts check
+        entry: python tools/render_contracts.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: docs-mirror-check
         name: docs mirror check
         entry: python tools/sync_docs.py --check

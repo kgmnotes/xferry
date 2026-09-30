@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
 
 from tests.server_factory import make_server
-from xferry.extensions import HandlerContext, PluginMethodSpec, PluginSpec
+from xferry.extensions import HandlerContext, PluginMethodSpec, PluginServices, PluginSpec
 from xferry.http import HTTPRequest, HTTPResponse
 
 
@@ -52,10 +53,124 @@ def test_plugin_method_registers_and_dispatches(temp_dir: Path) -> None:
 
 def test_public_xferry_extensions_exports_plugin_api() -> None:
     from xferry.extensions import PluginMethodSpec as PublicPluginMethodSpec
+    from xferry.extensions import PluginServices as PublicPluginServices
     from xferry.extensions import PluginSpec as PublicPluginSpec
 
     assert PublicPluginMethodSpec is PluginMethodSpec
+    assert PublicPluginServices is PluginServices
     assert PublicPluginSpec is PluginSpec
+
+
+def test_plugin_context_exposes_only_narrow_services(temp_dir: Path) -> None:
+    seen_contexts: list[HandlerContext] = []
+
+    def handler(_request: HTTPRequest, context: HandlerContext) -> HTTPResponse:
+        seen_contexts.append(context)
+        response = HTTPResponse(200)
+        response.set_body(context.services.upload_dir.name, "text/plain")
+        return response
+
+    plugin = PluginSpec(
+        name="storage-plugin",
+        methods=(PluginMethodSpec(method="STORE", handler=handler, mutating=False),),
+    )
+    server = make_server(root_dir=str(temp_dir), quiet=True, plugins=[plugin])
+
+    response = server._dispatch_handler(_request("STORE"))
+
+    assert response.status_code == 200
+    assert response.body == b"uploads"
+    assert len(seen_contexts) == 1
+    context = seen_contexts[0]
+    assert context.plugin_name == "storage-plugin"
+    assert type(context.services) is PluginServices
+    assert context.services.upload_dir is server.upload_dir
+    assert context.services.upload_storage is server.upload_storage
+    assert [field.name for field in fields(HandlerContext)] == [
+        "services",
+        "plugin_name",
+    ]
+    assert [field.name for field in fields(PluginServices)] == [
+        "upload_dir",
+        "upload_storage",
+    ]
+    assert not hasattr(context, "server")
+    assert not hasattr(context, "__dict__")
+    assert not hasattr(context.services, "__dict__")
+    assert "__getattr__" not in HandlerContext.__dict__
+    assert "__getattribute__" not in HandlerContext.__dict__
+
+    for forbidden in (
+        "server",
+        "authenticator",
+        "auth_controller",
+        "auth_runtime",
+        "advanced_sessions",
+        "config",
+        "lifecycle",
+        "metrics",
+        "notepad",
+        "pipeline",
+        "smuggle_temp",
+        "tls",
+    ):
+        assert not hasattr(context, forbidden)
+        assert not hasattr(context.services, forbidden)
+
+    with pytest.raises(FrozenInstanceError):
+        context.plugin_name = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        context.services.upload_dir = temp_dir  # type: ignore[misc]
+    with pytest.raises(TypeError, match="server"):
+        HandlerContext(server=server, plugin_name="legacy")  # type: ignore[call-arg]
+
+
+def test_plugin_storage_cannot_grant_smuggle_provenance(temp_dir: Path) -> None:
+    artifact_name = "smuggle_0123456789abcdef.xhtml"
+
+    def handler(_request: HTTPRequest, context: HandlerContext) -> HTTPResponse:
+        context.services.upload_storage.publish_bytes(
+            context.services.upload_dir / artifact_name,
+            b"<html xmlns='http://www.w3.org/1999/xhtml'><script>0</script></html>",
+        )
+        return HTTPResponse(204)
+
+    plugin = PluginSpec(
+        name="storage",
+        methods=(PluginMethodSpec(method="STORE", handler=handler, mutating=True),),
+    )
+    server = make_server(root_dir=str(temp_dir), quiet=True, plugins=[plugin])
+
+    assert server._dispatch_handler(_request("STORE")).status_code == 204
+    assert not server.handler_context.smuggle_temp.contains(server.upload_dir / artifact_name)
+
+    response = server.handle_get(_request("GET", f"/uploads/{artifact_name}"))
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/octet-stream"
+    assert response.headers["Content-Disposition"].startswith("attachment;")
+
+
+def test_plugin_methods_share_one_service_boundary(temp_dir: Path) -> None:
+    seen_services: list[PluginServices] = []
+
+    def handler(_request: HTTPRequest, context: HandlerContext) -> HTTPResponse:
+        seen_services.append(context.services)
+        return HTTPResponse(204)
+
+    plugin = PluginSpec(
+        name="shared",
+        methods=(
+            PluginMethodSpec(method="FIRST", handler=handler, mutating=False),
+            PluginMethodSpec(method="SECOND", handler=handler, mutating=False),
+        ),
+    )
+    server = make_server(root_dir=str(temp_dir), quiet=True, plugins=[plugin])
+
+    server._dispatch_handler(_request("FIRST"))
+    server._dispatch_handler(_request("SECOND"))
+
+    assert len(seen_services) == 2
+    assert seen_services[0] is seen_services[1]
 
 
 def test_plugin_method_cannot_override_core_method_by_default(temp_dir: Path) -> None:

@@ -15,53 +15,35 @@ from typing import Any
 
 from .config import __version__
 from .features import registry_methods
-from .handlers.smuggle import (
-    DEFAULT_SMUGGLE_TEMP_MAX_AGE_SECONDS,
-    DEFAULT_SMUGGLE_TEMP_MAX_BYTES,
-    DEFAULT_SMUGGLE_TEMP_MAX_FILES,
-)
-from .http.io import (
-    BODY_TIMEOUT,
-    DEFAULT_BODY_IDLE_TIMEOUT,
-    DEFAULT_BODY_MIN_RATE_BYTES_PER_SECOND,
-    DEFAULT_MAX_HEADER_SIZE,
-)
-from .notepad_service import DEFAULT_MAX_NOTE_STORAGE_BYTES, DEFAULT_MAX_NOTES
 from .server import XFerryServer
-from .server_config import (
-    DEFAULT_STREAM_SEND_IDLE_TIMEOUT,
-    DEFAULT_STREAM_SEND_TIMEOUT,
-    DEFAULT_WEBSOCKET_FRAME_IDLE_TIMEOUT,
-)
 from .settings import (
     BODY_ADMISSION_BUDGET_NOTE,
     WEBSOCKET_WORKER_NOTE,
     LaunchPreset,
+    ServerSettings,
     load_settings_file,
     resolve_settings,
     sample_config_text,
 )
-
-_MIB = 1024 * 1024
+from .settings_schema import (
+    CLI_GROUP_ORDER,
+    SETTING_SPECS,
+    CliGroup,
+    cli_setting_specs,
+    cli_to_setting_map,
+)
 
 _NORMAL_HELP_DESTS = frozenset(
     {
         "help",
         "help_all",
         "version",
-        "preset",
         "config",
         "check_config",
         "print_config",
         "write_sample_config",
-        "host",
-        "port",
-        "dir",
-        "open",
-        "tls",
-        "auth",
-        "auth_file",
     }
+    | {spec.cli.dest for spec in SETTING_SPECS if spec.cli is not None and spec.cli.normal_help}
 )
 
 
@@ -125,6 +107,54 @@ def _bounded_float(
     return parse
 
 
+def _format_cli_default(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _add_setting_arguments(
+    group: argparse._ArgumentGroup,
+    group_name: CliGroup,
+    defaults: ServerSettings,
+) -> None:
+    """Declare one argparse group entirely from canonical settings metadata."""
+    for spec in cli_setting_specs(group_name):
+        cli = spec.cli
+        assert cli is not None
+        runtime_default = getattr(defaults, spec.name)
+        kwargs: dict[str, Any] = {
+            "dest": cli.dest,
+            "default": runtime_default if cli.default_from_runtime else None,
+            "help": cli.help.format(default=_format_cli_default(runtime_default)),
+        }
+        if cli.action == "append":
+            kwargs["action"] = "append"
+        elif cli.action == "boolean_optional":
+            kwargs["action"] = argparse.BooleanOptionalAction
+        elif cli.action == "store_true":
+            kwargs["action"] = "store_true"
+        if cli.metavar is not None:
+            kwargs["metavar"] = cli.metavar
+        if cli.choices:
+            kwargs["choices"] = list(cli.choices)
+        if cli.parser_kind == "integer":
+            assert cli.parser_label is not None and cli.minimum is not None
+            kwargs["type"] = _bounded_int(
+                cli.parser_label,
+                minimum=int(cli.minimum),
+                maximum=None if cli.maximum is None else int(cli.maximum),
+            )
+        elif cli.parser_kind == "number":
+            assert cli.parser_label is not None and cli.minimum is not None
+            kwargs["type"] = _bounded_float(
+                cli.parser_label,
+                minimum=float(cli.minimum),
+                maximum=None if cli.maximum is None else float(cli.maximum),
+            )
+        group.add_argument(*cli.option_strings, **kwargs)
+
+
 def create_parser(*, show_all_help: bool = False) -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     description = f"""HTTP server with custom methods, TLS, Auth, and uploads-only file access.
@@ -176,12 +206,11 @@ value remains authoritative. Use --help-all for the exhaustive option list.
         help="Show every configuration, limit, TLS and protocol option",
     )
 
+    defaults = ServerSettings()
+    groups: dict[CliGroup, argparse._ArgumentGroup] = {}
     config_group = parser.add_argument_group("Configuration")
-    config_group.add_argument(
-        "--preset",
-        choices=[preset.value for preset in LaunchPreset],
-        help="Select journey defaults below every explicit file/env/CLI value",
-    )
+    groups["Configuration"] = config_group
+    _add_setting_arguments(config_group, "Configuration", defaults)
     config_group.add_argument(
         "--config",
         metavar="FILE",
@@ -205,278 +234,29 @@ value remains authoritative. Use --help-all for the exhaustive option list.
 
     # Basic
     basic = parser.add_argument_group("Basic")
-    basic.add_argument(
-        "-H", "--host", default="127.0.0.1", metavar="HOST", help="Bind host (default: 127.0.0.1)"
-    )
-    basic.add_argument(
-        "-p",
-        "--port",
-        type=_bounded_int("port", minimum=1, maximum=65535),
-        default=8080,
-        metavar="PORT",
-        help="Listen port (default: 8080)",
-    )
-    basic.add_argument(
-        "-d", "--dir", default=".", metavar="DIR", help="Root directory (default: current)"
-    )
+    groups["Basic"] = basic
+    _add_setting_arguments(basic, "Basic", defaults)
 
     # Operating modes
     modes = parser.add_argument_group("Modes")
-    modes.add_argument("-q", "--quiet", action="store_true", help="Quiet mode (minimal logging)")
-    modes.add_argument("--debug", action="store_true", help="Debug mode (verbose logging)")
-    modes.add_argument("--open", action="store_true", help="Open browser after start")
-    modes.add_argument("--json-log", action="store_true", help="Structured JSON log format")
-    modes.add_argument(
-        "--cors-origin",
-        default="",
-        metavar="ORIGIN",
-        help="Enable CORS for an explicit origin (default: disabled)",
-    )
+    groups["Modes"] = modes
+    _add_setting_arguments(modes, "Modes", defaults)
     # Limits
     limits = parser.add_argument_group("Limits")
-    limits.add_argument(
-        "-m",
-        "--max-size",
-        type=_bounded_int("max size", minimum=1),
-        default=100,
-        metavar="MB",
-        help="Max per-request upload body size in MB (default: 100)",
-    )
-    limits.add_argument(
-        "--upload-storage-limit",
-        type=_bounded_int("upload storage limit", minimum=0),
-        default=0,
-        metavar="MB",
-        help="Aggregate uploads/ storage quota in MB; 0 disables (default: 0)",
-    )
-    limits.add_argument(
-        "--upload-file-limit",
-        type=_bounded_int("upload file limit", minimum=0),
-        default=0,
-        metavar="N",
-        help="Aggregate uploads/ file count quota; 0 disables (default: 0)",
-    )
-    limits.add_argument(
-        "--upload-reserve-free",
-        type=_bounded_int("upload reserve free", minimum=0),
-        default=0,
-        metavar="MB",
-        help="Minimum free disk space to preserve while committing uploads in MB (default: 0)",
-    )
-    limits.add_argument(
-        "--upload-quota-externally-managed",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help=(
-            "Acknowledge that upload disk capacity is enforced outside xferry; "
-            "required for public-direct only when all app upload disk controls are disabled"
-        ),
-    )
-    limits.add_argument(
-        "--note-storage-limit",
-        type=_bounded_int("note storage limit", minimum=0),
-        default=DEFAULT_MAX_NOTE_STORAGE_BYTES // _MIB,
-        metavar="MB",
-        help=(
-            "Aggregate encrypted notes/ blob quota in MB; 0 disables "
-            f"(default: {DEFAULT_MAX_NOTE_STORAGE_BYTES // _MIB})"
-        ),
-    )
-    limits.add_argument(
-        "--note-count-limit",
-        type=_bounded_int("note count limit", minimum=0),
-        default=DEFAULT_MAX_NOTES,
-        metavar="N",
-        help=f"Aggregate encrypted note count quota; 0 disables (default: {DEFAULT_MAX_NOTES})",
-    )
-    limits.add_argument(
-        "--smuggle-temp-age",
-        type=_bounded_int("SMUGGLE temp max age", minimum=0),
-        default=DEFAULT_SMUGGLE_TEMP_MAX_AGE_SECONDS,
-        metavar="SECONDS",
-        help=(
-            "Max age for retained SMUGGLE temp pages in seconds; 0 disables "
-            f"(default: {DEFAULT_SMUGGLE_TEMP_MAX_AGE_SECONDS})"
-        ),
-    )
-    limits.add_argument(
-        "--smuggle-temp-file-limit",
-        type=_bounded_int("SMUGGLE temp file limit", minimum=0),
-        default=DEFAULT_SMUGGLE_TEMP_MAX_FILES,
-        metavar="N",
-        help=(
-            "Max retained SMUGGLE temp page count; 0 disables "
-            f"(default: {DEFAULT_SMUGGLE_TEMP_MAX_FILES})"
-        ),
-    )
-    limits.add_argument(
-        "--smuggle-temp-storage-limit",
-        type=_bounded_int("SMUGGLE temp storage limit", minimum=0),
-        default=DEFAULT_SMUGGLE_TEMP_MAX_BYTES // _MIB,
-        metavar="MB",
-        help=(
-            "Max retained SMUGGLE temp page bytes in MB; 0 disables "
-            f"(default: {DEFAULT_SMUGGLE_TEMP_MAX_BYTES // _MIB})"
-        ),
-    )
-    limits.add_argument(
-        "--max-header-size",
-        type=_bounded_int("max header size", minimum=1),
-        default=DEFAULT_MAX_HEADER_SIZE // 1024,
-        metavar="KB",
-        help="Max HTTP request header size in KiB (default: 64)",
-    )
-    limits.add_argument(
-        "--body-memory-budget",
-        type=_bounded_int("body memory budget", minimum=1),
-        default=None,
-        metavar="MB",
-        help=(
-            "Admission budget for aggregate in-flight request bodies in MB, not an "
-            "RSS ceiling (default: workers * max size)"
-        ),
-    )
-    limits.add_argument(
-        "--body-idle-timeout",
-        type=_bounded_float("body idle timeout", minimum=0),
-        default=DEFAULT_BODY_IDLE_TIMEOUT,
-        metavar="SECONDS",
-        help=(
-            "Max idle seconds between request body chunks; 0 disables "
-            f"(default: {DEFAULT_BODY_IDLE_TIMEOUT:g})"
-        ),
-    )
-    limits.add_argument(
-        "--body-timeout",
-        type=_bounded_float("body timeout", minimum=0),
-        default=BODY_TIMEOUT,
-        metavar="SECONDS",
-        help=(
-            "Max seconds to receive a request body after headers; 0 disables "
-            f"(default: {BODY_TIMEOUT:g})"
-        ),
-    )
-    limits.add_argument(
-        "--body-min-rate",
-        type=_bounded_float("body minimum read rate", minimum=0),
-        default=DEFAULT_BODY_MIN_RATE_BYTES_PER_SECOND,
-        metavar="BYTES_PER_SECOND",
-        help="Minimum average request body read rate in bytes/s; 0 disables (default: 0)",
-    )
-    limits.add_argument(
-        "--stream-send-idle-timeout",
-        type=_bounded_float("stream send idle timeout", minimum=0.001),
-        default=DEFAULT_STREAM_SEND_IDLE_TIMEOUT,
-        metavar="SECONDS",
-        help=(
-            "Max seconds a streamed response send may block per chunk "
-            f"(default: {DEFAULT_STREAM_SEND_IDLE_TIMEOUT:g})"
-        ),
-    )
-    limits.add_argument(
-        "--stream-send-timeout",
-        type=_bounded_float("stream send timeout", minimum=0),
-        default=DEFAULT_STREAM_SEND_TIMEOUT,
-        metavar="SECONDS",
-        help=(
-            "Max total seconds for a streamed response transfer; 0 disables "
-            f"(default: {DEFAULT_STREAM_SEND_TIMEOUT:g})"
-        ),
-    )
-    limits.add_argument(
-        "--max-websocket-connections",
-        type=_bounded_int("max websocket connections", minimum=0),
-        default=None,
-        metavar="N",
-        help=(
-            "Max active WebSocket connections; each occupies a worker and 0 rejects "
-            "all (default: workers // 2)"
-        ),
-    )
-    limits.add_argument(
-        "--websocket-frame-idle-timeout",
-        type=_bounded_float("websocket frame idle timeout", minimum=0.001),
-        default=DEFAULT_WEBSOCKET_FRAME_IDLE_TIMEOUT,
-        metavar="SECONDS",
-        help=(
-            "Max idle seconds while waiting for the rest of an incomplete WebSocket frame "
-            f"(default: {DEFAULT_WEBSOCKET_FRAME_IDLE_TIMEOUT:g})"
-        ),
-    )
-    limits.add_argument(
-        "-w",
-        "--workers",
-        type=_bounded_int("workers", minimum=1),
-        default=10,
-        metavar="N",
-        help="Number of worker threads (default: 10)",
-    )
+    groups["Limits"] = limits
+    _add_setting_arguments(limits, "Limits", defaults)
 
     # TLS options
     tls = parser.add_argument_group("TLS")
-    tls.add_argument(
-        "--tls",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable HTTPS with a generated self-signed certificate",
-    )
-    tls.add_argument("--cert", metavar="FILE", help="Path to certificate file (PEM)")
-    tls.add_argument("--key", metavar="FILE", help="Path to private key file (PEM)")
-    tls.add_argument(
-        "--letsencrypt",
-        action="store_true",
-        help="Obtain Let's Encrypt certificate with built-in ACME HTTP-01",
-    )
-    tls.add_argument("--domain", metavar="DOMAIN", help="Domain for Let's Encrypt certificate")
-    tls.add_argument(
-        "--email", metavar="EMAIL", help="Email for Let's Encrypt notifications (optional)"
-    )
-    tls.add_argument(
-        "--sslip",
-        action="store_true",
-        help="Obtain a Let's Encrypt certificate for the public IPv4 sslip.io hostname",
-    )
-    tls.add_argument(
-        "--public-ip",
-        metavar="IP",
-        help="Public IPv4 override for --sslip (default: auto-detect)",
-    )
-    tls.add_argument(
-        "--acme-staging",
-        action="store_true",
-        help="Use Let's Encrypt staging ACME directory",
-    )
-    tls.add_argument(
-        "--acme-server",
-        metavar="URL",
-        help="Custom ACME directory URL (overrides --acme-staging)",
-    )
-    tls.add_argument(
-        "--acme-http-address",
-        default="",
-        metavar="ADDR",
-        help="Bind address for HTTP-01 challenge server (default: all interfaces)",
-    )
-    tls.add_argument(
-        "--acme-http-port",
-        type=_bounded_int("ACME HTTP port", minimum=1, maximum=65535),
-        default=80,
-        metavar="PORT",
-        help="Bind port for HTTP-01 challenge server (default: 80)",
-    )
+    groups["TLS"] = tls
+    _add_setting_arguments(tls, "TLS", defaults)
 
     # Authentication
     auth = parser.add_argument_group("Authentication")
-    auth.add_argument(
-        "--auth",
-        metavar="CREDS",
-        help="Basic Auth: 'user:pass', 'random', or 'user' (random password)",
-    )
-    auth.add_argument(
-        "--auth-file",
-        metavar="FILE",
-        help="Read Basic Auth credentials from one user:pass line in FILE",
-    )
+    groups["Authentication"] = auth
+    _add_setting_arguments(auth, "Authentication", defaults)
+
+    assert tuple(groups) == CLI_GROUP_ORDER
 
     if not show_all_help:
         for action in parser._actions:
@@ -553,51 +333,7 @@ def _collect_explicit_cli_dests(
     return explicit
 
 
-_CLI_TO_SETTINGS: dict[str, str] = {
-    "preset": "preset",
-    "host": "host",
-    "port": "port",
-    "dir": "root_dir",
-    "quiet": "quiet",
-    "debug": "debug",
-    "open": "open_browser",
-    "json_log": "json_log",
-    "cors_origin": "cors_origin",
-    "max_size": "max_size_mb",
-    "upload_storage_limit": "upload_storage_limit_mb",
-    "upload_file_limit": "upload_file_limit",
-    "upload_reserve_free": "upload_reserve_free_mb",
-    "upload_quota_externally_managed": "upload_quota_externally_managed",
-    "note_storage_limit": "note_storage_limit_mb",
-    "note_count_limit": "note_count_limit",
-    "smuggle_temp_age": "smuggle_temp_age",
-    "smuggle_temp_file_limit": "smuggle_temp_file_limit",
-    "smuggle_temp_storage_limit": "smuggle_temp_storage_limit_mb",
-    "max_header_size": "max_header_size_kb",
-    "body_memory_budget": "body_memory_budget_mb",
-    "body_idle_timeout": "body_idle_timeout",
-    "body_timeout": "body_timeout",
-    "body_min_rate": "body_min_rate",
-    "stream_send_idle_timeout": "stream_send_idle_timeout",
-    "stream_send_timeout": "stream_send_timeout",
-    "max_websocket_connections": "max_websocket_connections",
-    "websocket_frame_idle_timeout": "websocket_frame_idle_timeout",
-    "workers": "workers",
-    "tls": "tls",
-    "cert": "cert_file",
-    "key": "key_file",
-    "letsencrypt": "letsencrypt",
-    "domain": "domain",
-    "email": "email",
-    "sslip": "sslip",
-    "public_ip": "public_ip",
-    "acme_staging": "acme_staging",
-    "acme_server": "acme_server",
-    "acme_http_address": "acme_http_address",
-    "acme_http_port": "acme_http_port",
-    "auth": "auth",
-    "auth_file": "auth_file",
-}
+_CLI_TO_SETTINGS = cli_to_setting_map()
 
 
 def _cli_values_from_args(
@@ -609,7 +345,8 @@ def _cli_values_from_args(
     for dest, field_name in _CLI_TO_SETTINGS.items():
         if dest not in explicit_dests:
             continue
-        values[field_name] = getattr(args, dest)
+        value = getattr(args, dest)
+        values[field_name] = tuple(value) if dest == "allowed_host" else value
     return values
 
 

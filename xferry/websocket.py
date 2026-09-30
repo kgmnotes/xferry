@@ -57,17 +57,17 @@ def check_websocket_upgrade(request: HTTPRequest) -> bool:
     if request.method != "GET":
         return False
 
-    upgrade = request.headers.get("upgrade", "").lower()
-    connection = request.headers.get("connection", "").lower()
-    ws_key = request.headers.get("sec-websocket-key", "")
-    ws_version = request.headers.get("sec-websocket-version", "")
-    host = request.headers.get("host", "")
+    admitted = request.admission_context
+    upgrade = (admitted.upgrade or "").lower()
+    connection = (admitted.connection or "").lower()
+    ws_key = admitted.websocket_key or ""
+    ws_version = admitted.websocket_version or ""
 
     if upgrade != "websocket":
         return False
     if "upgrade" not in {part.strip() for part in connection.split(",")}:
         return False
-    if not host:
+    if admitted.authority is None:
         return False
     if ws_version != "13":
         return False

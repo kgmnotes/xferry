@@ -121,6 +121,12 @@ def make_server_config(**kwargs: Any) -> ServerConfig:
         logging=logging,
         plugins=plugins,
         cors_origin=kwargs.pop("cors_origin", config_defaults.cors_origin),
+        allowed_hosts=tuple(
+            kwargs.pop(
+                "allowed_hosts",
+                ("example.test", "localhost", "127.0.0.1"),
+            )
+        ),
         public_direct=kwargs.pop("public_direct", config_defaults.public_direct),
         runtime_posture=kwargs.pop("runtime_posture", config_defaults.runtime_posture),
     )

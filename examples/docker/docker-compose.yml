@@ -1,5 +1,5 @@
-# Contributor/pre-release example: builds xferry:local from the current
-# checkout. It is not the verified GHCR first-user path; see README.md.
+# Contributor example: builds xferry:local from the current source checkout.
+# Registry images are not a supported distribution channel; see README.md.
 # Cleanup with `docker compose -f examples/docker/docker-compose.yml down`
 # removes containers/network but preserves uploads, notes, and ACME state in
 # named volumes. Adding `--volumes` is destructive and deletes that data.

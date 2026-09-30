@@ -37,7 +37,6 @@ def test_active_project_coordinates_use_kgmnotes() -> None:
 
     assert stale_paths == []
     assert "https://github.com/kgmnotes/xferry" in _read("pyproject.toml")
-    assert "ghcr.io/kgmnotes/xferry" in _read(".github/workflows/release.yml")
 
 
 def test_landing_pages_are_compact_routes() -> None:
@@ -73,6 +72,8 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
     for marker in (
         "pages: write",
         "id-token: write",
+        "python tools/render_settings.py --check",
+        "python tools/render_contracts.py --check",
         "python tools/sync_docs.py --check",
         "python tools/check_stale_docs.py",
         "mkdocs build --strict",
@@ -82,6 +83,71 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
         "name: github-pages",
     ):
         assert marker in workflow
+
+    settings = workflow.index("python tools/render_settings.py --check")
+    contracts = workflow.index("python tools/render_contracts.py --check")
+    mirrors = workflow.index("python tools/sync_docs.py --check")
+    assert settings < contracts < mirrors
+
+
+def test_pre_commit_checks_settings_before_documentation_mirrors() -> None:
+    config = _read(".pre-commit-config.yaml")
+
+    settings_check = "entry: python tools/render_settings.py --check"
+    contracts_check = "entry: python tools/render_contracts.py --check"
+    docs_check = "entry: python tools/sync_docs.py --check"
+    assert settings_check in config
+    assert contracts_check in config
+    assert docs_check in config
+    assert config.index(settings_check) < config.index(contracts_check) < config.index(docs_check)
+
+
+def test_ci_checks_settings_before_documentation_mirrors() -> None:
+    workflow = _read(".github/workflows/ci.yml")
+
+    settings_check = "python tools/render_settings.py --check"
+    contracts_check = "python tools/render_contracts.py --check"
+    docs_check = "python tools/sync_docs.py --check"
+    assert settings_check in workflow
+    assert contracts_check in workflow
+    assert docs_check in workflow
+    assert (
+        workflow.index(settings_check)
+        < workflow.index(contracts_check)
+        < workflow.index(docs_check)
+    )
+
+
+def test_public_plugin_docs_match_the_narrow_runtime_boundary() -> None:
+    contributing = _read("CONTRIBUTING.md")
+    architecture = _read("docs/architecture.md")
+
+    for document in (contributing, architecture):
+        assert "PluginServices(upload_dir, upload_storage)" in document
+        assert "HandlerContext(services, plugin_name)" in document
+        assert "context.server" in document
+        assert "ordinary XHTML" in document
+        assert "attachment" in document
+        assert re.search(r"before\s+plugin dispatch", document)
+
+    assert "(HTTPRequest, HandlerContext) -> HTTPResponse" in contributing
+    assert "context.plugin_name" in contributing
+    assert set(re.findall(r"context\.services\.([a-z_]+)", contributing)) == {
+        "upload_dir",
+        "upload_storage",
+    }
+    assert "upload_storage.publish_bytes(file_path, data)" in contributing
+    assert "file_path` must be a direct child of `context.services.upload_dir" in contributing
+
+
+def test_contributor_generation_commands_follow_dependency_order() -> None:
+    contributing = _read("CONTRIBUTING.md")
+
+    for mode in ("write", "check"):
+        settings = contributing.index(f"python tools/render_settings.py --{mode}")
+        contracts = contributing.index(f"python tools/render_contracts.py --{mode}")
+        mirrors = contributing.index(f"python tools/sync_docs.py --{mode}")
+        assert settings < contracts < mirrors
 
 
 def test_primary_user_journey_is_english() -> None:

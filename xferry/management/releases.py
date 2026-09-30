@@ -1,12 +1,9 @@
-"""Verified immutable release updates, rollback, and conservative uninstall."""
+"""Verified local release lifecycle support with remote updates disabled by default."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import platform
-import re
 import shutil
 import stat
 import tempfile
@@ -26,6 +23,23 @@ from xferry.settings import SettingsError, load_settings_file
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .managed_state import has_unsupported_managed_state
 from .model import ManagedLayout
+from .release_contract import (
+    INSTALLED_EXECUTABLE_NAME,
+    MANIFEST_NAME,
+    MAX_MANIFEST_BYTES,
+    ReleaseManifest,
+    current_platform_id,
+)
+from .release_trust import (
+    DEFAULT_RELEASE_KEY_RING,
+    MAX_SIGNATURE_BYTES,
+    SIGNATURE_NAME,
+    ReleaseKeyRing,
+    ReleaseTrustError,
+    parse_signed_manifest,
+    verify_manifest_signature,
+    verify_signed_manifest,
+)
 from .system import (
     CommandRunner,
     InsufficientPrivilege,
@@ -34,14 +48,18 @@ from .system import (
     UnsafeLock,
     managed_mutation,
 )
-from .versions import is_canonical_release_version, is_supported_release_version
+from .versions import (
+    compare_release_versions,
+    is_canonical_release_version,
+    is_supported_release_version,
+)
 
 _SERVICE = "xferry.service"
-_MANIFEST_NAME = "xferry-release.json"
-_EXECUTABLE_NAME = "xferry"
-_PLATFORM = "linux-x86_64"
-_MAX_MANIFEST_BYTES = 64 * 1024
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_MANIFEST_NAME = MANIFEST_NAME
+_SIGNATURE_NAME = SIGNATURE_NAME
+_EXECUTABLE_NAME = INSTALLED_EXECUTABLE_NAME
+_MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
+_MAX_SIGNATURE_BYTES = MAX_SIGNATURE_BYTES
 
 HealthCheck = Callable[[HealthEndpoint, str, str, float], HealthResult]
 
@@ -113,109 +131,6 @@ class HttpsDownloader:
             raise OSError("download exceeded the permitted size")
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate manifest key")
-        result[key] = value
-    return result
-
-
-@dataclass(frozen=True)
-class ReleaseManifest:
-    """Exact Task 1 release-bundle metadata needed to verify one SCIE."""
-
-    schema_version: int
-    version: str
-    tag: str
-    platform: str
-    executable_name: str
-    executable_size: int
-    executable_sha256: str
-
-    @classmethod
-    def parse(cls, payload: bytes) -> ReleaseManifest:
-        """Parse only the literal schema emitted by ``build_scie_release.py``."""
-        try:
-            if not isinstance(payload, bytes) or len(payload) > _MAX_MANIFEST_BYTES:
-                raise ValueError
-            document = json.loads(
-                payload.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-            )
-            if not isinstance(document, dict) or set(document) != {
-                "schema_version",
-                "version",
-                "tag",
-                "platform",
-                "executable",
-            }:
-                raise ValueError
-            schema_version = document["schema_version"]
-            version = document["version"]
-            tag = document["tag"]
-            platform_id = document["platform"]
-            executable = document["executable"]
-            if schema_version != 1 or isinstance(schema_version, bool):
-                raise ValueError
-            if not all(isinstance(value, str) for value in (version, tag, platform_id)):
-                raise ValueError
-            if _safe_version(version) is None or tag != f"v{version}":
-                raise ValueError
-            if platform_id not in {_PLATFORM}:
-                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9_]+)+", platform_id):
-                    raise ValueError
-            if not isinstance(executable, dict) or set(executable) != {
-                "name",
-                "size",
-                "sha256",
-            }:
-                raise ValueError
-            name = executable["name"]
-            size = executable["size"]
-            sha256 = executable["sha256"]
-            if not isinstance(name, str) or not _safe_basename(name):
-                raise ValueError
-            if name != f"xferry-{version}-{platform_id}":
-                raise ValueError
-            if not isinstance(size, int) or isinstance(size, bool) or size < 1:
-                raise ValueError
-            if not isinstance(sha256, str) or _SHA256_RE.fullmatch(sha256) is None:
-                raise ValueError
-            return cls(
-                schema_version=schema_version,
-                version=version,
-                tag=tag,
-                platform=platform_id,
-                executable_name=name,
-                executable_size=size,
-                executable_sha256=sha256,
-            )
-        except (UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            raise ValueError("invalid release manifest") from None
-
-    def to_bytes(self) -> bytes:
-        """Serialize the exact public manifest schema beside an installed binary."""
-        return (
-            json.dumps(
-                {
-                    "schema_version": self.schema_version,
-                    "version": self.version,
-                    "tag": self.tag,
-                    "platform": self.platform,
-                    "executable": {
-                        "name": self.executable_name,
-                        "size": self.executable_size,
-                        "sha256": self.executable_sha256,
-                    },
-                },
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8")
-
-
 @dataclass(frozen=True)
 class ReleaseResult:
     """Secret-free stable result returned by each release lifecycle operation."""
@@ -240,6 +155,12 @@ class _HealthContext:
     password: str
 
 
+@dataclass(frozen=True)
+class _VerifiedRemoteManifest:
+    manifest: ReleaseManifest
+    signature_payload: bytes
+
+
 class ReleaseManager:
     """Coordinate verified immutable releases through one shared host lock."""
 
@@ -259,6 +180,8 @@ class ReleaseManager:
         acme_root: Path | None = None,
         staging_parent: Path | None = None,
         health_timeout: float = 2.0,
+        remote_updates_enabled: bool = False,
+        release_key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
     ) -> None:
         self.layout = replace(
             layout or ManagedLayout(),
@@ -271,15 +194,19 @@ class ReleaseManager:
         self.effective_uid = effective_uid
         self.root_uid = root_uid
         self.release_base_url = release_base_url.rstrip("/")
-        self.platform_id = platform_id or _local_platform
+        self.platform_id = platform_id or current_platform_id
         self.unit_path = unit_path
         self.cli_link = cli_link
         self.acme_root = acme_root or self.layout.acme_root
         self.staging_parent = staging_parent
         self.health_timeout = health_timeout
+        self._remote_updates_enabled = remote_updates_enabled is True
+        self.release_key_ring = release_key_ring
 
     def update(self, version: str | None, dry_run: bool) -> ReleaseResult:
         """Download, verify, install, switch, and health-gate one exact release."""
+        if not self._remote_updates_enabled:
+            return ReleaseResult(2, "remote_updates_disabled")
         if not dry_run and self.effective_uid() != 0:
             return ReleaseResult(3, "release_requires_root")
         requested = None if version is None else _safe_version(version)
@@ -290,9 +217,10 @@ class ReleaseManager:
         try:
             self._require_supported_managed_installation()
             _require_https_url(self.release_base_url)
-            self._current_supported_version()
+            current_version = self._current_supported_version()
             with self._staging_directory() as staging:
-                manifest = self._download_manifest(staging, requested)
+                verified_manifest = self._download_manifest(staging, requested)
+                manifest = verified_manifest.manifest
                 if requested is not None and manifest.version != requested:
                     raise _ReleaseFailure(1, "release_manifest_mismatch")
                 if not is_supported_release_version(manifest.version):
@@ -303,6 +231,7 @@ class ReleaseManager:
                     )
                 if manifest.platform != self.platform_id():
                     raise _ReleaseFailure(4, "release_platform_unsupported")
+                _require_non_downgrade(manifest.version, current_version)
                 candidate = self._download_candidate(staging, manifest)
                 if dry_run:
                     self._validate_candidate(candidate)
@@ -318,8 +247,11 @@ class ReleaseManager:
                     root_uid=self.root_uid,
                 ):
                     self._require_supported_managed_installation()
-                    self._validate_candidate(candidate)
-                    return self._update_locked(manifest, candidate)
+                    return self._update_locked(
+                        manifest,
+                        candidate,
+                        verified_manifest.signature_payload,
+                    )
         except _ReleaseFailure as failure:
             return ReleaseResult(failure.exit_code, failure.message, version=requested)
         except InsufficientPrivilege:
@@ -427,24 +359,54 @@ class ReleaseManager:
         except OSError:
             return ReleaseResult(1, "uninstall_failed")
 
-    def _download_manifest(self, staging: Path, requested: str | None) -> ReleaseManifest:
-        url = (
+    def _download_manifest(
+        self,
+        staging: Path,
+        requested: str | None,
+    ) -> _VerifiedRemoteManifest:
+        manifest_url = (
             f"{self.release_base_url}/latest/download/{_MANIFEST_NAME}"
             if requested is None
             else f"{self.release_base_url}/download/v{requested}/{_MANIFEST_NAME}"
         )
-        destination = staging / _MANIFEST_NAME
+        manifest_path = staging / _MANIFEST_NAME
         try:
-            self.downloader.download(url, destination, _MAX_MANIFEST_BYTES)
+            self.downloader.download(manifest_url, manifest_path, _MAX_MANIFEST_BYTES)
         except OSError:
             raise _ReleaseFailure(5, "release_download_failed") from None
         try:
-            metadata = destination.lstat()
+            metadata = manifest_path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise ValueError
-            return ReleaseManifest.parse(destination.read_bytes())
+            manifest_payload = manifest_path.read_bytes()
+            manifest = parse_signed_manifest(manifest_payload)
+        except ReleaseTrustError as failure:
+            raise _ReleaseFailure(1, failure.code) from None
         except (OSError, ValueError):
             raise _ReleaseFailure(1, "release_manifest_invalid") from None
+
+        signature_url = manifest_url + ".sig"
+        signature_path = staging / _SIGNATURE_NAME
+        try:
+            self.downloader.download(signature_url, signature_path, _MAX_SIGNATURE_BYTES)
+        except OSError:
+            raise _ReleaseFailure(5, "release_signature_download_failed") from None
+        try:
+            signature_metadata = signature_path.lstat()
+            if not stat.S_ISREG(signature_metadata.st_mode) or signature_metadata.st_nlink != 1:
+                raise ValueError
+            signature_payload = signature_path.read_bytes()
+            verify_manifest_signature(
+                manifest_payload,
+                manifest,
+                signature_payload,
+                key_ring=self.release_key_ring,
+            )
+        except ReleaseTrustError as failure:
+            raise _ReleaseFailure(1, failure.code) from None
+        except (OSError, ValueError):
+            raise _ReleaseFailure(1, "release_signature_invalid") from None
+        return _VerifiedRemoteManifest(manifest, signature_payload)
 
     def _download_candidate(self, staging: Path, manifest: ReleaseManifest) -> Path:
         url = f"{self.release_base_url}/download/{manifest.tag}/{manifest.executable_name}"
@@ -481,9 +443,16 @@ class ReleaseManager:
         if result.returncode != 0:
             raise _ReleaseFailure(2, "candidate_config_invalid")
 
-    def _update_locked(self, manifest: ReleaseManifest, candidate: Path) -> ReleaseResult:
+    def _update_locked(
+        self,
+        manifest: ReleaseManifest,
+        candidate: Path,
+        signature_payload: bytes,
+    ) -> ReleaseResult:
         self._validate_release_layout()
         previous = self._current_supported_version()
+        _require_non_downgrade(manifest.version, previous)
+        self._validate_candidate(candidate)
         if previous == manifest.version:
             if self._installed_manifest(self._release_path(previous)) != manifest:
                 raise _ReleaseFailure(1, "installed_release_conflict")
@@ -495,7 +464,11 @@ class ReleaseManager:
         health = self._health_context()
         created = False
         try:
-            created = self._install_verified_release(manifest, candidate)
+            created = self._install_verified_release(
+                manifest,
+                candidate,
+                signature_payload,
+            )
             failure = self._activate(manifest.version, previous, health, was_active=was_active)
             if failure is not None:
                 if created:
@@ -631,7 +604,12 @@ class ReleaseManager:
         except (OSError, SettingsError, UnicodeError, ValueError):
             raise _ReleaseFailure(2, "managed_config_unavailable") from None
 
-    def _install_verified_release(self, manifest: ReleaseManifest, candidate: Path) -> bool:
+    def _install_verified_release(
+        self,
+        manifest: ReleaseManifest,
+        candidate: Path,
+        signature_payload: bytes,
+    ) -> bool:
         releases = self.layout.release_root / "releases"
         releases.mkdir(mode=0o755, exist_ok=True)
         _require_real_directory(releases)
@@ -656,11 +634,18 @@ class ReleaseManager:
                 stream.flush()
                 os.fsync(stream.fileno())
             metadata.chmod(0o644)
+            signature = temporary / _SIGNATURE_NAME
+            with signature.open("xb") as stream:
+                stream.write(signature_payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            signature.chmod(0o644)
             # This method runs only inside the root-gated managed mutation. Publish
             # the completed root-owned directory with service-traversable permissions.
             temporary.chmod(0o755)
             if any(
-                path.stat().st_uid != self.root_uid for path in (temporary, executable, metadata)
+                path.stat().st_uid != self.root_uid
+                for path in (temporary, executable, metadata, signature)
             ):
                 raise _ReleaseFailure(1, "release_install_owner_invalid")
             os.replace(temporary, target)  # noqa: PTH105 - atomic directory publication
@@ -722,7 +707,10 @@ class ReleaseManager:
         return version
 
     def _require_supported_managed_installation(self) -> None:
-        if has_unsupported_managed_state(self.layout):
+        if has_unsupported_managed_state(
+            self.layout,
+            platform_id=self.platform_id(),
+        ):
             raise _ReleaseFailure(1, "unsupported_managed_state")
 
     def _select_rollback_target(self, requested: str | None) -> tuple[str, Path, ReleaseManifest]:
@@ -755,7 +743,18 @@ class ReleaseManager:
             metadata_stat = metadata_path.lstat()
             if not stat.S_ISREG(executable_stat.st_mode) or not stat.S_ISREG(metadata_stat.st_mode):
                 return None
-            manifest = ReleaseManifest.parse(metadata_path.read_bytes())
+            manifest_payload = metadata_path.read_bytes()
+            manifest = ReleaseManifest.parse(manifest_payload)
+            if manifest.signing_scheme == "ed25519":
+                signature_path = release / _SIGNATURE_NAME
+                signature_stat = signature_path.lstat()
+                if not stat.S_ISREG(signature_stat.st_mode) or signature_stat.st_nlink != 1:
+                    return None
+                manifest = verify_signed_manifest(
+                    manifest_payload,
+                    signature_path.read_bytes(),
+                    key_ring=self.release_key_ring,
+                )
             if manifest.version != release.name or manifest.platform != self.platform_id():
                 return None
             if executable_stat.st_size != manifest.executable_size:
@@ -883,14 +882,10 @@ def _safe_version(value: object) -> str | None:
     return value
 
 
-def _safe_basename(value: str) -> bool:
-    return (
-        value not in {"", ".", ".."}
-        and Path(value).name == value
-        and "/" not in value
-        and "\\" not in value
-        and "\x00" not in value
-    )
+def _require_non_downgrade(candidate: str, current: str) -> None:
+    version_order = compare_release_versions(candidate, current)
+    if version_order < 0 or (version_order == 0 and candidate != current):
+        raise _ReleaseFailure(1, "release_downgrade_blocked")
 
 
 def _require_https_url(url: str) -> None:
@@ -911,12 +906,6 @@ def _require_https_redirect_url(url: str) -> None:
         or parsed.fragment
     ):
         raise _ReleaseFailure(5, "release_url_unsafe")
-
-
-def _local_platform() -> str:
-    if platform.system() == "Linux" and platform.machine() == "x86_64":
-        return _PLATFORM
-    return f"{platform.system().casefold()}-{platform.machine().casefold()}"
 
 
 def _file_sha256(path: Path) -> str:

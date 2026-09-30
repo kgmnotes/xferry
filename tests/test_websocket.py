@@ -88,6 +88,8 @@ class TestWsUpgradeDetection:
                 "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
                 "Sec-WebSocket-Version": "13",
             },
+            http_version="HTTP/1.0",
+            default_host=None,
         )
         assert check_websocket_upgrade(req) is False
 
@@ -117,6 +119,31 @@ class TestWsUpgradeDetection:
                 "Sec-WebSocket-Version": "13",
             },
         )
+        assert check_websocket_upgrade(req) is True
+
+    def test_upgrade_validation_consumes_admitted_values_not_mutable_headers(self):
+        """Catch preliminary WebSocket validation returning to last-value headers."""
+        req = make_request(
+            "GET",
+            "/notes/ws",
+            headers={
+                "Host": "127.0.0.1:8080",
+                "Upgrade": "websocket",
+                "Connection": "keep-alive, Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            },
+        )
+        req.headers.update(
+            {
+                "host": "attacker.example",
+                "upgrade": "not-websocket",
+                "connection": "close",
+                "sec-websocket-key": "invalid",
+                "sec-websocket-version": "12",
+            }
+        )
+
         assert check_websocket_upgrade(req) is True
 
     def test_post_method_rejected(self):

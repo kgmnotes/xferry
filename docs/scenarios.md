@@ -2,9 +2,18 @@
 
 ## Transfer a file
 
-Use **Send** for basic uploads and **Files** to browse, inspect, download, or
-delete them. Start here when checking whether a gateway permits ordinary file
-transfer.
+Use **Upload** for basic uploads and **Files** to browse, inspect, download, or
+delete them. Upload can build Multipart, Raw URL, Raw Header, and No filename
+requests and can declare the file-part or raw-body MIME. No filename sends raw
+bytes to `/` so the server generates the name; it never sends raw bytes to
+`/uploads`.
+
+Profile and method comparison support remains available internally, but its
+controls are currently hidden from the Upload interface. Use individual sends
+while refining a request; each send may create a file and trigger gateway
+inspection.
+
+Start here when checking whether a gateway permits ordinary file transfer.
 
 ## Exercise HTTP methods
 

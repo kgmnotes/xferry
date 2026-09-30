@@ -31,10 +31,7 @@ _PRIMARY_COMMANDS = (
     "examples",
     "uninstall",
 )
-_MAINTENANCE_COMMANDS = (
-    "update",
-    "rollback",
-)
+_MAINTENANCE_COMMANDS = ("rollback",)
 _COMMANDS = (
     *_PRIMARY_COMMANDS,
     *_MAINTENANCE_COMMANDS,
@@ -52,7 +49,6 @@ _COMMAND_EXAMPLES = {
     "restart": "sudo xferry restart",
     "doctor": "sudo xferry doctor",
     "credentials": "sudo xferry credentials reset",
-    "update": f"sudo xferry update --version {__version__}",
     "rollback": f"sudo xferry rollback --to {__version__}",
     "uninstall": "sudo xferry uninstall",
     "examples": "xferry examples",
@@ -101,7 +97,10 @@ def _strip_global_language(argv: Sequence[str]) -> list[str]:
 
 def _root_help(translator: Translator) -> str:
     """Build the compact management reference shown by ``xferry help``."""
-    command_lines = "\n".join(f"  {command}" for command in _PRIMARY_COMMANDS)
+    portable_lines = "\n".join(f"  {command}" for command in ("run", "examples", "help"))
+    command_lines = "\n".join(
+        f"  {command}" for command in _PRIMARY_COMMANDS if command in _LINUX_MANAGEMENT_COMMANDS
+    )
     maintenance_lines = "\n".join(f"  {command}" for command in _MAINTENANCE_COMMANDS)
     return "\n".join(
         (
@@ -109,11 +108,17 @@ def _root_help(translator: Translator) -> str:
             "",
             translator.get("root_description"),
             "",
+            translator.get("portable_heading"),
+            portable_lines,
+            "",
             translator.get("commands_heading"),
             command_lines,
             "",
             translator.get("maintenance_heading"),
             maintenance_lines,
+            "",
+            translator.get("portable_lifecycle"),
+            translator.get("root_options"),
             "",
             translator.get("examples_heading"),
             translator.get("root_examples"),
@@ -158,10 +163,6 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
     elif command == "doctor":
         parser.add_argument("--deep", action="store_true")
         parser.add_argument("--skip-network", action="store_true")
-        parser.add_argument("--json", action="store_true")
-    elif command == "update":
-        parser.add_argument("--version", metavar="VERSION")
-        parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--json", action="store_true")
     elif command == "rollback":
         parser.add_argument("--to", metavar="VERSION")
@@ -331,6 +332,8 @@ def _doctor_handler(args: argparse.Namespace, context: ManagementContext) -> int
                     detail=context.translator.managed_text("detail", check.detail),
                 )
             )
+        for action in report.next_actions:
+            print(context.translator.get("next_action_text", action=action))
     return report.exit_code
 
 
@@ -339,9 +342,7 @@ def _release_handler(args: argparse.Namespace, context: ManagementContext) -> in
     from .releases import default_release_manager
 
     manager = default_release_manager()
-    if args.command == "update":
-        result = manager.update(args.version, args.dry_run)
-    elif args.command == "rollback":
+    if args.command == "rollback":
         result = manager.rollback(args.to, args.dry_run)
     else:
         confirmed = bool(args.yes)
@@ -479,6 +480,14 @@ def _render_operation_result(
             payload["url"] = credentials.url
         else:
             payload["message"] = result.message
+            if result.code is not None:
+                payload.update(
+                    {
+                        "code": result.code,
+                        "detail": result.detail,
+                        "next_actions": list(result.next_actions),
+                    }
+                )
         print(json.dumps(payload, sort_keys=True))
         if credentials is not None:
             print(
@@ -489,6 +498,13 @@ def _render_operation_result(
 
     if credentials is None:
         print(result.message, file=sys.stderr if result.exit_code else sys.stdout)
+        if result.detail:
+            print(f"Detail: {result.detail}", file=sys.stderr if result.exit_code else sys.stdout)
+        for action in result.next_actions:
+            print(
+                f"Next action: {action}",
+                file=sys.stderr if result.exit_code else sys.stdout,
+            )
         return result.exit_code
     print(f"URL: {credentials.url}")
     print(f"Credentials: {credentials.username}:{credentials.password}")
@@ -502,6 +518,48 @@ class _OperationResult:
     exit_code: int
     message: str
     credentials: None = None
+    code: str | None = None
+    detail: str = ""
+    next_actions: tuple[str, ...] = ()
+
+
+def _non_linux_management_result(command: str, args: argparse.Namespace) -> int:
+    """Reject managed commands before backend import with portable next actions."""
+    from .model import (
+        MANAGED_HOST_NEXT_ACTIONS,
+        MANAGED_HOST_REQUIRED_MESSAGE,
+        SUPPORTED_MANAGED_HOST_SUMMARY,
+    )
+
+    display_name = {
+        "darwin": "macOS",
+        "win32": "Windows",
+    }.get(sys.platform, sys.platform)
+    detail = (
+        f"Detected operating system: {display_name}. "
+        f"Supported matrix: {SUPPORTED_MANAGED_HOST_SUMMARY}."
+    )
+    if bool(getattr(args, "json", False)):
+        print(
+            json.dumps(
+                {
+                    "code": "unsupported-platform",
+                    "detail": detail,
+                    "exit_code": 4,
+                    "message": MANAGED_HOST_REQUIRED_MESSAGE,
+                    "next_actions": list(MANAGED_HOST_NEXT_ACTIONS),
+                    "status": "error",
+                },
+                sort_keys=True,
+            )
+        )
+        return 4
+
+    print(f"xferry {command}: {MANAGED_HOST_REQUIRED_MESSAGE}", file=sys.stderr)
+    print(f"Detail: {detail}", file=sys.stderr)
+    for action in MANAGED_HOST_NEXT_ACTIONS:
+        print(f"Next action: {action}", file=sys.stderr)
+    return 4
 
 
 def _run_management(command: str, argv: Sequence[str], context: ManagementContext) -> int:
@@ -510,6 +568,13 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         if not argv:
             print(_root_help(context.translator))
             return 0
+        if len(argv) == 1 and argv[0] not in _COMMANDS:
+            print(
+                f"xferry help: {context.translator.get('usage_error')}: "
+                f"{context.translator.get('unknown_command', command=argv[0])}",
+                file=sys.stderr,
+            )
+            return 2
         if len(argv) != 1 or argv[0] not in _COMMAND_EXAMPLES:
             print(f"xferry help: {context.translator.get('usage_error')}", file=sys.stderr)
             return 2
@@ -523,8 +588,7 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         return exc.code if isinstance(exc.code, int) else 1
     args.command = command
     if command in _LINUX_MANAGEMENT_COMMANDS and sys.platform != "linux":
-        print(f"xferry {command}: managed operations require Linux", file=sys.stderr)
-        return 4
+        return _non_linux_management_result(command, args)
     handlers: dict[str, CommandHandler] = {
         "credentials": _credentials_handler,
         "doctor": _doctor_handler,
@@ -536,7 +600,6 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         "status": _status_handler,
         "stop": _service_action_handler,
         "uninstall": _release_handler,
-        "update": _release_handler,
         "restart": _service_action_handler,
     }
     handler = handlers.get(command, _not_implemented_handler)
@@ -562,6 +625,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_root_help(context.translator))
         return 0
 
+    if remaining == ["--version"]:
+        print(f"xferry {__version__}")
+        return 0
+
     if remaining and remaining[0] in _COMMANDS:
         command = remaining[0]
         if command == "run":
@@ -571,5 +638,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_management(command, remaining[1:], context)
 
     print(_root_help(context.translator), file=sys.stderr)
-    print(f"xferry: error: {context.translator.get('usage_error')}", file=sys.stderr)
+    message = context.translator.get("unknown_command", command=remaining[0])
+    print(f"xferry: error: {message}", file=sys.stderr)
     return 2

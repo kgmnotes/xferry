@@ -68,7 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ===== Система локализации =====
 const translations = {
     ru: {
-        brandTagline: "Инструмент для тестирования SWG",
+        brandTagline: "Инструмент для тестирования SWG/NGFW",
         langRussianSelectedLabel: "Русский язык выбран",
         langRussianSelectLabel: "Переключить на русский язык",
         langEnglishSelectedLabel: "Английский язык выбран",
@@ -93,12 +93,7 @@ const translations = {
         toolPhasePending: "Выполняется",
         toolPhaseSuccess: "Готово",
         toolPhaseError: "Ошибка",
-        uploadResultIdleTitle: "Файл ещё не отправлен",
-        uploadResultIdleBody: "Выберите файл и нажмите «Отправить».",
-        uploadResultServerPath: "Путь на сервере",
-        uploadResultSize: "Размер",
-        uploadResultTraceAction: "Открыть технические детали",
-        uploadResultFilesAction: "Открыть Файлы",
+        notificationDismiss: "Закрыть уведомление",
         filesResultIdleTitle: "Пока без действий с файлами",
         filesResultIdleBody: "Откройте папку, скачайте файл, удалите выбранное или очистите uploads/.",
         opsecResultIdleTitle: "Пока без продвинутой загрузки",
@@ -119,8 +114,8 @@ const translations = {
         methodNote: "Проверка ECDH-ключа блокнота",
         methodSmuggle: "HTML Smuggling",
         tabRequests: "Запросы",
-        tabUpload: "Отправить",
-        tabFiles: "Файлы",
+        topTabUpload: "Отправить",
+        topTabFiles: "Получить",
         tabOpsec: "Расширенные",
         labelFilePath: "Путь к файлу",
         labelDirPath: "Путь к директории",
@@ -220,11 +215,23 @@ const translations = {
         dropFilesHere: "Выберите файлы или перетащите сюда",
         uploadDropZoneLabel: "Выбрать файлы для обычной загрузки",
         uploadMethodLabel: "Метод обычной загрузки",
+        uploadTargetPathLabel: "Путь запроса",
         uploadSelectionIdle: "Файлы не выбраны",
         uploadProfileLabel: "Профиль запроса",
         uploadProfileMultipart: "Multipart",
         uploadProfileRawUrl: "Raw URL",
         uploadProfileRawHeader: "Raw Header",
+        uploadProfileNoFilename: "Без имени",
+        uploadOptionsTitle: "Параметры",
+        uploadMimeModeLabel: "Заявленный MIME",
+        uploadMimeModeAuto: "Авто",
+        uploadMimeModeOctetStream: "application/octet-stream",
+        uploadMimeModeTextPlain: "text/plain",
+        uploadMimeModePdf: "application/pdf",
+        uploadMimeHint: "Для Multipart меняется MIME части файла, для raw-профилей - Content-Type.",
+        uploadMimeRequired: "Введите MIME-тип.",
+        uploadMimeInvalid: "Введите корректный MIME-тип длиной не более 120 символов.",
+        uploadTechnicalDetailsEmpty: "Выберите файл, чтобы собрать точный HTTP-запрос.",
         uploadRequestSummaryTitle: "Запрос перед отправкой",
         uploadSummaryRequestLine: "Строка запроса",
         uploadSummaryBodyKind: "Тело",
@@ -235,12 +242,19 @@ const translations = {
         uploadFilenameSourcePart: "имя части multipart",
         uploadFilenameSourceUrl: "сегмент URL",
         uploadFilenameSourceHeader: "заголовок X-File-Name",
-        uploadCompareBtn: "Сравнить 3 профиля",
-        uploadCompareConfirmTitle: "Создать три файла?",
-        uploadCompareConfirmBody: "Сравнение последовательно отправит один файл через Multipart, Raw URL и Raw Header и создаст три файла на сервере.",
-        uploadCompareConfirmAction: "Создать 3 файла",
+        uploadFilenameSourceGenerated: "сгенерировано сервером",
+        uploadCompareBtn: "Сравнить профили",
+        uploadCompareConfirmTitle: "Создать четыре файла?",
+        uploadCompareConfirmBody: "Сравнение последовательно отправит один файл через Multipart, Raw URL, Raw Header и No filename и создаст четыре файла на сервере.",
+        uploadCompareConfirmAction: "Создать 4 файла",
         uploadCompareResultsTitle: "Сравнение профилей",
         uploadCompareRunning: "Сравниваем профили…",
+        uploadCompareMethodsBtn: "Сравнить методы",
+        uploadCompareMethodsConfirmTitle: "Сравнить методы?",
+        uploadCompareMethodsConfirmBody: "Сравнение последовательно отправит выбранный файл через {1}. На сервере будет создано файлов: {0}.",
+        uploadCompareMethodsConfirmAction: "Создать файлов: {0}",
+        uploadCompareMethodsResultsTitle: "Сравнение методов",
+        uploadCompareMethodsRunning: "Сравниваем методы…",
         uploadCompareProfileLabel: "Профиль",
         uploadCompareVerdictLabel: "Результат",
         uploadCompareRequestLabel: "Запрос",
@@ -351,7 +365,12 @@ const translations = {
         parseError: "Ошибка парсинга",
         error: "Ошибка",
         uploadStarting: "Начинаем загрузку...",
+        uploadProgress: "Загрузка файлов: {0} из {1}",
         uploadComplete: "Загрузка завершена",
+        uploadStatusDetails: "Детали",
+        uploadStatusHttp: "HTTP-статус",
+        uploadStatusPath: "Путь на сервере",
+        uploadStatusSize: "Размер",
         successCount: "успешно",
         errorCount: "ошибок",
         sendingRequest: "Отправка",
@@ -685,7 +704,6 @@ const translations = {
         deleteSelectedFilesConfirm: "Удалить выбранные файлы из uploads/?",
         deleteSelectedFilesSuccess: "Выбранные файлы удалены",
         deleteSelectedFilesRefreshError: "Файлы удалены ({0}), но список не удалось обновить",
-        filesToastDismiss: "Закрыть уведомление",
         clearUploadsBtn: "Очистить uploads/",
         clearUploadsConfirm: "Удалить всё содержимое uploads/? Служебные скрытые файлы будут сохранены.",
         clearUploadsRunning: "Очистка uploads/...",
@@ -703,7 +721,7 @@ const translations = {
         downloadEta: "Осталось"
     },
     en: {
-        brandTagline: "SWG testing tool",
+        brandTagline: "SWG/NGFW testing tool",
         langRussianSelectedLabel: "Russian language selected",
         langRussianSelectLabel: "Switch to Russian",
         langEnglishSelectedLabel: "English language selected",
@@ -728,12 +746,7 @@ const translations = {
         toolPhasePending: "Running",
         toolPhaseSuccess: "Done",
         toolPhaseError: "Error",
-        uploadResultIdleTitle: "No file sent yet",
-        uploadResultIdleBody: "Choose a file, then press Send.",
-        uploadResultServerPath: "Server path",
-        uploadResultSize: "Size",
-        uploadResultTraceAction: "Open technical details",
-        uploadResultFilesAction: "Open Files",
+        notificationDismiss: "Dismiss notification",
         filesResultIdleTitle: "No file action yet",
         filesResultIdleBody: "Open a folder, download a file, delete selected items, or clear uploads/.",
         opsecResultIdleTitle: "No advanced upload yet",
@@ -754,8 +767,8 @@ const translations = {
         methodNote: "Inspect notepad ECDH key",
         methodSmuggle: "HTML smuggling",
         tabRequests: "Requests",
-        tabUpload: "Send",
-        tabFiles: "Files",
+        topTabUpload: "Upload",
+        topTabFiles: "Download",
         tabOpsec: "Advanced",
         labelFilePath: "File path",
         labelDirPath: "Directory path",
@@ -855,11 +868,23 @@ const translations = {
         dropFilesHere: "Choose files or drop them here",
         uploadDropZoneLabel: "Choose files for regular upload",
         uploadMethodLabel: "Regular upload method",
+        uploadTargetPathLabel: "Request path",
         uploadSelectionIdle: "No files selected",
         uploadProfileLabel: "Request profile",
         uploadProfileMultipart: "Multipart",
         uploadProfileRawUrl: "Raw URL",
         uploadProfileRawHeader: "Raw Header",
+        uploadProfileNoFilename: "No filename",
+        uploadOptionsTitle: "Options",
+        uploadMimeModeLabel: "Declared MIME",
+        uploadMimeModeAuto: "Auto",
+        uploadMimeModeOctetStream: "application/octet-stream",
+        uploadMimeModeTextPlain: "text/plain",
+        uploadMimeModePdf: "application/pdf",
+        uploadMimeHint: "Multipart changes the file-part MIME; raw profiles change Content-Type.",
+        uploadMimeRequired: "Enter a MIME type.",
+        uploadMimeInvalid: "Enter a valid MIME type no longer than 120 characters.",
+        uploadTechnicalDetailsEmpty: "Choose a file to build the exact HTTP request.",
         uploadRequestSummaryTitle: "Request before send",
         uploadSummaryRequestLine: "Request line",
         uploadSummaryBodyKind: "Body",
@@ -870,12 +895,19 @@ const translations = {
         uploadFilenameSourcePart: "multipart part filename",
         uploadFilenameSourceUrl: "URL segment",
         uploadFilenameSourceHeader: "X-File-Name header",
-        uploadCompareBtn: "Compare 3 profiles",
-        uploadCompareConfirmTitle: "Create three files?",
-        uploadCompareConfirmBody: "Comparison sends the selected file sequentially as Multipart, Raw URL, and Raw Header and creates three files on the server.",
-        uploadCompareConfirmAction: "Create 3 files",
+        uploadFilenameSourceGenerated: "generated by server",
+        uploadCompareBtn: "Compare profiles",
+        uploadCompareConfirmTitle: "Create four files?",
+        uploadCompareConfirmBody: "Comparison sends the selected file sequentially as Multipart, Raw URL, Raw Header, and No filename and creates four files on the server.",
+        uploadCompareConfirmAction: "Create 4 files",
         uploadCompareResultsTitle: "Profile comparison",
         uploadCompareRunning: "Comparing profiles…",
+        uploadCompareMethodsBtn: "Compare methods",
+        uploadCompareMethodsConfirmTitle: "Compare methods?",
+        uploadCompareMethodsConfirmBody: "Comparison sends the selected file sequentially using {1} and creates {0} files on the server.",
+        uploadCompareMethodsConfirmAction: "Create {0} files",
+        uploadCompareMethodsResultsTitle: "Method comparison",
+        uploadCompareMethodsRunning: "Comparing methods…",
         uploadCompareProfileLabel: "Profile",
         uploadCompareVerdictLabel: "Verdict",
         uploadCompareRequestLabel: "Request",
@@ -986,7 +1018,12 @@ const translations = {
         parseError: "Parse error",
         error: "Error",
         uploadStarting: "Starting upload...",
+        uploadProgress: "Uploading files: {0} of {1}",
         uploadComplete: "Upload complete",
+        uploadStatusDetails: "Details",
+        uploadStatusHttp: "HTTP status",
+        uploadStatusPath: "Server path",
+        uploadStatusSize: "Size",
         successCount: "successful",
         errorCount: "errors",
         sendingRequest: "Sending",
@@ -1320,7 +1357,6 @@ const translations = {
         deleteSelectedFilesConfirm: "Delete selected files from uploads/?",
         deleteSelectedFilesSuccess: "Selected files deleted",
         deleteSelectedFilesRefreshError: "Files deleted ({0}), but the list could not be refreshed",
-        filesToastDismiss: "Dismiss notification",
         clearUploadsBtn: "Clear uploads/",
         clearUploadsConfirm: "Delete all contents of uploads/? Hidden service files will be preserved.",
         clearUploadsRunning: "Clearing uploads/...",
@@ -1342,7 +1378,7 @@ const translations = {
 const supportedLangs = new Set(['ru', 'en']);
 
 function normalizeLang(lang) {
-    return supportedLangs.has(lang) ? lang : 'ru';
+    return supportedLangs.has(lang) ? lang : 'en';
 }
 
 const storedLang = safeGetStorageItem('lang');
@@ -1361,7 +1397,7 @@ function setLang(lang) {
 }
 
 function applyTranslations() {
-    const localeTranslations = translations[currentLang] || translations.ru;
+    const localeTranslations = translations[currentLang] || translations.en;
 
     // Обновляем все элементы с data-i18n
     document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -1426,8 +1462,8 @@ function updateLangButtons() {
 }
 
 function t(key) {
-    const localeTranslations = translations[currentLang] || translations.ru;
-    return localeTranslations[key] || translations.ru[key] || key;
+    const localeTranslations = translations[currentLang] || translations.en;
+    return localeTranslations[key] || translations.en[key] || key;
 }
 
 // Применяем переводы при загрузке
@@ -1821,7 +1857,7 @@ function switchTab(tabName, tabButton, options = {}) {
 function bindCoreControls() {
     document.querySelectorAll('[data-lang]').forEach(button => {
         button.addEventListener('click', () => {
-            setLang(button.dataset.lang || 'ru');
+            setLang(button.dataset.lang || 'en');
         });
     });
 

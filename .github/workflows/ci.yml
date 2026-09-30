@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      candidate-gates:
+        description: Run source gates before the release workflow constructs candidates
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -10,10 +16,11 @@ permissions:
   contents: read
 
 env:
-  PIP_CONSTRAINT: constraints/ci.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,6 +34,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -78,11 +87,16 @@ jobs:
           path: coverage.xml
 
   python314-readiness:
+    if: ${{ !inputs.candidate-gates }}
     name: Python 3.14 package and security smoke
     runs-on: ubuntu-latest
+    outputs:
+      wheel-sha256: ${{ steps.wheel-identity.outputs.sha256 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.14
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -141,12 +155,37 @@ jobs:
             --fresh-root "$RUNNER_TEMP/xferry-fresh-artifacts" \
             --constraints "$GITHUB_WORKSPACE/constraints/ci.txt"
 
+      - name: Record portable wheel identity
+        id: wheel-identity
+        run: |
+          python - <<'PYTHON'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("xferry-*.whl"))
+          assert len(wheels) == 1, wheels
+          digest = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"sha256={digest}\n")
+          print(f"portable wheel SHA256: {digest}")
+          PYTHON
+
+      - name: Upload portable wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: portable-wheel
+          path: dist/xferry-*.whl
+          if-no-files-found: error
+
   docs:
     name: Docs
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -165,7 +204,9 @@ jobs:
       - name: Check generated docs and semantic guards
         run: |
           set -euo pipefail
-          ruff check tools/sync_docs.py tools/check_stale_docs.py
+          ruff check tools/render_settings.py tools/render_contracts.py tools/sync_docs.py tools/check_stale_docs.py
+          python tools/render_settings.py --check
+          python tools/render_contracts.py --check
           python tools/sync_docs.py --check
           python tools/check_stale_docs.py
 
@@ -180,6 +221,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -229,46 +272,59 @@ jobs:
             tests/test_security/test_websocket_upgrade.py
 
   cross-platform:
-    name: Cross-platform smoke (${{ matrix.os }})
+    if: ${{ !inputs.candidate-gates }}
+    name: Portable wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    needs: python314-readiness
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
+        python-version: ["3.10", "3.12", "3.14"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             pyproject.toml
             constraints/ci.txt
 
-      - name: Install package
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,test]"
+      - name: Install verifier bootstrap
+        run: python -m pip install setuptools
 
-      - name: Dependency completeness smoke
-        run: |
-          python -m pip check
-          python -m xferry --help
-          python -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+      - name: Download exact portable wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          name: portable-wheel
+          path: portable-artifacts
 
-      - name: CLI smoke
+      - name: Isolated packaged CLI and portable tests
+        shell: bash
+        env:
+          PORTABLE_WHEEL_SHA256: ${{ needs.python314-readiness.outputs.wheel-sha256 }}
         run: |
-          python -m xferry run --version
-          python -m xferry run --help
-          python -m xferry --help
-          xferry --help
-          xferry run --help
+          python tools/verify_python_artifacts.py portable-smoke \
+            --workspace "$GITHUB_WORKSPACE" \
+            --wheel 'portable-artifacts/xferry-*.whl' \
+            --wheel-sha256 "$PORTABLE_WHEEL_SHA256" \
+            --fresh-root "$RUNNER_TEMP/xferry-portable-app" \
+            --constraints "$GITHUB_WORKSPACE/constraints/ci.txt"
 
-      - name: Portable unit subset
-        run: pytest -q tests/test_http tests/test_security/test_crypto.py tests/test_cli.py
+      - name: Upload portable failure log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: portable-log-${{ matrix.os }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/xferry-portable-app/outside-checkout/server.log
+          if-no-files-found: ignore
 
   smoke:
     name: Release smoke
@@ -277,6 +333,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
@@ -297,7 +355,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,lint,test]"
 
+      - name: Source static UI gate
+        if: inputs.candidate-gates
+        run: |
+          set -euo pipefail
+          python tools/check_static_ui_assets.py
+          node --check tools/browser_smoke.playwright.js
+
       - name: Static UI release gates
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           wheel_dir="${RUNNER_TEMP}/xferry-browser-wheel"
@@ -308,6 +374,7 @@ jobs:
           node --check tools/browser_smoke.playwright.js
 
       - name: Prepare installed-wheel browser target
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           wheel_venv="${RUNNER_TEMP}/xferry-browser-wheel-venv"
@@ -329,6 +396,8 @@ jobs:
           python tools/check_stale_docs.py
 
       - name: Compact source and wheel browser journeys
+        env:
+          CANDIDATE_GATES: ${{ inputs.candidate-gates }}
         run: |
           set -euo pipefail
           artifacts="${RUNNER_TEMP}/browser-smoke-artifacts"
@@ -389,25 +458,27 @@ jobs:
             --target-url "http://127.0.0.1:${source_port}/" \
             --artifacts-dir "${artifacts}/source-ui-contracts"
 
-          wheel_port="$(allocate_port)"
-          mkdir -p "${RUNNER_TEMP}/xferry-browser-wheel-root"
-          (
-            cd "${RUNNER_TEMP}"
-            exec "${RUNNER_TEMP}/xferry-browser-wheel-venv/bin/xferry" \
-              run \
-              --host 127.0.0.1 \
-              --port "${wheel_port}" \
-              --dir "${RUNNER_TEMP}/xferry-browser-wheel-root" \
-              --quiet
-          ) >"${artifacts}/wheel-server.log" 2>&1 &
-          wheel_pid="$!"
-          wait_for_target \
-            "http://127.0.0.1:${wheel_port}/" \
-            "${artifacts}/wheel-server.log"
-          python tools/browser_smoke.py \
-            --mode first-run \
-            --target-url "http://127.0.0.1:${wheel_port}/" \
-            --artifacts-dir "${artifacts}/wheel-first-run"
+          if [ "${CANDIDATE_GATES}" != "true" ]; then
+            wheel_port="$(allocate_port)"
+            mkdir -p "${RUNNER_TEMP}/xferry-browser-wheel-root"
+            (
+              cd "${RUNNER_TEMP}"
+              exec "${RUNNER_TEMP}/xferry-browser-wheel-venv/bin/xferry" \
+                run \
+                --host 127.0.0.1 \
+                --port "${wheel_port}" \
+                --dir "${RUNNER_TEMP}/xferry-browser-wheel-root" \
+                --quiet
+            ) >"${artifacts}/wheel-server.log" 2>&1 &
+            wheel_pid="$!"
+            wait_for_target \
+              "http://127.0.0.1:${wheel_port}/" \
+              "${artifacts}/wheel-server.log"
+            python tools/browser_smoke.py \
+              --mode first-run \
+              --target-url "http://127.0.0.1:${wheel_port}/" \
+              --artifacts-dir "${artifacts}/wheel-first-run"
+          fi
 
       - name: Full browser aggregate on main
         if: github.event_name == 'push'
@@ -418,6 +489,7 @@ jobs:
             --artifacts-dir "${RUNNER_TEMP}/browser-smoke-artifacts/source-full"
 
       - name: Docker smoke
+        if: ${{ !inputs.candidate-gates }}
         run: |
           set -euo pipefail
           http_cid=""
@@ -520,9 +592,22 @@ jobs:
           retention-days: 14
 
   scie-verify:
-    name: Build and verify SCIE bundle
-    runs-on: ubuntu-latest
+    if: ${{ !inputs.candidate-gates }}
+    name: Build and verify SCIE bundle (${{ matrix.platform }}, native)
+    runs-on: ${{ matrix.runner }}
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            docker_platform: linux/amd64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            docker_platform: linux/arm64
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
@@ -542,29 +627,87 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install build pex==2.99.0
+          python -m pip install -e ".[test]" build pex==2.99.0
 
-      - name: Build SCIE bundle
-        run: python tools/build_scie_release.py --output-dir dist/scie
-
-      - name: Validate SCIE manifest, checksum, and canonical CLI
+      - name: Confirm native build architecture
         run: |
           set -euo pipefail
-          executable="$(find dist/scie -maxdepth 1 -type f -name 'xferry-*-linux-x86_64')"
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          printf 'platform=%s runner_machine=%s evidence=native\n' \
+            '${{ matrix.platform }}' "$(uname -m)"
+
+      - name: Build deterministic SCIE release bundle
+        run: |
+          set -euo pipefail
+          python tools/build_scie_release.py \
+            --platform '${{ matrix.platform }}' \
+            --output-dir 'dist/scie-${{ matrix.platform }}'
+
+      - name: Validate SCIE manifest and checksum
+        env:
+          SCIE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
           python - <<'PY'
           import hashlib
-          import json
+          import os
           from pathlib import Path
 
-          bundle = Path("dist/scie")
-          manifest = json.loads((bundle / "xferry-release.json").read_text(encoding="utf-8"))
-          executable = bundle / manifest["executable"]["name"]
+          from xferry.management.release_contract import ReleaseManifest
+
+          platform = os.environ["SCIE_PLATFORM"]
+          bundle = Path(f"dist/scie-{platform}")
+          manifest = ReleaseManifest.parse_new((bundle / "xferry-release.json").read_bytes())
+          executable = bundle / manifest.executable_name
           digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-          assert executable.stat().st_size == manifest["executable"]["size"]
-          assert digest == manifest["executable"]["sha256"]
+          assert manifest.platform == platform
+          assert executable.stat().st_size == manifest.executable_size
+          assert digest == manifest.executable_sha256
           assert (bundle / "SHA256SUMS").read_text(encoding="utf-8") == (
               f"{digest}  {executable.name}\n"
           )
+          assert {path.name for path in bundle.iterdir()} == {
+              "SHA256SUMS",
+              "install.sh",
+              "xferry-release.json",
+              executable.name,
+          }
           PY
-          "${executable}" run --version
-          "${executable}" run --check-config
+
+      - name: Smoke SCIE without host Python
+        run: |
+          set -euo pipefail
+          executable="$(find "$PWD/dist/scie-${{ matrix.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
+          PATH=/nonexistent "$executable" run --version
+          PATH=/nonexistent "$executable" --help > /dev/null
+          PATH=/nonexistent "$executable" run --check-config
+
+      - name: Smoke SCIE on every supported Linux base
+        run: |
+          set -euo pipefail
+          bundle="$PWD/dist/scie-${{ matrix.platform }}"
+          executable="$(basename "$(find "$bundle" -maxdepth 1 -type f -name 'xferry-*-linux-*')")"
+          for image in ubuntu:22.04 ubuntu:24.04 ubuntu:26.04 debian:12 debian:13; do
+            printf 'platform=%s image=%s evidence=native\n' '${{ matrix.platform }}' "$image"
+            docker run --rm \
+              --platform '${{ matrix.docker_platform }}' \
+              --volume "$bundle:/release:ro" \
+              "$image" \
+              /bin/sh -eu -c '
+                test "$(uname -m)" = "$1"
+                candidate="/release/$2"
+                "$candidate" run --version
+                "$candidate" --help > /dev/null
+                "$candidate" run --check-config
+              ' sh '${{ matrix.machine }}' "$executable"
+          done
+
+      - name: Exercise isolated managed lifecycle and failure paths
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_scie_release.py \
+            tests/test_management_setup.py::test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes \
+            tests/test_management_service.py::test_cli_status_and_doctor_render_secret_free_stable_json \
+            tests/test_management_releases.py::test_default_rollback_selects_previous_verified_release_and_keeps_old_current \
+            tests/test_management_releases.py::test_default_uninstall_removes_only_managed_runtime_and_preserves_state

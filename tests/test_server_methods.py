@@ -19,10 +19,38 @@ from xferry.handlers import HandlerMixin
 from xferry.handlers.smuggle import SmuggleTempPolicy
 from xferry.http import HTTPRequest, HTTPResponse
 from xferry.http.io import RequestReceiveResult
-from xferry.security.auth import AuthRateLimiter, BasicAuthenticator
 from xferry.websocket import WS_CLOSE, WS_PING, WS_PONG, WS_TEXT, parse_ws_frame
 
 EXPECTED_CORE_METHODS = list(registry_methods())
+
+
+def test_tls_setup_finalizes_sslip_admission_policy_before_listener_bind(
+    temp_dir,
+    monkeypatch,
+):
+    """Catch the runtime certificate hostname remaining disallowed after TLS setup."""
+    from xferry.request_admission import RequestAdmissionContext
+
+    server = make_server(
+        root_dir=str(temp_dir),
+        quiet=True,
+        host="0.0.0.0",
+        sslip=True,
+        allowed_hosts=(),
+    )
+
+    def resolve_sslip() -> None:
+        server._tls.domain = "203-0-113-10.sslip.io"
+
+    monkeypatch.setattr(server._tls, "setup", resolve_sslip)
+
+    server._setup_tls()
+
+    request = HTTPRequest(b"PING / HTTP/1.1\r\nHost: 203-0-113-10.sslip.io\r\n\r\n")
+    assert isinstance(
+        server.request_admission_policy.admit(request),
+        RequestAdmissionContext,
+    )
 
 
 class ServerStub(HandlerMixin):
@@ -33,7 +61,6 @@ class ServerStub(HandlerMixin):
         root_dir: Path,
         upload_dir: Path,
         *,
-        auth: BasicAuthenticator | None = None,
         opsec: bool = False,
     ):
         self.root_dir = root_dir
@@ -44,9 +71,6 @@ class ServerStub(HandlerMixin):
         self._smuggle_lock = threading.Lock()
         self._notes_lock = threading.Lock()
         self._ecdh_manager = None
-
-        self.authenticator = auth
-        self._rate_limiter = AuthRateLimiter() if auth else None
 
         self.method_handlers = self.build_method_handlers()
 
@@ -61,40 +85,6 @@ class ServerStub(HandlerMixin):
             "status_counts": {},
         }
 
-    # Mirror of XFerryServer._authenticate_request
-    def _authenticate_request(
-        self,
-        request: HTTPRequest,
-        client_address: tuple[str, int],
-    ) -> HTTPResponse | None:
-        if not self.authenticator:
-            return None
-        ip = client_address[0]
-        if self._rate_limiter and self._rate_limiter.is_blocked(ip):
-            response = HTTPResponse(429)
-            response.set_body(
-                json.dumps({"error": "Too Many Requests", "status": 429}),
-                "application/json",
-            )
-            return response
-        auth_header = request.headers.get("authorization")
-        if not self.authenticator.authenticate(auth_header):
-            if self._rate_limiter:
-                self._rate_limiter.record_failure(ip)
-            response = HTTPResponse(401)
-            response.set_header(
-                "WWW-Authenticate",
-                self.authenticator.get_www_authenticate_header(),
-            )
-            response.set_body(
-                json.dumps({"error": "Unauthorized", "status": 401}),
-                "application/json",
-            )
-            return response
-        if self._rate_limiter:
-            self._rate_limiter.reset(ip)
-        return None
-
 
 @pytest.fixture
 def server(temp_dir, upload_dir):
@@ -105,8 +95,7 @@ def server(temp_dir, upload_dir):
 @pytest.fixture
 def auth_server(temp_dir, upload_dir):
     (temp_dir / "index.html").write_text("<html>ok</html>")
-    auth = BasicAuthenticator({"admin": "secret123"})
-    return ServerStub(temp_dir, upload_dir, auth=auth)
+    return make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
 
 
 @pytest.fixture
@@ -122,45 +111,57 @@ ADDR = ("127.0.0.1", 12345)
 
 
 class TestAuthenticateRequest:
-    def test_no_auth_configured_returns_none(self, server):
+    def test_no_auth_configured_returns_none(self, temp_dir):
+        server = make_server(root_dir=str(temp_dir), quiet=True)
         req = make_request("GET", "/")
         assert server._authenticate_request(req, ADDR) is None
 
     def test_rate_limited_returns_429(self, auth_server):
-        # Trigger rate limit by failing multiple times
-        for _ in range(10):
+        for _ in range(5):
             req = make_request("GET", "/")
-            auth_server._authenticate_request(req, ADDR)
+            result = auth_server._authenticate_request(req, ADDR)
+            assert result is not None
+            assert result.status_code == 401
 
         req = make_request("GET", "/")
         result = auth_server._authenticate_request(req, ADDR)
         assert result is not None
         assert result.status_code == 429
+        assert "WWW-Authenticate" not in result.headers
+        assert result.headers["Cache-Control"] == "no-store"
+        assert int(result.headers["Retry-After"]) >= 1
 
-    def test_successful_auth_resets_rate_limiter(self, auth_server):
-        # Fail a few times
+    def test_successful_auth_resets_admission_failures(self, auth_server):
         for _ in range(3):
             req = make_request("GET", "/")
             auth_server._authenticate_request(req, ADDR)
 
-        # Succeed
         creds = base64.b64encode(b"admin:secret123").decode()
         req = make_request("GET", "/", headers={"Authorization": f"Basic {creds}"})
         auth_server._authenticate_request(req, ADDR)
 
-        # Should not be blocked
-        assert not auth_server._rate_limiter.is_blocked(ADDR[0])
+        for _ in range(5):
+            response = auth_server._authenticate_request(make_request("GET", "/"), ADDR)
+            assert response is not None
+            assert response.status_code == 401
 
-    def test_real_server_rate_limited_returns_429(self, temp_dir, monkeypatch):
+        blocked = auth_server._authenticate_request(make_request("GET", "/"), ADDR)
+        assert blocked is not None
+        assert blocked.status_code == 429
+
+    def test_real_server_rate_limited_returns_429(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
-        assert server._rate_limiter is not None
-        monkeypatch.setattr(server._rate_limiter, "is_blocked", lambda _ip: True)
+        for _ in range(5):
+            server._authenticate_request(make_request("GET", "/"), ADDR)
 
         response = server._authenticate_request(make_request("GET", "/"), ADDR)
 
         assert response is not None
         assert response.status_code == 429
+        assert "WWW-Authenticate" not in response.headers
+        assert response.headers["Cache-Control"] == "no-store"
+        assert int(response.headers["Retry-After"]) >= 1
         assert json.loads(response.body) == {
             "error": {
                 "code": "rate_limited",
@@ -179,6 +180,7 @@ class TestAuthenticateRequest:
         assert response is not None
         assert response.status_code == 401
         assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted Area"'
+        assert response.headers["Cache-Control"] == "no-store"
         assert json.loads(response.body) == {
             "error": {
                 "code": "authentication_required",
@@ -187,6 +189,23 @@ class TestAuthenticateRequest:
                 "details": {},
             }
         }
+
+    def test_real_server_authentication_consumes_admitted_authorization(self, temp_dir):
+        """Catch Basic Auth falling back to the mutable last-value compatibility map."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(root_dir=str(temp_dir), quiet=True, auth="admin:secret123")
+        creds = base64.b64encode(b"admin:secret123").decode("ascii")
+        request = make_request(
+            "GET",
+            "/",
+            headers={"Authorization": f"Basic {creds}"},
+        )
+        request.headers["authorization"] = "Basic Zm9yZ2VkOmNyZWRlbnRpYWxz"
+
+        response = server._authenticate_request(request, ADDR)
+
+        assert response is None
+        assert request.security_context.verified_principal == "admin"
 
 
 # ── _dispatch_handler tests ───────────────────────────────────────
@@ -428,6 +447,35 @@ class TestFullMode:
 
 
 class TestWebSocketOriginValidation:
+    def test_origin_and_upgrade_helpers_consume_admitted_values(self, temp_dir):
+        """Catch WS route/origin policy returning to mutable last-value headers."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        req = make_request(
+            "GET",
+            "/notes/ws",
+            headers={
+                "Host": "127.0.0.1:8080",
+                "Origin": "http://127.0.0.1:8080",
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            },
+        )
+        for field in (
+            "host",
+            "origin",
+            "upgrade",
+            "connection",
+            "sec-websocket-key",
+            "sec-websocket-version",
+        ):
+            req.headers[field] = "forged"
+
+        assert server._is_websocket_upgrade_attempt(req) is True
+        assert server._is_websocket_origin_allowed(req) is True
+
     def test_missing_origin_allowed(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(root_dir=str(temp_dir), quiet=True)
@@ -551,6 +599,40 @@ class TestWebSocketOriginValidation:
 
 
 class TestCorsContract:
+    def test_http_security_consumers_use_admitted_connection_origin_and_fetch_site(
+        self,
+        temp_dir,
+    ):
+        """Catch keep-alive, CORS, or browser policy rereading mutable headers."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(
+            root_dir=str(temp_dir),
+            quiet=True,
+            cors_origin="https://app.example",
+        )
+        req = make_request(
+            "POST",
+            "/upload.txt",
+            headers={
+                "Host": "127.0.0.1:8080",
+                "Origin": "https://app.example",
+                "Sec-Fetch-Site": "cross-site",
+                "Connection": "keep-alive",
+            },
+        )
+        req.headers.update(
+            {
+                "host": "attacker.example",
+                "origin": "https://attacker.example",
+                "sec-fetch-site": "same-origin",
+                "connection": "close",
+            }
+        )
+
+        assert server._should_keep_alive(req) is True
+        assert server._resolve_cors_origin(req) == "https://app.example"
+        assert server._is_browser_mutation_allowed(req) is True
+
     def test_multi_origin_http_cors_reflects_only_matching_request_origin(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(
@@ -673,6 +755,30 @@ class TestCorsContract:
         allowed = response.headers["Access-Control-Allow-Methods"]
         assert "XUPLOAD" in allowed
         assert "SMUGGLE" in allowed
+
+    def test_options_consumes_admitted_preflight_values_not_mutable_headers(self, temp_dir):
+        """Catch OPTIONS falling back to the parser's last-value compatibility map."""
+        (temp_dir / "index.html").write_text("<html>ok</html>")
+        server = make_server(
+            root_dir=str(temp_dir),
+            quiet=True,
+            cors_origin="https://app.example",
+        )
+        req = make_request(
+            "OPTIONS",
+            "/",
+            headers={
+                "Access-Control-Request-Method": "XUPLOAD",
+                "Access-Control-Request-Headers": "Content-Type, X-XFerry-Data",
+            },
+        )
+        req.headers["access-control-request-method"] = "DELETE"
+        req.headers["access-control-request-headers"] = "Authorization"
+
+        response = server.handle_options(req)
+
+        assert "XUPLOAD" in response.headers["Access-Control-Allow-Methods"]
+        assert response.headers["Access-Control-Allow-Headers"] == ("Content-Type, X-XFerry-Data")
 
     def test_wildcard_options_advertises_only_read_methods(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
@@ -1492,8 +1598,19 @@ class TestServerHelpers:
 
         http11 = make_request("GET", "/")
         http11_close = make_request("GET", "/", headers={"Connection": "close"})
-        http10 = HTTPRequest(b"GET / HTTP/1.0\r\n\r\n")
-        http10_keep = HTTPRequest(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
+        http10 = make_request(
+            "GET",
+            "/",
+            http_version="HTTP/1.0",
+            default_host=None,
+        )
+        http10_keep = make_request(
+            "GET",
+            "/",
+            headers={"Connection": "keep-alive"},
+            http_version="HTTP/1.0",
+            default_host=None,
+        )
 
         assert server._should_keep_alive(http11) is True
         assert server._should_keep_alive(http11_close) is False
@@ -1728,6 +1845,182 @@ class TestServerHelpers:
 
         assert ordinary_response.headers["Content-Type"] == "application/octet-stream"
         assert "Content-Security-Policy" not in ordinary_response.headers
+
+    @pytest.mark.parametrize("extension", ["xhtml", "xht", "xhtm"])
+    def test_ordinary_xhtml_uploads_are_forced_to_download(self, server, extension):
+        uploaded = server.upload_dir / f"ordinary.{extension}"
+        uploaded.write_text("<html><script>window.executed=true</script></html>", encoding="utf-8")
+
+        response = server.handle_get(make_request("GET", f"/uploads/{uploaded.name}"))
+
+        assert response.status_code == 200
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
+
+    def test_generated_xhtml_smuggle_artifact_keeps_active_content_contract(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+
+        smuggle_response = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(smuggle_response.body)["artifact"]["url"]
+        artifact_response = server.handle_get(make_request("GET", artifact_url))
+
+        assert artifact_response.status_code == 200
+        assert artifact_response.headers["Content-Type"] == "application/xhtml+xml; charset=utf-8"
+        assert artifact_response.headers["Content-Security-Policy"] == (
+            "default-src 'none'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'unsafe-inline' data:; img-src data:; connect-src blob:; "
+            "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'"
+        )
+        assert artifact_response.stream_path is not None
+        assert artifact_response.stream_cleanup is not None
+        artifact_response.stream_cleanup()
+
+    def test_deleted_smuggle_name_cannot_retain_generated_provenance(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+
+        deleted = server.handle_delete(make_request("DELETE", artifact_url))
+        assert deleted.status_code == 200
+        assert not server.handler_context.smuggle_temp.contains(server.upload_dir / artifact_name)
+        with server.handler_context.smuggle_temp.transaction() as registry:
+            registry.add(server.upload_dir / artifact_name)
+
+        uploaded = server.handle_post(
+            make_request(
+                "POST",
+                "/uploads",
+                headers={"X-File-Name": artifact_name},
+                body=b"attacker-controlled XHTML",
+            )
+        )
+        assert uploaded.status_code == 201
+        response = server.handle_get(make_request("GET", f"/uploads/{artifact_name}"))
+
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
+
+    def test_basic_upload_get_waits_for_stale_smuggle_provenance_to_clear(
+        self,
+        temp_dir,
+        monkeypatch,
+    ):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+        assert server.handle_delete(make_request("DELETE", artifact_url)).status_code == 200
+        with server.handler_context.smuggle_temp.transaction() as registry:
+            registry.add(server.upload_dir / artifact_name)
+
+        original_publish = server._get_upload_storage().publish_bytes
+        published = threading.Event()
+        allow_return = threading.Event()
+        upload_done = threading.Event()
+        get_done = threading.Event()
+        errors: list[BaseException] = []
+        responses: dict[str, HTTPResponse] = {}
+
+        def publish_then_pause(*args, **kwargs):
+            result = original_publish(*args, **kwargs)
+            published.set()
+            assert allow_return.wait(timeout=1)
+            return result
+
+        monkeypatch.setattr(server._get_upload_storage(), "publish_bytes", publish_then_pause)
+
+        def run_upload() -> None:
+            try:
+                responses["upload"] = server.handle_post(
+                    make_request(
+                        "POST",
+                        "/uploads",
+                        headers={"X-File-Name": artifact_name},
+                        body=b"attacker-controlled XHTML",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - test thread handoff
+                errors.append(exc)
+            finally:
+                upload_done.set()
+
+        def run_get() -> None:
+            try:
+                responses["served"] = server.handle_get(
+                    make_request("GET", f"/uploads/{artifact_name}")
+                )
+            except BaseException as exc:  # pragma: no cover - test thread handoff
+                errors.append(exc)
+            finally:
+                get_done.set()
+
+        upload_thread = threading.Thread(target=run_upload)
+        get_thread = threading.Thread(target=run_get)
+        upload_thread.start()
+        assert published.wait(timeout=1)
+        get_thread.start()
+        try:
+            assert not get_done.wait(timeout=0.2)
+        finally:
+            allow_return.set()
+            upload_thread.join(timeout=1)
+            get_thread.join(timeout=1)
+
+        assert not errors
+        assert upload_done.is_set()
+        assert get_done.is_set()
+        assert responses["upload"].status_code == 201
+        assert responses["served"].headers["Content-Type"] == "application/octet-stream"
+        assert responses["served"].headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in responses["served"].headers
+
+    def test_cleared_smuggle_name_cannot_retain_generated_provenance(self, temp_dir):
+        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        source_path = server.upload_dir / "small.txt"
+        source_path.write_bytes(b"small payload")
+        created = server.handle_smuggle(
+            make_request("SMUGGLE", "/uploads/small.txt?mode=constructor&output_format=xhtml")
+        )
+        artifact_url = json.loads(created.body)["artifact"]["url"]
+        artifact_name = Path(artifact_url).name
+
+        cleared = server.handle_delete(make_request("DELETE", "/uploads?clear=true"))
+        assert cleared.status_code == 200
+        assert not server.handler_context.smuggle_temp.contains(server.upload_dir / artifact_name)
+
+        uploaded = server.handle_post(
+            make_request(
+                "POST",
+                "/uploads",
+                headers={"X-File-Name": artifact_name},
+                body=b"attacker-controlled XHTML",
+            )
+        )
+        assert uploaded.status_code == 201
+        response = server.handle_get(make_request("GET", f"/uploads/{artifact_name}"))
+
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert "Content-Security-Policy" not in response.headers
 
     def test_smuggle_encrypted_response_exposes_verification_password(
         self,
@@ -2250,6 +2543,7 @@ class TestServerHelpers:
             409: "conflict",
             413: "payload_too_large",
             415: "unsupported_media_type",
+            421: "misdirected_request",
             429: "rate_limited",
             500: "internal_error",
             501: "feature_unavailable",

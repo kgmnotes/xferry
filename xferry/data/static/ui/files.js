@@ -26,6 +26,7 @@ const {
     withNoGzipHeader: withUiNoGzipHeader,
 } = app.service('inspector');
 const httpErrors = app.service('http-errors');
+const notifications = app.service('notifications');
 
 function sendCustomRequest(...args) {
     return app.service('http').request(...args);
@@ -149,12 +150,10 @@ const filesListHeaderEl = document.getElementById('filesListHeader');
 const filesSelectVisibleCheckbox = document.getElementById('filesSelectVisibleCheckbox');
 const filesSortNameBtn = document.getElementById('filesSortNameBtn');
 const filesSortNameIndicatorEl = document.getElementById('filesSortNameIndicator');
-const filesToastRegionEl = document.getElementById('filesToastRegion');
 const serverFilesEl = document.getElementById('serverFiles');
 const filesBrowseStatusEl = document.getElementById('filesBrowseStatus');
 const filesSelectionBarEl = document.getElementById('filesSelectionBar');
 const filesSelectionCountEl = document.getElementById('filesSelectionCount');
-let filesToastTimer = null;
 let filesToastDeletedCount = null;
 const filesState = {
     selectedPaths: new Set(),
@@ -392,105 +391,31 @@ function focusFilesBrowserAnchor() {
     }
 }
 
-function clearFilesToastTimer() {
-    if (filesToastTimer !== null) {
-        window.clearTimeout(filesToastTimer);
-        filesToastTimer = null;
-    }
-}
-
 function getFilesDeletedToastMessage() {
     return `${t('deleteSelectedFilesSuccess')}: ${filesToastDeletedCount || 0}`;
 }
 
 function syncFilesToastCopy() {
-    const toast = filesToastRegionEl?.querySelector('[data-files-toast]');
-    if (!toast || filesToastDeletedCount === null) return;
-
-    const message = toast.querySelector('[data-files-toast-message]');
-    const closeButton = toast.querySelector('[data-files-toast-dismiss]');
-    if (message) {
-        message.textContent = getFilesDeletedToastMessage();
-    }
-    if (closeButton) {
-        const closeLabel = t('filesToastDismiss');
-        closeButton.title = closeLabel;
-        closeButton.setAttribute('aria-label', closeLabel);
-    }
+    if (filesToastDeletedCount === null) return;
+    notifications.update('files-delete', {
+        message: getFilesDeletedToastMessage(),
+    });
 }
 
 function dismissFilesToast({ restoreFocus = false } = {}) {
-    const toast = filesToastRegionEl?.querySelector('[data-files-toast]');
-    const toastHadFocus = Boolean(toast?.contains(document.activeElement));
-    clearFilesToastTimer();
-    toast?.remove();
+    notifications.dismiss('files-delete', { restoreFocus });
     filesToastDeletedCount = null;
-    if (restoreFocus && toastHadFocus) {
-        focusFilesBrowserAnchor();
-    }
-}
-
-function scheduleFilesToastDismiss(toast, delay = 5000) {
-    clearFilesToastTimer();
-    filesToastTimer = window.setTimeout(() => {
-        if (toast?.isConnected) {
-            dismissFilesToast();
-        }
-    }, delay);
 }
 
 function showFilesDeletedToast(deletedCount) {
     const count = Number(deletedCount);
     filesToastDeletedCount = Number.isFinite(count) ? Math.max(0, count) : 0;
-
-    if (!filesToastRegionEl) {
-        announceLiveRegion('filesResponseAreaLive', getFilesDeletedToastMessage());
-        filesToastDeletedCount = null;
-        return;
-    }
-
-    dismissFilesToast();
-    filesToastDeletedCount = Number.isFinite(count) ? Math.max(0, count) : 0;
-
-    const toast = document.createElement('div');
-    toast.className = 'file-toast file-toast--success';
-    toast.dataset.filesToast = '';
-
-    const icon = document.createElement('span');
-    icon.className = 'file-toast__icon';
-    icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = '✓';
-
-    const message = document.createElement('p');
-    message.className = 'file-toast__message';
-    message.dataset.filesToastMessage = '';
-
-    const closeButton = document.createElement('button');
-    closeButton.type = 'button';
-    closeButton.className = 'btn-ghost btn-icon file-toast__dismiss';
-    closeButton.dataset.filesToastDismiss = '';
-    closeButton.textContent = '×';
-    closeButton.addEventListener('click', () => dismissFilesToast({ restoreFocus: true }));
-
-    toast.append(icon, message, closeButton);
-    filesToastRegionEl.appendChild(toast);
-    syncFilesToastCopy();
-    announceLiveRegion('filesToastLive', getFilesDeletedToastMessage());
-    scheduleFilesToastDismiss(toast);
-
-    toast.addEventListener('mouseenter', clearFilesToastTimer);
-    toast.addEventListener('mouseleave', () => scheduleFilesToastDismiss(toast, 3000));
-    toast.addEventListener('focusin', clearFilesToastTimer);
-    toast.addEventListener('focusout', event => {
-        if (!toast.contains(event.relatedTarget)) {
-            scheduleFilesToastDismiss(toast, 3000);
-        }
-    });
-    toast.addEventListener('keydown', event => {
-        if (event.key !== 'Escape') return;
-        event.preventDefault();
-        event.stopPropagation();
-        dismissFilesToast({ restoreFocus: true });
+    notifications.show({
+        id: 'files-delete',
+        tone: 'success',
+        message: getFilesDeletedToastMessage(),
+        timeoutMs: 5000,
+        origin: browsePathInput,
     });
 }
 

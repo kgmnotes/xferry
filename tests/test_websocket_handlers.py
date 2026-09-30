@@ -157,6 +157,33 @@ def _ws_payload(
 
 
 class TestStage008CanonicalWebSocketContract:
+    def test_http_and_websocket_share_one_notepad_service(
+        self,
+        ws_server,
+        mock_socket,
+        monkeypatch,
+    ):
+        service = ws_server._get_notepad_service()
+        original_list_notes = service.list_notes
+        calls: list[object] = []
+
+        def tracked_list_notes():
+            calls.append(service)
+            return original_list_notes()
+
+        monkeypatch.setattr(service, "list_notes", tracked_list_notes)
+
+        http_response = ws_server.handle_note(make_request("NOTE", "/notes?action=list"))
+        ws_server._handle_ws_message(
+            mock_socket,
+            _ws_payload("list", request_id="shared-service"),
+        )
+
+        assert http_response.status_code == 200
+        assert mock_socket.last_json["request_id"] == "shared-service"
+        assert calls == [service, service]
+        assert ws_server._get_notepad_service() is service
+
     def test_success_wraps_the_same_domain_result_as_http(self, ws_server, mock_socket):
         body = json.dumps(
             {

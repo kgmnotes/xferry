@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypedDict
 
 from .features import websocket_route_enabled
 from .http import HTTPRequest, HTTPResponse
+from .request_admission import AdmissionFailure, RequestAdmissionPolicy
 from .websocket import check_websocket_upgrade
 
 logger = logging.getLogger("xferry")
@@ -73,6 +74,7 @@ class RequestPipelineServer(Protocol):
     cors_origin: str | None
     KEEP_ALIVE_TIMEOUT: int
     _ecdh_manager: Any
+    request_admission_policy: RequestAdmissionPolicy
 
     def _resolve_keep_alive(self, request: HTTPRequest, request_num: int) -> tuple[bool, int]: ...
 
@@ -178,6 +180,18 @@ class RequestPipeline:
                 )
                 self._send_direct_response(response, client_socket, build_args)
                 return False
+            admitted = self._server.request_admission_policy.admit(request)
+            if isinstance(admitted, AdmissionFailure):
+                response = self._server._build_error_response(
+                    admitted.status,
+                    admitted.message,
+                    code=admitted.code,
+                    field=admitted.field,
+                    no_store=True,
+                )
+                self._send_direct_response(response, client_socket, build_args)
+                return False
+            request.set_admission_context(admitted)
             is_session_control_route = False
             session_control_route = getattr(
                 self._server,

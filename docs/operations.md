@@ -1,8 +1,9 @@
 # Operations
 
-Choose the data root and its lifetime before the first upload. The current
-public distribution is source-only, so release update and rollback commands do
-not provide a published artifact to install.
+Choose the data root and its lifetime before the first upload. Supported
+distribution is source-only from a reviewed checkout. Remote updates are not
+exposed by the public CLI; `xferry rollback` can only select a verified release
+already retained in a managed installation and never fetches one.
 
 ## Source process
 
@@ -34,8 +35,8 @@ key is lost.
 
 ## Docker from the checkout
 
-The example Compose file builds `xferry:local` from source. It is a contributor
-workflow, not a published image installation:
+The example Compose file builds `xferry:local` from source. It is a local
+checkout workflow, not a registry-image installation:
 
 ```bash
 docker compose -f examples/docker/docker-compose.yml up --build xferry

@@ -3,14 +3,12 @@
 
 const {
     t,
-    escapeHtml: esc,
     formatSize,
     serverUrl: SERVER_URL,
     announceLiveRegion,
     bindDropZoneKeyboardTrigger,
     isServerMethodInGroup,
     focusElementWithoutScroll,
-    switchWorkspace: switchTab,
 } = app.service('core');
 const {
     binaryTextPreviewLimit: exchangeBinaryTextPreviewLimit,
@@ -21,7 +19,6 @@ const {
     createPreviewBody: createExchangePreviewBody,
     createTextBody: createExchangeTextBody,
     setInspector: setExchangeInspector,
-    setSummaryActions: setToolSummaryActions,
     withNoGzipHeader: withUiNoGzipHeader,
 } = app.service('inspector');
 const dialogs = app.service('dialogs');
@@ -34,8 +31,14 @@ function sendCustomRequest(...args) {
 // ===== Загрузка файлов =====
 const uploadState = {
     method: 'POST',
+    targetPath: '/upload',
     profile: 'multipart',
+    mimeMode: 'auto',
+    customMime: '',
     previewSequence: 0,
+    technicalDetailsUserToggled: false,
+    technicalDetailsAutoOpened: false,
+    ignoreNextTechnicalDetailsToggle: false,
     files: [],
     renderFileListRAF: null,
     actionPhase: 'idle',
@@ -46,16 +49,287 @@ const uploadState = {
         blockedReason: '',
         sendBlockedReason: '',
         compareBlockedReason: '',
+        compareProfilesBlockedReason: '',
+        compareMethodsBlockedReason: '',
     },
+    compareAxis: 'profile',
     compareResults: [],
+    status: {
+        phase: 'idle',
+        current: 0,
+        total: 0,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+        singleResult: null,
+    },
 };
 let activeBasicUploadErrorFile = null;
-const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header']);
+const basicUploadProfiles = Object.freeze(['multipart', 'raw-url', 'raw-header', 'raw-generated']);
+const basicUploadMethods = Object.freeze(['POST', 'NONE', 'PUT', 'PATCH']);
+const basicUploadTargetPaths = Object.freeze(['/', '/upload', '/api', '/file']);
+const uploadMimeModes = Object.freeze(['auto', 'octet-stream', 'text-plain', 'pdf', 'custom']);
+const uploadCustomMimeMaxLength = 120;
+const uploadMimePattern = /^(?=[\x20-\x7E]+$)[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?: *; *[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[^"\\]|\\.)*"))*$/;
 const uploadBodyPreviewReadLimit = (typeof exchangeBinaryTextPreviewLimit === 'number'
     ? exchangeBinaryTextPreviewLimit
     : 512) + 1;
 const uploadMethodButtons = Array.from(document.querySelectorAll('.upload-method-btn[data-upload-method]'));
+const uploadTargetPathButtons = Array.from(document.querySelectorAll(
+    '.upload-target-path-btn[data-upload-target-path]'
+));
 const uploadProfileButtons = Array.from(document.querySelectorAll('.upload-profile-btn[data-upload-profile]'));
+const uploadStatus = document.getElementById('uploadStatus');
+const uploadStatusIcon = uploadStatus?.querySelector('.upload-status__icon') || null;
+const uploadStatusMessage = document.getElementById('uploadStatusMessage');
+const uploadStatusMeta = document.getElementById('uploadStatusMeta');
+const uploadStatusHttpValue = document.getElementById('uploadStatusHttpValue');
+const uploadStatusPathValue = document.getElementById('uploadStatusPathValue');
+const uploadStatusSizeValue = document.getElementById('uploadStatusSizeValue');
+const uploadStatusDetailsBtn = document.getElementById('uploadStatusDetailsBtn');
+const uploadTechnicalDetails = document.getElementById('uploadTechnicalDetails');
+const uploadTechnicalDetailsSummary = uploadTechnicalDetails?.querySelector('summary') || null;
+
+function getUploadStatusMessage(state = uploadState.status) {
+    if (state.phase === 'sending') {
+        if (state.current > 0 && state.total > 0) {
+            return t('uploadProgress')
+                .replace('{0}', String(state.current))
+                .replace('{1}', String(state.total));
+        }
+        return t('uploadStarting');
+    }
+    if (state.blockedReason) {
+        return t(state.blockedReason === 'conflict'
+            ? 'uploadRoutingConflict'
+            : 'uploadRoutingUnknown');
+    }
+    const counts = [`${state.successCount} ${t('successCount')}`];
+    if (state.failCount > 0) {
+        counts.push(`${state.failCount} ${t('errorCount')}`);
+    }
+    return `${t('uploadComplete')}: ${counts.join(', ')}`;
+}
+
+function getUploadStatusTone(state = uploadState.status) {
+    if (state.phase === 'complete') return 'success';
+    if (state.phase === 'error') return 'error';
+    return 'pending';
+}
+
+function getUploadStatusIcon(tone) {
+    if (tone === 'success') return '✓';
+    if (tone === 'error') return '!';
+    return '…';
+}
+
+function syncUploadStatusDetailsExpanded() {
+    if (uploadStatusDetailsBtn) {
+        uploadStatusDetailsBtn.setAttribute(
+            'aria-expanded',
+            String(Boolean(uploadTechnicalDetails?.open))
+        );
+    }
+}
+
+function renderUploadStatusMeta(singleResult) {
+    const result = singleResult && typeof singleResult === 'object' ? singleResult : null;
+    if (uploadStatusHttpValue) {
+        uploadStatusHttpValue.textContent = result
+            ? `${result.status} ${result.statusText}`.trim()
+            : '';
+    }
+    if (uploadStatusPathValue) {
+        uploadStatusPathValue.textContent = result?.path || '';
+    }
+    if (uploadStatusSizeValue) {
+        uploadStatusSizeValue.textContent = result ? formatSize(result.sizeBytes) : '';
+    }
+    if (uploadStatusMeta) {
+        uploadStatusMeta.hidden = !result;
+    }
+}
+
+function renderUploadStatus(options = {}) {
+    const state = uploadState.status;
+    renderUploadStatusMeta(state.phase === 'complete' ? state.singleResult : null);
+    if (state.phase === 'idle') {
+        if (uploadStatus) {
+            uploadStatus.hidden = true;
+        }
+        return false;
+    }
+
+    const tone = getUploadStatusTone(state);
+    const message = getUploadStatusMessage(state);
+    if (uploadStatus) {
+        uploadStatus.dataset.tone = tone;
+        uploadStatus.hidden = false;
+    }
+    if (uploadStatusIcon) {
+        uploadStatusIcon.textContent = getUploadStatusIcon(tone);
+    }
+    if (uploadStatusMessage) {
+        uploadStatusMessage.textContent = message;
+    }
+    syncUploadStatusDetailsExpanded();
+    if (options.announce !== false) {
+        announceLiveRegion(
+            tone === 'error' ? 'appNotificationAlert' : 'appNotificationLive',
+            message
+        );
+    }
+    return true;
+}
+
+function setUploadStatus(nextState, options = {}) {
+    Object.assign(uploadState.status, nextState);
+    return renderUploadStatus(options);
+}
+
+function resetUploadStatus() {
+    Object.assign(uploadState.status, {
+        phase: 'idle',
+        current: 0,
+        total: 0,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+        singleResult: null,
+    });
+    if (uploadStatusMessage) {
+        uploadStatusMessage.textContent = '';
+    }
+    if (uploadStatusIcon) {
+        uploadStatusIcon.textContent = '…';
+    }
+    if (uploadStatus) {
+        uploadStatus.dataset.tone = 'pending';
+    }
+    return renderUploadStatus({ announce: false });
+}
+
+function openUploadTechnicalDetails() {
+    if (!uploadTechnicalDetails) {
+        return;
+    }
+    uploadTechnicalDetails.open = true;
+    syncUploadStatusDetailsExpanded();
+    if (typeof uploadTechnicalDetails.scrollIntoView === 'function') {
+        uploadTechnicalDetails.scrollIntoView({ block: 'nearest' });
+    }
+    focusElementWithoutScroll(uploadTechnicalDetailsSummary);
+}
+
+function maybeAutoOpenUploadTechnicalDetails() {
+    if (
+        !uploadTechnicalDetails
+        || uploadState.technicalDetailsUserToggled
+        || uploadState.technicalDetailsAutoOpened
+        || window.matchMedia('(max-width: 640px)').matches
+    ) {
+        return false;
+    }
+    uploadState.technicalDetailsAutoOpened = true;
+    if (!uploadTechnicalDetails.open) {
+        uploadState.ignoreNextTechnicalDetailsToggle = true;
+        uploadTechnicalDetails.open = true;
+    }
+    syncUploadStatusDetailsExpanded();
+    return true;
+}
+
+function collapseAutoOpenedUploadTechnicalDetailsForEmptyState() {
+    if (
+        !uploadTechnicalDetails
+        || uploadState.technicalDetailsUserToggled
+        || !uploadState.technicalDetailsAutoOpened
+        || !uploadTechnicalDetails.open
+    ) {
+        return false;
+    }
+    uploadState.ignoreNextTechnicalDetailsToggle = true;
+    uploadTechnicalDetails.open = false;
+    syncUploadStatusDetailsExpanded();
+    return true;
+}
+
+function buildUploadMultipartPreviewEnvelope(filename, mime) {
+    const safeFilename = String(filename || 'upload.bin')
+        .replace(/[\r\n]/g, '')
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"');
+    return {
+        rawPrefix: [
+            '--<browser-generated>',
+            `Content-Disposition: form-data; name="file"; filename="${safeFilename}"`,
+            `Content-Type: ${mime}`,
+            '',
+            '',
+        ].join('\r\n'),
+        rawSuffix: '\r\n--<browser-generated>--',
+    };
+}
+
+function getUploadMimeValidation(state = uploadState) {
+    const requestedMode = String(state?.mimeMode || 'auto');
+    const mode = uploadMimeModes.includes(requestedMode) ? requestedMode : 'auto';
+    if (mode !== 'custom') {
+        return {
+            mode,
+            valid: true,
+            mime: '',
+            errorKey: '',
+        };
+    }
+
+    const mime = String(state?.customMime || '').trim();
+    if (!mime) {
+        return {
+            mode,
+            valid: false,
+            mime: '',
+            errorKey: 'uploadMimeRequired',
+        };
+    }
+    if (mime.length > uploadCustomMimeMaxLength || !uploadMimePattern.test(mime)) {
+        return {
+            mode,
+            valid: false,
+            mime: '',
+            errorKey: 'uploadMimeInvalid',
+        };
+    }
+    return {
+        mode,
+        valid: true,
+        mime,
+        errorKey: '',
+    };
+}
+
+function resolveUploadDeclaredMime(state, file, profile) {
+    const validation = getUploadMimeValidation(state);
+    if (!validation.valid) {
+        throw new TypeError(validation.errorKey);
+    }
+    if (validation.mode === 'octet-stream') {
+        return 'application/octet-stream';
+    }
+    if (validation.mode === 'text-plain') {
+        return 'text/plain';
+    }
+    if (validation.mode === 'pdf') {
+        return 'application/pdf';
+    }
+    if (validation.mode === 'custom') {
+        return validation.mime;
+    }
+    if (profile === 'raw-header' || profile === 'raw-generated') {
+        return 'application/octet-stream';
+    }
+    return String(file?.type || '') || 'application/octet-stream';
+}
 
 function getUploadByteView(bodyBytes) {
     if (!bodyBytes) {
@@ -73,24 +347,30 @@ function getUploadByteView(bodyBytes) {
     throw new TypeError('Basic upload body bytes must be an ArrayBuffer or typed array');
 }
 
-function compileBasicUploadRequest(state, file, bodyBytes = null) {
+function compileBasicUploadRequest(state, file, bodyBytes = null, previewBytes = bodyBytes) {
     const profile = basicUploadProfiles.includes(state?.profile)
         ? state.profile
         : 'multipart';
     const method = String(state?.method || 'POST').toUpperCase();
+    const targetPath = basicUploadTargetPaths.includes(state?.targetPath)
+        ? state.targetPath
+        : '/upload';
     const filename = String(file?.name || 'upload.bin');
     const encodedFilename = encodeURIComponent(filename);
-    const fileMime = String(file?.type || '') || 'application/octet-stream';
-    const byteView = getUploadByteView(bodyBytes);
-    const bodySize = byteView?.byteLength ?? Number(file?.size || 0);
+    const fileMime = resolveUploadDeclaredMime(state, file, profile);
+    const bodyByteView = getUploadByteView(bodyBytes);
+    const previewByteView = getUploadByteView(previewBytes);
+    const bodySize = bodyByteView?.byteLength ?? Number(file?.size || 0);
 
-    let pathname = '/uploads';
+    let pathname = targetPath;
     let body = bodyBytes || file;
     let wireHeaders = {};
     let traceHeaders = {};
     let mime = fileMime;
     let bodyKind = 'raw';
     let filenameSource = 'url';
+    let previewFilename = filename;
+    let multipartPreview = {};
 
     if (profile === 'multipart') {
         const form = new FormData();
@@ -100,6 +380,7 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
                 type: fileMime,
                 lastModified: Number(file?.lastModified || Date.now()),
             });
+        mime = String(multipartFile.type || '') || 'application/octet-stream';
         form.append('file', multipartFile, filename);
         body = form;
         bodyKind = 'multipart';
@@ -109,8 +390,12 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             'Content-Type': 'multipart/form-data; boundary=<browser-generated>',
             'Content-Length': '<browser-generated>',
         });
+        multipartPreview = buildUploadMultipartPreviewEnvelope(filename, mime);
     } else if (profile === 'raw-url') {
-        pathname = `/uploads/${encodedFilename}`;
+        const filenamePath = `/${encodedFilename}`;
+        pathname = targetPath === '/'
+            ? (basicUploadTargetPaths.includes(filenamePath) ? `${filenamePath}/` : filenamePath)
+            : `${targetPath}/${encodedFilename}`;
         wireHeaders = withUiNoGzipHeader({
             'Content-Type': fileMime,
         });
@@ -118,12 +403,21 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
             ...wireHeaders,
             'Content-Length': String(bodySize),
         };
-    } else {
-        mime = 'application/octet-stream';
+    } else if (profile === 'raw-header') {
         filenameSource = 'header';
         wireHeaders = withUiNoGzipHeader({
-            'Content-Type': 'application/octet-stream',
+            'Content-Type': fileMime,
             'X-File-Name': encodedFilename,
+        });
+        traceHeaders = {
+            ...wireHeaders,
+            'Content-Length': String(bodySize),
+        };
+    } else {
+        filenameSource = 'generated';
+        previewFilename = '';
+        wireHeaders = withUiNoGzipHeader({
+            'Content-Type': fileMime,
         });
         traceHeaders = {
             ...wireHeaders,
@@ -138,11 +432,12 @@ function compileBasicUploadRequest(state, file, bodyBytes = null) {
         path: pathname,
         headers: traceHeaders,
         body: createExchangeBinaryBody({
-            filename,
+            filename: previewFilename,
             contentType: mime,
             size: bodySize,
-            bytes: byteView,
+            bytes: previewByteView,
             label: bodyKind,
+            ...multipartPreview,
         }),
         exportFilenameBase: 'xferry-upload-request',
         sensitive: true,
@@ -220,16 +515,49 @@ function setUploadProfile(profile, btn, options = {}) {
     }
 }
 
+function setUploadTargetPath(targetPath, btn, options = {}) {
+    const { focusButton = false } = options;
+    if (!basicUploadTargetPaths.includes(targetPath)) {
+        return;
+    }
+    uploadState.targetPath = targetPath;
+
+    let activeButton = btn || null;
+    uploadTargetPathButtons.forEach(button => {
+        const isActive = button.dataset.uploadTargetPath === targetPath;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-checked', String(isActive));
+        button.setAttribute('tabindex', isActive ? '0' : '-1');
+        if (isActive) {
+            activeButton = button;
+        }
+    });
+
+    refreshUploadRequestPreview();
+    refreshUploadActionState();
+    if (focusButton) {
+        focusElementWithoutScroll(activeButton);
+    }
+}
+
+function setUploadMimeMode(mode) {
+    uploadState.mimeMode = uploadMimeModes.includes(mode) ? mode : 'auto';
+    renderUploadMimeControls();
+    refreshUploadRequestPreview();
+    refreshUploadActionState();
+}
+
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
 const uploadBtn = document.getElementById('uploadBtn');
 const uploadCompareBtn = document.getElementById('uploadCompareBtn');
+const uploadCompareMethodsBtn = document.getElementById('uploadCompareMethodsBtn');
 const uploadCompareResults = document.getElementById('uploadCompareResults');
+const uploadCompareResultsTitle = document.getElementById('uploadCompareResultsTitle');
 const uploadRequestSummary = document.getElementById('uploadRequestSummary');
-const uploadResponseAreaEl = document.getElementById('uploadResponseArea');
 const uploadSelectionState = document.getElementById('uploadSelectionState');
-const uploadSummaryEl = document.querySelector('[data-tool-summary-scope="upload"]');
+const uploadMimeMode = document.getElementById('uploadMimeMode');
 const uploadSummaryFields = Object.freeze({
     requestLine: document.querySelector('[data-upload-summary="request-line"]'),
     bodyKind: document.querySelector('[data-upload-summary="body-kind"]'),
@@ -254,6 +582,7 @@ function getUploadProfileLabel(profile) {
         multipart: t('uploadProfileMultipart'),
         'raw-url': t('uploadProfileRawUrl'),
         'raw-header': t('uploadProfileRawHeader'),
+        'raw-generated': t('uploadProfileNoFilename'),
     };
     return labels[profile] || profile;
 }
@@ -267,11 +596,47 @@ function getUploadFilenameSourceLabel(source) {
         part: t('uploadFilenameSourcePart'),
         url: t('uploadFilenameSourceUrl'),
         header: t('uploadFilenameSourceHeader'),
+        generated: t('uploadFilenameSourceGenerated'),
     };
     return labels[source] || source;
 }
 
-function refreshUploadLiveSummary() {
+function renderUploadMimeControls() {
+    const validation = getUploadMimeValidation(uploadState);
+    if (uploadMimeMode) {
+        uploadMimeMode.value = validation.mode;
+        uploadMimeMode.setAttribute('aria-invalid', String(!validation.valid));
+    }
+    return validation;
+}
+
+function refreshUploadLiveSummary(validation = getUploadMimeValidation(uploadState)) {
+    if (!validation.valid) {
+        const sourceByProfile = {
+            multipart: 'part',
+            'raw-url': 'url',
+            'raw-header': 'header',
+            'raw-generated': 'generated',
+        };
+        if (uploadSummaryFields.requestLine) {
+            uploadSummaryFields.requestLine.textContent = `${uploadState.method} -`;
+        }
+        if (uploadSummaryFields.bodyKind) {
+            uploadSummaryFields.bodyKind.textContent = getUploadBodyKindLabel(
+                uploadState.profile === 'multipart' ? 'multipart' : 'raw'
+            );
+        }
+        if (uploadSummaryFields.mime) {
+            uploadSummaryFields.mime.textContent = t(validation.errorKey);
+        }
+        if (uploadSummaryFields.filenameSource) {
+            uploadSummaryFields.filenameSource.textContent = getUploadFilenameSourceLabel(
+                sourceByProfile[uploadState.profile] || 'url'
+            );
+        }
+        return false;
+    }
+
     const plan = compileBasicUploadRequest(uploadState, getUploadSummaryFile());
     if (uploadSummaryFields.requestLine) {
         uploadSummaryFields.requestLine.textContent = `${plan.method} ${plan.pathname}`;
@@ -285,26 +650,55 @@ function refreshUploadLiveSummary() {
     if (uploadSummaryFields.filenameSource) {
         uploadSummaryFields.filenameSource.textContent = getUploadFilenameSourceLabel(plan.filenameSource);
     }
+    return true;
 }
 
 function hasSupportedUploadMethod() {
-    return uploadMethodButtons.some(button => (
-        typeof isServerMethodInGroup !== 'function'
-        || isServerMethodInGroup(button.dataset.uploadMethod || '', 'upload')
+    return getSupportedBasicUploadMethods().length > 0;
+}
+
+function getSupportedBasicUploadMethods() {
+    return basicUploadMethods.filter(method => (
+        uploadMethodButtons.some(button => button.dataset.uploadMethod === method)
+        && (
+            typeof isServerMethodInGroup !== 'function'
+            || isServerMethodInGroup(method, 'upload')
+        )
     ));
+}
+
+function getBasicUploadComparisonCases(axis, state = uploadState) {
+    const values = axis === 'method'
+        ? getSupportedBasicUploadMethods()
+        : basicUploadProfiles;
+    return values.map(value => {
+        const requestState = Object.freeze({
+            method: axis === 'method' ? value : state.method,
+            targetPath: state.targetPath,
+            profile: axis === 'profile' ? value : state.profile,
+            mimeMode: state.mimeMode,
+            customMime: state.customMime,
+        });
+        return Object.freeze({
+            axis,
+            value,
+            method: requestState.method,
+            profile: requestState.profile,
+            requestState,
+        });
+    });
 }
 
 function getBasicActionPlans(action = 'send') {
     const pendingFiles = getUploadPendingFiles();
-    if (action === 'compare') {
+    if (action === 'compare' || action === 'compare-methods') {
         const file = pendingFiles[0]?.file;
         if (!file) {
             return [];
         }
-        return basicUploadProfiles.map(profile => compileBasicUploadRequest({
-            method: uploadState.method,
-            profile,
-        }, file));
+        const axis = action === 'compare-methods' ? 'method' : 'profile';
+        return getBasicUploadComparisonCases(axis)
+            .map(item => compileBasicUploadRequest(item.requestState, file));
     }
     return pendingFiles.map(fileData => compileBasicUploadRequest(uploadState, fileData.file));
 }
@@ -315,14 +709,19 @@ function getRoutingBlockReason(_plans, _snapshot = uploadState.routing.snapshot)
 
 function renderUploadRoutingGuard() {
     const sendBlockedReason = getRoutingBlockReason(getBasicActionPlans('send'));
-    const compareBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare'));
+    const compareProfilesBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare'));
+    const compareMethodsBlockedReason = getRoutingBlockReason(getBasicActionPlans('compare-methods'));
+    const compareBlockedReason = compareProfilesBlockedReason || compareMethodsBlockedReason;
     const blockedReason = sendBlockedReason || compareBlockedReason;
     uploadState.routing.blockedReason = blockedReason;
     uploadState.routing.sendBlockedReason = sendBlockedReason;
     uploadState.routing.compareBlockedReason = compareBlockedReason;
+    uploadState.routing.compareProfilesBlockedReason = compareProfilesBlockedReason;
+    uploadState.routing.compareMethodsBlockedReason = compareMethodsBlockedReason;
     return {
         send: sendBlockedReason,
-        compare: compareBlockedReason,
+        compareProfiles: compareProfilesBlockedReason,
+        compareMethods: compareMethodsBlockedReason,
     };
 }
 
@@ -330,7 +729,17 @@ function refreshUploadActionState() {
     const enabled = hasSupportedUploadMethod();
     const pendingCount = getUploadPendingFiles().length;
     const busy = !['idle', 'confirming'].includes(uploadState.actionPhase);
-    const routingBlocks = renderUploadRoutingGuard();
+    const mimeValidation = renderUploadMimeControls();
+    const routingBlocks = mimeValidation.valid
+        ? renderUploadRoutingGuard()
+        : { send: '', compareProfiles: '', compareMethods: '' };
+    if (!mimeValidation.valid) {
+        uploadState.routing.blockedReason = '';
+        uploadState.routing.sendBlockedReason = '';
+        uploadState.routing.compareBlockedReason = '';
+        uploadState.routing.compareProfilesBlockedReason = '';
+        uploadState.routing.compareMethodsBlockedReason = '';
+    }
 
     uploadMethodButtons.forEach(button => {
         const method = button.dataset.uploadMethod || '';
@@ -341,6 +750,10 @@ function refreshUploadActionState() {
     uploadProfileButtons.forEach(button => {
         button.disabled = busy || !enabled;
     });
+    uploadTargetPathButtons.forEach(button => {
+        button.disabled = busy || !enabled;
+    });
+    if (uploadMimeMode) uploadMimeMode.disabled = busy || !enabled;
     if (fileInput) fileInput.disabled = busy || !enabled;
     if (dropZone) {
         dropZone.classList.toggle('is-disabled', busy || !enabled);
@@ -348,13 +761,30 @@ function refreshUploadActionState() {
         dropZone.setAttribute('tabindex', busy || !enabled ? '-1' : '0');
     }
     if (uploadBtn) {
-        uploadBtn.disabled = busy || Boolean(routingBlocks.send) || !enabled || pendingCount === 0;
+        uploadBtn.disabled = (
+            busy
+            || !mimeValidation.valid
+            || Boolean(routingBlocks.send)
+            || !enabled
+            || pendingCount === 0
+        );
     }
     if (uploadCompareBtn) {
         uploadCompareBtn.disabled = (
             busy
-            || Boolean(routingBlocks.compare)
+            || !mimeValidation.valid
+            || Boolean(routingBlocks.compareProfiles)
             || !enabled
+            || pendingCount !== 1
+        );
+    }
+    if (uploadCompareMethodsBtn) {
+        uploadCompareMethodsBtn.disabled = (
+            busy
+            || !mimeValidation.valid
+            || Boolean(routingBlocks.compareMethods)
+            || !enabled
+            || getSupportedBasicUploadMethods().length === 0
             || pendingCount !== 1
         );
     }
@@ -488,6 +918,7 @@ async function refreshUploadRequestPreviewBodySamples(sequence, signature) {
             const request = compileBasicUploadRequest(
                 uploadState,
                 fileData.file,
+                null,
                 previewBuffer
             ).requestExchange;
             return { fileData, request };
@@ -512,22 +943,34 @@ async function refreshUploadRequestPreviewBodySamples(sequence, signature) {
 
 function refreshUploadRequestPreview() {
     const sequence = ++uploadState.previewSequence;
-    refreshUploadLiveSummary();
-    if (uploadState.files.length === 0) {
+    const mimeValidation = renderUploadMimeControls();
+    if (!refreshUploadLiveSummary(mimeValidation)) {
         setExchangeInspector('upload', {
             phase: 'empty',
             request: {
                 phase: 'empty',
-                emptyText: t('exchangeRequestEmpty'),
+                emptyText: t(mimeValidation.errorKey),
             },
             response: {
                 phase: 'empty',
                 emptyText: t('exchangeResponseEmpty'),
             },
         });
-        if (typeof setToolSummaryActions === 'function') {
-            setToolSummaryActions('upload', '');
-        }
+        return;
+    }
+    if (uploadState.files.length === 0) {
+        setExchangeInspector('upload', {
+            phase: 'empty',
+            request: {
+                phase: 'empty',
+                emptyText: t('uploadTechnicalDetailsEmpty'),
+            },
+            response: {
+                phase: 'empty',
+                emptyText: t('exchangeResponseEmpty'),
+            },
+        });
+        collapseAutoOpenedUploadTechnicalDetailsForEmptyState();
         return;
     }
 
@@ -544,6 +987,7 @@ function refreshUploadRequestPreview() {
             emptyText: t('exchangeResponseEmpty'),
         },
     });
+    maybeAutoOpenUploadTechnicalDetails();
     void refreshUploadRequestPreviewBodySamples(sequence, getUploadPendingSignature());
 }
 
@@ -619,6 +1063,48 @@ uploadProfileButtons.forEach(button => {
     });
 });
 
+uploadTargetPathButtons.forEach(button => {
+    button.addEventListener('click', () => {
+        const targetPath = button.dataset.uploadTargetPath;
+        if (targetPath) {
+            setUploadTargetPath(targetPath, button);
+        }
+    });
+
+    button.addEventListener('keydown', (event) => {
+        const currentIndex = uploadTargetPathButtons.indexOf(button);
+        if (currentIndex === -1) {
+            return;
+        }
+
+        let nextIndex;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+            nextIndex = (currentIndex + 1) % uploadTargetPathButtons.length;
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+            nextIndex = (
+                currentIndex - 1 + uploadTargetPathButtons.length
+            ) % uploadTargetPathButtons.length;
+        } else if (event.key === 'Home') {
+            nextIndex = 0;
+        } else if (event.key === 'End') {
+            nextIndex = uploadTargetPathButtons.length - 1;
+        } else {
+            return;
+        }
+
+        event.preventDefault();
+        const nextButton = uploadTargetPathButtons[nextIndex];
+        const targetPath = nextButton?.dataset.uploadTargetPath;
+        if (targetPath) {
+            setUploadTargetPath(targetPath, nextButton, { focusButton: true });
+        }
+    });
+});
+
+uploadMimeMode?.addEventListener('change', () => {
+    setUploadMimeMode(uploadMimeMode.value);
+});
+
 if (uploadBtn) {
     uploadBtn.addEventListener('click', () => {
         void uploadAllFiles();
@@ -627,6 +1113,24 @@ if (uploadBtn) {
 if (uploadCompareBtn) {
     uploadCompareBtn.addEventListener('click', () => {
         void compareBasicUploadProfiles();
+    });
+}
+if (uploadCompareMethodsBtn) {
+    uploadCompareMethodsBtn.addEventListener('click', () => {
+        void compareBasicUploadMethods();
+    });
+}
+if (uploadStatusDetailsBtn) {
+    uploadStatusDetailsBtn.addEventListener('click', openUploadTechnicalDetails);
+}
+if (uploadTechnicalDetails) {
+    uploadTechnicalDetails.addEventListener('toggle', () => {
+        if (uploadState.ignoreNextTechnicalDetailsToggle) {
+            uploadState.ignoreNextTechnicalDetailsToggle = false;
+        } else {
+            uploadState.technicalDetailsUserToggled = true;
+        }
+        syncUploadStatusDetailsExpanded();
     });
 }
 
@@ -658,50 +1162,6 @@ if (fileList) {
             removeFile(index);
         }
     });
-}
-
-if (uploadResponseAreaEl) {
-    uploadResponseAreaEl.addEventListener('click', (e) => {
-        const actionBtn = e.target.closest('[data-upload-response-action]');
-        if (!actionBtn) return;
-
-        handleUploadResultAction(actionBtn);
-    });
-}
-
-if (uploadSummaryEl) {
-    uploadSummaryEl.addEventListener('click', (e) => {
-        const actionBtn = e.target.closest('[data-upload-response-action]');
-        if (!actionBtn) return;
-
-        handleUploadResultAction(actionBtn);
-    });
-}
-
-function openUploadTraceDetails() {
-    const traceDetails = document.querySelector('[data-tool-trace-scope="upload"]');
-    if (!traceDetails) {
-        return;
-    }
-
-    traceDetails.open = true;
-    focusElementWithoutScroll(traceDetails.querySelector('summary'));
-}
-
-function handleUploadResultAction(actionBtn) {
-    if (!actionBtn) {
-        return;
-    }
-
-    if (actionBtn.dataset.uploadResponseAction === 'view-files') {
-        const browseInput = document.getElementById('browsePathInput');
-        if (browseInput) {
-            browseInput.value = '/uploads';
-        }
-        switchTab('files', document.getElementById('tab-files'), { focusTabButton: true });
-    } else if (actionBtn.dataset.uploadResponseAction === 'show-trace') {
-        openUploadTraceDetails();
-    }
 }
 
 // Drag & Drop
@@ -748,6 +1208,9 @@ if (uploadProfileButtons.length > 0) {
 function handleFiles(files) {
     if (!hasSupportedUploadMethod()) {
         return;
+    }
+    if (files?.length > 0) {
+        resetUploadStatus();
     }
 
     for (const file of files) {
@@ -874,6 +1337,9 @@ function removeFile(index) {
     if (fileData?.status === 'error') {
         invalidateBasicUploadError(fileData);
     }
+    if (fileData) {
+        resetUploadStatus();
+    }
     renderFileList();
     refreshUploadSelectionLocale();
     syncUploadWorkspaceSelectionState();
@@ -916,7 +1382,10 @@ function createBasicUploadRetryContext(fileData, requestState = uploadState) {
         size: fileData.size,
         requestState: Object.freeze({
             method: requestState.method,
+            targetPath: requestState.targetPath,
             profile: requestState.profile,
+            mimeMode: requestState.mimeMode,
+            customMime: requestState.customMime,
         }),
     });
 }
@@ -989,10 +1458,13 @@ async function beginBasicUploadTransport(state, file, bodyBytes, onProgress = nu
 
 function announceBasicUploadRoutingBlock(blockedReason) {
     uploadState.routing.blockedReason = blockedReason;
-    announceLiveRegion(
-        'uploadResponseAreaLive',
-        t(blockedReason === 'conflict' ? 'uploadRoutingConflict' : 'uploadRoutingUnknown')
-    );
+    setUploadStatus({
+        phase: 'error',
+        blockedReason,
+        successCount: 0,
+        failCount: 0,
+        singleResult: null,
+    });
 }
 
 function parseUploadJson(text) {
@@ -1059,27 +1531,6 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
 
     setExchangeInspector('upload', {
         phase: failCount === 0 ? 'complete' : 'error',
-        summaryMetaMode: singleSuccessfulResult ? 'replace' : '',
-        summaryMeta: singleSuccessfulResult
-            ? [
-                {
-                    label: t('responseSummaryFieldStatus'),
-                    value: `${finalStatus} ${finalStatusText}`.trim(),
-                    tone: finalStatus >= 400 ? 'danger' : 'success',
-                    field: 'status',
-                },
-                {
-                    label: t('uploadResultServerPath'),
-                    value: singleSuccessfulResult.path,
-                    field: 'server-path',
-                },
-                {
-                    label: t('uploadResultSize'),
-                    value: formatSize(singleSuccessfulResult.size),
-                    field: 'size',
-                },
-            ]
-            : [],
         request: lastRequestExchange
             ? {
                 ...lastRequestExchange,
@@ -1110,21 +1561,22 @@ function renderUploadCompletion(results, exchangeEntries, lastRequestExchange) {
                 : 'xferry-upload-response',
         },
     });
-    if (typeof setToolSummaryActions === 'function') {
-        setToolSummaryActions(
-            'upload',
-            successCount > 0
-                ? `
-                    <button class="btn-info btn--sm" type="button" data-upload-response-action="show-trace" data-testid="upload-result-trace-btn">${esc(t('uploadResultTraceAction'))}</button>
-                    <button class="btn-info btn--sm" type="button" data-upload-response-action="view-files" data-testid="upload-result-files-btn">${esc(t('uploadResultFilesAction'))}</button>
-                `
-                : ''
-        );
-    }
-    announceLiveRegion(
-        'uploadResponseAreaLive',
-        `${t('uploadComplete')}: ${successCount} ${t('successCount')}, ${failCount} ${t('errorCount')}`
-    );
+    setUploadStatus({
+        phase: failCount === 0 ? 'complete' : 'error',
+        current: results.length,
+        total: results.length,
+        successCount,
+        failCount,
+        blockedReason: '',
+        singleResult: singleSuccessfulResult
+            ? {
+                status: singleSuccessfulResult.status,
+                statusText: singleSuccessfulResult.statusText,
+                path: singleSuccessfulResult.path,
+                sizeBytes: singleSuccessfulResult.sizeBytes,
+            }
+            : null,
+    });
 }
 
 async function uploadFiles(fileDataList, options = {}) {
@@ -1134,15 +1586,21 @@ async function uploadFiles(fileDataList, options = {}) {
         retrying = false,
     } = options;
     const pendingFiles = Array.from(fileDataList || []).filter(Boolean);
-    if (!hasSupportedUploadMethod() || pendingFiles.length === 0 || uploadState.actionPhase !== 'idle') {
+    const mimeValidation = getUploadMimeValidation(requestState);
+    if (
+        !hasSupportedUploadMethod()
+        || !mimeValidation.valid
+        || pendingFiles.length === 0
+        || uploadState.actionPhase !== 'idle'
+    ) {
         return false;
     }
 
-    uploadState.actionPhase = 'checking';
-    refreshUploadActionState();
     const previewPlans = pendingFiles.map(fileData => (
         compileBasicUploadRequest(requestState, fileData.file)
     ));
+    uploadState.actionPhase = 'checking';
+    refreshUploadActionState();
     if (!await ensureBasicUploadRoute(previewPlans)) {
         uploadState.actionPhase = 'idle';
         refreshUploadActionState();
@@ -1151,10 +1609,15 @@ async function uploadFiles(fileDataList, options = {}) {
 
     uploadState.actionPhase = 'sending';
     refreshUploadActionState();
-    announceLiveRegion('uploadResponseAreaLive', t('uploadStarting'));
-    if (typeof setToolSummaryActions === 'function') {
-        setToolSummaryActions('upload', '');
-    }
+    setUploadStatus({
+        phase: 'sending',
+        current: 0,
+        total: pendingFiles.length,
+        successCount: 0,
+        failCount: 0,
+        blockedReason: '',
+        singleResult: null,
+    });
     setExchangeInspector('upload', {
         phase: 'sending',
         request: buildUploadRequestInspectorModel(pendingFiles.map((fileData, index) => ({
@@ -1174,7 +1637,12 @@ async function uploadFiles(fileDataList, options = {}) {
     const exchangeEntries = [];
     let routingBlocked = false;
 
-    for (const fileData of pendingFiles) {
+    for (const [index, fileData] of pendingFiles.entries()) {
+        setUploadStatus({
+            phase: 'sending',
+            current: index + 1,
+            total: pendingFiles.length,
+        });
         fileData.status = 'uploading';
         fileData.progress = 0;
         renderFileList();
@@ -1241,7 +1709,7 @@ async function uploadFiles(fileDataList, options = {}) {
                 success,
                 path: success ? result.file.path : '',
                 error: success ? '' : fileData.error,
-                size: fileData.size,
+                sizeBytes: success ? result.file.size_bytes : fileData.size,
                 status: response.status,
                 statusText: response.statusText || (success ? 'Created' : t('error')),
             });
@@ -1269,7 +1737,7 @@ async function uploadFiles(fileDataList, options = {}) {
                 name: fileData.name,
                 success: false,
                 error: fileData.error,
-                size: fileData.size,
+                sizeBytes: fileData.size,
                 status: 0,
                 statusText: t('error'),
             });
@@ -1376,10 +1844,25 @@ function getCompareVerdict(plan, file, localHash, response, payload) {
         return 'content-changed';
     }
 
+    const expectedServerProfile = {
+        multipart: 'multipart',
+        'raw-url': 'raw_url',
+        'raw-header': 'raw_header',
+        'raw-generated': 'raw_url',
+    }[plan.profile];
     const expectedCarrier = plan.profile === 'multipart' ? 'multipart' : 'body';
+    const normalizedNameMatches = (
+        payload.file.name === payload.upload.normalized_name
+        && (
+            plan.filenameSource === 'generated'
+            || payload.upload.normalized_name === file.name
+            || payload.upload.collision_renamed === true
+        )
+    );
     const metadataMatches = (
         payload.upload.kind === 'basic'
-        && payload.upload.profile === plan.profile
+        && expectedServerProfile
+        && payload.upload.profile === expectedServerProfile
         && payload.upload.carrier === expectedCarrier
         && payload.upload.filename_source === plan.filenameSource
         && payload.file.content_type === plan.mime
@@ -1388,10 +1871,7 @@ function getCompareVerdict(plan, file, localHash, response, payload) {
                 ? payload.upload.request_body_size >= file.size
                 : payload.upload.request_body_size === file.size
         )
-        && (
-            payload.upload.normalized_name === file.name
-            || payload.upload.collision_renamed === true
-        )
+        && normalizedNameMatches
     );
     return metadataMatches ? 'delivered' : 'metadata-changed';
 }
@@ -1408,25 +1888,67 @@ function getCompareVerdictLabel(verdict) {
     return t(labels[verdict] || labels['not-confirmed']);
 }
 
+function getBasicUploadComparisonValueLabel(result) {
+    return result.axis === 'method'
+        ? result.method
+        : getUploadProfileLabel(result.profile);
+}
+
+function getBasicUploadComparisonConfig(axis, cases) {
+    const methodAxis = axis === 'method';
+    const values = cases.map(item => (
+        methodAxis ? item.method : getUploadProfileLabel(item.profile)
+    ));
+    const format = key => t(key)
+        .replace('{0}', String(cases.length))
+        .replace('{1}', values.join(', '));
+    return {
+        title: format(methodAxis
+            ? 'uploadCompareMethodsConfirmTitle'
+            : 'uploadCompareConfirmTitle'),
+        message: format(methodAxis
+            ? 'uploadCompareMethodsConfirmBody'
+            : 'uploadCompareConfirmBody'),
+        confirmLabel: format(methodAxis
+            ? 'uploadCompareMethodsConfirmAction'
+            : 'uploadCompareConfirmAction'),
+        runningKey: methodAxis
+            ? 'uploadCompareMethodsRunning'
+            : 'uploadCompareRunning',
+        triggerEl: methodAxis ? uploadCompareMethodsBtn : uploadCompareBtn,
+        restoreFocusSelector: methodAxis ? '#uploadCompareMethodsBtn' : '#uploadCompareBtn',
+    };
+}
+
 function renderBasicUploadComparison() {
     const list = uploadCompareResults?.querySelector('[data-upload-compare-list]');
     if (!uploadCompareResults || !list) {
         return;
     }
     uploadCompareResults.hidden = uploadState.compareResults.length === 0;
+    const axis = uploadState.compareAxis === 'method' ? 'method' : 'profile';
+    if (uploadCompareResultsTitle) {
+        uploadCompareResultsTitle.textContent = t(axis === 'method'
+            ? 'uploadCompareMethodsResultsTitle'
+            : 'uploadCompareResultsTitle');
+    }
     const fragment = document.createDocumentFragment();
 
     uploadState.compareResults.forEach(result => {
+        const resultAxis = result.axis === 'method' ? 'method' : 'profile';
+        const resultValue = result.value || (resultAxis === 'method' ? result.method : result.profile);
         const row = document.createElement('article');
         row.className = 'upload-compare-result';
-        row.dataset.uploadCompareResult = result.profile;
+        row.dataset.uploadCompareResult = resultValue;
+        row.dataset.uploadCompareAxis = resultAxis;
+        row.dataset.uploadCompareValue = resultValue;
         row.dataset.uploadVerdict = result.verdict;
 
         const header = document.createElement('div');
         header.className = 'upload-compare-result__header';
-        const profile = document.createElement('strong');
-        profile.textContent = getUploadProfileLabel(result.profile);
-        header.appendChild(profile);
+        const value = document.createElement('strong');
+        value.textContent = getBasicUploadComparisonValueLabel(result);
+        header.appendChild(value);
         const verdict = document.createElement('span');
         verdict.className = 'upload-compare-result__verdict';
         verdict.dataset.uploadCompareVerdict = '';
@@ -1465,10 +1987,13 @@ function renderBasicUploadComparison() {
     list.replaceChildren(fragment);
 }
 
-async function compareBasicUploadProfiles() {
+async function compareBasicUploads(axis) {
     const pendingFiles = getUploadPendingFiles();
+    const mimeValidation = getUploadMimeValidation();
     if (
-        !hasSupportedUploadMethod()
+        !['profile', 'method'].includes(axis)
+        || !hasSupportedUploadMethod()
+        || !mimeValidation.valid
         || pendingFiles.length !== 1
         || uploadState.actionPhase !== 'idle'
     ) {
@@ -1476,10 +2001,13 @@ async function compareBasicUploadProfiles() {
     }
 
     const fileData = pendingFiles[0];
-    const previewPlans = basicUploadProfiles.map(profile => compileBasicUploadRequest({
-        method: uploadState.method,
-        profile,
-    }, fileData.file));
+    const cases = getBasicUploadComparisonCases(axis);
+    if (cases.length === 0) {
+        return false;
+    }
+    const previewPlans = cases.map(item => (
+        compileBasicUploadRequest(item.requestState, fileData.file)
+    ));
     uploadState.actionPhase = 'checking';
     refreshUploadActionState();
     if (!await ensureBasicUploadRoute(previewPlans)) {
@@ -1488,16 +2016,17 @@ async function compareBasicUploadProfiles() {
         return false;
     }
 
+    const config = getBasicUploadComparisonConfig(axis, cases);
     uploadState.actionPhase = 'confirming';
     refreshUploadActionState();
     const confirmed = await dialogs.confirm({
-        title: t('uploadCompareConfirmTitle'),
-        message: t('uploadCompareConfirmBody'),
-        confirmLabel: t('uploadCompareConfirmAction'),
+        title: config.title,
+        message: config.message,
+        confirmLabel: config.confirmLabel,
         cancelLabel: t('smuggleCancel'),
         confirmClassName: 'btn-info',
-        triggerEl: uploadCompareBtn,
-        restoreFocusSelector: '#uploadCompareBtn',
+        triggerEl: config.triggerEl,
+        restoreFocusSelector: config.restoreFocusSelector,
         initialFocus: 'cancel',
     });
     if (!confirmed) {
@@ -1507,8 +2036,12 @@ async function compareBasicUploadProfiles() {
     }
 
     uploadState.actionPhase = 'comparing';
-    uploadState.compareResults = basicUploadProfiles.map(profile => ({
-        profile,
+    uploadState.compareAxis = axis;
+    uploadState.compareResults = cases.map(item => ({
+        axis: item.axis,
+        value: item.value,
+        method: item.method,
+        profile: item.profile,
         verdict: 'not-run',
         collisionRenamed: false,
         requestTrace: '',
@@ -1516,7 +2049,7 @@ async function compareBasicUploadProfiles() {
     }));
     renderBasicUploadComparison();
     refreshUploadActionState();
-    announceLiveRegion('uploadResponseAreaLive', t('uploadCompareRunning'));
+    announceLiveRegion('uploadResponseAreaLive', t(config.runningKey));
 
     let arrayBuffer;
     let localHash;
@@ -1535,17 +2068,14 @@ async function compareBasicUploadProfiles() {
         return uploadState.compareResults.map(result => ({ ...result }));
     }
 
-    for (let index = 0; index < basicUploadProfiles.length; index += 1) {
-        const profile = basicUploadProfiles[index];
+    for (let index = 0; index < cases.length; index += 1) {
+        const item = cases[index];
         const result = uploadState.compareResults[index];
         let plan = null;
 
         try {
             const transport = await beginBasicUploadTransport(
-                {
-                    method: uploadState.method,
-                    profile,
-                },
+                item.requestState,
                 fileData.file,
                 arrayBuffer
             );
@@ -1589,10 +2119,18 @@ async function compareBasicUploadProfiles() {
     announceLiveRegion(
         'uploadResponseAreaLive',
         uploadState.compareResults
-            .map(result => `${getUploadProfileLabel(result.profile)}: ${getCompareVerdictLabel(result.verdict)}`)
+            .map(result => `${getBasicUploadComparisonValueLabel(result)}: ${getCompareVerdictLabel(result.verdict)}`)
             .join('. ')
     );
     return uploadState.compareResults.map(result => ({ ...result }));
+}
+
+function compareBasicUploadProfiles() {
+    return compareBasicUploads('profile');
+}
+
+function compareBasicUploadMethods() {
+    return compareBasicUploads('method');
 }
 
 refreshUploadSelectionLocale();
@@ -1605,6 +2143,7 @@ app.on(app.events.LOCALE_CHANGED, () => {
     refreshUploadRequestPreview();
     renderBasicUploadComparison();
     refreshUploadActionState();
+    renderUploadStatus({ announce: false });
 });
 app.on(app.events.SERVER_METHODS_CHANGED, refreshUploadMethodAvailability);
 document.addEventListener('xferry:response-options-changed', refreshUploadRequestPreview);
@@ -1613,24 +2152,35 @@ app.registerWorkflow('upload', {
     commands: {
         send: uploadAllFiles,
         compare: compareBasicUploadProfiles,
+        'compare-methods': compareBasicUploadMethods,
         'compile-request': compileBasicUploadRequest,
         'set-method': setUploadMethod,
+        'set-target-path': setUploadTargetPath,
         'set-profile': setUploadProfile,
         'handle-files': handleFiles,
         'refresh-methods': refreshUploadMethodAvailability,
     },
     getState: () => ({
         method: uploadState.method,
+        targetPath: uploadState.targetPath,
         profile: uploadState.profile,
         fileCount: uploadState.files.length,
         pendingCount: uploadState.files.filter(file => file.status === 'pending').length,
         previewSequence: uploadState.previewSequence,
+        technicalDetailsUserToggled: uploadState.technicalDetailsUserToggled,
+        technicalDetailsAutoOpened: uploadState.technicalDetailsAutoOpened,
         actionPhase: uploadState.actionPhase,
         routingPhase: uploadState.routing.phase,
         routingBlockedReason: uploadState.routing.blockedReason,
         sendRoutingBlockedReason: uploadState.routing.sendBlockedReason,
         compareRoutingBlockedReason: uploadState.routing.compareBlockedReason,
+        compareProfilesRoutingBlockedReason: uploadState.routing.compareProfilesBlockedReason,
+        compareMethodsRoutingBlockedReason: uploadState.routing.compareMethodsBlockedReason,
+        compareAxis: uploadState.compareAxis,
         compareResults: uploadState.compareResults.map(result => ({
+            axis: result.axis,
+            value: result.value,
+            method: result.method,
             profile: result.profile,
             verdict: result.verdict,
             collisionRenamed: result.collisionRenamed,

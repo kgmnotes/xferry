@@ -275,6 +275,31 @@ def test_public_exports_keep_identity_and_do_not_eagerly_load_acme_or_josepy() -
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_dns_canonicalization_stays_independent_of_tls_runtime() -> None:
+    """DNS-only admission must not load certificate or Cryptography modules."""
+    result = _run_probe(
+        """
+        import sys
+
+        from xferry.request_admission import normalize_allowed_hosts
+
+        assert normalize_allowed_hosts(("BÜCHER.example.",)) == (
+            "xn--bcher-kva.example",
+        )
+        forbidden = [
+            name
+            for name in sys.modules
+            if name == "xferry.security.tls"
+            or name == "cryptography"
+            or name.startswith("cryptography.")
+        ]
+        assert not forbidden, f"unexpected imports: {forbidden}"
+        """
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_package_resources_are_loaded_from_xferry_data_and_management() -> None:
     """Catches resource package lookups still rooted at the removed package."""
     from xferry.handlers.base import get_package_resource
