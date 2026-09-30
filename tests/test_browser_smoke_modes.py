@@ -433,6 +433,28 @@ def test_playwright_dispatcher_owns_every_mode_and_failure_artifacts() -> None:
     assert "${smokeMode}-failure.png" in script
 
 
+def test_first_run_upload_preview_waits_for_the_default_upload_endpoint() -> None:
+    """The first-run oracle must follow the basic uploader's /upload request target."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    preview_wait = script.split('"upload request preview ready before send"', 1)[1].split(
+        "10000", 1
+    )[0]
+
+    assert '["/upload"]' in preview_wait
+    assert '["/uploads"]' not in preview_wait
+
+
+def test_first_run_upload_download_assertion_uses_the_default_upload_endpoint() -> None:
+    """The downloaded request oracle must expect the request the basic uploader sends."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    upload_helper = script.split("async function uploadViaDom", 1)[1].split(
+        "async function clearUploadsViaUiAndAssertSummaryPersistence", 1
+    )[0]
+
+    assert '"POST /upload HTTP/1.1"' in upload_helper
+    assert '"POST /uploads HTTP/1.1"' not in upload_helper
+
+
 def test_advanced_smoke_uses_per_tab_session_and_canonical_send() -> None:
     script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
 
