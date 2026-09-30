@@ -1237,6 +1237,186 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
     return findings
 
 
+def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
+    """Keep STAGE-012 draft Release publishing split across safe trust boundaries."""
+    path = Path(".github/workflows/github-release-rehearsal.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if _workflow_events(text)[0] != frozenset({"workflow_dispatch"}):
+        reject("GitHub Release rehearsal must be manual-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("GitHub Release rehearsal actions must be commit-SHA pinned")
+    permissions_found, permission_entries = _permission_entries(text, 0)
+    permissions = {scope: access for scope, access, _ in permission_entries}
+    if (
+        not permissions_found
+        or len(permission_entries) != 2
+        or permissions != {"contents": "read", "actions": "read"}
+    ):
+        reject("GitHub Release rehearsal workflow permissions must grant only read access")
+
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    expected_jobs = {"identity", "sign-assets", "publish-draft", "download-verify"}
+    if set(jobs) != expected_jobs:
+        reject("GitHub Release rehearsal requires exactly identity/sign/publish/verify jobs")
+        return findings
+
+    expected_gate = (
+        "    if: ${{ inputs.confirm_github_release_rehearsal && "
+        "github.repository == 'kgmnotes/xferry' && "
+        "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal' }}"
+    )
+    if expected_gate not in jobs["identity"].text.splitlines():
+        reject("GitHub Release identity gate must enforce exact confirmation/repository/ref")
+    protected_branch_contract = (
+        "Require protected rehearsal branch",
+        'branches/codex%2Fstage-012-draft-release-rehearsal")',
+        '.commit.sha\' <<<"${branch_json}"',
+        '.protected\' <<<"${branch_json}"',
+    )
+    if any(item not in jobs["identity"].text for item in protected_branch_contract):
+        reject("GitHub Release identity must verify the exact protected rehearsal branch")
+    if "stage-012-draft-release-rehearsal/protection" in jobs["identity"].text:
+        reject("GitHub Release rehearsal cannot call the Administration branch protection API")
+
+    exact_tag = "xferry-stage-012-rehearsal-v0.1.0-36712344792"
+    if f"RELEASE_TAG: {exact_tag}" not in text or "RELEASE_TAG: v0.1.0" in text:
+        reject("GitHub Release rehearsal must use only the fixed non-production release tag")
+
+    required = {
+        "identity": (
+            "inputs.confirm_github_release_rehearsal",
+            "github.repository == 'kgmnotes/xferry'",
+            "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal'",
+            "gh api repos/kgmnotes/xferry/commits/${RELEASE_TAG}",
+            "github_release_assets.py identity",
+            "github_release_assets.py prepare",
+            "repository: kgmnotes/xferry",
+            "run-id: 36712344792",
+            "artifact-ids: 11095067140",
+            "github-token: ${{ github.token }}",
+            "merge-multiple: true",
+            "--archive downloaded/release-candidate.tar",
+            "--candidate-dir promoted --unsigned-dir unsigned-assets",
+            "unsigned-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}",
+            "if-no-files-found: error",
+        ),
+        "sign-assets": (
+            "needs: identity",
+            "environment: production-release",
+            "artifact-ids: ${{ needs.identity.outputs.artifact-id }}",
+            "XFERRY_RELEASE_SIGNING_KEY_ID: ${{ vars.XFERRY_RELEASE_SIGNING_KEY_ID }}",
+            "XFERRY_RELEASE_PRIVATE_KEY_PEM: ${{ secrets.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM }}",
+            "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM",
+            "umask 077",
+            "trap cleanup EXIT",
+            "shred -u",
+            "printf '%s' \"${XFERRY_RELEASE_PRIVATE_KEY_PEM}\"",
+            "python tools/github_release_assets.py sign",
+            "python tools/github_release_assets.py verify --assets-dir signed-assets",
+            "cleanup\n          trap - EXIT",
+            "signed-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}",
+        ),
+        "publish-draft": (
+            "needs: sign-assets",
+            "environment: github-release-staging",
+            "artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}",
+            "gh release create",
+            "--draft --prerelease --latest=false",
+            "--verify-tag",
+            'gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}"',
+            ".tag_name",
+            ".draft",
+            ".prerelease",
+        ),
+        "download-verify": (
+            "needs: publish-draft",
+            "gh release download",
+            "python tools/github_release_assets.py verify --assets-dir downloaded",
+            "python tools/github_release_assets.py verify-tamper --assets-dir downloaded",
+        ),
+    }
+    for name, job in jobs.items():
+        if any(item not in job.text for item in required[name]):
+            reject(f"GitHub Release {name} job lost its fixed rehearsal contract")
+
+    expected_permissions = {
+        "identity": {"contents": "read", "actions": "read"},
+        "sign-assets": {"contents": "read", "actions": "read"},
+        "publish-draft": {"actions": "read", "contents": "write"},
+        "download-verify": {"contents": "read", "actions": "read"},
+    }
+    for name, job in jobs.items():
+        has_permissions, entries = _permission_entries(job.text, 4)
+        permissions = {scope: access for scope, access, _ in entries}
+        if not has_permissions or permissions != expected_permissions[name]:
+            reject(f"GitHub Release {name} job must keep its exact least-privilege permissions")
+
+    for block in text.split("uses: actions/checkout@")[1:]:
+        if "persist-credentials: false" not in block.split("\n      -", 1)[0]:
+            reject("GitHub Release checkout credentials must not persist")
+
+    publish = jobs["publish-draft"]
+    publish_actions = tuple(
+        match.group("reference").strip("\"'")
+        for match in WORKFLOW_ACTION_PATTERN.finditer(publish.text)
+    )
+    if publish_actions != ("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",):
+        reject("GitHub Release publisher may only download the signed asset artifact")
+    if "actions/checkout@" in publish.text or "python " in publish.text:
+        reject("GitHub Release publisher must not checkout or execute repository code")
+    if _publisher_channels(jobs["identity"]) or _publisher_channels(jobs["sign-assets"]):
+        reject("GitHub Release writes must be isolated to the secret-free publisher job")
+    if _publisher_channels(publish) != frozenset({"github-release"}):
+        reject("GitHub Release publisher must use exactly one GitHub Release write channel")
+    if re.search(r"^\s*RELEASE_TAG\s*=", publish.text, re.MULTILINE):
+        reject("GitHub Release publisher must not override the fixed release tag in shell")
+    if (
+        "gh release upload" in publish.text
+        or "gh release edit" in publish.text
+        or "--clobber" in publish.text
+        or re.search(r"--draft(?:=|\s+)false", publish.text)
+    ):
+        reject("GitHub Release publisher must create once and never overwrite assets")
+
+    secret_pattern = r"\$\{\{\s*secrets\.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM\s*\}\}"
+    if len(re.findall(secret_pattern, text)) != 1:
+        reject("GitHub Release signing secret must be referenced exactly once")
+    if re.search(secret_pattern, publish.text) is not None:
+        reject("GitHub Release publisher must not receive the signing secret")
+    if any(
+        re.search(secret_pattern, jobs[name].text) is not None
+        for name in ("identity", "download-verify")
+    ):
+        reject("GitHub Release signing secret must stay only in the protected signing job")
+    approved_secret_line = (
+        "          XFERRY_RELEASE_PRIVATE_KEY_PEM: "
+        "${{ secrets.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM }}"
+    )
+    if approved_secret_line not in jobs["sign-assets"].text:
+        reject("GitHub Release signing secret must only enter the protected signer env")
+
+    if "latest/download" in text:
+        reject("GitHub Release rehearsal must use immutable versioned URLs, not latest")
+    if re.search(
+        r"(?:python(?:3)?\s+-m\s+build|pip\s+wheel|docker\s+(?:build|buildx\s+build)|"
+        r"tools/build_scie_release\.py)",
+        text,
+        re.IGNORECASE,
+    ):
+        reject("GitHub Release rehearsal must not rebuild candidate artifacts")
+    return findings
+
+
 def ghcr_workflow_policy_findings(text: str) -> list[Finding]:
     """Keep the fixed GHCR rehearsal separate from production release policy."""
     path = Path(".github/workflows/ghcr.yml")
@@ -1417,6 +1597,16 @@ def find_release_policy_issues(
     if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
         findings.extend(
             testpypi_workflow_policy_findings(read_contract_text(repo_root / staging) or "")
+        )
+    github_release = Path(".github/workflows/github-release-rehearsal.yml")
+    if (
+        targets_cover_path(github_release, repo_root, targets)
+        and (repo_root / github_release).is_file()
+    ):
+        findings.extend(
+            github_release_rehearsal_policy_findings(
+                read_contract_text(repo_root / github_release) or ""
+            )
         )
     ghcr = Path(".github/workflows/ghcr.yml")
     if targets_cover_path(ghcr, repo_root, targets) and (repo_root / ghcr).is_file():
