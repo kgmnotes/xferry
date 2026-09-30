@@ -381,6 +381,44 @@ def test_external_target_does_not_import_or_start_a_server(
     assert recorded == result
 
 
+def test_browser_smoke_opens_with_the_installed_chromium_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    opened_config: dict[str, object] = {}
+
+    def fake_run_playwright(
+        base_cmd: list[str],
+        session: str,
+        *args: str,
+        cwd: Path,
+    ) -> str:
+        del base_cmd, session, cwd
+        if "open" in args:
+            config_path = Path(args[args.index("--config") + 1])
+            opened_config.update(json.loads(config_path.read_text(encoding="utf-8")))
+        if "run-code" in args:
+            return json.dumps({"journey": "first-run"})
+        return ""
+
+    monkeypatch.setattr(browser_smoke, "_playwright_command", lambda: ["fake-playwright"])
+    monkeypatch.setattr(browser_smoke, "_run_playwright", fake_run_playwright)
+
+    browser_smoke.run_browser_smoke(
+        mode="first-run",
+        target_url="http://127.0.0.1:9876/",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+
+    browser = opened_config["browser"]
+    assert isinstance(browser, dict)
+    assert browser["browserName"] == "chromium"
+    launch_options = browser["launchOptions"]
+    assert isinstance(launch_options, dict)
+    assert launch_options["channel"] == "chromium"
+    assert launch_options["headless"] is True
+
+
 def test_external_target_failure_is_labeled_and_persisted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

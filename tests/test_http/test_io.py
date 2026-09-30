@@ -312,25 +312,22 @@ class TestReceiveRequest:
         assert budget.snapshot()["current_bytes"] == 0
         assert budget.snapshot()["peak_bytes"] == 10
 
-    def test_body_idle_timeout_rejects_stalled_body(
-        self,
-        socket_pair: tuple[socket.socket, socket.socket],
-    ) -> None:
-        server, client = socket_pair
-        client.sendall(b"POST /slow HTTP/1.1\r\nContent-Length: 10\r\n\r\nx")
+    def test_body_idle_timeout_rejects_stalled_body(self) -> None:
+        sock = ScriptedSocket(
+            [b"POST /slow HTTP/1.1\r\nContent-Length: 10\r\n\r\nx", TimeoutError()]
+        )
         reasons: list[str] = []
 
-        start = time.monotonic()
         result = receive_request(
-            server,
+            sock,
             max_upload_size=1024,
             body_idle_timeout=0.05,
             on_reject=reasons.append,
         )
-        elapsed = time.monotonic() - start
 
         assert result == b""
-        assert elapsed < 1.0
+        assert sock.recv_calls == 2
+        assert sock.timeouts[-1] == 0.05
         assert reasons == ["body_idle_timeout"]
 
     def test_body_total_timeout_rejects_when_idle_timeout_disabled(
