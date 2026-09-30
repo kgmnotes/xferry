@@ -629,6 +629,25 @@ def verify_inventory(
     return digest
 
 
+def normalize_oci_export(root: Path) -> None:
+    """Remove BuildKit's empty local-content-store ingest directory, if present."""
+    root = Path(root)
+    oci = root / "oci"
+    if root.is_symlink() or not root.is_dir() or oci.is_symlink() or not oci.is_dir():
+        raise ValueError("OCI candidate root and OCI directory must be real directories")
+    ingest = oci / "ingest"
+    if ingest.is_symlink():
+        raise ValueError("OCI ingest path must be an empty directory")
+    if not ingest.exists():
+        return
+    if not ingest.is_dir():
+        raise ValueError("OCI ingest path must be an empty directory")
+    try:
+        ingest.rmdir()
+    except OSError as error:
+        raise ValueError("OCI ingest path must be an empty directory") from error
+
+
 def pack_candidate(root: Path, archive: Path) -> str:
     """Write a new deterministic tar archive preserving regular permission bits."""
     root, archive = Path(root), Path(archive)
@@ -725,9 +744,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     unpack.add_argument("--archive", type=Path, required=True)
     unpack.add_argument("--expected-sha256", required=True)
     unpack.add_argument("--candidate-dir", dest="root", type=Path, required=True)
+    normalize = subparsers.add_parser("normalize-oci")
+    normalize.add_argument("--candidate-dir", dest="root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "pack":
+        if args.command == "normalize-oci":
+            normalize_oci_export(args.root)
+        elif args.command == "pack":
             print(pack_candidate(args.root, args.archive))
         elif args.command == "unpack":
             unpack_candidate(args.archive, args.expected_sha256, args.root)
