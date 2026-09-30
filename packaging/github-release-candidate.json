@@ -1,0 +1,15 @@
+{
+  "repository": "kgmnotes/xferry",
+  "repository_id": 1341230685,
+  "version": "0.1.0",
+  "tag": "v0.1.0",
+  "release_tag": "xferry-stage-012-rehearsal-v0.1.0-36712344792",
+  "source_commit": "40ac9bc031aa28b9adc2765857a8926f522e4005",
+  "workflow_run": 36712344792,
+  "artifact_id": 11095067140,
+  "artifact_name": "release-candidate-36712344792-1",
+  "artifact_sha256": "97cad6b7fc6ca848de441930162d842f05d004659f14a5fd40e2b89995c7e878",
+  "artifact_size": 254412956,
+  "archive_sha256": "c3746592f16699fafe062e5bf245853f5058a8bdff70193ddf1c112e84ac8517",
+  "inventory_sha256": "b6e86089660bff44daf856c2dc18ac4a310b79c40dde949f3aa9817894a99189"
+}

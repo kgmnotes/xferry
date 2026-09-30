@@ -1,0 +1,194 @@
+name: GitHub Release Asset Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_github_release_rehearsal:
+        description: Create a draft prerelease from the immutable STAGE-009 xferry 0.1.0 candidate
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: github-release-rehearsal-xferry-0.1.0
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: xferry-stage-012-rehearsal-v0.1.0-36712344792
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+
+jobs:
+  identity:
+    if: ${{ inputs.confirm_github_release_rehearsal && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.unsigned-assets.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install release verifier dependency
+        run: python -m pip install --upgrade pip cryptography==50.0.0
+      - name: Require protected rehearsal branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-012-draft-release-rehearsal")"
+          test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
+          test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
+          tag_sha="$(gh api repos/kgmnotes/xferry/commits/${RELEASE_TAG} --jq '.sha')"
+          test "${tag_sha}" = "${GITHUB_SHA}"
+      - name: Verify fixed producer identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/kgmnotes/xferry/actions/artifacts/11095067140 > artifact.json
+          gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
+          python tools/github_release_assets.py identity --artifact-metadata artifact.json --run-metadata run.json
+      - name: Download immutable STAGE-009 candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          repository: kgmnotes/xferry
+          run-id: 36712344792
+          artifact-ids: 11095067140
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: downloaded
+      - name: Authenticate candidate and prepare unsigned Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python tools/github_release_assets.py prepare --artifact-metadata artifact.json --run-metadata run.json \
+            --archive downloaded/release-candidate.tar --candidate-dir promoted --unsigned-dir unsigned-assets
+      - name: Preserve unsigned assets for protected signing
+        id: unsigned-assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: unsigned-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: unsigned-assets/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-assets:
+    needs: identity
+    runs-on: ubuntu-latest
+    environment: production-release
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.signed-assets.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install release signer dependency
+        run: python -m pip install --upgrade pip cryptography==50.0.0
+      - name: Download unsigned assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.identity.outputs.artifact-id }}
+          merge-multiple: true
+          path: unsigned-assets
+      - name: Sign manifests and installers inside the protected environment
+        env:
+          XFERRY_RELEASE_SIGNING_KEY_ID: ${{ vars.XFERRY_RELEASE_SIGNING_KEY_ID }}
+          XFERRY_RELEASE_PRIVATE_KEY_PEM: ${{ secrets.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          key_file="${RUNNER_TEMP}/xferry-release-ed25519.pem"
+          cleanup() {
+            if [ -f "${key_file}" ]; then
+              shred -u "${key_file}" 2>/dev/null || rm -f "${key_file}"
+            fi
+          }
+          trap cleanup EXIT
+          umask 077
+          printf '%s' "${XFERRY_RELEASE_PRIVATE_KEY_PEM}" > "${key_file}"
+          python tools/github_release_assets.py sign --unsigned-dir unsigned-assets --signed-dir signed-assets \
+            --key-id "${XFERRY_RELEASE_SIGNING_KEY_ID}" --private-key "${key_file}"
+          python tools/github_release_assets.py verify --assets-dir signed-assets
+          cleanup
+          trap - EXIT
+      - name: Preserve signed assets for secret-free publishing
+        id: signed-assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: signed-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signed-assets/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-draft:
+    needs: sign-assets
+    runs-on: ubuntu-latest
+    environment: github-release-staging
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      release-tag: ${{ env.RELEASE_TAG }}
+    steps:
+      - name: Download signed assets only
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}
+          merge-multiple: true
+          path: signed-assets
+      - name: Create draft rehearsal Release without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd signed-assets
+          gh release create "${RELEASE_TAG}" ./* --repo kgmnotes/xferry --draft --prerelease --latest=false --verify-tag \
+            --title "STAGE-012 GitHub Release asset rehearsal" \
+            --notes "Draft prerelease rehearsal for the immutable STAGE-009 xferry 0.1.0 candidate."
+          release_json="$(gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}")"
+          test "$(jq -r '.tag_name' <<<"${release_json}")" = "${RELEASE_TAG}"
+          test "$(jq -r '.draft' <<<"${release_json}")" = "true"
+          test "$(jq -r '.prerelease' <<<"${release_json}")" = "true"
+
+  download-verify:
+    needs: publish-draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install release verifier dependency
+        run: python -m pip install --upgrade pip cryptography==50.0.0
+      - name: Download draft assets through authenticated GitHub Release API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded
+          gh release download "${RELEASE_TAG}" --repo kgmnotes/xferry --dir downloaded --pattern '*'
+      - name: Verify downloaded signed assets and tamper rejection
+        run: |
+          set -euo pipefail
+          python tools/github_release_assets.py verify --assets-dir downloaded
+          python tools/github_release_assets.py verify-tamper --assets-dir downloaded
