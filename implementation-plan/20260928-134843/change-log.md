@@ -82,3 +82,12 @@
 - Remaining evidence: successful complete hosted candidate run and exact downloaded-artifact digest verification after wrapper commit/push. Unchanged HEAD reproduces the existing public shipping-tree policy failure; its gate was preserved.
 - Boundary: no commit/push, production publication/tag activation, production Environment, or private-key access; later publishers remain staging/draft/rehearsal until STAGE-015.
 - Report: `stage-reports/STAGE-009-20260930-121326.md`
+
+## 2026-09-30 15:22:00 +0300 — STAGE-009 hosted closure
+- Status: CLOSED
+- Hosted evidence: run `36712344792`, public-tree SHA `40ac9bc031aa28b9adc2765857a8926f522e4005`; every quality/security/docs, Python candidate, nine portable, two native SCIE, multiarch OCI, two native image, collector, and final download job passed.
+- Remediation: BuildKit's optional empty `oci/ingest` staging state is removed before packing; malformed/non-empty/link shapes and symlinked parents fail closed. Independent review exposed the parent-symlink deletion boundary, fixed test-first.
+- Verification: 180 focused and all 3,485 repository tests, strict mypy, Ruff lint/format, compile, actionlint, collection/toolchain policies, public-tree preflight/surface checks, and final hosted run passed.
+- Downloaded evidence: artifact `11095067140`; API/ZIP SHA256 `97cad6b7fc6ca848de441930162d842f05d004659f14a5fd40e2b89995c7e878`; archive SHA256 `c3746592f16699fafe062e5bf245853f5058a8bdff70193ddf1c112e84ac8517`; inventory SHA256 `b6e86089660bff44daf856c2dc18ac4a310b79c40dde949f3aa9817894a99189`; exact `v0.1.0`/source/run identity reverified locally.
+- Boundary: no PyPI, GHCR, or GitHub Release publication/write and no production Environment, signing-secret, or private-key access. The feature PR's unchanged internal-plan public-surface failure remains separate from the passing public rehearsal tree.
+- Report: `stage-reports/STAGE-009-20260930-152200.md`

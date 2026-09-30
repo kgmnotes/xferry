@@ -1,7 +1,7 @@
 # STAGE-009 - Create build-once candidate promotion pipeline
 
 ## Status
-PARTIALLY_CLOSED
+CLOSED
 
 ## Priority
 HIGH
@@ -53,7 +53,7 @@ Turn release verification into a non-publishing candidate pipeline that checks r
 - [x] Preflight rejects malformed/mismatched tag, version, changelog, manifest, or filename data.
 - [x] Candidate jobs run only after normal CI/security/docs gates pass.
 - [x] One digest inventory covers every promoted file and OCI manifest/platform image.
-- [ ] Downloaded workflow artifacts match producer digests byte-for-byte.
+- [x] Downloaded workflow artifacts match producer digests byte-for-byte.
 - [x] No downstream/publisher job rebuilds candidates.
 - [x] Workflow/actions are commit-SHA pinned, checkout credentials are not persisted, and default permissions remain read-only.
 - [x] No external package, registry, or Release write occurs in this stage.
@@ -79,7 +79,8 @@ Turn release verification into a non-publishing candidate pipeline that checks r
 ## Completion notes
 - Implemented strict source/changelog preflight; reusable source/security/docs gates; once-built wheel/sdist; exact-wheel native SCIE builders and image Dockerfile; OCI SBOM/provenance export; safe producer archive transfer by immutable artifact ID and SHA256; complete canonical file/platform digest inventory and downstream revalidation.
 - Local verification covers adversarial release/archive/OCI metadata fixtures, 458 focused and 3,476 full repository tests, real wheel/sdist offline installs, exact-wheel native x86_64 SCIE and all five Linux base probes, native OCI export/load/hardened lifecycle, and byte/mode equality for 26 real native candidate files. See the report for final command counts and independent review.
-- Still required: a successful manual candidate run after the wrapper commits/pushes the changes, including both native SCIE/image jobs, all portable consumers, producer artifact IDs/digests and final hosted download-and-verify gate. No new hosted run or GitHub artifact download is claimed.
-- The existing public-tree CI guard remains failing on unchanged tracked internal plan/analysis files and ADR text; unchanged HEAD fixtures reproduce it. The required source gate remains fail-closed. Public shipping-tree preparation is a separate prerequisite before a complete green hosted candidate run.
-- No commit/push, production tag activation, registry/package/Release publication, production Environment access, or private-key access occurred. STAGE-010/011/012 remain staging/draft/rehearsal only; STAGE-015 retains every protected approval, identity, namespace and immutable-version gate.
-- Result: PARTIALLY_CLOSED. Report: `stage-reports/STAGE-009-20260930-121326.md`.
+- Hosted failure remediation normalizes only BuildKit's empty `oci/ingest` staging directory and rejects files, non-empty/nested directories, direct links, and symlinked candidate/OCI parents before deletion. The final remediation passed 180 focused and all 3,485 repository tests plus strict mypy, repository Ruff, actionlint, compile, collection, and toolchain guards.
+- Manual run `36712344792` on public-tree SHA `40ac9bc031aa28b9adc2765857a8926f522e4005` passed source/security/docs gates, all five Python quality jobs, both native SCIE jobs, all nine Ubuntu/macOS/Windows portable consumers, one multiarch OCI producer, both native OCI consumers, the collector, and the final download verifier.
+- Final artifact `11095067140` was downloaded independently through the Artifact API. Its 254,412,956-byte ZIP matched API SHA256 `97cad6b7fc6ca848de441930162d842f05d004659f14a5fd40e2b89995c7e878`; inner archive SHA256 `c3746592f16699fafe062e5bf245853f5058a8bdff70193ddf1c112e84ac8517` and inventory SHA256 `b6e86089660bff44daf856c2dc18ac4a310b79c40dde949f3aa9817894a99189` verified exact tag, source SHA, run ID, bytes, modes, and OCI platform graph.
+- The feature PR still intentionally trips the unchanged public-surface policy on tracked internal plan/analysis inputs. The public rehearsal tree excludes those inputs and passed the same guard; no guard was weakened. No package-index, registry, or GitHub Release publication/write occurred, and no production Environment or private key was accessed.
+- Result: CLOSED. Report: `stage-reports/STAGE-009-20260930-152200.md`.
