@@ -1141,16 +1141,26 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
-    for job_name, command in (("identity", "identity"), ("publish", "prepare")):
+    protected_branch_contract = (
+        "Require protected rehearsal branch",
+        'branches/codex%2Fstage-010-testpypi-rehearsal")',
+        '.commit.sha\' <<<"${branch_json}"',
+        '.protected\' <<<"${branch_json}"',
+    )
+    if any(item not in jobs["identity"].text for item in protected_branch_contract):
+        reject("TestPyPI identity must verify the exact protected rehearsal branch")
+    if "stage-010-testpypi-rehearsal/protection" in jobs["identity"].text:
+        reject("TestPyPI cannot call the Administration-only branch protection endpoint")
+    for command in ("identity", "prepare"):
         if (
             re.search(
                 rf"^          python tools/testpypi_publish\.py {command} ",
-                jobs[job_name].text,
+                jobs["identity"].text,
                 re.MULTILINE,
             )
             is None
         ):
-            reject(f"TestPyPI {job_name} must execute its identity verifier")
+            reject(f"TestPyPI identity must execute its {command} verifier")
     if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
         jobs["publish"]
     ) != frozenset({"pypi"}):
@@ -1162,11 +1172,8 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             "inputs.confirm_testpypi",
             "github.repository == 'kgmnotes/xferry'",
             "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal'",
+            "artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}",
             "testpypi_publish.py identity",
-        ),
-        "publish": (
-            "needs: identity",
-            "environment: testpypi",
             "repository: kgmnotes/xferry",
             "run-id: 36712344792",
             "artifact-ids: 11095067140",
@@ -1175,6 +1182,16 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             "testpypi_publish.py prepare",
             "--archive downloaded/release-candidate.tar",
             "--candidate-dir promoted --packages-dir dist",
+            "id: staged-distributions",
+            "authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}",
+            "if-no-files-found: error",
+        ),
+        "publish": (
+            "needs: identity",
+            "environment: testpypi",
+            "artifact-ids: ${{ needs.identity.outputs.artifact-id }}",
+            "merge-multiple: true",
+            "path: dist",
             "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
             "repository-url: https://test.pypi.org/legacy/",
             "packages-dir: dist/",
@@ -1192,11 +1209,20 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         if any(item not in job.text for item in required[name]):
             reject(f"TestPyPI {name} job lost its fixed staging contract")
         permissions = {scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]}
-        expected = {"contents": "read", "actions": "read", "id-token": "write"}
+        expected = {"actions": "read", "id-token": "write"}
         if name == "publish" and permissions != expected:
             reject("Only TestPyPI publish may grant job-scoped OIDC and read scopes")
         if name != "publish" and any(access != "read" for access in permissions.values()):
             reject("TestPyPI verification jobs must remain read-only")
+    publish_actions = tuple(
+        match.group("reference").strip("\"'")
+        for match in WORKFLOW_ACTION_PATTERN.finditer(jobs["publish"].text)
+    )
+    if publish_actions != (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+    ) or re.search(r"^\s+run\s*:", jobs["publish"].text, re.MULTILINE):
+        reject("TestPyPI OIDC publish must execute only the two approved pinned actions")
     for block in text.split("uses: actions/checkout@")[1:]:
         if "persist-credentials: false" not in block.split("\n      -", 1)[0]:
             reject("TestPyPI checkout credentials must not persist")

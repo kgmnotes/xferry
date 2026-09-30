@@ -231,6 +231,68 @@ def test_staging_policy_requires_explicit_top_level_permissions():
     assert any("permissions" in finding.message.lower() for finding in findings)
 
 
+@pytest.mark.parametrize(
+    "unsafe_step",
+    [
+        (
+            "      - uses: actions/checkout@"
+            "3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+            "        with:\n"
+            "          persist-credentials: false\n"
+        ),
+        "      - uses: ./.github/actions/prepare-testpypi\n",
+        (
+            "      - name: Execute repository code\n"
+            "        run: python tools/testpypi_publish.py prepare\n"
+        ),
+    ],
+)
+def test_staging_policy_rejects_repository_execution_in_oidc_job(unsafe_step):
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+    anchor = "      - name: Trusted Publishing to TestPyPI only\n"
+    assert anchor in workflow
+
+    findings = staging_policy_findings(workflow.replace(anchor, unsafe_step + anchor, 1))
+
+    assert any("oidc" in finding.message.lower() for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("Require protected rehearsal branch", "Trust mutable rehearsal branch"),
+        ('branches/codex%2Fstage-010-testpypi-rehearsal")', 'branches/main")'),
+        ('.commit.sha\' <<<"${branch_json}"', '.name\' <<<"${branch_json}"'),
+        (
+            '.protected\' <<<"${branch_json}"',
+            '.name\' <<<"${branch_json}"',
+        ),
+    ],
+)
+def test_staging_policy_requires_protected_branch_preflight(before, after):
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+    assert before in workflow
+    assert staging_policy_findings(workflow) == []
+
+    findings = staging_policy_findings(workflow.replace(before, after, 1))
+
+    assert any("protected" in finding.message.lower() for finding in findings)
+
+
+def test_staging_policy_rejects_administration_only_branch_endpoint():
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+    anchor = 'branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
+    assert anchor in workflow
+    injection = (
+        'protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
+        'codex%2Fstage-010-testpypi-rehearsal/protection")"\n          '
+    )
+
+    findings = staging_policy_findings(workflow.replace(anchor, injection + anchor, 1))
+
+    assert any("administration" in finding.message.lower() for finding in findings)
+
+
 def test_staging_policy_checks_every_publish_destination():
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
     injection = (

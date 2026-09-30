@@ -21,6 +21,8 @@ jobs:
   identity:
     if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
@@ -28,6 +30,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Require protected rehearsal branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-010-testpypi-rehearsal")"
+          test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
+          test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
       - name: Verify fixed producer identity
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,22 +46,6 @@ jobs:
           gh api repos/kgmnotes/xferry/actions/artifacts/11095067140 > artifact.json
           gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
           python tools/testpypi_publish.py identity --artifact-metadata artifact.json --run-metadata run.json
-
-  publish:
-    needs: identity
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
-        with:
-          python-version: "3.12"
       - name: Download immutable STAGE-009 candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
         with:
@@ -66,10 +60,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/kgmnotes/xferry/actions/artifacts/11095067140 > artifact.json
-          gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
           python tools/testpypi_publish.py prepare --artifact-metadata artifact.json --run-metadata run.json \
             --archive downloaded/release-candidate.tar --candidate-dir promoted --packages-dir dist
+      - name: Preserve authenticated distributions for the OIDC job
+        id: staged-distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: identity
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Download authenticated candidate distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.identity.outputs.artifact-id }}
+          merge-multiple: true
+          path: dist
       - name: Trusted Publishing to TestPyPI only
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
