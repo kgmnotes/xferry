@@ -27,7 +27,7 @@ TAG = "v0.1.0"
 VERSION = "0.1.0"
 COMMIT = "40ac9bc031aa28b9adc2765857a8926f522e4005"
 RUN = "36712344792"
-REHEARSAL_TAG = "xferry-stage-012-rehearsal-v0.1.0-36712344792"
+REHEARSAL_TAG = "xferry-stage-012-rehearsal-v0.1.0-36712344792-v2"
 OCI_INDEX = "application/vnd.oci.image.index.v1+json"
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
@@ -485,7 +485,7 @@ def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
         ("environment: github-release-staging", "environment: production-release"),
         ("contents: write", "contents: read"),
         ("contents: read\n  actions: read", "contents: write\n  actions: read"),
-        ("xferry-stage-012-rehearsal-v0.1.0-36712344792", "v0.1.0"),
+        ("xferry-stage-012-rehearsal-v0.1.0-36712344792-v2", "v0.1.0"),
         ("--draft --prerelease --latest=false", "--prerelease"),
         ("gh release create", "gh release upload"),
         ("gh release create", "gh release edit"),
@@ -497,14 +497,26 @@ def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
             "python tools/github_release_assets.py sign --unsigned-dir unsigned-assets",
         ),
         (
-            'gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}"',
+            (
+                'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+                "--json tagName,isDraft,isPrerelease"
+            ),
             "true",
+        ),
+        ('gh release download "${RELEASE_TAG}"', "true"),
+        (
+            "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}",
+            "artifact-id: missing",
+        ),
+        (
+            "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}",
+            "artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}",
         ),
         (
             "python tools/github_release_assets.py verify-tamper",
             "python tools/github_release_assets.py verify",
         ),
-        ("refs/heads/codex/stage-012-draft-release-rehearsal", "refs/heads/main"),
+        ("refs/heads/codex/stage-012-draft-release-rehearsal-v2", "refs/heads/main"),
         ("run-id: 36712344792", "run-id: 1"),
         ("artifact-ids: 11095067140", "artifact-ids: 1"),
         ("persist-credentials: false", "persist-credentials: true"),
@@ -526,6 +538,36 @@ def test_github_release_rehearsal_policy_is_included_in_repository_guard() -> No
     from tools.check_stale_docs import find_release_policy_issues
 
     assert find_release_policy_issues(REPO_ROOT) == []
+
+
+def test_github_release_draft_postcondition_uses_draft_aware_lookup() -> None:
+    """A created draft must not be queried through the published-release tag endpoint."""
+    workflow = (REPO_ROOT / ".github/workflows/github-release-rehearsal.yml").read_text()
+    publish = workflow.split("\n  publish-draft:", 1)[1].split("\n  download-verify:", 1)[0]
+
+    assert (
+        'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+        "--json tagName,isDraft,isPrerelease"
+    ) in publish
+    assert "releases/tags/" not in publish
+    assert "jq -r '.tagName'" in publish
+    assert "jq -r '.isDraft'" in publish
+    assert "jq -r '.isPrerelease'" in publish
+
+
+def test_draft_assets_cross_the_write_boundary_only_as_an_actions_artifact() -> None:
+    """The read-only verifier must not need push access to discover a draft Release."""
+    workflow = (REPO_ROOT / ".github/workflows/github-release-rehearsal.yml").read_text()
+    publish = workflow.split("\n  publish-draft:", 1)[1].split("\n  download-verify:", 1)[0]
+    verify = workflow.split("\n  download-verify:", 1)[1]
+
+    assert 'gh release download "${RELEASE_TAG}"' in publish
+    assert "id: downloaded-assets" in publish
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in publish
+    assert "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}" in publish
+    assert "gh release download" not in verify
+    assert "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}" in verify
+    assert "path: downloaded" in verify
 
 
 def test_github_release_rehearsal_policy_rejects_secret_in_publisher_job() -> None:

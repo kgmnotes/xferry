@@ -1273,22 +1273,22 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
     expected_gate = (
         "    if: ${{ inputs.confirm_github_release_rehearsal && "
         "github.repository == 'kgmnotes/xferry' && "
-        "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal' }}"
+        "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal-v2' }}"
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("GitHub Release identity gate must enforce exact confirmation/repository/ref")
     protected_branch_contract = (
         "Require protected rehearsal branch",
-        'branches/codex%2Fstage-012-draft-release-rehearsal")',
+        'branches/codex%2Fstage-012-draft-release-rehearsal-v2")',
         '.commit.sha\' <<<"${branch_json}"',
         '.protected\' <<<"${branch_json}"',
     )
     if any(item not in jobs["identity"].text for item in protected_branch_contract):
         reject("GitHub Release identity must verify the exact protected rehearsal branch")
-    if "stage-012-draft-release-rehearsal/protection" in jobs["identity"].text:
+    if "stage-012-draft-release-rehearsal-v2/protection" in jobs["identity"].text:
         reject("GitHub Release rehearsal cannot call the Administration branch protection API")
 
-    exact_tag = "xferry-stage-012-rehearsal-v0.1.0-36712344792"
+    exact_tag = "xferry-stage-012-rehearsal-v0.1.0-36712344792-v2"
     if f"RELEASE_TAG: {exact_tag}" not in text or "RELEASE_TAG: v0.1.0" in text:
         reject("GitHub Release rehearsal must use only the fixed non-production release tag")
 
@@ -1296,7 +1296,7 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         "identity": (
             "inputs.confirm_github_release_rehearsal",
             "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal'",
+            "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal-v2'",
             "gh api repos/kgmnotes/xferry/commits/${RELEASE_TAG}",
             "github_release_assets.py identity",
             "github_release_assets.py prepare",
@@ -1330,17 +1330,27 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
             "needs: sign-assets",
             "environment: github-release-staging",
             "artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}",
+            "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}",
             "gh release create",
             "--draft --prerelease --latest=false",
             "--verify-tag",
-            'gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}"',
-            ".tag_name",
-            ".draft",
-            ".prerelease",
+            (
+                'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+                "--json tagName,isDraft,isPrerelease"
+            ),
+            ".tagName",
+            ".isDraft",
+            ".isPrerelease",
+            'gh release download "${RELEASE_TAG}"',
+            "downloaded-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path: downloaded/",
+            "if-no-files-found: error",
         ),
         "download-verify": (
             "needs: publish-draft",
-            "gh release download",
+            "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}",
+            "merge-multiple: true",
+            "path: downloaded",
             "python tools/github_release_assets.py verify --assets-dir downloaded",
             "python tools/github_release_assets.py verify-tamper --assets-dir downloaded",
         ),
@@ -1370,8 +1380,11 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         match.group("reference").strip("\"'")
         for match in WORKFLOW_ACTION_PATTERN.finditer(publish.text)
     )
-    if publish_actions != ("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",):
-        reject("GitHub Release publisher may only download the signed asset artifact")
+    if publish_actions != (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ):
+        reject("GitHub Release publisher may only transfer signed and Release-downloaded assets")
     if "actions/checkout@" in publish.text or "python " in publish.text:
         reject("GitHub Release publisher must not checkout or execute repository code")
     if _publisher_channels(jobs["identity"]) or _publisher_channels(jobs["sign-assets"]):
