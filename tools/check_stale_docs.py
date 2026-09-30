@@ -1103,17 +1103,132 @@ def release_workflow_policy_findings(
     return findings
 
 
+def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
+    """Keep the fixed staging rehearsal separate from production release policy."""
+    path = Path(".github/workflows/testpypi.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    # A commented safety check provides no execution boundary. Ignore comments
+    # before examining both YAML fields and commands inside run blocks.
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if _workflow_events(text)[0] != frozenset({"workflow_dispatch"}):
+        reject("TestPyPI rehearsal must be manual-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("TestPyPI actions must be commit-SHA pinned")
+    permissions_found, permission_entries = _permission_entries(text, 0)
+    permissions = {scope: access for scope, access, _ in permission_entries}
+    if (
+        not permissions_found
+        or len(permission_entries) != 2
+        or permissions != {"contents": "read", "actions": "read"}
+    ):
+        reject("TestPyPI workflow permissions must explicitly grant only read access")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    if set(jobs) != {"identity", "publish", "pipx-smoke"}:
+        reject("TestPyPI rehearsal requires exactly identity, publish and pipx-smoke jobs")
+        return findings
+    expected_gate = (
+        "    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' "
+        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}"
+    )
+    if expected_gate not in jobs["identity"].text.splitlines():
+        reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
+    for job_name, command in (("identity", "identity"), ("publish", "prepare")):
+        if (
+            re.search(
+                rf"^          python tools/testpypi_publish\.py {command} ",
+                jobs[job_name].text,
+                re.MULTILINE,
+            )
+            is None
+        ):
+            reject(f"TestPyPI {job_name} must execute its identity verifier")
+    if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
+        jobs["publish"]
+    ) != frozenset({"pypi"}):
+        reject("TestPyPI requires exactly one official publisher and no other write channel")
+    if re.search(r"(?:twine\s+upload|(?:uv|hatch)\s+publish)", text):
+        reject("TestPyPI uploads must use only the official publisher step")
+    required = {
+        "identity": (
+            "inputs.confirm_testpypi",
+            "github.repository == 'kgmnotes/xferry'",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal'",
+            "testpypi_publish.py identity",
+        ),
+        "publish": (
+            "needs: identity",
+            "environment: testpypi",
+            "repository: kgmnotes/xferry",
+            "run-id: 36712344792",
+            "artifact-ids: 11095067140",
+            "github-token: ${{ github.token }}",
+            "merge-multiple: true",
+            "testpypi_publish.py prepare",
+            "--archive downloaded/release-candidate.tar",
+            "--candidate-dir promoted --packages-dir dist",
+            "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+            "repository-url: https://test.pypi.org/legacy/",
+            "packages-dir: dist/",
+            "verify-metadata: true",
+            "skip-existing: false",
+            "attestations: true",
+        ),
+        "pipx-smoke": (
+            "needs: publish",
+            "os: [ubuntu-latest, macos-15, windows-latest]",
+            "testpypi_publish.py smoke",
+        ),
+    }
+    for name, job in jobs.items():
+        if any(item not in job.text for item in required[name]):
+            reject(f"TestPyPI {name} job lost its fixed staging contract")
+        permissions = {scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]}
+        expected = {"contents": "read", "actions": "read", "id-token": "write"}
+        if name == "publish" and permissions != expected:
+            reject("Only TestPyPI publish may grant job-scoped OIDC and read scopes")
+        if name != "publish" and any(access != "read" for access in permissions.values()):
+            reject("TestPyPI verification jobs must remain read-only")
+    for block in text.split("uses: actions/checkout@")[1:]:
+        if "persist-credentials: false" not in block.split("\n      -", 1)[0]:
+            reject("TestPyPI checkout credentials must not persist")
+    if PUBLISH_JOB_REBUILD_PATTERN.search(jobs["publish"].text):
+        reject("TestPyPI publisher must not rebuild candidates")
+    if PYPI_STATIC_CREDENTIAL_PATTERN.search(text) or "${{ secrets." in text:
+        reject("TestPyPI must not consume static credentials or signing secrets")
+    if any(value in text for value in ("upload.pypi.org", "production", "--extra-index-url")):
+        reject("TestPyPI cannot target production or mix package indexes")
+    if any(_publisher_channels(job) for name, job in jobs.items() if name != "publish"):
+        reject("TestPyPI writes must be isolated to the publish job")
+    return findings
+
+
 def find_release_policy_issues(
     repo_root: Path = REPO_ROOT,
     targets: Sequence[str] = DEFAULT_TARGETS,
 ) -> list[Finding]:
+    findings: list[Finding] = []
     path = Path(".github/workflows/release.yml")
-    if not targets_cover_path(path, repo_root, targets):
-        return []
-    text = read_contract_text(repo_root / path)
-    if text is None:
-        return [contract_finding(path, "release workflow policy file is missing")]
-    return release_workflow_policy_findings(text, path)
+    if targets_cover_path(path, repo_root, targets):
+        text = read_contract_text(repo_root / path)
+        if text is None:
+            findings.append(contract_finding(path, "release workflow policy file is missing"))
+        else:
+            findings.extend(release_workflow_policy_findings(text, path))
+    staging = Path(".github/workflows/testpypi.yml")
+    if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
+        findings.extend(
+            testpypi_workflow_policy_findings(read_contract_text(repo_root / staging) or "")
+        )
+    return findings
 
 
 def is_superseded_adr(path: Path, text: str) -> bool:

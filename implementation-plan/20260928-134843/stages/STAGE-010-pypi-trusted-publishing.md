@@ -1,7 +1,7 @@
 # STAGE-010 - Add PyPI Trusted Publishing path
 
 ## Status
-OPEN
+PARTIALLY_CLOSED
 
 ## Priority
 HIGH
@@ -42,26 +42,26 @@ Implement an initially non-production-activated PyPI publisher that uses Trusted
 - Blocks: STAGE-014, STAGE-015
 
 ## Implementation steps
-1. Reserve/configure the TestPyPI and PyPI project/publisher identities using the agreed namespace and exact GitHub repository/workflow/environment mapping.
+1. Document the exact publisher identity and obtain owner configuration/confirmation for TestPyPI only. Production PyPI configuration/publication is not authorized by this invocation.
 2. Add a job that downloads and verifies promoted wheel/sdist, grants only `id-token: write` plus required read access, and invokes a SHA-pinned official publisher.
 3. Keep production job unreachable from ordinary/manual branch events until STAGE-015; use a separate explicit staging rehearsal path.
-4. Publish a unique TestPyPI rehearsal version, then install that exact version with pipx on Windows/macOS/Linux, using production PyPI only for dependencies if needed.
+4. Publish the preserved STAGE-009 `xferry==0.1.0` wheel/sdist to TestPyPI without rebuilding or relabeling. Download and verify both accepted files from TestPyPI, then install the verified local wheel with actual pipx on Windows/macOS/Linux, using PyPI only for dependencies. A conflicting existing version requires an owner decision, not a new identity.
 5. Verify metadata, console entry point, imports, help/version/config, and no source-tree dependency.
 
 ## Acceptance criteria
-- [ ] No static PyPI credential exists in repository or workflow configuration.
-- [ ] Publish job has job-scoped `id-token: write`, consumes downloaded candidates, and contains no build command.
+- [x] No static PyPI credential exists in repository or workflow configuration.
+- [x] Publish job has job-scoped `id-token: write`, consumes downloaded candidates, and contains no build command.
 - [ ] Trusted Publisher mapping is documented and independently confirmed by the owner.
 - [ ] Exact promoted wheel/sdist digests match the files accepted by TestPyPI.
 - [ ] Exact-version pipx install and portable smoke pass on Windows, macOS, and Linux.
-- [ ] Production PyPI publication remains inactive until STAGE-015.
+- [x] Production PyPI publication remains inactive until STAGE-015.
 
 ## Verification plan
 | Check | Command or method | Expected result |
 |---|---|---|
 | Targeted tests | `python -m pytest -q tests/test_deployment_artifacts.py tests/test_cli.py tests/test_public_surface.py` | Policy and CLI contracts pass |
 | Artifact identity | Compare candidate digest inventory with files submitted to TestPyPI | Exact match |
-| Consumer integration | `pipx install --index-url https://test.pypi.org/simple/ --pip-args='--extra-index-url https://pypi.org/simple' 'xferry==X.Y.Z...'` on three OSes | Install and smoke succeed |
+| Consumer integration | `python tools/testpypi_publish.py smoke --download-dir <fresh-absolute-download-dir> --fresh-root <fresh-absolute-pipx-root>` on three OSes | Install and smoke succeed |
 | Security/static review | Inspect job permissions, environment, action SHA, and absence of token secrets | Least privilege/OIDC only |
 
 ## Suggested subagents
@@ -71,8 +71,13 @@ Implement an initially non-production-activated PyPI publisher that uses Trusted
 - `security-auditor` - OIDC mapping and permission review.
 
 ## Risks and rollback
-- Risk: publishing an incorrect version is irreversible; TestPyPI dependency resolution may differ from production.
-- Rollback: use unique rehearsal versions, never reuse a version, keep production inactive, and discard/yank only the staging artifact if needed.
+- Risk: TestPyPI uploads are immutable; the fixed 0.1.0 candidate cannot be renamed to avoid a conflict. Mixed-index resolution could install another project artifact, so the verified local XFerry wheel is installed with PyPI-only dependencies.
+- Rollback: keep production inactive; stop on namespace/file conflicts or expired candidate artifacts. Any deletion/yanking or candidate replacement needs separate owner authorization; do not rebuild/relabel this candidate.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Attempt: 2026-09-30 16:13:00 +0300; result PARTIALLY_CLOSED. Report: `stage-reports/STAGE-010-20260930-125252.md`; operator instructions: `stage-reports/STAGE-010-20260930-125252-operator.md`.
+- Added separate manual `testpypi.yml`, fixed candidate identity manifest, authenticated wheel/sdist preparation, TestPyPI accepted-byte verification, three-OS actual pipx smoke, and staging-specific policy regressions. `release.yml` and STAGE-009 candidate bytes were preserved.
+- Final verification: 501 focused tests and all 3,533 repository tests passed, together with strict mypy, Ruff lint/format (176 files), compile, actionlint, package-content validation, release preflight, stale-doc guard, and two independent reviews. The second review exposed a missing-top-level-permissions guard gap; it was reproduced and fixed test-first. Actual local Linux pipx smoke passed against the preserved candidate wheel; this does not establish TestPyPI or hosted OS acceptance.
+- External evidence: the protected `testpypi` Environment now exists with no secrets, exact branch policy `codex/stage-010-testpypi-rehearsal`, reviewers `kgmnotes` and `gkumurzhi`, self-review prevention, and administrator bypass disabled. TestPyPI `xferry/0.1.0` still returns 404; publisher mapping has no owner confirmation, the workflow is not registered on the default branch, and no upload or hosted OS run occurred.
+- Production custody prerequisite: `gkumurzhi` accepted explicit repository `write` access and is now an eligible `production-release` reviewer alongside `kgmnotes`; self-review remains prevented and administrator bypass disabled. Deployment refs remain unrestricted, so STAGE-012 must not consume that environment until its exact reviewed rehearsal ref is selected and allowlisted.
+- No production PyPI/tag/public Release/docs activation or STAGE-015 work occurred; no signing secret was read or exposed.

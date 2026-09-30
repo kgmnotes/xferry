@@ -91,3 +91,20 @@
 - Downloaded evidence: artifact `11095067140`; API/ZIP SHA256 `97cad6b7fc6ca848de441930162d842f05d004659f14a5fd40e2b89995c7e878`; archive SHA256 `c3746592f16699fafe062e5bf245853f5058a8bdff70193ddf1c112e84ac8517`; inventory SHA256 `b6e86089660bff44daf856c2dc18ac4a310b79c40dde949f3aa9817894a99189`; exact `v0.1.0`/source/run identity reverified locally.
 - Boundary: no PyPI, GHCR, or GitHub Release publication/write and no production Environment, signing-secret, or private-key access. The feature PR's unchanged internal-plan public-surface failure remains separate from the passing public rehearsal tree.
 - Report: `stage-reports/STAGE-009-20260930-152200.md`
+
+## 2026-09-30 16:13:00 +0300 — STAGE-010
+- Status: PARTIALLY_CLOSED.
+- Files changed: `.github/workflows/testpypi.yml`, `packaging/testpypi-candidate.json`, `tools/testpypi_publish.py`, `tools/check_stale_docs.py`, `tests/test_testpypi_publish.py`; selected stage, active plan overview/status/matrix, this log, closure report, external snapshot, and operator instructions.
+- Implementation: TestPyPI-only SHA-pinned OIDC publisher of the preserved STAGE-009 0.1.0 distributions; authenticated artifact/run/archive/inventory identity; no rebuild; remote accepted-file byte verification; actual pipx consumer workflow on Linux/macOS/Windows; separate staging-policy guards.
+- Verification: 500 final focused tests, mypy, Ruff lint/format, compile, actionlint, stale-doc/release preflight, exact original candidate preparation, package validation, real isolated local Linux pipx lifecycle, and independent review passed. Reviewer-found pipx constraint-path and five policy-guard gaps were fixed.
+- Remaining: owner-confirmed TestPyPI mapping, staging environment/workflow availability, actual accepted TestPyPI wheel/sdist bytes, and hosted three-OS pipx evidence. TestPyPI version endpoint returns 404. No commit/push or external write was performed.
+- Prerequisite only: production-release needs restricted refs and an independent eligible reviewer before STAGE-012; no repository permissions were granted and no signing secret was accessed. STAGE-015 untouched.
+- Report: `stage-reports/STAGE-010-20260930-125252.md`; instructions: `stage-reports/STAGE-010-20260930-125252-operator.md`.
+
+## 2026-09-30 16:42:58 +0300 — STAGE-010 operator update
+- Status: PARTIALLY_CLOSED; production remains inactive.
+- Access boundary: `gkumurzhi` accepted explicit repository `write` access and joined `kgmnotes` as a required `production-release` reviewer. Self-review prevention and disabled administrator bypass were preserved; the signing secret value was not read. Exact deployment-ref restriction is still required before STAGE-012 consumes the Environment.
+- Staging boundary: created secret-free `testpypi`, limited it to branch `codex/stage-010-testpypi-rehearsal`, configured both eligible reviewers, prevented self-review, and disabled administrator bypass.
+- Independent review found that deleting the top-level workflow permissions block escaped the policy guard. A failing regression reproduced it; the guard now requires exactly `contents: read` and `actions: read`.
+- Verification: the new regression passed, all 3,533 repository tests passed, and strict mypy, Ruff lint/format, compile, actionlint v1.7.7, stale-doc guard, release preflight, and diff integrity were clean.
+- Remaining: owner-confirmed TestPyPI Trusted Publisher mapping, workflow registration on the default branch, actual immutable `0.1.0` upload, accepted-byte verification, and hosted Ubuntu/macOS/Windows receipts.

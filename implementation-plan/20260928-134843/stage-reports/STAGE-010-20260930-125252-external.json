@@ -1,0 +1,57 @@
+{
+  "artifact": {
+    "digest": "sha256:97cad6b7fc6ca848de441930162d842f05d004659f14a5fd40e2b89995c7e878",
+    "expired": false,
+    "id": 11095067140,
+    "name": "release-candidate-36712344792-1",
+    "size_in_bytes": 254412956,
+    "workflow_run": {
+      "head_branch": "codex/stage-009-hosted-rehearsal-20260930",
+      "head_repository_id": 1341230685,
+      "head_sha": "40ac9bc031aa28b9adc2765857a8926f522e4005",
+      "id": 36712344792,
+      "repository_id": 1341230685
+    }
+  },
+  "checked_at": "2026-09-30T13:06:11.239145+00:00",
+  "collaborators": [
+    {
+      "login": "kgmnotes",
+      "permissions": {
+        "admin": true,
+        "maintain": true,
+        "pull": true,
+        "push": true,
+        "triage": true
+      },
+      "role_name": "admin"
+    }
+  ],
+  "gkumurzhi": {
+    "permission": "read",
+    "role_name": "read"
+  },
+  "mutations_performed": false,
+  "production_release": {
+    "deployment_branch_policy": null,
+    "review_rules": [
+      {
+        "prevent_self_review": true,
+        "reviewers": [
+          "kgmnotes"
+        ],
+        "type": "required_reviewers"
+      }
+    ]
+  },
+  "run": {
+    "conclusion": "success",
+    "event": "workflow_dispatch",
+    "head_sha": "40ac9bc031aa28b9adc2765857a8926f522e4005",
+    "id": 36712344792,
+    "path": ".github/workflows/release.yml",
+    "run_attempt": 1,
+    "status": "completed"
+  },
+  "testpypi_0_1_0_http_status": 404
+}
