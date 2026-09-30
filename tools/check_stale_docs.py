@@ -1269,25 +1269,25 @@ def ghcr_workflow_policy_findings(text: str) -> list[Finding]:
         return findings
     expected_gate = (
         "    if: ${{ inputs.confirm_ghcr && github.repository == 'kgmnotes/xferry' "
-        "&& github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal' }}"
+        "&& github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal-v2' }}"
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("GHCR identity gate must enforce the exact confirmation/repository/ref")
     protected_branch_contract = (
         "Require protected rehearsal branch",
-        'branches/codex%2Fstage-011-ghcr-rehearsal")',
+        'branches/codex%2Fstage-011-ghcr-rehearsal-v2")',
         '.commit.sha\' <<<"${branch_json}"',
         '.protected\' <<<"${branch_json}"',
     )
     if any(item not in jobs["identity"].text for item in protected_branch_contract):
         reject("GHCR identity must verify the exact protected rehearsal branch")
-    if "stage-011-ghcr-rehearsal/protection" in jobs["identity"].text:
+    if "stage-011-ghcr-rehearsal-v2/protection" in jobs["identity"].text:
         reject("GHCR cannot call the Administration-only branch protection endpoint")
     required = {
         "identity": (
             "inputs.confirm_ghcr",
             "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal'",
+            "github.ref == 'refs/heads/codex/stage-011-ghcr-rehearsal-v2'",
             "artifact-id: ${{ steps.staged-oci.outputs.artifact-id }}",
             "ghcr_publish.py identity",
             "repository: kgmnotes/xferry",
@@ -1322,6 +1322,7 @@ def ghcr_workflow_policy_findings(text: str) -> list[Finding]:
         "registry-verify": (
             "needs: [identity, publish]",
             "skopeo=1.13.3+ds1-2ubuntu0.24.04.3",
+            "mkdir -p registry",
             (
                 "skopeo copy --all --preserve-digests "
                 '"docker://ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" "oci:registry/oci"'
