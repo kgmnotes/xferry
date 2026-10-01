@@ -310,6 +310,61 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
     )
 
 
+def test_managed_update_apply_failure_diagnostic_is_sanitized_and_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Failed apply evidence must identify recovery state without logging details."""
+    import sys
+
+    sensitive = "must-not-appear"
+    result_path = tmp_path / "update-apply.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "active": "0.1.1",
+                "before": "0.1.1",
+                "code": "candidate_unhealthy",
+                "detail": sensitive,
+                "dry_run": False,
+                "exit_code": 6,
+                "message": sensitive,
+                "next_actions": [sensitive],
+                "rollback": "restored",
+                "status": "error",
+                "target": "0.1.2",
+                "version": "0.1.2",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    workflow = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
+    failure_marker = '          if [ "$apply_exit" -ne 0 ]; then\n'
+    failure_section = workflow.split(failure_marker, 1)[1]
+    python_marker = "            python - \"$result\" <<'PY'\n"
+    diagnostic = failure_section.split(python_marker, 1)[1].split("\n          PY", 1)[0]
+    diagnostic = "\n".join(line[10:] for line in diagnostic.splitlines())
+    monkeypatch.setattr(sys, "argv", ["apply-diagnostic", str(result_path)])
+
+    exec(compile(diagnostic, str(REHEARSAL_WORKFLOW), "exec"), {})
+
+    output = capsys.readouterr().out
+    assert sensitive not in output
+    assert json.loads(output) == {
+        "active": "0.1.1",
+        "before": "0.1.1",
+        "code": "candidate_unhealthy",
+        "dry_run": False,
+        "exit_code": 6,
+        "rollback": "restored",
+        "status": "error",
+        "target": "0.1.2",
+        "version": "0.1.2",
+    }
+
+
 def test_repository_guard_includes_managed_update_rehearsal() -> None:
     from tools.check_stale_docs import find_release_policy_issues
 

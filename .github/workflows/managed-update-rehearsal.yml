@@ -422,8 +422,65 @@ jobs:
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/managed-update-evidence/update-apply.json"
+          apply_exit=0
           sudo env SSL_CERT_FILE="$RUNNER_TEMP/managed-update-tls/server.crt" \
-            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --json > "$result"
+            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --json \
+            > "$result" || apply_exit="$?"
+          if [ "$apply_exit" -ne 0 ]; then
+            python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "active",
+              "before",
+              "code",
+              "detail",
+              "dry_run",
+              "exit_code",
+              "message",
+              "next_actions",
+              "rollback",
+              "status",
+              "target",
+              "version",
+          }
+          if not isinstance(result, dict) or set(result) != expected:
+              raise RuntimeError("managed update failure result must use the fixed schema")
+          scalar_keys = (
+              "active",
+              "before",
+              "code",
+              "dry_run",
+              "exit_code",
+              "rollback",
+              "status",
+              "target",
+              "version",
+          )
+          diagnostic = {key: result[key] for key in scalar_keys}
+          optional_versions = (diagnostic["active"], diagnostic["before"])
+          required_strings = (
+              diagnostic["code"],
+              diagnostic["rollback"],
+              diagnostic["status"],
+              diagnostic["target"],
+              diagnostic["version"],
+          )
+          if (
+              diagnostic["status"] != "error"
+              or any(value is not None and not isinstance(value, str) for value in optional_versions)
+              or any(not isinstance(value, str) for value in required_strings)
+              or not isinstance(diagnostic["dry_run"], bool)
+              or not isinstance(diagnostic["exit_code"], int)
+              or isinstance(diagnostic["exit_code"], bool)
+          ):
+              raise RuntimeError("managed update failure result contains unsafe diagnostics")
+          print(json.dumps(diagnostic, sort_keys=True))
+          PY
+            exit "$apply_exit"
+          fi
           python - "$result" <<'PY'
           import json
           import sys
