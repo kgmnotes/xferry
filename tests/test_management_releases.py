@@ -261,6 +261,19 @@ class FakeRunner:
         return CommandResult(command, 0)
 
 
+@dataclass
+class FakeClock:
+    """Advance readiness deadlines without making release tests sleep."""
+
+    current: float = 0.0
+
+    def monotonic(self) -> float:
+        return self.current
+
+    def sleep(self, delay: float) -> None:
+        self.current += delay
+
+
 def _seed_config(layout: ManagedLayout, password: str = "known-password") -> None:
     layout.config_file.parent.mkdir(parents=True, exist_ok=True)
     _protect_managed_directory(layout, layout.config_file.parent)
@@ -386,6 +399,7 @@ def _manager(
     platform: PlatformId = "linux-x86_64",
     facts: HostFacts | None = None,
 ) -> ReleaseManager:
+    clock = FakeClock()
     return ReleaseManager(
         layout=layout,
         runner=runner or FakeRunner(),
@@ -406,6 +420,9 @@ def _manager(
         cli_link=tmp_path / "usr/local/bin/xferry",
         acme_root=layout.acme_root,
         staging_parent=tmp_path / "staging",
+        readiness_timeout=1.0,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
         remote_updates_enabled=True,
         release_key_ring=key_ring,
         host_facts=lambda: (
@@ -2259,6 +2276,101 @@ def test_restart_failure_restores_link_service_health_and_removes_new_release(
     assert runner.restart_count == 2
     assert health_versions == ["0.1.0"]
     assert not (layout.release_root / "releases/0.2.0").exists()
+
+
+def test_update_waits_for_eventual_exact_target_health_after_restart(tmp_path: Path) -> None:
+    """A transient first PING must not roll back a candidate that becomes ready."""
+    layout = _installed_layout(tmp_path)
+    base_url = "https://releases.example.test/xferry/releases"
+    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    attempts: dict[str, int] = {}
+
+    def health(*_args: object) -> HealthResult:
+        version = (layout.release_root / "current").readlink().name
+        attempts[version] = attempts.get(version, 0) + 1
+        if version == "0.2.0" and attempts[version] == 1:
+            return HealthResult(False, "connection failed")
+        return HealthResult(True, "healthy", version)
+
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+
+    assert result == _update_result(
+        0,
+        "update_complete",
+        active="0.2.0",
+        rollback="not_needed",
+    )
+    assert attempts == {"0.2.0": 2}
+    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+
+
+def test_restore_waits_for_eventual_exact_previous_health_after_restart(
+    tmp_path: Path,
+) -> None:
+    """A transient first PING must not hide a successfully restored prior release."""
+    layout = _installed_layout(tmp_path)
+    base_url = "https://releases.example.test/xferry/releases"
+    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    runner = FakeRunner(restart_failures=1)
+    attempts = 0
+
+    def health(*_args: object) -> HealthResult:
+        nonlocal attempts
+        attempts += 1
+        version = (layout.release_root / "current").readlink().name
+        if attempts == 1:
+            return HealthResult(False, "connection failed")
+        return HealthResult(True, "healthy", version)
+
+    result = _manager(
+        tmp_path,
+        layout,
+        downloader,
+        runner=runner,
+        health=health,
+    ).update("0.2.0", False)
+
+    assert result == _update_result(
+        6,
+        "candidate_restart_failed",
+        active="0.1.0",
+        rollback="restored",
+    )
+    assert attempts == 2
+    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+
+
+def test_update_readiness_deadline_never_uses_a_non_positive_health_timeout(
+    tmp_path: Path,
+) -> None:
+    """An expired readiness budget must stop before an invalid zero-timeout probe."""
+    layout = _installed_layout(tmp_path)
+    base_url = "https://releases.example.test/xferry/releases"
+    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    timeouts: list[float] = []
+
+    def health(
+        _endpoint: HealthEndpoint,
+        _username: str,
+        _password: str,
+        timeout: float,
+    ) -> HealthResult:
+        version = (layout.release_root / "current").readlink().name
+        timeouts.append(timeout)
+        if version == "0.2.0":
+            return HealthResult(False, "connection failed")
+        return HealthResult(True, "healthy", version)
+
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+
+    assert result == _update_result(
+        6,
+        "candidate_unhealthy",
+        active="0.1.0",
+        rollback="restored",
+    )
+    assert timeouts == [2.0, 1.75, 1.25, 0.25, 2.0]
+    assert all(timeout > 0 for timeout in timeouts)
 
 
 def test_unhealthy_candidate_restores_and_verifies_previous_release(tmp_path: Path) -> None:

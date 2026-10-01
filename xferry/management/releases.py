@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -70,6 +71,9 @@ _SIGNATURE_NAME = SIGNATURE_NAME
 _EXECUTABLE_NAME = INSTALLED_EXECUTABLE_NAME
 _MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
 _MAX_SIGNATURE_BYTES = MAX_SIGNATURE_BYTES
+_DEFAULT_READINESS_TIMEOUT = 120.0
+_INITIAL_READINESS_BACKOFF = 0.25
+_MAX_READINESS_BACKOFF = 2.0
 
 HealthCheck = Callable[[HealthEndpoint, str, str, float], HealthResult]
 
@@ -224,6 +228,9 @@ class ReleaseManager:
         acme_root: Path | None = None,
         staging_parent: Path | None = None,
         health_timeout: float = 2.0,
+        readiness_timeout: float = _DEFAULT_READINESS_TIMEOUT,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
         remote_updates_enabled: bool = False,
         release_key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
         host_facts: Callable[[], HostFacts] | None = None,
@@ -245,6 +252,9 @@ class ReleaseManager:
         self.acme_root = acme_root or self.layout.acme_root
         self.staging_parent = staging_parent
         self.health_timeout = health_timeout
+        self.readiness_timeout = max(health_timeout, readiness_timeout)
+        self.monotonic = monotonic
+        self.sleep = sleep
         self._remote_updates_enabled = remote_updates_enabled is True
         self.release_key_ring = release_key_ring
         self.host_facts = host_facts or (lambda: detect_host_facts(data_path=self.layout.data_root))
@@ -774,18 +784,47 @@ class ReleaseManager:
             return False
 
     def _ping(self, context: _HealthContext, expected_version: str) -> HealthResult:
+        deadline = self.monotonic() + self.readiness_timeout
+        backoff = _INITIAL_READINESS_BACKOFF
+        result = HealthResult(False, "connection failed")
+        while True:
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                return result
+            result = self._ping_once(
+                context,
+                expected_version,
+                timeout=min(self.health_timeout, remaining),
+            )
+            if result.ok or result.detail != "connection failed":
+                return result
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                return result
+            self.sleep(min(backoff, remaining))
+            backoff = min(backoff * 2, _MAX_READINESS_BACKOFF)
+
+    def _ping_once(
+        self,
+        context: _HealthContext,
+        expected_version: str,
+        *,
+        timeout: float,
+    ) -> HealthResult:
         try:
             result = self.health_check(
                 context.endpoint,
                 context.username,
                 context.password,
-                self.health_timeout,
+                timeout,
             )
-            if result.ok and result.version == expected_version:
-                return result
-            return HealthResult(False, "authenticated health check failed", result.version)
         except (OSError, RuntimeError, ValueError):
             return HealthResult(False, "authenticated health check failed")
+        if result.ok and result.version == expected_version:
+            return result
+        if not result.ok and result.detail == "connection failed":
+            return HealthResult(False, "connection failed", result.version)
+        return HealthResult(False, "authenticated health check failed", result.version)
 
     def _observed_current_version(self) -> str | None:
         try:
