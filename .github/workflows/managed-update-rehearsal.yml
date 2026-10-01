@@ -12,6 +12,7 @@ env:
   SOURCE_VERSION: "0.1.1"
   TARGET_VERSION: "0.1.2"
   REHEARSAL_PORT: "44443"
+  MANAGED_XFERRY: /usr/local/bin/xferry
 
 jobs:
   lifecycle:
@@ -159,7 +160,7 @@ jobs:
             XFERRY_RELEASE_BASE_URL="$RELEASE_URL" \
             CURL_CA_BUNDLE="$RUNNER_TEMP/managed-update-tls/server.crt" \
             sh "$installer"
-          test "$(xferry --version)" = "xferry 0.1.1"
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
           test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.1"
 
       - name: Setup private managed service
@@ -168,7 +169,7 @@ jobs:
           setup_result="$RUNNER_TEMP/managed-update-evidence/setup.json"
           setup_credentials="$RUNNER_TEMP/managed-update-setup.credentials"
           umask 077
-          sudo xferry setup --private --json > "$setup_result" 2> "$setup_credentials"
+          sudo "$MANAGED_XFERRY" setup --private --json > "$setup_result" 2> "$setup_credentials"
           python - "$setup_result" <<'PY'
           import json
           import sys
@@ -187,7 +188,7 @@ jobs:
             --evidence "$RUNNER_TEMP/managed-update-evidence/health-0.1.1.json"
           sudo "$python_bin" tools/managed_update_rehearsal.py capture-state \
             --output "$RUNNER_TEMP/managed-update-state.json"
-          sudo xferry doctor --deep --json \
+          sudo "$MANAGED_XFERRY" doctor --deep --json \
             > "$RUNNER_TEMP/managed-update-evidence/doctor-0.1.1.json"
 
       - name: Dry-run signed update to 0.1.2
@@ -195,7 +196,7 @@ jobs:
           set -euo pipefail
           result="$RUNNER_TEMP/managed-update-evidence/update-dry-run.json"
           sudo env SSL_CERT_FILE="$RUNNER_TEMP/managed-update-tls/server.crt" \
-            xferry update --to "$TARGET_VERSION" --dry-run --json > "$result"
+            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --dry-run --json > "$result"
           python - "$result" <<'PY'
           import json
           import sys
@@ -207,7 +208,7 @@ jobs:
           assert result["target"] == "0.1.2"
           assert result["active"] == "0.1.1"
           PY
-          test "$(xferry --version)" = "xferry 0.1.1"
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-state \
             --baseline "$RUNNER_TEMP/managed-update-state.json" \
@@ -218,7 +219,7 @@ jobs:
           set -euo pipefail
           result="$RUNNER_TEMP/managed-update-evidence/update-apply.json"
           sudo env SSL_CERT_FILE="$RUNNER_TEMP/managed-update-tls/server.crt" \
-            xferry update --to "$TARGET_VERSION" --json > "$result"
+            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --json > "$result"
           python - "$result" <<'PY'
           import json
           import sys
@@ -230,7 +231,7 @@ jobs:
           assert result["target"] == "0.1.2"
           assert result["active"] == "0.1.2"
           PY
-          test "$(xferry --version)" = "xferry 0.1.2"
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.2"
           test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.2"
           sudo test -d /opt/xferry/releases/0.1.1
           sudo test -d /opt/xferry/releases/0.1.2
@@ -250,7 +251,7 @@ jobs:
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/managed-update-evidence/rollback.json"
-          sudo xferry rollback --to "$SOURCE_VERSION" --json > "$result"
+          sudo "$MANAGED_XFERRY" rollback --to "$SOURCE_VERSION" --json > "$result"
           python - "$result" <<'PY'
           import json
           import sys
@@ -259,7 +260,7 @@ jobs:
           assert result["status"] == "ok"
           assert result["version"] == "0.1.1"
           PY
-          test "$(xferry --version)" = "xferry 0.1.1"
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
           test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.1"
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-health \
@@ -273,7 +274,7 @@ jobs:
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/managed-update-evidence/uninstall.json"
-          sudo xferry uninstall --json > "$result"
+          sudo "$MANAGED_XFERRY" uninstall --json > "$result"
           python - "$result" <<'PY'
           import json
           import sys
@@ -284,7 +285,7 @@ jobs:
           PY
           sudo test ! -e /opt/xferry
           sudo test ! -e /etc/systemd/system/xferry.service
-          sudo test ! -e /usr/local/bin/xferry
+          sudo test ! -e "$MANAGED_XFERRY"
           sudo test -f /etc/xferry/xferry.ini
           sudo test -f /etc/xferry/auth
           sudo test -f /var/lib/xferry/rehearsal-sentinel

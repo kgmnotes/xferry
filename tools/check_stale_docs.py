@@ -1493,6 +1493,15 @@ def managed_update_rehearsal_policy_findings(
         or 'TARGET_VERSION: "0.1.2"' not in rehearsal_text
     ):
         reject("managed update rehearsal versions must remain fixed at 0.1.1 to 0.1.2")
+    if "MANAGED_XFERRY: /usr/local/bin/xferry" not in rehearsal_text:
+        reject("managed update rehearsal must pin the installed managed CLI path")
+    bare_managed_cli_patterns = (
+        r"\$\(\s*xferry\s",
+        r"\bsudo\s+xferry\s",
+        r"(?m)^\s+xferry\s+(?:setup|doctor|update|rollback|uninstall)\b",
+    )
+    if any(re.search(pattern, lifecycle.text) for pattern in bare_managed_cli_patterns):
+        reject("managed update rehearsal must not resolve lifecycle commands from PATH")
 
     lifecycle_steps = (
         "Install signed 0.1.1",

@@ -87,6 +87,16 @@ def test_managed_update_rehearsal_policy_is_registered_and_clean() -> None:
         ("rehearsal", 'TARGET_VERSION: "0.1.2"', 'TARGET_VERSION: "0.1.3"'),
         (
             "rehearsal",
+            "MANAGED_XFERRY: /usr/local/bin/xferry",
+            "MANAGED_XFERRY: xferry",
+        ),
+        (
+            "rehearsal",
+            'test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"',
+            'test "$(xferry --version)" = "xferry 0.1.1"',
+        ),
+        (
+            "rehearsal",
             "permissions:\n  contents: read",
             "permissions:\n  contents: read\n\nenv:\n  LEAK: ${{ secrets.REHEARSAL_KEY }}",
         ),
@@ -133,7 +143,7 @@ def test_managed_update_rehearsal_runs_the_complete_lifecycle_in_order() -> None
     positions = [workflow.index(step) for step in steps]
     assert positions == sorted(positions)
     assert "--purge-data" not in workflow
-    assert "xferry uninstall --json" in workflow
+    assert '"$MANAGED_XFERRY" uninstall --json' in workflow
     assert 'result["code"] == "uninstall_complete"' in workflow
 
 
