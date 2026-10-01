@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -164,6 +166,70 @@ def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields(
     assert '"executable_sha256_valid": executable_sha256_valid' in workflow
     assert '"release_permissions_valid": release_permissions_valid' in workflow
     assert 'cat "$setup_credentials"' not in workflow
+
+
+def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The hosted failure diagnostic must execute without exposing raw metadata."""
+    from xferry.management import model
+    from xferry.management.model import ManagedLayout
+    from xferry.management.release_contract import ReleaseManifest, current_platform_id
+
+    root = tmp_path / "host"
+    release_root = root / "opt/xferry"
+    release = release_root / "releases/0.1.1"
+    release.mkdir(parents=True)
+    executable = release / "xferry"
+    executable_payload = b"diagnostic-release"
+    executable.write_bytes(executable_payload)
+    executable.chmod(0o755)
+    release.joinpath("xferry-release.json").write_bytes(
+        ReleaseManifest.create_v2(
+            version="0.1.1",
+            platform=current_platform_id(),
+            executable_size=len(executable_payload),
+            executable_sha256=hashlib.sha256(executable_payload).hexdigest(),
+            source_commit="a" * 40,
+            workflow_run="123456",
+        ).to_bytes()
+    )
+    release_root.joinpath("current").symlink_to("releases/0.1.1")
+    layout = ManagedLayout(
+        release_root=release_root,
+        config_file=root / "etc/xferry/xferry.ini",
+        auth_file=root / "etc/xferry/auth",
+        data_root=root / "var/lib/xferry",
+        lock_file=root / "run/lock/xferry-ops.lock",
+        unit_file=root / "etc/systemd/system/xferry.service",
+        cli_link=root / "usr/local/bin/xferry",
+    )
+    monkeypatch.setattr(model, "ManagedLayout", lambda: layout)
+
+    workflow = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
+    marker = "            sudo \"$python_bin\" - <<'PY'\n"
+    diagnostic = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
+    diagnostic = "\n".join(line[10:] for line in diagnostic.splitlines())
+    exec(compile(diagnostic, str(REHEARSAL_WORKFLOW), "exec"), {})
+
+    evidence = json.loads(capsys.readouterr().out)
+    permission_checks = evidence["release_checks"]["permission_checks"]
+    assert set(permission_checks) == {
+        "executable",
+        "manifest",
+        "opt",
+        "release",
+        "release_root",
+        "releases_root",
+        "root",
+    }
+    assert all(
+        set(checks) == {"mode_valid", "owner_valid"}
+        and all(isinstance(value, bool) for value in checks.values())
+        for checks in permission_checks.values()
+    )
 
 
 def test_repository_guard_includes_managed_update_rehearsal() -> None:

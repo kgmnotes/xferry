@@ -174,7 +174,6 @@ jobs:
             > "$setup_result" 2> "$setup_credentials" || setup_exit="$?"
           if [ "$setup_exit" -ne 0 ]; then
             python - "$setup_result" <<'PY'
-          import hashlib
           import json
           import sys
 
@@ -189,6 +188,7 @@ jobs:
           PY
             python_bin="$(command -v python)"
             sudo "$python_bin" - <<'PY'
+          import hashlib
           import json
 
           from xferry.management.managed_state import (
@@ -227,6 +227,18 @@ jobs:
               current_target_valid = False
               release_count_valid = False
               release_permissions_valid = False
+              permission_checks = {
+                  label: {"mode_valid": False, "owner_valid": False}
+                  for label in (
+                      "root",
+                      "opt",
+                      "release_root",
+                      "releases_root",
+                      "release",
+                      "manifest",
+                      "executable",
+                  )
+              }
               try:
                   releases_root = layout.release_root / "releases"
                   release_entries = list(releases_root.iterdir())
@@ -252,18 +264,24 @@ jobs:
                       layout.release_root.joinpath("current").readlink()
                       == releases_root.relative_to(layout.release_root) / release.name
                   )
-                  protected_paths = (
-                      layout.release_root.anchor,
-                      layout.release_root.parent,
-                      layout.release_root,
-                      releases_root,
-                      release,
-                      manifest_path,
-                      executable_path,
-                  )
+                  protected_paths = {
+                      "root": type(layout.release_root)(layout.release_root.anchor),
+                      "opt": layout.release_root.parent,
+                      "release_root": layout.release_root,
+                      "releases_root": releases_root,
+                      "release": release,
+                      "manifest": manifest_path,
+                      "executable": executable_path,
+                  }
+                  permission_checks = {}
+                  for label, path in protected_paths.items():
+                      metadata = path.stat()
+                      permission_checks[label] = {
+                          "mode_valid": metadata.st_mode & 0o022 == 0,
+                          "owner_valid": metadata.st_uid == 0,
+                      }
                   release_permissions_valid = all(
-                      path.stat().st_uid == 0 and path.stat().st_mode & 0o022 == 0
-                      for path in map(type(layout.release_root), protected_paths)
+                      all(checks.values()) for checks in permission_checks.values()
                   )
               except (OSError, ValueError):
                   pass
@@ -277,6 +295,7 @@ jobs:
                       "manifest_platform_valid": manifest_platform_valid,
                       "manifest_valid": manifest_valid,
                       "manifest_version_valid": manifest_version_valid,
+                      "permission_checks": permission_checks,
                       "release_count_valid": release_count_valid,
                       "release_permissions_valid": release_permissions_valid,
                   },
