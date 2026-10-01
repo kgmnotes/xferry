@@ -281,7 +281,10 @@ class ReleaseManager:
                 version=requested,
                 dry_run=dry_run,
                 target=requested,
-                next_actions=("Run this managed update as root with `sudo`.",),
+                next_actions=(
+                    "For a managed installation, rerun this update as root with `sudo`.",
+                    "For a portable installation, run `pipx upgrade xferry`.",
+                ),
             )
         current_version: str | None = None
         try:

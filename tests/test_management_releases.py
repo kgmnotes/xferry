@@ -694,22 +694,38 @@ def test_update_portable_admission_returns_only_pipx_action_without_remote_acces
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=("apply", "dry-run"))
+@pytest.mark.parametrize("installed", [False, True], ids=("portable", "managed"))
 def test_update_requires_root_before_host_inspection_or_remote_access(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     dry_run: bool,
+    installed: bool,
 ) -> None:
-    """Both update modes are managed-root operations even though dry-run is mutation-free."""
-    layout = _installed_layout(tmp_path)
+    """Non-root users need conditional guidance without inspecting or mutating managed paths."""
+    layout = _installed_layout(tmp_path) if installed else _layout(tmp_path)
     downloader = FakeDownloader({})
+    runner = FakeRunner()
+    before = sorted(tmp_path.rglob("*"))
 
     manager = _manager(
         tmp_path,
         layout,
         downloader,
+        runner=runner,
         effective_uid=lambda: 1000,
     )
     manager.host_facts = lambda: pytest.fail("non-root update inspected the host")
-    result = manager.update("0.2.0", dry_run)
+    manager.platform_id = lambda: pytest.fail("non-root update inspected the platform")
+
+    def forbidden_boundary(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("non-root update crossed a filesystem or lock boundary")
+
+    with monkeypatch.context() as boundary:
+        for method in ("stat", "lstat", "exists", "open", "iterdir", "readlink"):
+            boundary.setattr(Path, method, forbidden_boundary)
+        boundary.setattr(release_module, "managed_mutation", forbidden_boundary)
+        boundary.setattr(release_module, "has_unsupported_managed_state", forbidden_boundary)
+        result = manager.update("0.2.0", dry_run)
 
     assert result == ReleaseResult(
         3,
@@ -717,10 +733,16 @@ def test_update_requires_root_before_host_inspection_or_remote_access(
         version="0.2.0",
         dry_run=dry_run,
         target="0.2.0",
-        next_actions=("Run this managed update as root with `sudo`.",),
+        next_actions=(
+            "For a managed installation, rerun this update as root with `sudo`.",
+            "For a portable installation, run `pipx upgrade xferry`.",
+        ),
     )
     assert downloader.requests == []
+    assert runner.commands == []
     assert not layout.lock_file.exists()
+    assert not (tmp_path / "staging").exists()
+    assert sorted(tmp_path.rglob("*")) == before
 
 
 def test_update_requires_explicit_version_before_candidate_download_or_lock(
@@ -2882,7 +2904,10 @@ def test_real_update_requires_root_before_network_or_filesystem_effects(tmp_path
         "release_requires_root",
         version="0.2.0",
         target="0.2.0",
-        next_actions=("Run this managed update as root with `sudo`.",),
+        next_actions=(
+            "For a managed installation, rerun this update as root with `sudo`.",
+            "For a portable installation, run `pipx upgrade xferry`.",
+        ),
     )
     assert downloader.requests == []
     assert not layout.lock_file.exists()

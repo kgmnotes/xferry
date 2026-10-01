@@ -344,6 +344,108 @@ def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
     assert "pipx install xferry" in text
 
 
+@pytest.mark.parametrize("dry_run", [False, True], ids=("apply", "dry-run"))
+@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize("json_output", [False, True], ids=("text", "json"))
+def test_non_root_linux_update_renders_conditional_actions_from_real_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+    language: str,
+    json_output: bool,
+) -> None:
+    """A real non-root update must render both routes without touching managed state."""
+    from xferry.management import releases
+    from xferry.management.model import ManagedLayout
+    from xferry.management.system import CommandResult
+
+    class ForbiddenEffects:
+        def read(self, url: str, max_bytes: int) -> bytes:
+            pytest.fail("non-root CLI update read a remote asset")
+
+        def download(self, url: str, destination: Path, max_bytes: int) -> None:
+            pytest.fail("non-root CLI update downloaded a remote asset")
+
+        def run(self, argv: Sequence[str]) -> CommandResult:
+            pytest.fail("non-root CLI update executed a command")
+
+    layout = ManagedLayout(
+        release_root=tmp_path / "opt/xferry",
+        config_file=tmp_path / "etc/xferry/xferry.ini",
+        auth_file=tmp_path / "etc/xferry/auth",
+        data_root=tmp_path / "var/lib/xferry",
+        lock_file=tmp_path / "run/lock/xferry-ops.lock",
+        unit_file=tmp_path / "etc/systemd/system/xferry.service",
+        cli_link=tmp_path / "usr/local/bin/xferry",
+    )
+    effects = ForbiddenEffects()
+    manager = releases.ReleaseManager(
+        layout=layout,
+        unit_path=layout.unit_file,
+        cli_link=layout.cli_link,
+        downloader=effects,
+        runner=effects,
+        effective_uid=lambda: 1000,
+        remote_updates_enabled=True,
+        host_facts=lambda: pytest.fail("non-root CLI update inspected the host"),
+        platform_id=lambda: pytest.fail("non-root CLI update inspected the platform"),
+        staging_parent=tmp_path / "staging",
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(releases, "default_update_manager", lambda: manager)
+    argv = ["--lang", language, "update", "--to", "0.2.0"]
+    if dry_run:
+        argv.append("--dry-run")
+    if json_output:
+        argv.append("--json")
+
+    def forbidden_boundary(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("non-root CLI update crossed a filesystem or lock boundary")
+
+    with monkeypatch.context() as boundary:
+        for method in ("stat", "lstat", "exists", "open", "iterdir", "readlink"):
+            boundary.setattr(Path, method, forbidden_boundary)
+        boundary.setattr(releases, "managed_mutation", forbidden_boundary)
+        boundary.setattr(releases, "has_unsupported_managed_state", forbidden_boundary)
+        assert main(argv) == 3
+
+    captured = capsys.readouterr()
+    if json_output:
+        assert captured.err == ""
+        assert json.loads(captured.out) == {
+            "active": None,
+            "before": None,
+            "code": "release_requires_root",
+            "detail": "",
+            "dry_run": dry_run,
+            "exit_code": 3,
+            "message": "This release operation requires root.",
+            "next_actions": [
+                "For a managed installation, rerun this update as root with `sudo`.",
+                "For a portable installation, run `pipx upgrade xferry`.",
+            ],
+            "rollback": "not_attempted",
+            "status": "error",
+            "target": "0.2.0",
+            "version": "0.2.0",
+        }
+    else:
+        assert captured.out == ""
+        message, prefix = (
+            ("This release operation requires root.", "Next action: ")
+            if language == "en"
+            else ("Для этой операции с выпуском нужны права root.", "Следующее действие: ")
+        )
+        assert captured.err.splitlines() == [
+            message,
+            f"{prefix}For a managed installation, rerun this update as root with `sudo`.",
+            f"{prefix}For a portable installation, run `pipx upgrade xferry`.",
+        ]
+    assert list(tmp_path.iterdir()) == []
+    assert not layout.lock_file.exists()
+
+
 @pytest.mark.parametrize(
     ("argv", "env", "expected"),
     [
