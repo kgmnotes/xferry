@@ -143,11 +143,12 @@ def test_future_distribution_contract_language_is_not_unconditionally_stale(
     "route",
     (
         "https://github.com/kgmnotes/xferry/releases/latest",
-        "ghcr.io/kgmnotes/xferry:v1.2.3",
+        "ghcr.io/kgmnotes/xferry:latest",
         "pip install xferry==1.2.3",
         "pip install --upgrade xferry",
-        "python -m pip install --upgrade xferry",
-        "pip install -U xferry",
+        "curl https://example.test/install.sh | sudo sh",
+        "xferry update",
+        "xferry update --to latest",
         "xferry update --version 1.2.3",
     ),
 )
@@ -160,7 +161,7 @@ def test_future_distribution_contract_language_is_not_unconditionally_stale(
         Path("docs/public-direct.md"),
     ),
 )
-def test_current_user_install_docs_reject_unavailable_distribution_routes(
+def test_current_user_install_docs_reject_unsafe_distribution_routes(
     tmp_path: Path,
     route: str,
     path: Path,
@@ -171,7 +172,33 @@ def test_current_user_install_docs_reject_unavailable_distribution_routes(
 
     findings = check_stale_docs.find_source_first_issues(tmp_path, (str(path),))
 
-    assert any("unsupported distribution channel" in item.message for item in findings)
+    assert any("unsafe distribution or lifecycle route" in item.message for item in findings)
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        "pipx install xferry",
+        "python3 -m pip install --user pipx",
+        "ghcr.io/kgmnotes/xferry:v1.2.3",
+        "ghcr.io/kgmnotes/xferry@sha256:" + "a" * 64,
+        "xferry update --to 1.2.3",
+    ),
+)
+def test_current_user_docs_allow_immutable_supported_routes(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    path = tmp_path / "docs" / "quick-start.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(f"Use `{route}`.\n", encoding="utf-8")
+
+    findings = check_stale_docs.find_source_first_issues(
+        tmp_path,
+        ("docs/quick-start.md",),
+    )
+
+    assert not any("unsafe distribution or lifecycle route" in item.message for item in findings)
 
 
 def test_safe_future_controlled_publisher_workflow_is_expressible() -> None:
@@ -507,10 +534,10 @@ render `error.message` for operators.
 @pytest.mark.parametrize(
     ("path", "message"),
     (
-        ("README.md", "README must keep source installation"),
+        ("README.md", "README must route portable"),
         ("SECURITY.md", "SECURITY must preserve authorized-use"),
         ("CONTRIBUTING.md", "CONTRIBUTING must preserve local checks"),
-        ("docs/operations.md", "operations must own source lifecycle"),
+        ("docs/operations.md", "operations must own portable"),
         ("docs/public-direct.md", "public-direct must defer"),
         ("docs/threat-model.md", "duplicate Content-Length"),
     ),
@@ -529,7 +556,7 @@ def test_public_document_owner_rejects_missing_contract(
     assert any(message in finding.message for finding in findings)
 
 
-def test_quick_start_order_and_source_route_are_enforced(tmp_path: Path) -> None:
+def test_quick_start_order_and_journey_route_are_enforced(tmp_path: Path) -> None:
     quick_start = tmp_path / "docs" / "quick-start.md"
     quick_start.parent.mkdir(parents=True)
     quick_start.write_text(

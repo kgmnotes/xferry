@@ -13,10 +13,16 @@ from typing import Literal, NoReturn, Protocol, TypeAlias
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .release_contract import MANIFEST_NAME, ReleaseManifest, require_signing_key_id
+from .release_contract import (
+    MANIFEST_NAME,
+    ReleaseManifest,
+    require_signing_key_id,
+)
+from .release_contract import (
+    MAX_SIGNATURE_BYTES as MAX_SIGNATURE_BYTES,
+)
 
 SIGNATURE_NAME = f"{MANIFEST_NAME}.sig"
-MAX_SIGNATURE_BYTES = 4 * 1024
 SignatureType: TypeAlias = Literal["release-manifest-v2", "installer-v1"]
 MANIFEST_SIGNATURE_TYPE: Literal["release-manifest-v2"] = "release-manifest-v2"
 INSTALLER_SIGNATURE_TYPE: Literal["installer-v1"] = "installer-v1"

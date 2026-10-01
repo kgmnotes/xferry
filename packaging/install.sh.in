@@ -8,6 +8,8 @@ artifact_name='@EXECUTABLE_NAME@'
 artifact_size='@EXECUTABLE_SIZE@'
 artifact_sha256='@EXECUTABLE_SHA256@'
 manifest_signature_required='@MANIFEST_SIGNATURE_REQUIRED@'
+hosted_signature_required='@HOSTED_SIGNATURE_REQUIRED@'
+hosted_manifest_name='@HOSTED_MANIFEST_NAME@'
 manifest_signature_name='xferry-release.json.sig'
 supported_release_major='@SUPPORTED_RELEASE_MAJOR@'
 unsupported_managed_state_instructions='@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@'
@@ -88,6 +90,38 @@ real_directory() {
 
 regular_file() {
   [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+download_bounded() {
+  download_limit="$1"
+  download_target="$2"
+  download_url="$3"
+  case "$download_limit" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$download_limit" -gt 0 ] || return 1
+  download_blocks=$(( (download_limit + 511) / 512 ))
+  if ! (
+    ulimit -f "$download_blocks"
+    curl -fsSL \
+      --proto '=https' \
+      --proto-redir '=https' \
+      --retry 3 \
+      --retry-max-time 180 \
+      --connect-timeout 15 \
+      --max-time 60 \
+      --max-filesize "$download_limit" \
+      -o "$download_target" \
+      "$download_url"
+  ); then
+    return 1
+  fi
+  regular_file "$download_target" || return 1
+  download_size="$(wc -c < "$download_target" | tr -d '[:space:]')"
+  case "$download_size" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$download_size" -le "$download_limit" ]
 }
 
 valid_supported_version() {
@@ -344,14 +378,9 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 downloaded="$stage_dir/$artifact_name"
-curl -fsSL --retry 3 -o "$downloaded" "$release_base_url/$artifact_name"
-
-downloaded_signature=''
-if [ "$manifest_signature_required" = true ]; then
-  downloaded_signature="$stage_dir/$manifest_signature_name"
-  curl -fsSL --retry 3 \
-    -o "$downloaded_signature" \
-    "$release_base_url/$manifest_signature_name"
+if ! download_bounded "$artifact_size" "$downloaded" "$release_base_url/$artifact_name"; then
+  echo 'xferry bounded release download failed' >&2
+  exit 1
 fi
 
 actual_size="$(wc -c < "$downloaded" | tr -d '[:space:]')"
@@ -366,16 +395,64 @@ if [ "$actual_sha256" != "$artifact_sha256" ]; then
   exit 1
 fi
 
+downloaded_manifest=''
+downloaded_signature=''
+if [ "$hosted_signature_required" = true ]; then
+  downloaded_manifest="$stage_dir/$hosted_manifest_name"
+  downloaded_signature="$stage_dir/$hosted_manifest_name.sig"
+  if ! download_bounded \
+    @MAX_MANIFEST_BYTES@ \
+    "$downloaded_manifest" \
+    "$release_base_url/$hosted_manifest_name"
+  then
+    echo 'xferry bounded release download failed' >&2
+    exit 1
+  fi
+  if ! download_bounded \
+    @MAX_SIGNATURE_BYTES@ \
+    "$downloaded_signature" \
+    "$release_base_url/$hosted_manifest_name.sig"
+  then
+    echo 'xferry bounded release download failed' >&2
+    exit 1
+  fi
+elif [ "$manifest_signature_required" = true ]; then
+  downloaded_signature="$stage_dir/$manifest_signature_name"
+  if ! download_bounded \
+    @MAX_SIGNATURE_BYTES@ \
+    "$downloaded_signature" \
+    "$release_base_url/$manifest_signature_name"
+  then
+    echo 'xferry bounded release download failed' >&2
+    exit 1
+  fi
+fi
+
 candidate_release="$stage_dir/candidate"
 mkdir "$candidate_release"
 chmod 0755 "$candidate_release"
 install -m 0755 "$downloaded" "$candidate_release/xferry"
+if [ "$hosted_signature_required" = true ]; then
+  if ! "$candidate_release/xferry" _verify-release-envelope \
+    --manifest "$downloaded_manifest" \
+    --signature "$downloaded_signature" \
+    --executable "$candidate_release/xferry" \
+    --version "$version" \
+    --platform "$platform_id"
+  then
+    echo 'xferry signed release envelope verification failed' >&2
+    exit 1
+  fi
+  install -m 0644 "$downloaded_manifest" "$candidate_release/xferry-release.json"
+  install -m 0644 "$downloaded_signature" "$candidate_release/$manifest_signature_name"
+else
 cat > "$candidate_release/xferry-release.json" <<'XFERRY_CANDIDATE_MANIFEST'
 @MANIFEST_JSON@
 XFERRY_CANDIDATE_MANIFEST
 chmod 0644 "$candidate_release/xferry-release.json"
-if [ "$manifest_signature_required" = true ]; then
-  install -m 0644 "$downloaded_signature" "$candidate_release/$manifest_signature_name"
+  if [ "$manifest_signature_required" = true ]; then
+    install -m 0644 "$downloaded_signature" "$candidate_release/$manifest_signature_name"
+  fi
 fi
 if ! valid_supported_release "$candidate_release" "$version" 2; then
   echo 'xferry candidate manifest or executable is invalid' >&2
@@ -395,7 +472,9 @@ mkdir "$install_stage"
 chmod 0755 "$install_stage"
 install -m 0755 "$candidate_release/xferry" "$install_stage/xferry"
 install -m 0644 "$candidate_release/xferry-release.json" "$install_stage/xferry-release.json"
-if [ "$manifest_signature_required" = true ]; then
+if [ "$hosted_signature_required" = true ] \
+  || [ "$manifest_signature_required" = true ]
+then
   install -m 0644 \
     "$candidate_release/$manifest_signature_name" \
     "$install_stage/$manifest_signature_name"

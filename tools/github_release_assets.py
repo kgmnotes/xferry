@@ -31,6 +31,7 @@ from xferry.management.release_contract import (  # noqa: E402
     PlatformId,
     ReleaseManifest,
     artifact_name,
+    release_manifest_asset_name,
 )
 from xferry.management.release_trust import (  # noqa: E402
     DEFAULT_RELEASE_KEY_RING,
@@ -96,7 +97,7 @@ def _unsigned_asset_names(identity: Mapping[str, object]) -> set[str]:
 def _signed_asset_names(identity: Mapping[str, object]) -> set[str]:
     names = _unsigned_asset_names(identity)
     for platform in SUPPORTED_PLATFORM_IDS:
-        manifest_name = f"xferry-release-{platform}.json"
+        manifest_name = release_manifest_asset_name(platform)
         names.update(
             {
                 manifest_name,
@@ -389,7 +390,7 @@ def _write_signed_platform_assets(
         artifact_digests=artifact_digests,
         signing_key_ids=(key_id,),
     )
-    manifest_name = f"xferry-release-{platform}.json"
+    manifest_name = release_manifest_asset_name(platform)
     manifest_path = signed_dir / manifest_name
     manifest_path.write_bytes(manifest.to_bytes())
     manifest_path.chmod(0o644)
@@ -469,7 +470,7 @@ def _verify_platform_assets(
     key_ring: ReleaseKeyRing,
     platform: PlatformId,
 ) -> None:
-    manifest_name = f"xferry-release-{platform}.json"
+    manifest_name = release_manifest_asset_name(platform)
     installer_name = f"install-{platform}.sh"
     manifest_payload = (assets_dir / manifest_name).read_bytes()
     manifest = verify_signed_manifest(

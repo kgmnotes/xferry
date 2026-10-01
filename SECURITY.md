@@ -7,8 +7,10 @@ service. Use it only with explicit authorization and test data. Binding to a
 public address, enabling TLS, or adding Basic Auth does not by itself make an
 internet-facing deployment safe.
 
-The supported distribution is a reviewed source checkout. Project automation
-does not publish packages, release binaries, or registry images.
+The supported user journeys are portable pipx, managed Linux, and immutable
+container distribution. Select an exact version or digest, keep lifecycle
+ownership with that channel, and use a reviewed source checkout only for
+contributor work.
 
 ## Report a vulnerability
 
@@ -67,10 +69,9 @@ configuration procedure.
 
 ## Release and update supply chain
 
-ADR-011 accepts a staged controlled-distribution architecture, but it does not
-activate a public channel. The supported distribution remains a reviewed source
-checkout, and the current Release Verification workflow must remain unable to
-write to PyPI, GHCR, or GitHub Releases until the channel-specific stages close.
+ADR-011 defines a controlled-distribution architecture. Public artifacts are
+promoted from one verified candidate, never rebuilt by a publisher, and remain
+unadvertised until the protected production activation completes.
 
 Release tags, workflow definitions, publisher identities, candidate artifacts,
 digests, manifests, checksums, SBOMs, provenance, signing identities, registry
@@ -108,8 +109,10 @@ publishes updated trust or revocation metadata before release work resumes.
 
 ### Signed release metadata contract
 
-Remote managed releases use manifest schema v2 plus the detached
-`xferry-release.json.sig` envelope. The signed bytes are exactly the UTF-8 bytes
+Remote managed releases use platform-specific manifest schema v2 plus detached
+`xferry-release-linux-ARCH.json.sig` envelopes. Installed metadata retains the
+local names `xferry-release.json` and `xferry-release.json.sig`. Signed bytes are
+exactly the UTF-8 bytes
 emitted by `ReleaseManifest.to_bytes()`: fixed field order, two-space JSON
 indentation, lexically sorted artifact digests, and one trailing newline. A
 signed manifest declares `ed25519` and exactly one lowercase key ID. The
@@ -175,18 +178,25 @@ material. Release automation must sign both `xferry-release.json` and
 
 ### Privileged installer verification order
 
-The production key is enrolled, but the managed channel is not public until the
-release-assets stage closes. The required shape is download, offline verification
-with the shipped public-key ring, and only then explicit privileged execution:
+The required shape is download, offline verification with the shipped
+public-key ring, and only then explicit privileged execution. For x86_64, use:
 
 ```console
-curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json"
-curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json.sig"
-curl --fail --silent --show-error --remote-name "$release_url/install.sh"
-curl --fail --silent --show-error --remote-name "$release_url/install.sh.sig"
-python tools/verify_release_signature.py --manifest xferry-release.json --signature xferry-release.json.sig
-python tools/verify_release_signature.py --installer install.sh --signature install.sh.sig
-sudo sh ./install.sh
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/xferry-release-linux-x86_64.json"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/xferry-release-linux-x86_64.json.sig"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/install-linux-x86_64.sh"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/install-linux-x86_64.sh.sig"
+python tools/verify_release_signature.py \
+  --manifest xferry-release-linux-x86_64.json \
+  --signature xferry-release-linux-x86_64.json.sig
+python tools/verify_release_signature.py \
+  --installer install-linux-x86_64.sh \
+  --signature install-linux-x86_64.sh.sig
+sudo sh ./install-linux-x86_64.sh
 ```
 
 Run the verifier from a reviewed checkout. Never stream a network response into

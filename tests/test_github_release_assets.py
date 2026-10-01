@@ -110,6 +110,8 @@ def _candidate(root: Path) -> Path:
             f"version='{VERSION}'\nplatform_id='{platform}'\n"
             f"artifact_name='{executable.name}'\nartifact_size='{executable.stat().st_size}'\n"
             f"artifact_sha256='{manifest.executable_sha256}'\nmanifest_signature_required='false'\n"
+            "hosted_signature_required='true'\n"
+            f"hosted_manifest_name='xferry-release-{platform}.json'\n"
             "supported_release_major='0'\n"
             "cat > \"$candidate_release/xferry-release.json\" <<'XFERRY_CANDIDATE_MANIFEST'\n"
             + manifest.to_bytes().decode()

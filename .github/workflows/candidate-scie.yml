@@ -101,6 +101,7 @@ jobs:
             --platform '${{ inputs.platform }}' \
             --output-dir 'dist/scie-${{ inputs.platform }}' \
             --version "${CANDIDATE_TAG#v}" \
+            --require-hosted-signature \
             --wheel "python-input/python/xferry-${CANDIDATE_TAG#v}-py3-none-any.whl" \
             --wheel-sha256 "$WHEEL_SHA256"
 

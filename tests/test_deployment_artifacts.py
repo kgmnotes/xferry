@@ -323,7 +323,7 @@ def test_systemd_install_script_fails_clearly_when_the_managed_scie_is_missing(
     assert result.stderr.strip() == f"installed XFerry executable is missing: {missing}"
 
 
-def test_docker_public_direct_compose_builds_the_source_checkout_and_uses_config() -> None:
+def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_config() -> None:
     compose_path = REPO_ROOT / "deploy/docker/docker-compose.public-direct.yml"
     config_path = REPO_ROOT / "deploy/docker/xferry.ini.example"
 
@@ -344,10 +344,9 @@ def test_docker_public_direct_compose_builds_the_source_checkout_and_uses_config
 
     compose = compose_path.read_text(encoding="utf-8")
     assert "name: xferry-public-direct" in compose
-    assert "    build:\n      context: ../..\n      dockerfile: Dockerfile" in compose
-    assert "image: xferry:public-direct-local" in compose
-    assert "XFERRY_IMAGE" not in compose
-    assert "ghcr.io/" not in compose
+    assert "    build:" not in compose
+    assert "image: ghcr.io/kgmnotes/xferry:v0.1.0" in compose
+    assert "ghcr.io/kgmnotes/xferry:latest" not in compose
     assert "container_name:" not in compose
     assert "    command:\n      - run\n      - --config" in compose
     assert "--config" in compose
@@ -379,8 +378,8 @@ def test_docker_public_direct_runtime_files_are_ignored() -> None:
     assert "!.gitignore" in secrets_ignore.splitlines()
 
 
-def test_source_only_docs_publish_the_supported_operator_contract() -> None:
-    """Keep the durable source distribution and non-publication policy consistent."""
+def test_journey_docs_publish_portable_managed_container_and_contributor_contracts() -> None:
+    """Keep every lifecycle owned by one documented, immutable distribution path."""
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     quick_start = (REPO_ROOT / "docs/quick-start.md").read_text(encoding="utf-8")
     operations = (REPO_ROOT / "docs/operations.md").read_text(encoding="utf-8")
@@ -388,31 +387,28 @@ def test_source_only_docs_publish_the_supported_operator_contract() -> None:
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     for document in (readme, quick_start):
-        normalized_document = re.sub(r"\s+", " ", document).lower()
-        assert "supported distribution" in normalized_document
-        assert "source checkout" in normalized_document
-        assert "do not publish" in normalized_document
-        assert "python -m pip install ." in document
+        assert "pipx install xferry" in document
+        assert "ghcr.io/kgmnotes/xferry:v0.1.0" in document
+        assert "ghcr.io/kgmnotes/xferry:latest" not in document
+        assert "curl | sudo sh" not in document
 
-    assert "git clone https://github.com/kgmnotes/xferry.git" in quick_start
+    assert "git clone https://github.com/kgmnotes/xferry.git" not in quick_start
     assert "xferry run --preset local --open" in quick_start
-    assert quick_start.index("## Install") < quick_start.index("## Send a first file")
-    assert quick_start.index("## Send a first file") < quick_start.index("## Try a custom method")
-    assert quick_start.index("## Try a custom method") < quick_start.index(
-        "## Stop and protect data"
-    )
+    assert quick_start.index("## Portable") < quick_start.index("## Managed Linux")
+    assert quick_start.index("## Managed Linux") < quick_start.index("## Container")
 
-    assert "distribution is source-only" in operations
-    assert "Remote updates are not\nexposed by the public CLI" in operations
-    assert "Docker from the checkout" in operations
+    assert "sudo xferry update --to 0.1.0" in operations
+    assert "sudo xferry rollback" in operations
+    assert "sudo xferry uninstall" in operations
+    assert "ghcr.io/kgmnotes/xferry@sha256:" in operations
     assert "down --volumes" in operations
     assert "destructive" in operations
     normalized_contributing = re.sub(r"\s+", " ", contributing)
-    assert "manual Release Verification workflow" in normalized_contributing
-    assert "They do not upload or publish" in normalized_contributing
-    assert "documentation and examples source-only" in normalized_contributing
+    assert "source checkout is the contributor workflow" in normalized_contributing
+    assert "python -m pip install -e" in contributing
+    assert "generated CLI reference" in normalized_contributing
+    assert "## [Unreleased]" in changelog
     assert "## [0.1.0] - 2026-08-20" in changelog
-    assert "Source distribution" in changelog
 
 
 def test_release_verification_workflow_is_manual_read_only_and_non_publishing() -> None:
@@ -444,6 +440,7 @@ def test_release_verification_workflow_is_manual_read_only_and_non_publishing() 
     for platform in ("linux-x86_64", "linux-aarch64"):
         assert f"platform: {platform}" in workflow
     assert "--wheel-sha256" in scie and "--wheel" in scie
+    assert "--require-hosted-signature" in scie
     assert "python -m build" not in scie
     for lane in ("Smoke SCIE without host Python", "Smoke SCIE on every supported Linux base"):
         assert lane in scie
@@ -543,7 +540,8 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
     security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
     for required in (
-        "/opt/xferry-source",
+        "ghcr.io/kgmnotes/xferry:v0.1.0",
+        "ghcr.io/kgmnotes/xferry@sha256:",
         "/etc/xferry/auth",
         "--write-sample-config",
         "--check-config",
@@ -551,9 +549,9 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
         "--config /run/secrets/xferry-curl.conf",
         "direct TCP peer",
         '"health":"ready"',
-        "no supported binary or container distribution",
     ):
         assert required in public_direct
+    assert "ghcr.io/kgmnotes/xferry:latest" not in public_direct
 
     for required in (
         "TLS with a hostname clients verify",

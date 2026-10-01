@@ -12,12 +12,15 @@ still provide the network, storage, monitoring, and recovery boundaries in the
 
 ## Prepare the host
 
-Create a dedicated runtime user and permission-restricted paths. The examples
+Use the immutable `ghcr.io/kgmnotes/xferry:v0.1.0` image or the exact
+`ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}` recorded by the release. The
+Compose file at `deploy/docker/docker-compose.public-direct.yml` pins the
+versioned image and applies a read-only filesystem and finite resource limits.
+
+Prepare permission-restricted configuration and secret paths. The examples
 below assume:
 
-- the source checkout and virtual environment are installed under
-  `/opt/xferry-source`;
-- runtime data is owned by the service user at `/var/lib/xferry`;
+- runtime data is stored in a named volume;
 - `/etc/xferry/auth` contains exactly one strong `user:password` line;
 - DNS points to the host and TCP 80/443 are controlled by the firewall;
 - a supervisor applies process limits and restarts.
@@ -27,8 +30,6 @@ Do not place credentials in the command line, repository, or environment.
 ## Generate and edit the configuration
 
 ```bash
-cd /opt/xferry-source
-. .venv/bin/activate
 xferry run --write-sample-config /etc/xferry/xferry.ini
 ```
 
@@ -97,8 +98,14 @@ no-auth Advanced Session loopback checks. `Forwarded`, `X-Forwarded-For`, and
 
 ## Start and verify
 
-Start xferry through the configured supervisor, then probe it from another
-network using a protected curl config:
+After placing the reviewed config at `deploy/docker/xferry.ini` and credentials
+at `deploy/docker/secrets/xferry_auth`, start the immutable Compose service:
+
+```console
+docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
+```
+
+Then probe it from another network using a protected curl config:
 
 ```bash
 curl --config /run/secrets/xferry-curl.conf \
@@ -114,16 +121,15 @@ worker saturation, and free space.
 
 ## Recovery
 
-Keep the source revision, dependency constraints, configuration, and backup
-used for each deployment. To recover:
+Keep the exact image digest, configuration, and backup used for each
+deployment. To recover:
 
 1. Stop new traffic at the firewall or proxy.
 2. Preserve the current data and ACME state.
-3. Restore the last tested source environment and configuration.
+3. Restore the last tested immutable image digest and configuration.
 4. Validate the configuration before starting.
 5. Restore traffic only after authenticated HTTPS `PING` and a file lifecycle
    check pass.
 
-There is no supported binary or container distribution to use as a rollback
-target. Recovery uses a retained, reviewed source revision and its locked
-environment.
+Never substitute `latest` during recovery. A retained version tag is useful for
+people; the recorded digest is the rollback identity enforced by the registry.

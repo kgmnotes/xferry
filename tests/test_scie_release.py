@@ -27,15 +27,17 @@ from tools.sign_release_metadata import (
 )
 from tools.verify_release_signature import verify_installer_files
 from xferry.management.health import HealthResult
-from xferry.management.model import ManagedLayout
+from xferry.management.model import HostFacts, ManagedLayout
 from xferry.management.release_contract import (
     LINUX_AARCH64,
     LINUX_X86_64,
+    MAX_MANIFEST_BYTES,
     SUPPORTED_PLATFORM_IDS,
     PlatformId,
 )
 from xferry.management.release_trust import (
     MANIFEST_SIGNATURE_TYPE,
+    MAX_SIGNATURE_BYTES,
     ReleaseKeyRing,
     TrustedReleaseKey,
     create_detached_signature,
@@ -158,6 +160,7 @@ def _render_bundle(
     *,
     platform_id: PlatformId = LINUX_X86_64,
     signing_key_id: str | None = None,
+    require_hosted_signature: bool = False,
 ) -> ReleaseBundle:
     return build_release_bundle(
         REPO_ROOT,
@@ -168,6 +171,7 @@ def _render_bundle(
         source_commit=TEST_SOURCE_COMMIT,
         workflow_run=TEST_WORKFLOW_RUN,
         signing_key_id=signing_key_id,
+        require_hosted_signature=require_hosted_signature,
     )
 
 
@@ -287,7 +291,9 @@ def _run_installer(
     has_systemd: bool = True,
     ram_mib: int = 1024,
     prepare_root: Callable[[Path], None] | None = None,
+    manifest_payload: bytes | None = None,
     signature_payload: bytes | None = None,
+    require_https_transport: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir(parents=True)
@@ -302,13 +308,29 @@ def _run_installer(
         ': > "$XFERRY_TEST_CURL_MARKER"\n'
         "output=''\n"
         "url=''\n"
+        "saw_proto=false\n"
+        "saw_proto_redir=false\n"
         'while [ "$#" -gt 0 ]; do\n'
         '  if [ "$1" = "-o" ]; then output="$2"; shift 2; continue; fi\n'
+        '  if [ "$1" = "--proto" ]; then\n'
+        '    [ "$2" = "=https" ] && saw_proto=true\n'
+        "    shift 2\n"
+        "    continue\n"
+        "  fi\n"
+        '  if [ "$1" = "--proto-redir" ]; then\n'
+        '    [ "$2" = "=https" ] && saw_proto_redir=true\n'
+        "    shift 2\n"
+        "    continue\n"
+        "  fi\n"
         '  url="$1"\n'
         "  shift\n"
         "done\n"
+        'if [ "$XFERRY_TEST_REQUIRE_HTTPS_TRANSPORT" = true ]; then\n'
+        '  [ "$saw_proto" = true ] && [ "$saw_proto_redir" = true ] || exit 97\n'
+        "fi\n"
         'case "$url" in\n'
-        '  *.sig) cp "$XFERRY_TEST_SIGNATURE" "$output" ;;\n'
+        '  *.json.sig) cp "$XFERRY_TEST_SIGNATURE" "$output" ;;\n'
+        '  *.json) cp "$XFERRY_TEST_MANIFEST" "$output" ;;\n'
         '  *) cp "$XFERRY_TEST_PAYLOAD" "$output" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -324,6 +346,8 @@ def _run_installer(
 
     downloaded = tmp_path / "downloaded-scie"
     downloaded.write_bytes(payload)
+    downloaded_manifest = tmp_path / "downloaded-manifest"
+    downloaded_manifest.write_bytes(manifest_payload or bundle.manifest.read_bytes())
     downloaded_signature = tmp_path / "downloaded-signature"
     downloaded_signature.write_bytes(signature_payload or b"")
     target_root = tmp_path / "root"
@@ -354,12 +378,16 @@ def _run_installer(
     environment = os.environ | {
         "DESTDIR": str(target_root),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "PYTHONPATH": str(REPO_ROOT),
         "XFERRY_RELEASE_BASE_URL": "https://releases.example.test/xferry",
         "XFERRY_TEST_CURL_MARKER": str(tmp_path / "curl-called"),
         "XFERRY_TEST_MKTEMP_MARKER": str(tmp_path / "mktemp-called"),
         "XFERRY_TEST_MACHINE": machine,
+        "XFERRY_TEST_MANIFEST": str(downloaded_manifest),
         "XFERRY_TEST_PAYLOAD": str(downloaded),
+        "XFERRY_TEST_REQUIRE_HTTPS_TRANSPORT": ("true" if require_https_transport else "false"),
         "XFERRY_TEST_SIGNATURE": str(downloaded_signature),
+        "XFERRY_TEST_VERIFIER_LOG": str(tmp_path / "verifier-arguments"),
     }
     return subprocess.run(
         ["sh", str(bundle.installer)],
@@ -719,15 +747,203 @@ def test_signed_bundle_installer_persists_manifest_signature_for_rollback(
     assert stat.S_IMODE(installed.joinpath("xferry-release.json.sig").stat().st_mode) == 0o644
 
 
+def _recording_verifier_scie(public_key: bytes) -> bytes:
+    return f"""#!{sys.executable}
+import argparse
+import os
+import sys
+from pathlib import Path
+
+from xferry.management.release_trust import ReleaseKeyRing, TrustedReleaseKey
+from xferry.management.release_verifier import ReleaseEnvelopeError, verify_release_envelope
+
+if sys.argv[1:2] != ["_verify-release-envelope"]:
+    raise SystemExit(97)
+parser = argparse.ArgumentParser()
+parser.add_argument("--manifest", required=True, type=Path)
+parser.add_argument("--signature", required=True, type=Path)
+parser.add_argument("--executable", required=True, type=Path)
+parser.add_argument("--version", required=True)
+parser.add_argument("--platform", required=True)
+arguments = parser.parse_args(sys.argv[2:])
+Path(os.environ["XFERRY_TEST_VERIFIER_LOG"]).write_text(
+    "\\n".join(sys.argv[2:]) + "\\n", encoding="utf-8"
+)
+try:
+    verify_release_envelope(
+        arguments.manifest,
+        arguments.signature,
+        arguments.executable,
+        expected_version=arguments.version,
+        expected_platform=arguments.platform,
+        key_ring=ReleaseKeyRing(
+            (TrustedReleaseKey("test-release-2026", bytes.fromhex("{public_key.hex()}")),)
+        ),
+    )
+except ReleaseEnvelopeError as failure:
+    print(failure.code, file=sys.stderr)
+    raise SystemExit(1) from None
+""".encode()
+
+
+def _hosted_envelope(
+    payload: bytes,
+    private_key: Ed25519PrivateKey,
+) -> tuple[bytes, bytes]:
+    key_id = "test-release-2026"
+    manifest = ReleaseManifest.create_v2(
+        version="0.1.0",
+        platform=LINUX_X86_64,
+        executable_size=len(payload),
+        executable_sha256=hashlib.sha256(payload).hexdigest(),
+        source_commit=TEST_SOURCE_COMMIT,
+        workflow_run=TEST_WORKFLOW_RUN,
+        signing_key_ids=(key_id,),
+    ).to_bytes()
+    return manifest, sign_manifest(
+        manifest,
+        key_id=key_id,
+        private_key=private_key,
+    )
+
+
+def test_hosted_installer_verifies_and_persists_exact_platform_envelope(tmp_path: Path) -> None:
+    """Replacing the hosted signed envelope with the embedded unsigned one breaks rollback trust."""
+    private_key = Ed25519PrivateKey.generate()
+    payload = _recording_verifier_scie(private_key.public_key().public_bytes_raw())
+    manifest, signature = _hosted_envelope(payload, private_key)
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        require_hosted_signature=True,
+    )
+
+    result = _run_installer(
+        bundle,
+        tmp_path / "installed",
+        payload,
+        manifest_payload=manifest,
+        signature_payload=signature,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = tmp_path / "installed/root/opt/xferry/releases/0.1.0"
+    assert installed.joinpath("xferry-release.json").read_bytes() == manifest
+    assert installed.joinpath("xferry-release.json.sig").read_bytes() == signature
+    verifier_arguments = tmp_path.joinpath("installed/verifier-arguments").read_text().splitlines()
+    assert verifier_arguments[::2] == [
+        "--manifest",
+        "--signature",
+        "--executable",
+        "--version",
+        "--platform",
+    ]
+    assert Path(verifier_arguments[1]).name == "xferry-release-linux-x86_64.json"
+    assert Path(verifier_arguments[3]).name == "xferry-release-linux-x86_64.json.sig"
+    assert Path(verifier_arguments[5]).name == "xferry"
+    assert verifier_arguments[7] == "0.1.0"
+    assert verifier_arguments[9] == "linux-x86_64"
+
+
+def test_hosted_installer_verifier_failure_prevents_managed_writes(tmp_path: Path) -> None:
+    """Signature rejection must stop before creating the managed release or CLI link roots."""
+    private_key = Ed25519PrivateKey.generate()
+    payload = _recording_verifier_scie(private_key.public_key().public_bytes_raw())
+    manifest, _signature = _hosted_envelope(payload, private_key)
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        require_hosted_signature=True,
+    )
+    case_root = tmp_path / "rejected"
+
+    result = _run_installer(
+        bundle,
+        case_root,
+        payload,
+        manifest_payload=manifest,
+        signature_payload=b'{"invalid":true}\n',
+    )
+
+    assert result.returncode == 1
+    assert "signed release envelope verification failed" in result.stderr
+    assert not case_root.joinpath("root/opt").exists()
+    assert not case_root.joinpath("root/usr").exists()
+
+
+@pytest.mark.parametrize("oversized_asset", ["manifest", "signature"])
+def test_hosted_installer_bounds_metadata_before_invoking_the_verifier(
+    tmp_path: Path,
+    oversized_asset: str,
+) -> None:
+    """Unauthenticated metadata must not fill root temporary storage before verification."""
+    private_key = Ed25519PrivateKey.generate()
+    payload = _recording_verifier_scie(private_key.public_key().public_bytes_raw())
+    manifest, signature = _hosted_envelope(payload, private_key)
+    if oversized_asset == "manifest":
+        manifest = b"x" * (MAX_MANIFEST_BYTES + 1)
+    else:
+        signature = b"x" * (MAX_SIGNATURE_BYTES + 1)
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        require_hosted_signature=True,
+    )
+    case_root = tmp_path / oversized_asset
+
+    result = _run_installer(
+        bundle,
+        case_root,
+        payload,
+        manifest_payload=manifest,
+        signature_payload=signature,
+    )
+
+    assert result.returncode == 1
+    assert "bounded release download failed" in result.stderr
+    assert not case_root.joinpath("verifier-arguments").exists()
+    assert not case_root.joinpath("root/opt").exists()
+    assert not case_root.joinpath("root/usr").exists()
+
+
+def test_hosted_installer_restricts_initial_and_redirect_downloads_to_https(
+    tmp_path: Path,
+) -> None:
+    """Every executable and metadata request must reject non-HTTPS redirect targets."""
+    private_key = Ed25519PrivateKey.generate()
+    payload = _recording_verifier_scie(private_key.public_key().public_bytes_raw())
+    manifest, signature = _hosted_envelope(payload, private_key)
+    bundle = _render_bundle(
+        tmp_path / "candidate",
+        payload,
+        require_hosted_signature=True,
+    )
+    case_root = tmp_path / "https-only"
+
+    result = _run_installer(
+        bundle,
+        case_root,
+        payload,
+        manifest_payload=manifest,
+        signature_payload=signature,
+        require_https_transport=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert case_root.joinpath("root/opt/xferry/current/xferry").is_file()
+
+
 def test_installer_guidance_verifies_downloads_before_explicit_sudo() -> None:
     security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
     procedure = security.split("### Privileged installer verification order", maxsplit=1)[1]
     commands = procedure.split("```console", maxsplit=1)[1].split("```", maxsplit=1)[0]
 
-    assert commands.index("--manifest xferry-release.json") < commands.index(
-        "--installer install.sh"
+    assert commands.index("--manifest xferry-release-linux-x86_64.json") < commands.index(
+        "--installer install-linux-x86_64.sh"
     )
-    assert commands.index("--installer install.sh") < commands.index("sudo sh ./install.sh")
+    assert commands.index("--installer install-linux-x86_64.sh") < commands.index(
+        "sudo sh ./install-linux-x86_64.sh"
+    )
     assert "| sudo" not in commands
     assert "curl |" not in commands
 
@@ -1512,6 +1728,11 @@ class _LifecycleDownloader:
     def __init__(self, assets: dict[str, bytes]) -> None:
         self.assets = assets
 
+    def read(self, url: str, max_bytes: int) -> bytes:
+        payload = self.assets[url]
+        assert len(payload) <= max_bytes
+        return payload
+
     def download(self, url: str, destination: Path, max_bytes: int) -> None:
         payload = self.assets[url]
         assert len(payload) <= max_bytes
@@ -1520,9 +1741,27 @@ class _LifecycleDownloader:
 
 def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_path: Path) -> None:
     """Omitting bootstrap metadata makes the first verified update impossible to roll back."""
-    bootstrap_payload = b"bootstrap-release"
-    bundle = _render_bundle(tmp_path, bootstrap_payload)
-    installed = _run_installer(bundle, tmp_path / "bootstrap", bootstrap_payload)
+    key_id = "test-release-2026"
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes_raw()
+    key_ring = ReleaseKeyRing((TrustedReleaseKey(key_id, public_key),))
+    bootstrap_payload = _recording_verifier_scie(public_key)
+    bootstrap_manifest, bootstrap_signature = _hosted_envelope(
+        bootstrap_payload,
+        private_key,
+    )
+    bundle = _render_bundle(
+        tmp_path,
+        bootstrap_payload,
+        require_hosted_signature=True,
+    )
+    installed = _run_installer(
+        bundle,
+        tmp_path / "bootstrap",
+        bootstrap_payload,
+        manifest_payload=bootstrap_manifest,
+        signature_payload=bootstrap_signature,
+    )
     assert installed.returncode == 0, installed.stderr
     root = tmp_path / "bootstrap/root"
     layout = ManagedLayout(
@@ -1540,8 +1779,6 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     layout.auth_file.write_text("admin:known-password\n", encoding="utf-8")
     update_payload = b"updated-release"
     base_url = "https://releases.example.test/xferry/releases"
-    key_id = "test-release-2026"
-    private_key = Ed25519PrivateKey.generate()
     update_manifest = ReleaseManifest.create_v2(
         version="0.2.0",
         platform="linux-x86_64",
@@ -1559,16 +1796,28 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     )
     downloader = _LifecycleDownloader(
         {
-            f"{base_url}/download/v0.2.0/xferry-release.json": update_manifest,
-            f"{base_url}/download/v0.2.0/xferry-release.json.sig": update_signature,
+            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json": update_manifest,
+            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json.sig": update_signature,
             f"{base_url}/download/v0.2.0/xferry-0.2.0-linux-x86_64": update_payload,
         }
     )
+
+    def exact_current_health(*_args: object) -> HealthResult:
+        active = layout.release_root.joinpath("current").readlink().name
+        return HealthResult(True, "healthy", active)
+
+    installed_bootstrap = layout.release_root / "releases/0.1.0"
+    verified_bootstrap = verify_signed_manifest(
+        installed_bootstrap.joinpath("xferry-release.json").read_bytes(),
+        installed_bootstrap.joinpath("xferry-release.json.sig").read_bytes(),
+        key_ring=key_ring,
+    )
+    assert verified_bootstrap.version == "0.1.0"
     manager = ReleaseManager(
         layout=layout,
         runner=_LifecycleRunner(),
         downloader=downloader,
-        health_check=lambda *_args: HealthResult(True, "healthy"),
+        health_check=exact_current_health,
         effective_uid=lambda: 0,
         root_uid=os.getuid(),
         release_base_url=base_url,
@@ -1578,13 +1827,15 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         acme_root=layout.acme_root,
         staging_parent=tmp_path / "staging",
         remote_updates_enabled=True,
-        release_key_ring=ReleaseKeyRing(
-            (
-                TrustedReleaseKey(
-                    key_id,
-                    private_key.public_key().public_bytes_raw(),
-                ),
-            )
+        release_key_ring=key_ring,
+        host_facts=lambda: HostFacts(
+            os_id="ubuntu",
+            os_version="24.04",
+            machine="x86_64",
+            has_systemd=True,
+            ram_mib=1024,
+            cpu_count=2,
+            disk_free_mib=4096,
         ),
     )
 

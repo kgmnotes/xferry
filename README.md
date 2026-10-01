@@ -18,21 +18,22 @@ Documentation: <https://xferry.kgmnotes.ru/>
 > authentication, finite quotas, network controls, and monitoring. See
 > [Security](SECURITY.md).
 
-## Install from source
+## Choose an installation
 
-The supported distribution is a reviewed source checkout. Automated workflows
-do not publish packages, release binaries, or registry images; they only verify
-wheel, source-distribution, container, and SCIE build products. Install from a
-checkout:
+For a portable CLI on Windows, macOS, or Linux, install with pipx and start the
+loopback server:
 
 ```bash
-git clone https://github.com/kgmnotes/xferry.git
-cd xferry
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install .
+pipx install xferry
 xferry run --preset local --open
 ```
+
+For a systemd-managed Linux service, use the signed exact-version installer and
+the [ten supported host combinations](docs/managed-hosts.md). For a container,
+use the immutable image `ghcr.io/kgmnotes/xferry:v0.1.0` or its recorded digest.
+The [quick start](docs/quick-start.md) gives separate copy-paste journeys for
+portable, managed, and container use. Source checkout installation belongs to
+the [contributor workflow](CONTRIBUTING.md).
 
 The local preset listens on `127.0.0.1:8080`. The web UI provides Send,
 Requests, Files, Advanced, and Secure Notepad workflows.
@@ -62,6 +63,8 @@ See the [API reference](API.md) for complete request shapes and a curl journey.
 ## Documentation
 
 - [Quick start](docs/quick-start.md)
+- [Managed Linux support matrix](docs/managed-hosts.md)
+- [Generated CLI reference](docs/cli-reference.md)
 - [Scenarios](docs/scenarios.md)
 - [Operations](docs/operations.md)
 - [Disposable SSH tunnel](docs/disposable-ssh-tunnel.md)
