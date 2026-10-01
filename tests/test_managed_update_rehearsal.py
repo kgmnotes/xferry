@@ -160,6 +160,9 @@ def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields(
     assert "print(json.dumps(result, sort_keys=True), file=sys.stderr)" in workflow
     assert '"release_state": release_state.value' in workflow
     assert '"owned_state_safe": owned_state_safe' in workflow
+    assert '"manifest_valid": manifest_valid' in workflow
+    assert '"executable_sha256_valid": executable_sha256_valid' in workflow
+    assert '"release_permissions_valid": release_permissions_valid' in workflow
     assert 'cat "$setup_credentials"' not in workflow
 
 

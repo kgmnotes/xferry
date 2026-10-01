@@ -174,6 +174,7 @@ jobs:
             > "$setup_result" 2> "$setup_credentials" || setup_exit="$?"
           if [ "$setup_exit" -ne 0 ]; then
             python - "$setup_result" <<'PY'
+          import hashlib
           import json
           import sys
 
@@ -197,7 +198,7 @@ jobs:
               _release_state,
           )
           from xferry.management.model import ManagedLayout
-          from xferry.management.release_contract import current_platform_id
+          from xferry.management.release_contract import ReleaseManifest, current_platform_id
 
           layout = ManagedLayout()
           capabilities = _descriptor_capabilities()
@@ -218,9 +219,67 @@ jobs:
                   capabilities,
                   allow_expected_entries=release_state is _ReleaseState.VALID_SUPPORTED,
               )
+              manifest_valid = False
+              manifest_platform_valid = False
+              manifest_version_valid = False
+              executable_size_valid = False
+              executable_sha256_valid = False
+              current_target_valid = False
+              release_count_valid = False
+              release_permissions_valid = False
+              try:
+                  releases_root = layout.release_root / "releases"
+                  release_entries = list(releases_root.iterdir())
+                  release_count_valid = (
+                      len(release_entries) == 1
+                      and release_entries[0].is_dir()
+                      and not release_entries[0].is_symlink()
+                  )
+                  release = release_entries[0]
+                  manifest_path = release / "xferry-release.json"
+                  executable_path = release / "xferry"
+                  manifest = ReleaseManifest.parse(manifest_path.read_bytes())
+                  manifest_valid = True
+                  manifest_platform_valid = manifest.platform == current_platform_id()
+                  manifest_version_valid = manifest.version == release.name
+                  executable_metadata = executable_path.stat()
+                  executable_size_valid = executable_metadata.st_size == manifest.executable_size
+                  executable_sha256_valid = (
+                      hashlib.sha256(executable_path.read_bytes()).hexdigest()
+                      == manifest.executable_sha256
+                  )
+                  current_target_valid = (
+                      layout.release_root.joinpath("current").readlink()
+                      == releases_root.relative_to(layout.release_root) / release.name
+                  )
+                  protected_paths = (
+                      layout.release_root.anchor,
+                      layout.release_root.parent,
+                      layout.release_root,
+                      releases_root,
+                      release,
+                      manifest_path,
+                      executable_path,
+                  )
+                  release_permissions_valid = all(
+                      path.stat().st_uid == 0 and path.stat().st_mode & 0o022 == 0
+                      for path in map(type(layout.release_root), protected_paths)
+                  )
+              except (OSError, ValueError):
+                  pass
               diagnostic = {
                   "capabilities_available": True,
                   "owned_state_safe": owned_state_safe,
+                  "release_checks": {
+                      "current_target_valid": current_target_valid,
+                      "executable_sha256_valid": executable_sha256_valid,
+                      "executable_size_valid": executable_size_valid,
+                      "manifest_platform_valid": manifest_platform_valid,
+                      "manifest_valid": manifest_valid,
+                      "manifest_version_valid": manifest_version_valid,
+                      "release_count_valid": release_count_valid,
+                      "release_permissions_valid": release_permissions_valid,
+                  },
                   "release_state": release_state.value,
               }
           print(json.dumps(diagnostic, sort_keys=True))
