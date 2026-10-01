@@ -198,10 +198,14 @@ jobs:
             sudo "$python_bin" - <<'PY'
           import hashlib
           import json
+          import os
+          from pathlib import Path
 
           from xferry.management.managed_state import (
               _ReleaseState,
               _descriptor_capabilities,
+              _inspect_owned_entry,
+              _owned_entry_witness_is_valid,
               _owned_state_is_safe,
               _release_state,
           )
@@ -209,10 +213,25 @@ jobs:
           from xferry.management.release_contract import ReleaseManifest, current_platform_id
 
           layout = ManagedLayout()
+          owned_entry_checks = {
+              label: {
+                  "descriptor_close_ok": False,
+                  "inspection_ok": False,
+                  "witness_valid": False,
+              }
+              for label in (
+                  "auth_file",
+                  "cli_link",
+                  "config_file",
+                  "data_root",
+                  "unit_file",
+              )
+          }
           capabilities = _descriptor_capabilities()
           if capabilities is None:
               diagnostic = {
                   "capabilities_available": False,
+                  "owned_entry_checks": owned_entry_checks,
                   "owned_state_safe": False,
                   "release_state": "unavailable",
               }
@@ -227,6 +246,44 @@ jobs:
                   capabilities,
                   allow_expected_entries=release_state is _ReleaseState.VALID_SUPPORTED,
               )
+              owned_entry_specs = (
+                  ("config_file", layout.config_file, "file", None),
+                  ("auth_file", layout.auth_file, "file", None),
+                  ("data_root", layout.data_root, "directory", None),
+                  ("unit_file", layout.unit_file, "file", None),
+                  (
+                      "cli_link",
+                      layout.cli_link,
+                      "symlink",
+                      Path("/opt/xferry/current/xferry"),
+                  ),
+              )
+              for label, path, expected_kind, expected_target in owned_entry_specs:
+                  witness = None
+                  try:
+                      witness = _inspect_owned_entry(
+                          path,
+                          expected_kind,
+                          expected_target,
+                          allow_expected_entry=(
+                              release_state is _ReleaseState.VALID_SUPPORTED
+                          ),
+                          capabilities=capabilities,
+                      )
+                      owned_entry_checks[label]["inspection_ok"] = True
+                      owned_entry_checks[label]["witness_valid"] = (
+                          _owned_entry_witness_is_valid(witness, capabilities)
+                      )
+                  except Exception:
+                      pass
+                  finally:
+                      if witness is not None:
+                          try:
+                              os.close(witness.descriptor)
+                          except OSError:
+                              pass
+                          else:
+                              owned_entry_checks[label]["descriptor_close_ok"] = True
               manifest_valid = False
               manifest_platform_valid = False
               manifest_version_valid = False
@@ -295,6 +352,7 @@ jobs:
                   pass
               diagnostic = {
                   "capabilities_available": True,
+                  "owned_entry_checks": owned_entry_checks,
                   "owned_state_safe": owned_state_safe,
                   "release_checks": {
                       "current_target_valid": current_target_valid,

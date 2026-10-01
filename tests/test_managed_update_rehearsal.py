@@ -218,6 +218,14 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
     release_root = root / "opt/xferry"
     release = release_root / "releases/0.1.1"
     release.mkdir(parents=True)
+    for directory in (
+        root,
+        root / "opt",
+        release_root,
+        release_root / "releases",
+        release,
+    ):
+        directory.chmod(0o755)
     executable = release / "xferry"
     executable_payload = b"diagnostic-release"
     executable.write_bytes(executable_payload)
@@ -248,9 +256,29 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
     marker = "            sudo \"$python_bin\" - <<'PY'\n"
     diagnostic = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
     diagnostic = "\n".join(line[10:] for line in diagnostic.splitlines())
+    descriptor_directory = Path("/proc/self/fd")
+    descriptor_count_before = (
+        len(tuple(descriptor_directory.iterdir())) if descriptor_directory.is_dir() else None
+    )
     exec(compile(diagnostic, str(REHEARSAL_WORKFLOW), "exec"), {})
+    if descriptor_count_before is not None:
+        assert len(tuple(descriptor_directory.iterdir())) == descriptor_count_before
 
     evidence = json.loads(capsys.readouterr().out)
+    owned_entry_checks = evidence["owned_entry_checks"]
+    assert set(owned_entry_checks) == {
+        "auth_file",
+        "cli_link",
+        "config_file",
+        "data_root",
+        "unit_file",
+    }
+    assert all(
+        set(checks) == {"descriptor_close_ok", "inspection_ok", "witness_valid"}
+        and all(isinstance(value, bool) for value in checks.values())
+        for checks in owned_entry_checks.values()
+    )
+    assert all(all(checks.values()) for checks in owned_entry_checks.values()), owned_entry_checks
     permission_checks = evidence["release_checks"]["permission_checks"]
     assert set(permission_checks) == {
         "executable",
