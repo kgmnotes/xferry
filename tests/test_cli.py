@@ -400,6 +400,32 @@ class TestCLIParser:
         assert "xferry run --preset local-secure" in help_text
         assert "xferry --preset local-secure" not in help_text
 
+    def test_server_help_is_stable_across_supported_python_versions(self):
+        """Stdlib argparse changes must not rewrite the generated CLI contract."""
+        help_text = self.parser.format_help()
+
+        assert "  -H HOST, --host HOST  Bind host (default: 127.0.0.1)" in help_text
+        assert "  -p PORT, --port PORT  Listen port (default: 8080)" in help_text
+        assert "  -d DIR, --dir DIR     Root directory (default: current)" in help_text
+        assert "-H, --host HOST" not in help_text
+        assert "(default: False)" not in help_text
+        assert (
+            "TLS:\n"
+            "  --tls, --no-tls       Enable HTTPS with a generated self-signed certificate\n\n"
+            "Authentication:"
+        ) in help_text
+
+    @pytest.mark.parametrize("columns", [0, 40, 160])
+    def test_server_help_is_stable_across_terminal_widths(self, monkeypatch, columns):
+        """Runner terminal geometry must not rewrite the generated CLI contract."""
+        expected = self.parser.format_help()
+        monkeypatch.setattr(
+            "shutil.get_terminal_size",
+            lambda fallback=(80, 24): os.terminal_size((columns, fallback[1])),
+        )
+
+        assert create_parser().format_help() == expected
+
     def test_help_text_is_cp1252_encodable(self):
         help_text = self.parser.format_help()
 

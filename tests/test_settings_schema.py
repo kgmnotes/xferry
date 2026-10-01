@@ -163,10 +163,6 @@ def test_argparse_setting_actions_are_derived_from_exact_schema_metadata() -> No
                 else str(getattr(defaults, spec.name))
             )
         )
-        if sys.version_info < (3, 11) and cli.action == "boolean_optional":
-            if action.default is not None and action.default is not argparse.SUPPRESS:
-                # Python 3.10's BooleanOptionalAction appends this before formatting.
-                expected_help += " (default: %(default)s)"
         assert action.help == expected_help
         assert action.choices == (list(cli.choices) if cli.choices else None)
 
