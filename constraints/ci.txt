@@ -64,7 +64,7 @@ pymdown-extensions==11.0.1
 pyparsing==3.3.2
 pyproject_hooks==1.2.0
 pyrfc3339==2.1.0
-pytest==9.0.3
+pytest==9.1.1
 pytest-benchmark==5.2.3
 pytest-cov==7.0.0
 python-dateutil==2.9.0.post0
