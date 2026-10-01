@@ -1482,6 +1482,20 @@ def managed_update_rehearsal_policy_findings(
     if any(item not in lifecycle.text for item in required_boundary):
         reject("managed update lifecycle lost its exact repository/ref/native matrix boundary")
 
+    required_opt_normalization = (
+        "Normalize disposable runner managed parent",
+        'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
+        'test "$(sudo stat -c \'%u\' /opt)" = "0"',
+        "sudo chmod 0755 /opt",
+        'test "$(sudo stat -c \'%u:%a\' /opt)" = "0:755"',
+    )
+    if any(item not in lifecycle.text for item in required_opt_normalization):
+        reject("managed update rehearsal must protect the disposable runner /opt parent")
+    elif lifecycle.text.index(required_opt_normalization[0]) > lifecycle.text.index(
+        "Install signed 0.1.1"
+    ):
+        reject("managed update rehearsal must protect /opt before installing a managed release")
+
     runner_lines = tuple(
         line.strip() for line in rehearsal_text.splitlines() if line.strip().startswith("runner:")
     )

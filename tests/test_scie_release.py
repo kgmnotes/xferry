@@ -294,6 +294,7 @@ def _run_installer(
     manifest_payload: bytes | None = None,
     signature_payload: bytes | None = None,
     require_https_transport: bool = False,
+    forced_mkdir_mode: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir(parents=True)
@@ -341,6 +342,23 @@ def _run_installer(
         f'#!/bin/sh\n: > "$XFERRY_TEST_MKTEMP_MARKER"\nexec "{real_mktemp}" "$@"\n',
         encoding="utf-8",
     )
+    if forced_mkdir_mode is not None:
+        real_mkdir = shutil.which("mkdir")
+        assert real_mkdir is not None
+        (fake_bin / "mkdir").write_text(
+            "#!/bin/sh\n"
+            f'"{real_mkdir}" "$@" || exit $?\n'
+            'for argument in "$@"; do\n'
+            '  case "$argument" in -*) continue ;; esac\n'
+            '  case "$argument" in\n'
+            '    "$DESTDIR/opt/xferry/releases")\n'
+            '      chmod "$XFERRY_TEST_FORCED_MKDIR_MODE" "${argument%/*}" "$argument"\n'
+            "      ;;\n"
+            '    *) chmod "$XFERRY_TEST_FORCED_MKDIR_MODE" "$argument" ;;\n'
+            "  esac\n"
+            "done\n",
+            encoding="utf-8",
+        )
     for tool in fake_bin.iterdir():
         tool.chmod(0o755)
 
@@ -381,6 +399,9 @@ def _run_installer(
         "PYTHONPATH": str(REPO_ROOT),
         "XFERRY_RELEASE_BASE_URL": "https://releases.example.test/xferry",
         "XFERRY_TEST_CURL_MARKER": str(tmp_path / "curl-called"),
+        "XFERRY_TEST_FORCED_MKDIR_MODE": (
+            "" if forced_mkdir_mode is None else format(forced_mkdir_mode, "04o")
+        ),
         "XFERRY_TEST_MKTEMP_MARKER": str(tmp_path / "mktemp-called"),
         "XFERRY_TEST_MACHINE": machine,
         "XFERRY_TEST_MANIFEST": str(downloaded_manifest),
@@ -1175,6 +1196,26 @@ def test_rendered_installer_verifies_before_installing(tmp_path: Path) -> None:
     assert stat.S_IMODE(release_dir.joinpath("xferry-release.json").stat().st_mode) == 0o644
     assert (root / "opt/xferry/current").readlink() == Path("releases/0.1.0")
     assert (root / "usr/local/bin/xferry").readlink() == Path("/opt/xferry/current/xferry")
+
+
+def test_installer_restricts_release_directories_after_writable_mode_inheritance(
+    tmp_path: Path,
+) -> None:
+    """A hostile parent ACL must not leave the managed release chain writable."""
+    payload = b"scie"
+    bundle = _render_bundle(tmp_path / "candidate", payload)
+
+    result = _run_installer(
+        bundle,
+        tmp_path / "install",
+        payload,
+        forced_mkdir_mode=0o777,
+    )
+
+    assert result.returncode == 0, result.stderr
+    release_root = tmp_path / "install/root/opt/xferry"
+    assert stat.S_IMODE(release_root.stat().st_mode) == 0o755
+    assert stat.S_IMODE(release_root.joinpath("releases").stat().st_mode) == 0o755
 
 
 @pytest.mark.parametrize(

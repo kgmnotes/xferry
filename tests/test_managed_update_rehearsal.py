@@ -130,6 +130,42 @@ def test_managed_update_rehearsal_policy_rejects_boundary_regressions(
     assert findings
 
 
+def test_managed_update_rehearsal_policy_requires_protected_opt_on_disposable_runner() -> None:
+    from tools.check_stale_docs import managed_update_rehearsal_policy_findings
+
+    rehearsal = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    normalization = """      - name: Normalize disposable runner managed parent
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          test "$(sudo stat -c '%u' /opt)" = "0"
+          sudo chmod 0755 /opt
+          test "$(sudo stat -c '%u:%a' /opt)" = "0:755"
+
+"""
+    if normalization not in rehearsal:
+        rehearsal = rehearsal.replace(
+            "      - name: Install signed 0.1.1\n",
+            normalization + "      - name: Install signed 0.1.1\n",
+        )
+
+    assert managed_update_rehearsal_policy_findings(rehearsal, release) == []
+    findings = managed_update_rehearsal_policy_findings(
+        rehearsal.replace(normalization, "", 1),
+        release,
+    )
+    assert findings
+
+    moved_after_install = rehearsal.replace(normalization, "", 1).replace(
+        "      - name: Setup private managed service\n",
+        normalization + "      - name: Setup private managed service\n",
+        1,
+    )
+    findings = managed_update_rehearsal_policy_findings(moved_after_install, release)
+    assert findings
+
+
 def test_managed_update_rehearsal_runs_the_complete_lifecycle_in_order() -> None:
     workflow = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
     steps = (

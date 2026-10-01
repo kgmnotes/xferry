@@ -141,6 +141,14 @@ jobs:
           done
           exit 1
 
+      - name: Normalize disposable runner managed parent
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          test "$(sudo stat -c '%u' /opt)" = "0"
+          sudo chmod 0755 /opt
+          test "$(sudo stat -c '%u:%a' /opt)" = "0:755"
+
       - name: Install signed 0.1.1
         env:
           RELEASE_URL: https://127.0.0.1:${{ env.REHEARSAL_PORT }}/releases/download/v0.1.1

@@ -466,7 +466,8 @@ if [ -e "$release_path" ]; then
   exit 1
 fi
 
-mkdir -p "$release_root/releases" "$bin_root"
+mkdir -p "$releases_root" "$bin_root"
+chmod 0755 "$release_root" "$releases_root"
 install_stage="$release_root/.install-$version-$$"
 mkdir "$install_stage"
 chmod 0755 "$install_stage"
