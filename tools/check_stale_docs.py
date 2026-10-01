@@ -1482,19 +1482,33 @@ def managed_update_rehearsal_policy_findings(
     if any(item not in lifecycle.text for item in required_boundary):
         reject("managed update lifecycle lost its exact repository/ref/native matrix boundary")
 
-    required_opt_normalization = (
-        "Normalize disposable runner managed parent",
+    required_parent_normalization = (
+        "Normalize disposable runner managed parents",
         'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
         'test "$(sudo stat -c \'%u\' /opt)" = "0"',
         "sudo chmod 0755 /opt",
         'test "$(sudo stat -c \'%u:%a\' /opt)" = "0:755"',
+        'test "$(sudo stat -c \'%u\' /usr/local/bin)" = "0"',
+        "sudo chmod 0755 /usr/local/bin",
+        'test "$(sudo stat -c \'%u:%a\' /usr/local/bin)" = "0:755"',
     )
-    if any(item not in lifecycle.text for item in required_opt_normalization):
-        reject("managed update rehearsal must protect the disposable runner /opt parent")
-    elif lifecycle.text.index(required_opt_normalization[0]) > lifecycle.text.index(
-        "Install signed 0.1.1"
-    ):
-        reject("managed update rehearsal must protect /opt before installing a managed release")
+    normalization_marker = "      - name: Normalize disposable runner managed parents"
+    install_marker = "      - name: Install signed 0.1.1"
+    normalization_start = lifecycle.text.find(normalization_marker)
+    install_start = lifecycle.text.find(install_marker)
+    next_step_start = lifecycle.text.find(
+        "\n      - ",
+        normalization_start + len(normalization_marker),
+    )
+    normalization_step = (
+        ""
+        if normalization_start < 0 or next_step_start < 0
+        else lifecycle.text[normalization_start:next_step_start]
+    )
+    if any(item not in normalization_step for item in required_parent_normalization):
+        reject("managed update rehearsal must protect its disposable runner managed parents")
+    elif install_start < 0 or normalization_start > install_start:
+        reject("managed update rehearsal must protect managed parents before installation")
 
     runner_lines = tuple(
         line.strip() for line in rehearsal_text.splitlines() if line.strip().startswith("runner:")

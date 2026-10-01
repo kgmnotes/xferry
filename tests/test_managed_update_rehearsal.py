@@ -130,18 +130,21 @@ def test_managed_update_rehearsal_policy_rejects_boundary_regressions(
     assert findings
 
 
-def test_managed_update_rehearsal_policy_requires_protected_opt_on_disposable_runner() -> None:
+def test_managed_update_rehearsal_policy_requires_protected_parents_on_disposable_runner() -> None:
     from tools.check_stale_docs import managed_update_rehearsal_policy_findings
 
     rehearsal = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    normalization = """      - name: Normalize disposable runner managed parent
+    normalization = """      - name: Normalize disposable runner managed parents
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
           test "$(sudo stat -c '%u' /opt)" = "0"
           sudo chmod 0755 /opt
           test "$(sudo stat -c '%u:%a' /opt)" = "0:755"
+          test "$(sudo stat -c '%u' /usr/local/bin)" = "0"
+          sudo chmod 0755 /usr/local/bin
+          test "$(sudo stat -c '%u:%a' /usr/local/bin)" = "0:755"
 
 """
     if normalization not in rehearsal:
@@ -163,6 +166,17 @@ def test_managed_update_rehearsal_policy_requires_protected_opt_on_disposable_ru
         1,
     )
     findings = managed_update_rehearsal_policy_findings(moved_after_install, release)
+    assert findings
+
+    cli_chmod = "          sudo chmod 0755 /usr/local/bin\n"
+    assert cli_chmod in rehearsal
+    split_normalization = rehearsal.replace(cli_chmod, "", 1).replace(
+        "      - name: Setup private managed service\n",
+        "      - name: Deferred CLI parent normalization\n"
+        "        run: |\n" + cli_chmod + "\n      - name: Setup private managed service\n",
+        1,
+    )
+    findings = managed_update_rehearsal_policy_findings(split_normalization, release)
     assert findings
 
 

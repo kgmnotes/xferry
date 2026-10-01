@@ -141,13 +141,16 @@ jobs:
           done
           exit 1
 
-      - name: Normalize disposable runner managed parent
+      - name: Normalize disposable runner managed parents
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
           test "$(sudo stat -c '%u' /opt)" = "0"
           sudo chmod 0755 /opt
           test "$(sudo stat -c '%u:%a' /opt)" = "0:755"
+          test "$(sudo stat -c '%u' /usr/local/bin)" = "0"
+          sudo chmod 0755 /usr/local/bin
+          test "$(sudo stat -c '%u:%a' /usr/local/bin)" = "0:755"
 
       - name: Install signed 0.1.1
         env:
