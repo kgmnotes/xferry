@@ -169,7 +169,25 @@ jobs:
           setup_result="$RUNNER_TEMP/managed-update-evidence/setup.json"
           setup_credentials="$RUNNER_TEMP/managed-update-setup.credentials"
           umask 077
-          sudo "$MANAGED_XFERRY" setup --private --json > "$setup_result" 2> "$setup_credentials"
+          setup_exit=0
+          sudo "$MANAGED_XFERRY" setup --private --json \
+            > "$setup_result" 2> "$setup_credentials" || setup_exit="$?"
+          if [ "$setup_exit" -ne 0 ]; then
+            python - "$setup_result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(result, dict):
+              raise RuntimeError("managed setup failure result must be an object")
+          allowed = {"code", "detail", "exit_code", "message", "next_actions", "status"}
+          unexpected = set(result) - allowed
+          if unexpected or result.get("status") != "error":
+              raise RuntimeError("managed setup failure result is not safe to log")
+          print(json.dumps(result, sort_keys=True), file=sys.stderr)
+          PY
+            exit "$setup_exit"
+          fi
           python - "$setup_result" <<'PY'
           import json
           import sys

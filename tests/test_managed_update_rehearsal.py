@@ -147,6 +147,20 @@ def test_managed_update_rehearsal_runs_the_complete_lifecycle_in_order() -> None
     assert 'result["code"] == "uninstall_complete"' in workflow
 
 
+def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields() -> None:
+    """A failed native setup must be diagnosable without printing credentials stderr."""
+    workflow = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "setup_exit=0" in workflow
+    assert 'setup_exit="$?"' in workflow
+    assert (
+        'allowed = {"code", "detail", "exit_code", "message", "next_actions", "status"}' in workflow
+    )
+    assert "unexpected = set(result) - allowed" in workflow
+    assert "print(json.dumps(result, sort_keys=True), file=sys.stderr)" in workflow
+    assert 'cat "$setup_credentials"' not in workflow
+
+
 def test_repository_guard_includes_managed_update_rehearsal() -> None:
     from tools.check_stale_docs import find_release_policy_issues
 
