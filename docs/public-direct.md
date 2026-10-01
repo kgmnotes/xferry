@@ -12,7 +12,7 @@ still provide the network, storage, monitoring, and recovery boundaries in the
 
 ## Prepare the host
 
-Use the immutable `ghcr.io/kgmnotes/xferry:v0.1.0` image or the exact
+Use the immutable `ghcr.io/kgmnotes/xferry:v0.2.0` image or the exact
 `ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}` recorded by the release. The
 released image supports `linux/amd64` and `linux/arm64`. The Compose file at
 `deploy/docker/docker-compose.public-direct.yml` pins the

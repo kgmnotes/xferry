@@ -1029,7 +1029,7 @@ def test_installer_guidance_resolves_immutable_urls_without_inherited_release_ur
         "--remote-name",
     ]
     expected = [
-        curl_prefix + [f"https://github.com/kgmnotes/xferry/releases/download/v0.1.0/{name}"]
+        curl_prefix + [f"https://github.com/kgmnotes/xferry/releases/download/v0.2.0/{name}"]
         for name in expected_names
     ]
     expected += [

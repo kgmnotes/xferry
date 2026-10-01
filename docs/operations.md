@@ -41,8 +41,8 @@ Updates require an exact immutable version. A dry-run verifies signed metadata
 and reports the plan without changing managed files or service state:
 
 ```console
-sudo xferry update --to 0.1.0 --dry-run --json
-sudo xferry update --to 0.1.0 --json
+sudo xferry update --to 0.2.0 --dry-run --json
+sudo xferry update --to 0.2.0 --json
 ```
 
 Successful activation must report exact-version health and retain the prior
@@ -69,11 +69,11 @@ The released image supports `linux/amd64` and `linux/arm64`. Pull and run an
 immutable version tag, or prefer the digest recorded in the release inventory:
 
 ```console
-docker pull ghcr.io/kgmnotes/xferry:v0.1.0
+docker pull ghcr.io/kgmnotes/xferry:v0.2.0
 docker pull ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}
 docker run --rm --publish 127.0.0.1:8080:8080 \
   --volume xferry-data:/data \
-  ghcr.io/kgmnotes/xferry:v0.1.0
+  ghcr.io/kgmnotes/xferry:v0.2.0
 ```
 
 For the public-direct Compose contract, set the health hostname to the

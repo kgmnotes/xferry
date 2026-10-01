@@ -3,7 +3,7 @@ Server configuration.
 """
 
 # Project version (single source of truth)
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 # Hidden/service-owned paths are inaccessible via external file methods.

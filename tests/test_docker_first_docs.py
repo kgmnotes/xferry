@@ -29,7 +29,7 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert "brew install pipx" in text
     assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
-    assert "ghcr.io/kgmnotes/xferry:v0.1.0" in text
+    assert "ghcr.io/kgmnotes/xferry:v0.2.0" in text
     assert "git clone https://github.com/kgmnotes/xferry.git" not in text
     assert "releases/latest" not in text
     assert "ghcr.io/kgmnotes/xferry:latest" not in text

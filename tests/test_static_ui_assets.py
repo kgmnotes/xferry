@@ -2376,7 +2376,7 @@ def test_static_ui_version_matches_package_version() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
 
-    assert 'id="appVersion" data-app-version="0.1.0">v0.1.0</p>' in html
+    assert 'id="appVersion" data-app-version="0.2.0">v0.2.0</p>' in html
     assert "function updateVisibleAppVersionFromPing" in core_js
     assert "match(/^XFerry\\/" in core_js
 

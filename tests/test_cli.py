@@ -308,7 +308,7 @@ class TestCLIParser:
             self.parser.parse_args(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert captured.out == "xferry run 0.1.0\n"
+        assert captured.out == "xferry run 0.2.0\n"
 
     def test_dir_flag(self):
         args = self.parser.parse_args(["-d", "/tmp/serve"])

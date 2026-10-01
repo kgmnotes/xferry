@@ -2,7 +2,7 @@ name: xferry-public-direct
 
 services:
   xferry:
-    image: ghcr.io/kgmnotes/xferry:v0.1.0
+    image: ghcr.io/kgmnotes/xferry:v0.2.0
     restart: unless-stopped
     init: true
     read_only: true

@@ -44,7 +44,7 @@ The server listens on <http://127.0.0.1:8080>.
 
 Managed setup requires root, systemd, and one of the exact combinations in the
 [generated support matrix](managed-hosts.md). Select the installer for the host
-architecture from GitHub Release `v0.1.0`, download it and its detached
+architecture from GitHub Release `v0.2.0`, download it and its detached
 signature, and follow the [privileged verification order](security.md#privileged-installer-verification-order).
 Never stream an installer into a shell.
 
@@ -64,13 +64,13 @@ for logs, exact-version update, rollback, and uninstall.
 ## Container
 
 The released image supports `linux/amd64` and `linux/arm64`. Run the immutable
-v0.1.0 image on loopback with a named data volume:
+v0.2.0 image on loopback with a named data volume:
 
 ```console
 docker run --rm --name xferry \
   --publish 127.0.0.1:8080:8080 \
   --volume xferry-data:/data \
-  ghcr.io/kgmnotes/xferry:v0.1.0
+  ghcr.io/kgmnotes/xferry:v0.2.0
 ```
 
 For repeatable deployments, replace the version tag with the digest recorded

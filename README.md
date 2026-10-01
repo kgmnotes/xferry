@@ -2,7 +2,7 @@
 
 ![Python 3.10-3.14](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
 [![Security](https://github.com/kgmnotes/xferry/actions/workflows/security.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/security.yml)
 
@@ -30,7 +30,7 @@ xferry run --preset local --open
 
 For a systemd-managed Linux service, use the signed exact-version installer and
 the [ten supported host combinations](docs/managed-hosts.md). For a container,
-use the immutable image `ghcr.io/kgmnotes/xferry:v0.1.0` or its recorded digest.
+use the immutable image `ghcr.io/kgmnotes/xferry:v0.2.0` or its recorded digest.
 The [quick start](docs/quick-start.md) gives separate copy-paste journeys for
 portable, managed, and container use. Source checkout installation belongs to
 the [contributor workflow](CONTRIBUTING.md).

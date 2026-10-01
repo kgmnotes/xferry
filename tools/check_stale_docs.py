@@ -9,6 +9,7 @@ import re
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -419,7 +420,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         re.compile(
             r"\A(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.1\.0)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
@@ -440,7 +441,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.1\.0)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -544,7 +545,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/operations.md"),
         re.compile(
             r"\A(?=[\s\S]*pipx upgrade xferry)(?=[\s\S]*pipx uninstall xferry)"
-            r"(?=[\s\S]*xferry update --to 0\.1\.0)"
+            r"(?=[\s\S]*xferry update --to 0\.2\.0)"
             r"(?=[\s\S]*xferry rollback)(?=[\s\S]*xferry uninstall)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
@@ -559,7 +560,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/public-direct.md"),
         re.compile(
             r"\A(?=[\s\S]*security\.md#external-exposure-baseline)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.1\.0)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*--write-sample-config)"
             r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
@@ -2182,20 +2183,79 @@ def find_version_consistency_issues(
     changelog_path = Path("CHANGELOG.md")
     if targets_cover_path(changelog_path, repo_root, targets):
         changelog = read_contract_text(repo_root / changelog_path) or ""
-        if f"## [{version}] - 2026-08-20" not in changelog:
-            findings.append(
-                contract_finding(
-                    changelog_path, f"CHANGELOG must contain the {version} section dated 2026-08-20"
+        headings = tuple(
+            (match.group(1), match.group(2), position)
+            for position, match in enumerate(
+                re.finditer(
+                    r"^## \[([^]]+)](?: - ([^\n]+))?$",
+                    changelog,
+                    re.MULTILINE,
                 )
             )
-        sections = tuple(
-            section
-            for section in re.findall(r"^## \[([^]]+)](?:\s+-[^\n]*)?$", changelog, re.MULTILINE)
-            if section.casefold() != "unreleased"
         )
-        if set(sections) != {version}:
+        released = tuple(
+            (released_version, released_date, position)
+            for released_version, released_date, position in headings
+            if released_version.casefold() != "unreleased"
+        )
+        release_counts: dict[str, int] = {}
+        for released_version, released_date, _position in released:
+            release_counts[released_version] = release_counts.get(released_version, 0) + 1
+            if released_date is None or re.fullmatch(r"\d{4}-\d{2}-\d{2}", released_date) is None:
+                displayed_date = released_date or "missing"
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        "CHANGELOG release date must use canonical ISO YYYY-MM-DD: "
+                        f"{displayed_date}",
+                    )
+                )
+                continue
+            try:
+                date.fromisoformat(released_date)
+            except ValueError:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG release date is not a valid ISO date: {released_date}",
+                    )
+                )
+
+        for released_version, count in release_counts.items():
+            if count > 1:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG released version {released_version} must not be duplicated",
+                    )
+                )
+
+        current_sections = tuple(item for item in released if item[0] == version)
+        if len(current_sections) != 1:
             findings.append(
-                contract_finding(changelog_path, f"CHANGELOG must contain only version {version}")
+                contract_finding(
+                    changelog_path,
+                    "CHANGELOG must contain exactly one released section for current package "
+                    f"version {version}",
+                )
+            )
+        unreleased_positions = tuple(
+            position
+            for heading, _heading_date, position in headings
+            if heading.casefold() == "unreleased"
+        )
+        if (
+            len(unreleased_positions) != 1
+            or not released
+            or released[0][0] != version
+            or released[0][2] <= unreleased_positions[0]
+        ):
+            findings.append(
+                contract_finding(
+                    changelog_path,
+                    f"CHANGELOG current package version {version} must be the first released "
+                    "section after [Unreleased]",
+                )
             )
 
     pyproject_path = Path("pyproject.toml")

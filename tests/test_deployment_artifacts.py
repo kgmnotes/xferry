@@ -390,7 +390,7 @@ def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_confi
     compose = compose_path.read_text(encoding="utf-8")
     assert "name: xferry-public-direct" in compose
     assert "    build:" not in compose
-    assert "image: ghcr.io/kgmnotes/xferry:v0.1.0" in compose
+    assert "image: ghcr.io/kgmnotes/xferry:v0.2.0" in compose
     assert "ghcr.io/kgmnotes/xferry:latest" not in compose
     assert "container_name:" not in compose
     assert "    command:\n      - run\n      - --config" in compose
@@ -433,7 +433,7 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
 
     for document in (readme, quick_start):
         assert "pipx install xferry" in document
-        assert "ghcr.io/kgmnotes/xferry:v0.1.0" in document
+        assert "ghcr.io/kgmnotes/xferry:v0.2.0" in document
         assert "ghcr.io/kgmnotes/xferry:latest" not in document
         assert "curl | sudo sh" not in document
 
@@ -442,7 +442,7 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
     assert quick_start.index("## Portable") < quick_start.index("## Managed Linux")
     assert quick_start.index("## Managed Linux") < quick_start.index("## Container")
 
-    assert "sudo xferry update --to 0.1.0" in operations
+    assert "sudo xferry update --to 0.2.0" in operations
     assert "sudo xferry rollback" in operations
     assert "sudo xferry uninstall" in operations
     assert "ghcr.io/kgmnotes/xferry@sha256:" in operations
@@ -453,6 +453,7 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
     assert "python -m pip install -e" in contributing
     assert "generated CLI reference" in normalized_contributing
     assert "## [Unreleased]" in changelog
+    assert "## [0.2.0] - 2026-10-01" in changelog
     assert "## [0.1.0] - 2026-08-20" in changelog
 
 
@@ -585,7 +586,7 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
     security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
     for required in (
-        "ghcr.io/kgmnotes/xferry:v0.1.0",
+        "ghcr.io/kgmnotes/xferry:v0.2.0",
         "ghcr.io/kgmnotes/xferry@sha256:",
         "/etc/xferry/auth",
         "--write-sample-config",

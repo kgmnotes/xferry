@@ -594,22 +594,107 @@ def test_adr_navigation_requires_every_current_decision(tmp_path: Path) -> None:
     assert any("ADR-010" in finding.message for finding in findings)
 
 
-def test_version_consistency_reports_ui_and_api_drift(tmp_path: Path) -> None:
+def test_version_consistency_accepts_current_release_before_retained_history(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "xferry" / "config.py"
     config.parent.mkdir()
-    config.write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
     html = tmp_path / "xferry" / "data" / "index.html"
     html.parent.mkdir()
     html.write_text('<p id="appVersion" data-app-version="0.2.0">v0.2.0</p>\n', encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)\n",
+        encoding="utf-8",
+    )
     (tmp_path / "API.md").write_text('{"server": "XFerry/0.2.0"}\n', encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-10-01\n\n## [0.1.0] - 2026-08-20\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        'version = {attr = "xferry.config.__version__"}\n', encoding="utf-8"
+    )
 
     findings = check_stale_docs.find_version_consistency_issues(
         tmp_path,
-        ("xferry", "API.md"),
+        ("xferry", "README.md", "API.md", "CHANGELOG.md", "pyproject.toml"),
+    )
+
+    assert findings == []
+
+
+def test_version_consistency_reports_ui_readme_and_api_drift(tmp_path: Path) -> None:
+    config = tmp_path / "xferry" / "config.py"
+    config.parent.mkdir()
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
+    html = tmp_path / "xferry" / "data" / "index.html"
+    html.parent.mkdir()
+    html.write_text('<p id="appVersion" data-app-version="0.1.0">v0.1.0</p>\n', encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "API.md").write_text('{"server": "XFerry/0.1.0"}\n', encoding="utf-8")
+
+    findings = check_stale_docs.find_version_consistency_issues(
+        tmp_path,
+        ("xferry", "README.md", "API.md"),
     )
 
     assert any("UI version" in finding.message for finding in findings)
+    assert any("README badge" in finding.message for finding in findings)
     assert any("API server example" in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("changelog", "message"),
+    (
+        (
+            "## [Unreleased]\n\n## [0.1.0] - 2026-08-20\n",
+            "exactly one released section for current package version 0.2.0",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-10-01\n\n## [0.2.0] - 2026-10-02\n",
+            "released version 0.2.0 must not be duplicated",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-02-30\n",
+            "release date is not a valid ISO date: 2026-02-30",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-1-01\n",
+            "release date must use canonical ISO YYYY-MM-DD: 2026-1-01",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.1.0] - 2026-08-20\n\n## [0.2.0] - 2026-10-01\n",
+            "current package version 0.2.0 must be the first released section",
+        ),
+        (
+            "## [Unreleased]\n\n"
+            "## [0.2.0] - 2026-10-01\n\n"
+            "## [0.1.0] - 2026-08-20\n\n"
+            "## [0.1.0] - 2026-08-21\n",
+            "released version 0.1.0 must not be duplicated",
+        ),
+    ),
+)
+def test_version_consistency_rejects_invalid_release_history(
+    tmp_path: Path,
+    changelog: str,
+    message: str,
+) -> None:
+    config = tmp_path / "xferry" / "config.py"
+    config.parent.mkdir()
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+
+    findings = check_stale_docs.find_version_consistency_issues(
+        tmp_path,
+        ("xferry/config.py", "CHANGELOG.md"),
+    )
+
+    assert any(message in finding.message for finding in findings)
 
 
 def test_contributor_commands_must_match_ci(tmp_path: Path) -> None:

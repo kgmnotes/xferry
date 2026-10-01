@@ -185,7 +185,7 @@ are Python available as `python` and a reviewed checkout containing
 For x86_64, use:
 
 ```console
-release_url='https://github.com/kgmnotes/xferry/releases/download/v0.1.0'
+release_url='https://github.com/kgmnotes/xferry/releases/download/v0.2.0'
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/xferry-release-linux-x86_64.json"
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
