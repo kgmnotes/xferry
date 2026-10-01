@@ -186,6 +186,45 @@ jobs:
               raise RuntimeError("managed setup failure result is not safe to log")
           print(json.dumps(result, sort_keys=True), file=sys.stderr)
           PY
+            python_bin="$(command -v python)"
+            sudo "$python_bin" - <<'PY'
+          import json
+
+          from xferry.management.managed_state import (
+              _ReleaseState,
+              _descriptor_capabilities,
+              _owned_state_is_safe,
+              _release_state,
+          )
+          from xferry.management.model import ManagedLayout
+          from xferry.management.release_contract import current_platform_id
+
+          layout = ManagedLayout()
+          capabilities = _descriptor_capabilities()
+          if capabilities is None:
+              diagnostic = {
+                  "capabilities_available": False,
+                  "owned_state_safe": False,
+                  "release_state": "unavailable",
+              }
+          else:
+              release_state = _release_state(
+                  layout,
+                  capabilities,
+                  platform_id=current_platform_id(),
+              )
+              owned_state_safe = _owned_state_is_safe(
+                  layout,
+                  capabilities,
+                  allow_expected_entries=release_state is _ReleaseState.VALID_SUPPORTED,
+              )
+              diagnostic = {
+                  "capabilities_available": True,
+                  "owned_state_safe": owned_state_safe,
+                  "release_state": release_state.value,
+              }
+          print(json.dumps(diagnostic, sort_keys=True))
+          PY
             exit "$setup_exit"
           fi
           python - "$setup_result" <<'PY'

@@ -158,6 +158,8 @@ def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields(
     )
     assert "unexpected = set(result) - allowed" in workflow
     assert "print(json.dumps(result, sort_keys=True), file=sys.stderr)" in workflow
+    assert '"release_state": release_state.value' in workflow
+    assert '"owned_state_safe": owned_state_safe' in workflow
     assert 'cat "$setup_credentials"' not in workflow
 
 
