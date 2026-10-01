@@ -699,7 +699,7 @@ def test_optional_maintenance_commands_keep_focused_help(
     ("command", "example"),
     [
         ("update", f"sudo xferry update --to {__version__}"),
-        ("rollback", f"sudo xferry rollback --to {__version__}"),
+        ("rollback", "sudo xferry rollback"),
     ],
 )
 def test_maintenance_help_uses_only_the_authoritative_release_examples(
@@ -708,7 +708,9 @@ def test_maintenance_help_uses_only_the_authoritative_release_examples(
     """Maintenance help must derive copy-paste examples from package authority."""
     assert main(["help", command]) == 0
     output = capsys.readouterr().out
-    assert f"Example: {example}" in output
+    assert [line for line in output.splitlines() if line.startswith("Example:")] == [
+        f"Example: {example}"
+    ]
 
 
 def test_help_run_shows_the_canonical_copy_paste_example(

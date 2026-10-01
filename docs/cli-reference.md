@@ -285,7 +285,7 @@ options:
   --dry-run
   --json
 
-Example: sudo xferry rollback --to 0.2.0
+Example: sudo xferry rollback
 ```
 
 ## `xferry uninstall --help`

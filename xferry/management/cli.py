@@ -51,7 +51,7 @@ _COMMAND_EXAMPLES = {
     "doctor": "sudo xferry doctor",
     "credentials": "sudo xferry credentials reset",
     "update": f"sudo xferry update --to {__version__}",
-    "rollback": f"sudo xferry rollback --to {__version__}",
+    "rollback": "sudo xferry rollback",
     "uninstall": "sudo xferry uninstall",
     "examples": "xferry examples",
 }
