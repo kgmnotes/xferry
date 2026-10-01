@@ -21,6 +21,51 @@ from xferry.settings import LaunchPreset, load_settings_file
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("document", ["docs/public-direct.md", "docs/operations.md"])
+def test_documented_public_compose_commands_set_required_health_host(
+    tmp_path: Path, document: str
+) -> None:
+    """Catches copied up/down commands failing Compose's required host interpolation."""
+    text = (REPO_ROOT / document).read_text(encoding="utf-8")
+    blocks = [
+        block
+        for block in re.findall(r"```(?:console|bash)\n([\s\S]*?)```", text)
+        if "docker-compose.public-direct.yml" in block
+    ]
+    assert blocks, "public Compose commands must be copyable"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "docker-argv"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$XFERRY_HEALTH_HOST" != files.example.com ]; then\n'
+        "  printf '%s\\n' 'missing or wrong XFERRY_HEALTH_HOST' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        'printf \'%s\\t\' "$@" >> "$XFERRY_TEST_CAPTURE"\n'
+        "printf '\\n' >> \"$XFERRY_TEST_CAPTURE\"\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    for block in blocks:
+        result = subprocess.run(
+            ["/bin/bash", "-e", "-c", block],
+            cwd=tmp_path,
+            env={"PATH": str(fake_bin), "XFERRY_TEST_CAPTURE": str(capture)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    prefix = ["compose", "-f", "deploy/docker/docker-compose.public-direct.yml"]
+    expected = [prefix + ["up", "-d"]]
+    if document == "docs/operations.md":
+        expected += [prefix + ["down"], prefix + ["down", "--volumes"]]
+    assert [line.split("\t")[:-1] for line in capture.read_text().splitlines()] == expected
+
+
 def _run_public_direct_healthcheck(
     monkeypatch: pytest.MonkeyPatch, response: bytes | tuple[bytes, ...]
 ) -> int:

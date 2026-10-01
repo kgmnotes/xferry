@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from tools import check_stale_docs
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUICK_START = Path("docs/quick-start.md")
 OPERATIONS = Path("docs/operations.md")
@@ -21,13 +25,46 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert "pipx install xferry" in text
     assert "xferry run --preset local --open" in text
     assert "py -m pip install --user pipx" in text
-    assert "python3 -m pip install --user pipx" in text
+    assert "sudo apt install pipx" in text
+    assert "brew install pipx" in text
+    assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
     assert "ghcr.io/kgmnotes/xferry:v0.1.0" in text
     assert "git clone https://github.com/kgmnotes/xferry.git" not in text
     assert "releases/latest" not in text
     assert "ghcr.io/kgmnotes/xferry:latest" not in text
     assert "curl | sudo sh" not in text
+
+
+def test_quick_start_guard_accepts_package_manager_bootstrap(tmp_path: Path) -> None:
+    """Catches the semantic guard requiring a PEP 668-incompatible bootstrap."""
+    text = _read(QUICK_START).replace(
+        "python3 -m pip install --user pipx",
+        "sudo apt install pipx\nbrew install pipx",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / QUICK_START).write_text(text, encoding="utf-8")
+
+    assert check_stale_docs.find_semantic_contract_issues(tmp_path, (str(QUICK_START),)) == []
+
+
+def test_quick_start_guard_rejects_generic_pip_bootstrap(tmp_path: Path) -> None:
+    """Catches onboarding drifting back to a system-Python pipx install."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / QUICK_START).write_text(
+        _read(QUICK_START) + "\npython3 -m pip install --user pipx\n", encoding="utf-8"
+    )
+
+    assert check_stale_docs.find_semantic_contract_issues(tmp_path, (str(QUICK_START),))
+
+
+@pytest.mark.parametrize("path", [QUICK_START, Path("docs/public-direct.md"), OPERATIONS])
+def test_container_journey_declares_released_platforms(path: Path) -> None:
+    """Catches container onboarding omitting the released host architectures."""
+    text = _read(path)
+
+    assert "linux/amd64" in text
+    assert "linux/arm64" in text
 
 
 def test_portable_process_documents_persistent_data_root() -> None:

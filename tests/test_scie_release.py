@@ -969,6 +969,91 @@ def test_installer_guidance_verifies_downloads_before_explicit_sudo() -> None:
     assert "curl |" not in commands
 
 
+def test_installer_guidance_declares_verifier_prerequisites_before_commands() -> None:
+    """Catches installer onboarding hiding its Python and checkout prerequisites."""
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    procedure = security.split("### Privileged installer verification order", maxsplit=1)[1]
+    introduction = procedure.split("```console", maxsplit=1)[0]
+
+    assert "Python" in introduction
+    assert "reviewed checkout" in introduction
+    assert "tools/verify_release_signature.py" in introduction
+
+
+def test_installer_guidance_resolves_immutable_urls_without_inherited_release_url(
+    tmp_path: Path,
+) -> None:
+    """Catches an undefined release URL or privileged execution before verification."""
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    procedure = security.split("### Privileged installer verification order", maxsplit=1)[1]
+    commands = procedure.split("```console", maxsplit=1)[1].split("```", maxsplit=1)[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "installer-argv"
+    for name in ("curl", "python", "sudo"):
+        executable = fake_bin / name
+        executable.write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\t\' "${0##*/}" "$@" >> "$XFERRY_TEST_CAPTURE"\n'
+            "printf '\\n' >> \"$XFERRY_TEST_CAPTURE\"\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/bash", "-e", "-c", commands],
+        cwd=tmp_path,
+        env={"PATH": str(fake_bin), "XFERRY_TEST_CAPTURE": str(capture)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = [line.split("\t")[:-1] for line in capture.read_text().splitlines()]
+    expected_names = [
+        "xferry-release-linux-x86_64.json",
+        "xferry-release-linux-x86_64.json.sig",
+        "install-linux-x86_64.sh",
+        "install-linux-x86_64.sh.sig",
+    ]
+    curl_prefix = [
+        "curl",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--remote-name",
+    ]
+    expected = [
+        curl_prefix + [f"https://github.com/kgmnotes/xferry/releases/download/v0.1.0/{name}"]
+        for name in expected_names
+    ]
+    expected += [
+        [
+            "python",
+            "tools/verify_release_signature.py",
+            "--manifest",
+            "xferry-release-linux-x86_64.json",
+            "--signature",
+            "xferry-release-linux-x86_64.json.sig",
+        ],
+        [
+            "python",
+            "tools/verify_release_signature.py",
+            "--installer",
+            "install-linux-x86_64.sh",
+            "--signature",
+            "install-linux-x86_64.sh.sig",
+        ],
+        ["sudo", "sh", "./install-linux-x86_64.sh"],
+    ]
+    assert calls == expected
+
+
 @pytest.mark.parametrize("version", ["1.0.0", "4.1.0", "99.0.0"])
 def test_release_builder_rejects_other_majors_before_build_or_output(
     tmp_path: Path,

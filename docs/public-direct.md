@@ -14,7 +14,8 @@ still provide the network, storage, monitoring, and recovery boundaries in the
 
 Use the immutable `ghcr.io/kgmnotes/xferry:v0.1.0` image or the exact
 `ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}` recorded by the release. The
-Compose file at `deploy/docker/docker-compose.public-direct.yml` pins the
+released image supports `linux/amd64` and `linux/arm64`. The Compose file at
+`deploy/docker/docker-compose.public-direct.yml` pins the
 versioned image and applies a read-only filesystem and finite resource limits.
 
 Prepare permission-restricted configuration and secret paths. The examples
@@ -102,8 +103,12 @@ After placing the reviewed config at `deploy/docker/xferry.ini` and credentials
 at `deploy/docker/secrets/xferry_auth`, start the immutable Compose service:
 
 ```console
-docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
+XFERRY_HEALTH_HOST=files.example.com \
+  docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
 ```
+
+Replace `files.example.com` with the configured TLS hostname and admitted
+request authority. Compose requires this value before parsing its healthcheck.
 
 Then probe it from another network using a protected curl config:
 

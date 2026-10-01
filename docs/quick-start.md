@@ -21,11 +21,20 @@ py -m pip install --user pipx
 py -m pipx ensurepath
 ```
 
-On Linux or macOS, bootstrap it once in a terminal:
+On Linux, install pipx with your distribution's package manager. For
+Ubuntu/Debian:
 
 ```console
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
+sudo apt update
+sudo apt install pipx
+pipx ensurepath
+```
+
+On macOS, install pipx with [Homebrew](https://brew.sh):
+
+```console
+brew install pipx
+pipx ensurepath
 ```
 
 Open a new terminal after `ensurepath`, then run the two first-success commands.
@@ -54,7 +63,8 @@ for logs, exact-version update, rollback, and uninstall.
 
 ## Container
 
-Run the immutable v0.1.0 image on loopback with a named data volume:
+The released image supports `linux/amd64` and `linux/arm64`. Run the immutable
+v0.1.0 image on loopback with a named data volume:
 
 ```console
 docker run --rm --name xferry \

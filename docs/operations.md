@@ -65,8 +65,8 @@ sudo xferry uninstall --purge-data --yes
 
 ## Container lifecycle
 
-Pull and run an immutable version tag, or prefer the digest recorded in the
-release inventory:
+The released image supports `linux/amd64` and `linux/arm64`. Pull and run an
+immutable version tag, or prefer the digest recorded in the release inventory:
 
 ```console
 docker pull ghcr.io/kgmnotes/xferry:v0.1.0
@@ -76,11 +76,14 @@ docker run --rm --publish 127.0.0.1:8080:8080 \
   ghcr.io/kgmnotes/xferry:v0.1.0
 ```
 
-For the public-direct Compose contract:
+For the public-direct Compose contract, set the health hostname to the
+configured TLS hostname and admitted request authority on every invocation:
 
 ```console
-docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
-docker compose -f deploy/docker/docker-compose.public-direct.yml down
+XFERRY_HEALTH_HOST=files.example.com \
+  docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
+XFERRY_HEALTH_HOST=files.example.com \
+  docker compose -f deploy/docker/docker-compose.public-direct.yml down
 ```
 
 `down` removes containers and the project network but keeps named volumes.
@@ -88,7 +91,8 @@ Adding `--volumes` also deletes uploads, notes, and ACME state and is
 destructive.
 
 ```console
-docker compose -f deploy/docker/docker-compose.public-direct.yml down --volumes
+XFERRY_HEALTH_HOST=files.example.com \
+  docker compose -f deploy/docker/docker-compose.public-direct.yml down --volumes
 ```
 
 The contributor Compose file under `examples/docker/` deliberately builds the

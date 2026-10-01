@@ -433,7 +433,10 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/quick-start.md"),
         re.compile(
             r"\A(?=[\s\S]*py -m pip install --user pipx)"
-            r"(?=[\s\S]*python3 -m pip install --user pipx)"
+            r"(?![\s\S]*python3 -m pip install --user pipx)"
+            r"(?=[\s\S]*sudo apt install pipx)"
+            r"(?=[\s\S]*brew install pipx)"
+            r"(?=[\s\S]*pipx ensurepath)"
             r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*managed-hosts\.md)"
@@ -441,7 +444,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
-        "quick start must provide portable first success plus managed and "
+        "quick start must provide platform-specific pipx bootstrap, portable first success, "
+        "managed and "
         "immutable container paths",
     ),
     SemanticRequirement(

@@ -181,9 +181,13 @@ material. Release automation must sign both `xferry-release.json` and
 ### Privileged installer verification order
 
 The required shape is download, offline verification with the shipped
-public-key ring, and only then explicit privileged execution. For x86_64, use:
+public-key ring, and only then explicit privileged execution. Prerequisites
+are Python available as `python` and a reviewed checkout containing
+`tools/verify_release_signature.py`; run the commands from that checkout's root.
+For x86_64, use:
 
 ```console
+release_url='https://github.com/kgmnotes/xferry/releases/download/v0.1.0'
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/xferry-release-linux-x86_64.json"
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
