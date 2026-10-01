@@ -23,6 +23,16 @@ markdown_extensions:
   - pymdownx.highlight
   - pymdownx.superfences
 
+validation:
+  nav:
+    omitted_files: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: relative_to_docs
+    unrecognized_links: warn
+    anchors: warn
+
 nav:
   - Home: index.md
   - Quick start: quick-start.md
@@ -36,6 +46,8 @@ nav:
       - Security policy: security.md
       - Threat model: threat-model.md
   - Reference:
+      - CLI: cli-reference.md
+      - Managed Linux support: managed-hosts.md
       - HTTP and WebSocket API: api.md
       - Changelog: changelog.md
   - Development:

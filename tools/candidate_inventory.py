@@ -27,6 +27,7 @@ from xferry.management.release_contract import (  # noqa: E402
     SUPPORTED_PLATFORM_IDS,
     ReleaseManifest,
     artifact_name,
+    release_manifest_asset_name,
     require_workflow_run,
 )
 from xferry.management.versions import is_supported_release_version  # noqa: E402
@@ -264,6 +265,8 @@ def _installer(path: Path, manifest: ReleaseManifest, manifest_payload: bytes) -
         "artifact_size": str(manifest.executable_size),
         "artifact_sha256": manifest.executable_sha256,
         "manifest_signature_required": "false",
+        "hosted_signature_required": "true",
+        "hosted_manifest_name": release_manifest_asset_name(manifest.platform),
         "supported_release_major": manifest.version.split(".", 1)[0],
     }
     if not payload.startswith("#!/bin/sh\n") or any(

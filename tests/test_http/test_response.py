@@ -171,7 +171,7 @@ class TestHTTPResponse:
         response.set_body("OK", "text/plain")
         built = response.build()
 
-        assert b"Server: XFerry/0.1.0\r\n" in built
+        assert b"Server: XFerry/0.2.0\r\n" in built
 
     def test_build_sets_nosniff_header(self):
         response = HTTPResponse(200)

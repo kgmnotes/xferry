@@ -8,7 +8,8 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NoReturn
+from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn, cast
 
 from xferry.config import __version__
 
@@ -31,7 +32,7 @@ _PRIMARY_COMMANDS = (
     "examples",
     "uninstall",
 )
-_MAINTENANCE_COMMANDS = ("rollback",)
+_MAINTENANCE_COMMANDS = ("update", "rollback")
 _COMMANDS = (
     *_PRIMARY_COMMANDS,
     *_MAINTENANCE_COMMANDS,
@@ -49,7 +50,8 @@ _COMMAND_EXAMPLES = {
     "restart": "sudo xferry restart",
     "doctor": "sudo xferry doctor",
     "credentials": "sudo xferry credentials reset",
-    "rollback": f"sudo xferry rollback --to {__version__}",
+    "update": f"sudo xferry update --to {__version__}",
+    "rollback": "sudo xferry rollback",
     "uninstall": "sudo xferry uninstall",
     "examples": "xferry examples",
 }
@@ -163,6 +165,19 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
     elif command == "doctor":
         parser.add_argument("--deep", action="store_true")
         parser.add_argument("--skip-network", action="store_true")
+        parser.add_argument("--json", action="store_true")
+    elif command == "update":
+        parser.add_argument(
+            "--to",
+            required=True,
+            metavar="VERSION",
+            help="Exact immutable release version to verify and install.",
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Verify signed metadata and report the apply plan without host mutation.",
+        )
         parser.add_argument("--json", action="store_true")
     elif command == "rollback":
         parser.add_argument("--to", metavar="VERSION")
@@ -339,12 +354,16 @@ def _doctor_handler(args: argparse.Namespace, context: ManagementContext) -> int
 
 def _release_handler(args: argparse.Namespace, context: ManagementContext) -> int:
     """Run one verified release lifecycle command through injectable boundaries."""
-    from .releases import default_release_manager
+    from .releases import default_release_manager, default_update_manager
 
-    manager = default_release_manager()
-    if args.command == "rollback":
+    if args.command == "update":
+        manager = default_update_manager()
+        result = manager.update(args.to, args.dry_run)
+    elif args.command == "rollback":
+        manager = default_release_manager()
         result = manager.rollback(args.to, args.dry_run)
     else:
+        manager = default_release_manager()
         confirmed = bool(args.yes)
         if args.purge_data and not confirmed and sys.stdin.isatty():
             response = input(context.translator.get("purge_prompt"))
@@ -361,17 +380,35 @@ def _render_release_result(
 ) -> int:
     if json_output:
         payload: dict[str, object] = {
+            "active": result.active,
+            "before": result.before,
+            "code": result.code or result.message,
+            "detail": result.detail,
             "dry_run": result.dry_run,
             "exit_code": result.exit_code,
-            "message": result.message,
+            "message": Translator("en").release_text(
+                result.message,
+                version=result.target or result.version,
+            ),
+            "next_actions": list(result.next_actions),
+            "rollback": result.rollback,
             "status": "ok" if result.exit_code == 0 else "error",
+            "target": result.target,
         }
         if result.version is not None:
             payload["version"] = result.version
         print(json.dumps(payload, sort_keys=True))
         return result.exit_code
-    message = context.translator.release_text(result.message, version=result.version)
-    print(message, file=sys.stderr if result.exit_code else sys.stdout)
+    output = sys.stderr if result.exit_code else sys.stdout
+    message = context.translator.release_text(
+        result.message,
+        version=result.target or result.version,
+    )
+    print(message, file=output)
+    if result.detail:
+        print(result.detail, file=output)
+    for action in result.next_actions:
+        print(context.translator.get("next_action_text", action=action), file=output)
     return result.exit_code
 
 
@@ -540,19 +577,27 @@ def _non_linux_management_result(command: str, args: argparse.Namespace) -> int:
         f"Supported matrix: {SUPPORTED_MANAGED_HOST_SUMMARY}."
     )
     if bool(getattr(args, "json", False)):
-        print(
-            json.dumps(
+        payload: dict[str, object] = {
+            "code": "unsupported-platform",
+            "detail": detail,
+            "exit_code": 4,
+            "message": MANAGED_HOST_REQUIRED_MESSAGE,
+            "next_actions": list(MANAGED_HOST_NEXT_ACTIONS),
+            "status": "error",
+        }
+        if command == "update":
+            target = getattr(args, "to", None)
+            payload.update(
                 {
-                    "code": "unsupported-platform",
-                    "detail": detail,
-                    "exit_code": 4,
-                    "message": MANAGED_HOST_REQUIRED_MESSAGE,
-                    "next_actions": list(MANAGED_HOST_NEXT_ACTIONS),
-                    "status": "error",
-                },
-                sort_keys=True,
+                    "active": None,
+                    "before": None,
+                    "dry_run": bool(getattr(args, "dry_run", False)),
+                    "rollback": "not_attempted",
+                    "target": target,
+                    "version": target,
+                }
             )
-        )
+        print(json.dumps(payload, sort_keys=True))
         return 4
 
     print(f"xferry {command}: {MANAGED_HOST_REQUIRED_MESSAGE}", file=sys.stderr)
@@ -594,6 +639,7 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         "doctor": _doctor_handler,
         "examples": _examples_handler,
         "logs": _logs_handler,
+        "update": _release_handler,
         "rollback": _release_handler,
         "setup": _setup_handler,
         "start": _service_action_handler,
@@ -604,6 +650,35 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
     }
     handler = handlers.get(command, _not_implemented_handler)
     return handler(args, context)
+
+
+def _verify_release_envelope_handler(argv: Sequence[str]) -> int:
+    """Serve the signed installer through a hidden, read-only trust boundary."""
+    from .release_contract import SUPPORTED_PLATFORM_IDS, PlatformId
+    from .release_verifier import ReleaseEnvelopeError, verify_release_envelope
+
+    parser = _Parser(prog="xferry _verify-release-envelope", add_help=False)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--signature", required=True, type=Path)
+    parser.add_argument("--executable", required=True, type=Path)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--platform", required=True, choices=SUPPORTED_PLATFORM_IDS)
+    try:
+        args = parser.parse_args(argv)
+        verify_release_envelope(
+            args.manifest,
+            args.signature,
+            args.executable,
+            expected_version=args.version,
+            expected_platform=cast(PlatformId, args.platform),
+        )
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
+    except ReleaseEnvelopeError as failure:
+        print(f"Release envelope verification failed: {failure.code}", file=sys.stderr)
+        return 1
+    print("Release envelope verified.")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -628,6 +703,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if remaining == ["--version"]:
         print(f"xferry {__version__}")
         return 0
+
+    if remaining and remaining[0] == "_verify-release-envelope":
+        return _verify_release_envelope_handler(remaining[1:])
 
     if remaining and remaining[0] in _COMMANDS:
         command = remaining[0]

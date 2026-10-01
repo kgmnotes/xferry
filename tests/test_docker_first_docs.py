@@ -1,8 +1,12 @@
-"""Semantic guards for source-first onboarding and local container examples."""
+"""Semantic guards for journey-first onboarding and contributor examples."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
+
+from tools import check_stale_docs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUICK_START = Path("docs/quick-start.md")
@@ -13,35 +17,68 @@ def _read(relative_path: Path) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_quick_start_enforces_the_durable_source_only_policy() -> None:
+def test_quick_start_routes_portable_managed_and_container_users_first() -> None:
     text = _read(QUICK_START)
-    normalized = " ".join(text.split())
 
-    for marker in (
-        "supported distribution is a reviewed source checkout",
-        "do not publish a GitHub Release, PyPI package",
-        "git clone https://github.com/kgmnotes/xferry.git",
-        "python3 -m venv .venv",
-        "python -m pip install .",
-        "xferry run --preset local --open",
-    ):
-        assert marker in normalized
-    assert text.index("git clone") < text.index("xferry run --preset local --open")
+    assert text.index("## Portable") < text.index("## Managed Linux")
+    assert text.index("## Managed Linux") < text.index("## Container")
+    assert "pipx install xferry" in text
+    assert "xferry run --preset local --open" in text
+    assert "py -m pip install --user pipx" in text
+    assert "sudo apt install pipx" in text
+    assert "brew install pipx" in text
+    assert "python3 -m pip install --user pipx" not in text
+    assert "managed-hosts.md" in text
+    assert "ghcr.io/kgmnotes/xferry:v0.2.0" in text
+    assert "git clone https://github.com/kgmnotes/xferry.git" not in text
     assert "releases/latest" not in text
-    assert "ghcr.io/kgmnotes/xferry" not in text
+    assert "ghcr.io/kgmnotes/xferry:latest" not in text
+    assert "curl | sudo sh" not in text
 
 
-def test_source_process_documents_persistent_data_root() -> None:
+def test_quick_start_guard_accepts_package_manager_bootstrap(tmp_path: Path) -> None:
+    """Catches the semantic guard requiring a PEP 668-incompatible bootstrap."""
+    text = _read(QUICK_START).replace(
+        "python3 -m pip install --user pipx",
+        "sudo apt install pipx\nbrew install pipx",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / QUICK_START).write_text(text, encoding="utf-8")
+
+    assert check_stale_docs.find_semantic_contract_issues(tmp_path, (str(QUICK_START),)) == []
+
+
+def test_quick_start_guard_rejects_generic_pip_bootstrap(tmp_path: Path) -> None:
+    """Catches onboarding drifting back to a system-Python pipx install."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / QUICK_START).write_text(
+        _read(QUICK_START) + "\npython3 -m pip install --user pipx\n", encoding="utf-8"
+    )
+
+    assert check_stale_docs.find_semantic_contract_issues(tmp_path, (str(QUICK_START),))
+
+
+@pytest.mark.parametrize("path", [QUICK_START, Path("docs/public-direct.md"), OPERATIONS])
+def test_container_journey_declares_released_platforms(path: Path) -> None:
+    """Catches container onboarding omitting the released host architectures."""
+    text = _read(path)
+
+    assert "linux/amd64" in text
+    assert "linux/arm64" in text
+
+
+def test_portable_process_documents_persistent_data_root() -> None:
     text = _read(OPERATIONS)
+    normalized = " ".join(text.split())
 
     for marker in (
         '--dir "$PWD/xferry-data"',
         "`uploads/`",
         "`notes/`",
         "Press `Ctrl+C`",
-        "preserves\nuploads and encrypted note state",
     ):
         assert marker in text
+    assert "preserves uploads and encrypted note state" in normalized
 
 
 def test_landing_pages_route_instead_of_duplicating_procedures() -> None:
@@ -52,11 +89,17 @@ def test_landing_pages_route_instead_of_duplicating_procedures() -> None:
     assert "docker compose" not in index
     for marker in (
         "docs/quick-start.md",
+        "docs/managed-hosts.md",
         "docs/operations.md",
         "docs/public-direct.md",
     ):
         assert marker in readme
-    for marker in ("quick-start.md", "operations.md", "public-direct.md"):
+    for marker in (
+        "quick-start.md",
+        "managed-hosts.md",
+        "operations.md",
+        "public-direct.md",
+    ):
         assert marker in index
 
 

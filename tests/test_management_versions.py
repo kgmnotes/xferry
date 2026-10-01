@@ -7,7 +7,7 @@ from xferry.management import versions
 
 
 def test_current_version_starts_the_pre_1_0_line() -> None:
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.2.0"
     assert versions.SUPPORTED_RELEASE_MAJOR == __version__.split(".", 1)[0] == "0"
 
 

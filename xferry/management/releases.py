@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -14,7 +15,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from http.client import HTTPMessage
 from pathlib import Path
-from typing import IO, Any, Protocol
+from typing import IO, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from xferry.security.tls import sslip_domain_for_ip
@@ -22,13 +23,23 @@ from xferry.settings import SettingsError, load_settings_file
 
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .managed_state import has_unsupported_managed_state
-from .model import ManagedLayout
+from .model import (
+    MANAGED_HOST_NEXT_ACTIONS,
+    SUPPORTED_MANAGED_HOST_SUMMARY,
+    HostFacts,
+    ManagedLayout,
+)
+from .platform import detect_host_facts
 from .release_contract import (
     INSTALLED_EXECUTABLE_NAME,
     MANIFEST_NAME,
     MAX_MANIFEST_BYTES,
+    PlatformId,
     ReleaseManifest,
     current_platform_id,
+    platform_id_for_host,
+    release_manifest_asset_name,
+    require_platform_id,
 )
 from .release_trust import (
     DEFAULT_RELEASE_KEY_RING,
@@ -60,6 +71,9 @@ _SIGNATURE_NAME = SIGNATURE_NAME
 _EXECUTABLE_NAME = INSTALLED_EXECUTABLE_NAME
 _MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
 _MAX_SIGNATURE_BYTES = MAX_SIGNATURE_BYTES
+_DEFAULT_READINESS_TIMEOUT = 120.0
+_INITIAL_READINESS_BACKOFF = 0.25
+_MAX_READINESS_BACKOFF = 2.0
 
 HealthCheck = Callable[[HealthEndpoint, str, str, float], HealthResult]
 
@@ -72,6 +86,8 @@ class _ServiceState(Enum):
 
 class Downloader(Protocol):
     """Download one HTTPS resource to a caller-selected staging path."""
+
+    def read(self, url: str, max_bytes: int) -> bytes: ...
 
     def download(self, url: str, destination: Path, max_bytes: int) -> None: ...
 
@@ -111,6 +127,17 @@ class HttpsDownloader:
         self.timeout = timeout
         self.opener = opener or urllib.request.build_opener(_HttpsRedirectHandler())
 
+    def read(self, url: str, max_bytes: int) -> bytes:
+        """Read one small HTTPS resource into memory under an exact byte cap."""
+        _require_https_url(url)
+        request = urllib.request.Request(url, method="GET")  # noqa: S310 - HTTPS checked above
+        with self.opener.open(request, timeout=self.timeout) as response:
+            _require_https_redirect_url(response.geturl())
+            payload = cast(bytes, response.read(max_bytes + 1))
+        if len(payload) > max_bytes:
+            raise OSError("download exceeded the permitted size")
+        return payload
+
     def download(self, url: str, destination: Path, max_bytes: int) -> None:
         """Write at most ``max_bytes`` from a credential-free HTTPS URL."""
         _require_https_url(url)
@@ -139,13 +166,33 @@ class ReleaseResult:
     message: str
     version: str | None = None
     dry_run: bool = False
+    code: str | None = None
+    detail: str = ""
+    before: str | None = None
+    target: str | None = None
+    active: str | None = None
+    rollback: str = "not_attempted"
+    next_actions: tuple[str, ...] = ()
 
 
 class _ReleaseFailure(RuntimeError):
-    def __init__(self, exit_code: int, message: str) -> None:
+    def __init__(
+        self,
+        exit_code: int,
+        message: str,
+        *,
+        detail: str = "",
+        next_actions: tuple[str, ...] = (),
+        rollback: str = "not_attempted",
+        active: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
         self.message = message
+        self.detail = detail
+        self.next_actions = next_actions
+        self.rollback = rollback
+        self.active = active
 
 
 @dataclass(frozen=True)
@@ -158,6 +205,7 @@ class _HealthContext:
 @dataclass(frozen=True)
 class _VerifiedRemoteManifest:
     manifest: ReleaseManifest
+    manifest_payload: bytes
     signature_payload: bytes
 
 
@@ -180,8 +228,12 @@ class ReleaseManager:
         acme_root: Path | None = None,
         staging_parent: Path | None = None,
         health_timeout: float = 2.0,
+        readiness_timeout: float = _DEFAULT_READINESS_TIMEOUT,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
         remote_updates_enabled: bool = False,
         release_key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
+        host_facts: Callable[[], HostFacts] | None = None,
     ) -> None:
         self.layout = replace(
             layout or ManagedLayout(),
@@ -200,47 +252,136 @@ class ReleaseManager:
         self.acme_root = acme_root or self.layout.acme_root
         self.staging_parent = staging_parent
         self.health_timeout = health_timeout
+        self.readiness_timeout = max(health_timeout, readiness_timeout)
+        self.monotonic = monotonic
+        self.sleep = sleep
         self._remote_updates_enabled = remote_updates_enabled is True
         self.release_key_ring = release_key_ring
+        self.host_facts = host_facts or (lambda: detect_host_facts(data_path=self.layout.data_root))
 
     def update(self, version: str | None, dry_run: bool) -> ReleaseResult:
         """Download, verify, install, switch, and health-gate one exact release."""
         if not self._remote_updates_enabled:
-            return ReleaseResult(2, "remote_updates_disabled")
-        if not dry_run and self.effective_uid() != 0:
-            return ReleaseResult(3, "release_requires_root")
+            return ReleaseResult(2, "remote_updates_disabled", dry_run=dry_run)
         requested = None if version is None else _safe_version(version)
-        if version is not None and requested is None:
-            return ReleaseResult(2, "invalid_release_version")
-        if requested is not None and not is_supported_release_version(requested):
-            return ReleaseResult(2, "unsupported_release_major", version=requested)
+        if requested is None:
+            return ReleaseResult(2, "invalid_release_version", dry_run=dry_run)
+        if not is_supported_release_version(requested):
+            return ReleaseResult(
+                2,
+                "unsupported_release_major",
+                version=requested,
+                dry_run=dry_run,
+                target=requested,
+            )
+        if self.effective_uid() != 0:
+            return ReleaseResult(
+                3,
+                "release_requires_root",
+                version=requested,
+                dry_run=dry_run,
+                target=requested,
+                next_actions=(
+                    "For a managed installation, rerun this update as root with `sudo`.",
+                    "For a portable installation, run `pipx upgrade xferry`.",
+                ),
+            )
+        current_version: str | None = None
         try:
+            try:
+                facts = self.host_facts()
+            except (OSError, RuntimeError, ValueError):
+                raise _ReleaseFailure(
+                    4,
+                    "managed_host_unsupported",
+                    detail=(
+                        "Host inspection failed. "
+                        f"Supported matrix: {SUPPORTED_MANAGED_HOST_SUMMARY}."
+                    ),
+                    next_actions=MANAGED_HOST_NEXT_ACTIONS,
+                ) from None
+            if not facts.is_supported:
+                raise _ReleaseFailure(
+                    4,
+                    "managed_host_unsupported",
+                    detail=facts.managed_support_detail,
+                    next_actions=facts.managed_support_next_actions,
+                )
+            try:
+                selected_platform = require_platform_id(self.platform_id())
+            except ValueError:
+                raise _ReleaseFailure(
+                    4,
+                    "managed_host_unsupported",
+                    detail=facts.managed_support_detail,
+                    next_actions=facts.managed_support_next_actions,
+                ) from None
+            if platform_id_for_host("linux", facts.machine) != selected_platform:
+                raise _ReleaseFailure(
+                    4,
+                    "managed_host_unsupported",
+                    detail=facts.managed_support_detail,
+                    next_actions=facts.managed_support_next_actions,
+                )
             self._require_supported_managed_installation()
+            if not self._managed_installation_present():
+                return ReleaseResult(
+                    4,
+                    "portable_installation",
+                    version=requested,
+                    dry_run=dry_run,
+                    detail=(
+                        "No supported XFerry managed installation was found; no changes were made."
+                    ),
+                    target=requested,
+                    next_actions=("Run `pipx upgrade xferry` for a portable installation.",),
+                )
             _require_https_url(self.release_base_url)
             current_version = self._current_supported_version()
+            verified_manifest = self._fetch_verified_manifest(requested, selected_platform)
+            manifest = verified_manifest.manifest
+            if manifest.version != requested:
+                raise _ReleaseFailure(1, "release_manifest_mismatch")
+            if not is_supported_release_version(manifest.version):
+                return ReleaseResult(
+                    2,
+                    "unsupported_release_major",
+                    version=manifest.version,
+                    dry_run=dry_run,
+                    before=current_version,
+                    target=requested,
+                    active=current_version,
+                )
+            if manifest.platform != selected_platform:
+                raise _ReleaseFailure(4, "release_platform_unsupported")
+            _require_non_downgrade(manifest.version, current_version)
+            if dry_run:
+                return ReleaseResult(
+                    0,
+                    "update_dry_run",
+                    version=manifest.version,
+                    dry_run=True,
+                    detail=(
+                        "Signed metadata verified. Apply will download and verify the executable, "
+                        "validate the managed configuration, restart the service, require "
+                        f"exact-version health, and retain {current_version} for rollback."
+                    ),
+                    before=current_version,
+                    target=manifest.version,
+                    active=current_version,
+                    rollback="not_needed",
+                    next_actions=(f"Run `sudo xferry update --to {manifest.version}` to apply.",),
+                )
+            if manifest.version == current_version:
+                with managed_mutation(
+                    self.layout.lock_file,
+                    effective_uid=self.effective_uid,
+                    root_uid=self.root_uid,
+                ):
+                    self._require_supported_managed_installation()
+                    return self._same_version_update_locked(verified_manifest)
             with self._staging_directory() as staging:
-                verified_manifest = self._download_manifest(staging, requested)
-                manifest = verified_manifest.manifest
-                if requested is not None and manifest.version != requested:
-                    raise _ReleaseFailure(1, "release_manifest_mismatch")
-                if not is_supported_release_version(manifest.version):
-                    return ReleaseResult(
-                        2,
-                        "unsupported_release_major",
-                        version=manifest.version,
-                    )
-                if manifest.platform != self.platform_id():
-                    raise _ReleaseFailure(4, "release_platform_unsupported")
-                _require_non_downgrade(manifest.version, current_version)
                 candidate = self._download_candidate(staging, manifest)
-                if dry_run:
-                    self._validate_candidate(candidate)
-                    return ReleaseResult(
-                        0,
-                        "update_dry_run",
-                        version=manifest.version,
-                        dry_run=True,
-                    )
                 with managed_mutation(
                     self.layout.lock_file,
                     effective_uid=self.effective_uid,
@@ -248,20 +389,62 @@ class ReleaseManager:
                 ):
                     self._require_supported_managed_installation()
                     return self._update_locked(
-                        manifest,
+                        verified_manifest,
                         candidate,
-                        verified_manifest.signature_payload,
                     )
         except _ReleaseFailure as failure:
-            return ReleaseResult(failure.exit_code, failure.message, version=requested)
+            return ReleaseResult(
+                failure.exit_code,
+                failure.message,
+                version=requested,
+                dry_run=dry_run,
+                detail=failure.detail,
+                before=current_version,
+                target=requested,
+                active=failure.active or current_version,
+                rollback=failure.rollback,
+                next_actions=failure.next_actions,
+            )
         except InsufficientPrivilege:
-            return ReleaseResult(3, "release_requires_root")
+            return ReleaseResult(
+                3,
+                "release_requires_root",
+                version=requested,
+                dry_run=dry_run,
+                before=current_version,
+                target=requested,
+                active=current_version,
+            )
         except MutationLocked:
-            return ReleaseResult(1, "release_operation_locked")
+            return ReleaseResult(
+                1,
+                "release_operation_locked",
+                version=requested,
+                dry_run=dry_run,
+                before=current_version,
+                target=requested,
+                active=current_version,
+            )
         except UnsafeLock:
-            return ReleaseResult(1, "release_lock_unsafe")
+            return ReleaseResult(
+                1,
+                "release_lock_unsafe",
+                version=requested,
+                dry_run=dry_run,
+                before=current_version,
+                target=requested,
+                active=current_version,
+            )
         except (OSError, SettingsError, ValueError):
-            return ReleaseResult(1, "release_operation_failed", version=requested)
+            return ReleaseResult(
+                1,
+                "release_operation_failed",
+                version=requested,
+                dry_run=dry_run,
+                before=current_version,
+                target=requested,
+                active=current_version,
+            )
 
     def rollback(self, to_version: str | None, dry_run: bool) -> ReleaseResult:
         """Switch to a verified installed release and health-gate the result."""
@@ -276,7 +459,6 @@ class ReleaseManager:
             self._require_supported_managed_installation()
             if dry_run:
                 target = self._select_rollback_target(requested)
-                self._validate_candidate(target[1] / _EXECUTABLE_NAME)
                 return ReleaseResult(0, "rollback_dry_run", version=target[0], dry_run=True)
             self._select_rollback_target(requested)
             with managed_mutation(
@@ -359,26 +541,20 @@ class ReleaseManager:
         except OSError:
             return ReleaseResult(1, "uninstall_failed")
 
-    def _download_manifest(
+    def _fetch_verified_manifest(
         self,
-        staging: Path,
-        requested: str | None,
+        requested: str,
+        selected_platform: PlatformId,
     ) -> _VerifiedRemoteManifest:
         manifest_url = (
-            f"{self.release_base_url}/latest/download/{_MANIFEST_NAME}"
-            if requested is None
-            else f"{self.release_base_url}/download/v{requested}/{_MANIFEST_NAME}"
+            f"{self.release_base_url}/download/v{requested}/"
+            f"{release_manifest_asset_name(selected_platform)}"
         )
-        manifest_path = staging / _MANIFEST_NAME
         try:
-            self.downloader.download(manifest_url, manifest_path, _MAX_MANIFEST_BYTES)
+            manifest_payload = self.downloader.read(manifest_url, _MAX_MANIFEST_BYTES)
         except OSError:
             raise _ReleaseFailure(5, "release_download_failed") from None
         try:
-            metadata = manifest_path.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise ValueError
-            manifest_payload = manifest_path.read_bytes()
             manifest = parse_signed_manifest(manifest_payload)
         except ReleaseTrustError as failure:
             raise _ReleaseFailure(1, failure.code) from None
@@ -386,16 +562,11 @@ class ReleaseManager:
             raise _ReleaseFailure(1, "release_manifest_invalid") from None
 
         signature_url = manifest_url + ".sig"
-        signature_path = staging / _SIGNATURE_NAME
         try:
-            self.downloader.download(signature_url, signature_path, _MAX_SIGNATURE_BYTES)
+            signature_payload = self.downloader.read(signature_url, _MAX_SIGNATURE_BYTES)
         except OSError:
             raise _ReleaseFailure(5, "release_signature_download_failed") from None
         try:
-            signature_metadata = signature_path.lstat()
-            if not stat.S_ISREG(signature_metadata.st_mode) or signature_metadata.st_nlink != 1:
-                raise ValueError
-            signature_payload = signature_path.read_bytes()
             verify_manifest_signature(
                 manifest_payload,
                 manifest,
@@ -406,7 +577,7 @@ class ReleaseManager:
             raise _ReleaseFailure(1, failure.code) from None
         except (OSError, ValueError):
             raise _ReleaseFailure(1, "release_signature_invalid") from None
-        return _VerifiedRemoteManifest(manifest, signature_payload)
+        return _VerifiedRemoteManifest(manifest, manifest_payload, signature_payload)
 
     def _download_candidate(self, staging: Path, manifest: ReleaseManifest) -> Path:
         url = f"{self.release_base_url}/download/{manifest.tag}/{manifest.executable_name}"
@@ -445,18 +616,26 @@ class ReleaseManager:
 
     def _update_locked(
         self,
-        manifest: ReleaseManifest,
+        verified_manifest: _VerifiedRemoteManifest,
         candidate: Path,
-        signature_payload: bytes,
     ) -> ReleaseResult:
+        manifest = verified_manifest.manifest
         self._validate_release_layout()
         previous = self._current_supported_version()
         _require_non_downgrade(manifest.version, previous)
-        self._validate_candidate(candidate)
         if previous == manifest.version:
             if self._installed_manifest(self._release_path(previous)) != manifest:
                 raise _ReleaseFailure(1, "installed_release_conflict")
-            return ReleaseResult(0, "update_complete", version=manifest.version)
+            return ReleaseResult(
+                0,
+                "update_noop",
+                version=manifest.version,
+                before=previous,
+                target=manifest.version,
+                active=previous,
+                rollback="not_needed",
+            )
+        self._validate_candidate(candidate)
         service_state = self._service_state()
         if service_state is _ServiceState.PROBE_ERROR:
             raise _ReleaseFailure(1, "release_operation_failed")
@@ -465,21 +644,58 @@ class ReleaseManager:
         created = False
         try:
             created = self._install_verified_release(
-                manifest,
+                verified_manifest,
                 candidate,
-                signature_payload,
             )
             failure = self._activate(manifest.version, previous, health, was_active=was_active)
             if failure is not None:
                 if created:
                     self._remove_created_if_inactive(manifest.version)
-                return ReleaseResult(failure.exit_code, failure.message, version=manifest.version)
+                return ReleaseResult(
+                    failure.exit_code,
+                    failure.message,
+                    version=manifest.version,
+                    before=previous,
+                    target=manifest.version,
+                    active=failure.active,
+                    rollback=failure.rollback,
+                )
             self._prune_verified(manifest.version, previous)
-            return ReleaseResult(0, "update_complete", version=manifest.version)
+            return ReleaseResult(
+                0,
+                "update_complete",
+                version=manifest.version,
+                before=previous,
+                target=manifest.version,
+                active=manifest.version,
+                rollback="not_needed",
+            )
         except _ReleaseFailure:
             if created:
                 self._remove_created_if_inactive(manifest.version)
             raise
+
+    def _same_version_update_locked(
+        self,
+        verified_manifest: _VerifiedRemoteManifest,
+    ) -> ReleaseResult:
+        self._validate_release_layout()
+        manifest = verified_manifest.manifest
+        current = self._current_supported_version()
+        _require_non_downgrade(manifest.version, current)
+        if current != manifest.version:
+            raise _ReleaseFailure(1, "release_operation_failed")
+        if self._installed_manifest(self._release_path(current)) != manifest:
+            raise _ReleaseFailure(1, "installed_release_conflict")
+        return ReleaseResult(
+            0,
+            "update_noop",
+            version=current,
+            before=current,
+            target=current,
+            active=current,
+            rollback="not_needed",
+        )
 
     def _rollback_locked(self, target: str) -> ReleaseResult:
         self._validate_release_layout()
@@ -514,7 +730,7 @@ class ReleaseManager:
                 raise _ReleaseFailure(6, "candidate_restart_failed")
             if self._service_state() is not _ServiceState.ACTIVE:
                 raise _ReleaseFailure(6, "candidate_restart_failed")
-            if not self._ping(health).ok:
+            if not self._ping(health, target).ok:
                 raise _ReleaseFailure(6, "candidate_unhealthy")
             if not was_active:
                 if self.runner.run(("systemctl", "stop", _SERVICE)).returncode != 0:
@@ -534,8 +750,18 @@ class ReleaseManager:
             except (OSError, _ReleaseFailure):
                 pass
         if not self._restore(previous, health, was_active=was_active):
-            return _ReleaseFailure(1, "restore_incomplete")
-        return failure
+            return _ReleaseFailure(
+                1,
+                "restore_incomplete",
+                rollback="incomplete",
+                active=self._observed_current_version(),
+            )
+        return _ReleaseFailure(
+            failure.exit_code,
+            failure.message,
+            rollback="restored",
+            active=previous,
+        )
 
     def _restore(
         self,
@@ -550,7 +776,9 @@ class ReleaseManager:
             if was_active:
                 restarted = self.runner.run(("systemctl", "restart", _SERVICE)).returncode == 0
                 state = self._service_state()
-                healthy = restarted and state is _ServiceState.ACTIVE and self._ping(health).ok
+                healthy = (
+                    restarted and state is _ServiceState.ACTIVE and self._ping(health, previous).ok
+                )
                 return link_restored and healthy
             stopped = self.runner.run(("systemctl", "stop", _SERVICE)).returncode == 0
             state = self._service_state()
@@ -558,16 +786,54 @@ class ReleaseManager:
         except (OSError, ValueError, _ReleaseFailure):
             return False
 
-    def _ping(self, context: _HealthContext) -> HealthResult:
+    def _ping(self, context: _HealthContext, expected_version: str) -> HealthResult:
+        deadline = self.monotonic() + self.readiness_timeout
+        backoff = _INITIAL_READINESS_BACKOFF
+        result = HealthResult(False, "connection failed")
+        while True:
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                return result
+            result = self._ping_once(
+                context,
+                expected_version,
+                timeout=min(self.health_timeout, remaining),
+            )
+            if result.ok or result.detail != "connection failed":
+                return result
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                return result
+            self.sleep(min(backoff, remaining))
+            backoff = min(backoff * 2, _MAX_READINESS_BACKOFF)
+
+    def _ping_once(
+        self,
+        context: _HealthContext,
+        expected_version: str,
+        *,
+        timeout: float,
+    ) -> HealthResult:
         try:
-            return self.health_check(
+            result = self.health_check(
                 context.endpoint,
                 context.username,
                 context.password,
-                self.health_timeout,
+                timeout,
             )
         except (OSError, RuntimeError, ValueError):
             return HealthResult(False, "authenticated health check failed")
+        if result.ok and result.version == expected_version:
+            return result
+        if not result.ok and result.detail == "connection failed":
+            return HealthResult(False, "connection failed", result.version)
+        return HealthResult(False, "authenticated health check failed", result.version)
+
+    def _observed_current_version(self) -> str | None:
+        try:
+            return self._current_version()
+        except _ReleaseFailure:
+            return None
 
     def _service_state(self) -> _ServiceState:
         result = self.runner.run(
@@ -606,10 +872,10 @@ class ReleaseManager:
 
     def _install_verified_release(
         self,
-        manifest: ReleaseManifest,
+        verified_manifest: _VerifiedRemoteManifest,
         candidate: Path,
-        signature_payload: bytes,
     ) -> bool:
+        manifest = verified_manifest.manifest
         releases = self.layout.release_root / "releases"
         releases.mkdir(mode=0o755, exist_ok=True)
         _require_real_directory(releases)
@@ -630,13 +896,13 @@ class ReleaseManager:
             executable.chmod(0o755)
             metadata = temporary / _MANIFEST_NAME
             with metadata.open("xb") as stream:
-                stream.write(manifest.to_bytes())
+                stream.write(verified_manifest.manifest_payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             metadata.chmod(0o644)
             signature = temporary / _SIGNATURE_NAME
             with signature.open("xb") as stream:
-                stream.write(signature_payload)
+                stream.write(verified_manifest.signature_payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             signature.chmod(0o644)
@@ -712,6 +978,19 @@ class ReleaseManager:
             platform_id=self.platform_id(),
         ):
             raise _ReleaseFailure(1, "unsupported_managed_state")
+        if not self._managed_installation_present():
+            return
+        current = self._current_supported_version()
+        if self._installed_manifest(self._release_path(current)) is None:
+            raise _ReleaseFailure(1, "unsupported_managed_state")
+
+    def _managed_installation_present(self) -> bool:
+        try:
+            return stat.S_ISDIR(self.layout.release_root.lstat().st_mode)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            raise _ReleaseFailure(1, "managed_installation_invalid") from None
 
     def _select_rollback_target(self, requested: str | None) -> tuple[str, Path, ReleaseManifest]:
         self._validate_release_layout()
@@ -876,6 +1155,11 @@ def default_release_manager() -> ReleaseManager:
     return ReleaseManager()
 
 
+def default_update_manager() -> ReleaseManager:
+    """Return the sole public dependency set allowed to access remote releases."""
+    return ReleaseManager(remote_updates_enabled=True)
+
+
 def _safe_version(value: object) -> str | None:
     if not is_canonical_release_version(value):
         return None
@@ -885,7 +1169,7 @@ def _safe_version(value: object) -> str | None:
 def _require_non_downgrade(candidate: str, current: str) -> None:
     version_order = compare_release_versions(candidate, current)
     if version_order < 0 or (version_order == 0 and candidate != current):
-        raise _ReleaseFailure(1, "release_downgrade_blocked")
+        raise _ReleaseFailure(1, "release_downgrade_blocked", active=current)
 
 
 def _require_https_url(url: str) -> None:

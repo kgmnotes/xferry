@@ -1,8 +1,9 @@
 # Examples
 
-These examples exercise a reviewed source checkout. Start with the root
-[README](../README.md#install-from-source); packages, release binaries, and
-registry images are not supported distribution channels.
+These are contributor examples exercised from a reviewed source checkout. User
+installation starts with the root [README](../README.md#choose-an-installation);
+the local build examples here do not replace portable, managed, or immutable
+container release journeys.
 
 | Path | Scenario |
 | --- | --- |

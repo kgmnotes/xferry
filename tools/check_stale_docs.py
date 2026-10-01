@@ -9,6 +9,7 @@ import re
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -389,25 +390,27 @@ ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
     OrderedMarkersRequirement(
         Path("docs/quick-start.md"),
         (
-            "## Install",
+            "## Portable",
+            "## Managed Linux",
+            "## Container",
             "## Send a first file",
-            "## Try a custom method",
             "## Stop and protect data",
         ),
-        "quick start must keep source install, first file, custom method, and lifecycle ordered",
+        "quick start must keep portable, managed, container, first-success, and lifecycle ordered",
     ),
     OrderedMarkersRequirement(
         Path("docs/operations.md"),
         (
-            "## Source process",
+            "## Portable lifecycle",
+            "## Managed Linux lifecycle",
+            "## Container lifecycle",
             "## Data layout",
-            "## Docker from the checkout",
             "## Capacity",
             "## Health and diagnostics",
             "## Public services",
         ),
-        "operations must keep lifecycle, storage, capacity, diagnostics, and service "
-        "guidance ordered",
+        "operations must keep all three lifecycles, storage, capacity, diagnostics, and "
+        "service guidance ordered",
     ),
 )
 
@@ -415,36 +418,42 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("README.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*workflows[\s\S]*do\s+not\s+publish)"
-            r"(?=[\s\S]*python -m pip install \.)"
+            r"\A(?=[\s\S]*pipx install xferry)"
+            r"(?=[\s\S]*managed-hosts\.md)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
             r"(?=[\s\S]*`none`[\s\S]*XOR[\s\S]*AES-256-GCM)[\s\S]*",
             re.IGNORECASE,
         ),
-        "README must keep source installation, UI, curl, Advanced Sessions, custom "
-        "methods, and crypto support discoverable",
+        "README must route portable, managed and container users while keeping UI, curl, "
+        "Advanced Sessions, custom methods, and crypto support discoverable",
     ),
     SemanticRequirement(
         Path("docs/quick-start.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*do\s+not\s+publish[\s\S]*GitHub Release[\s\S]*PyPI package)"
-            r"(?=[\s\S]*git clone https://github\.com/kgmnotes/xferry\.git)"
-            r"(?=[\s\S]*python -m pip install \.)"
+            r"\A(?=[\s\S]*py -m pip install --user pipx)"
+            r"(?![\s\S]*python3 -m pip install --user pipx)"
+            r"(?=[\s\S]*sudo apt install pipx)"
+            r"(?=[\s\S]*brew install pipx)"
+            r"(?=[\s\S]*pipx ensurepath)"
+            r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --preset local --open)"
+            r"(?=[\s\S]*managed-hosts\.md)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
-        "quick start must remain source-first and link lifecycle and exposure guidance",
+        "quick start must provide platform-specific pipx bootstrap, portable first success, "
+        "managed and "
+        "immutable container paths",
     ),
     SemanticRequirement(
         Path("SECURITY.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*automation[\s\S]*does\s+not\s+publish)"
+            r"\A(?=[\s\S]*portable[\s\S]*managed[\s\S]*container)"
+            r"(?=[\s\S]*immutable[\s\S]*version or digest)"
             r"(?=[\s\S]*authoriz\w*[\s\S]*test data)"
             r"(?=[\s\S]*## External exposure baseline)"
             r"(?=[\s\S]*TLS[\s\S]*Basic Auth[\s\S]*finite[\s\S]*quota)"
@@ -485,15 +494,14 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("CONTRIBUTING.md"),
         re.compile(
             r"\A(?=[\s\S]*python -m pip install -e)"
+            r"(?=[\s\S]*source checkout is the contributor workflow)"
             r"(?=[\s\S]*python tools/sync_docs\.py --check)"
             r"(?=[\s\S]*python tools/check_stale_docs\.py)"
-            r"(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*do not upload or[\s\S]*publish)"
-            r"(?=[\s\S]*documentation and[\s\S]*examples source-only)[\s\S]*",
+            r"(?=[\s\S]*generated\s+CLI\s+reference)"
+            r"(?=[\s\S]*managed\s+support\s+matrix)[\s\S]*",
             re.IGNORECASE,
         ),
-        "CONTRIBUTING must preserve local checks, documentation sync, and source-first "
-        "release status",
+        "CONTRIBUTING must preserve local checks, contributor-source scope, and generated docs",
     ),
     SemanticRequirement(
         Path("CONTRIBUTING.md"),
@@ -536,24 +544,27 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("docs/operations.md"),
         re.compile(
-            r"\A(?=[\s\S]*distribution[\s\S]*source-only)"
-            r"(?=[\s\S]*remote updates[\s\S]*not[\s\S]*exposed[\s\S]*public CLI)"
+            r"\A(?=[\s\S]*pipx upgrade xferry)(?=[\s\S]*pipx uninstall xferry)"
+            r"(?=[\s\S]*xferry update --to 0\.2\.0)"
+            r"(?=[\s\S]*xferry rollback)(?=[\s\S]*xferry uninstall)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
             r"(?=[\s\S]*body-memory-budget[\s\S]*not an[\s\S]*RSS ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
             r"(?=[\s\S]*destructive)[\s\S]*",
             re.IGNORECASE,
         ),
-        "operations must own source lifecycle, persistent data, capacity, and destructive cleanup",
+        "operations must own portable, managed and container lifecycle plus persistent data",
     ),
     SemanticRequirement(
         Path("docs/public-direct.md"),
         re.compile(
             r"\A(?=[\s\S]*security\.md#external-exposure-baseline)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*--write-sample-config)"
             r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
-            r"(?=[\s\S]*direct TCP peer)"
-            r"(?=[\s\S]*no supported binary or container distribution)[\s\S]*",
+            r"(?=[\s\S]*direct TCP peer)[\s\S]*",
             re.IGNORECASE,
         ),
         "public-direct must defer to security policy and preserve validation and proxy boundaries",
@@ -1430,6 +1441,166 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
     return findings
 
 
+def managed_update_rehearsal_policy_findings(
+    rehearsal_text: str,
+    release_text: str,
+) -> list[Finding]:
+    """Keep STAGE-013 native lifecycle evidence read-only and non-publishing."""
+    path = Path(".github/workflows/managed-update-rehearsal.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    if _workflow_events(rehearsal_text)[0] != frozenset({"workflow_call"}):
+        reject("managed update rehearsal must be reusable-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(rehearsal_text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("managed update rehearsal actions must be commit-SHA pinned")
+
+    permissions_found, entries = _permission_entries(rehearsal_text, 0)
+    permissions = {scope: access for scope, access, _line in entries}
+    if not permissions_found or permissions != {"contents": "read"}:
+        reject("managed update rehearsal workflow must grant only contents read")
+
+    jobs = {job.name: job for job in _workflow_jobs(rehearsal_text)}
+    if set(jobs) != {"lifecycle"}:
+        reject("managed update rehearsal must contain only the native lifecycle matrix job")
+        return findings
+    lifecycle = jobs["lifecycle"]
+    job_permissions_found, job_entries = _permission_entries(lifecycle.text, 4)
+    job_permissions = {scope: access for scope, access, _line in job_entries}
+    if not job_permissions_found or job_permissions != {"contents": "read"}:
+        reject("managed update lifecycle job must grant only contents read")
+
+    required_boundary = (
+        "refs/heads/codex/stage-013-managed-update-rehearsal",
+        'test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"',
+        'test "$GITHUB_EVENT_NAME" = "workflow_dispatch"',
+        "fail-fast: false",
+        "runs-on: ${{ matrix.runner }}",
+    )
+    if any(item not in lifecycle.text for item in required_boundary):
+        reject("managed update lifecycle lost its exact repository/ref/native matrix boundary")
+
+    required_parent_normalization = (
+        "Normalize disposable runner managed parents",
+        'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
+        'test "$(sudo stat -c \'%u\' /opt)" = "0"',
+        "sudo chmod 0755 /opt",
+        'test "$(sudo stat -c \'%u:%a\' /opt)" = "0:755"',
+        'test "$(sudo stat -c \'%u\' /usr/local/bin)" = "0"',
+        "sudo chmod 0755 /usr/local/bin",
+        'test "$(sudo stat -c \'%u:%a\' /usr/local/bin)" = "0:755"',
+    )
+    normalization_marker = "      - name: Normalize disposable runner managed parents"
+    install_marker = "      - name: Install signed 0.1.1"
+    normalization_start = lifecycle.text.find(normalization_marker)
+    install_start = lifecycle.text.find(install_marker)
+    next_step_start = lifecycle.text.find(
+        "\n      - ",
+        normalization_start + len(normalization_marker),
+    )
+    normalization_step = (
+        ""
+        if normalization_start < 0 or next_step_start < 0
+        else lifecycle.text[normalization_start:next_step_start]
+    )
+    if any(item not in normalization_step for item in required_parent_normalization):
+        reject("managed update rehearsal must protect its disposable runner managed parents")
+    elif install_start < 0 or normalization_start > install_start:
+        reject("managed update rehearsal must protect managed parents before installation")
+
+    runner_lines = tuple(
+        line.strip() for line in rehearsal_text.splitlines() if line.strip().startswith("runner:")
+    )
+    if runner_lines != ("runner: ubuntu-24.04", "runner: ubuntu-24.04-arm"):
+        reject("managed update rehearsal requires exactly amd64 and arm64 native runners")
+
+    if (
+        'SOURCE_VERSION: "0.1.1"' not in rehearsal_text
+        or 'TARGET_VERSION: "0.1.2"' not in rehearsal_text
+    ):
+        reject("managed update rehearsal versions must remain fixed at 0.1.1 to 0.1.2")
+    if "MANAGED_XFERRY: /usr/local/bin/xferry" not in rehearsal_text:
+        reject("managed update rehearsal must pin the installed managed CLI path")
+    bare_managed_cli_patterns = (
+        r"\$\(\s*xferry\s",
+        r"\bsudo\s+xferry\s",
+        r"(?m)^\s+xferry\s+(?:setup|doctor|update|rollback|uninstall)\b",
+    )
+    if any(re.search(pattern, lifecycle.text) for pattern in bare_managed_cli_patterns):
+        reject("managed update rehearsal must not resolve lifecycle commands from PATH")
+
+    lifecycle_steps = (
+        "Install signed 0.1.1",
+        "Setup private managed service",
+        "Dry-run signed update to 0.1.2",
+        "Apply signed update to 0.1.2",
+        "Verify exact 0.1.2 health",
+        "Rollback to retained 0.1.1",
+        "Conservative uninstall",
+    )
+    try:
+        positions = [rehearsal_text.index(step) for step in lifecycle_steps]
+    except ValueError:
+        reject("managed update rehearsal is missing a required lifecycle step")
+    else:
+        if positions != sorted(positions):
+            reject("managed update rehearsal lifecycle steps are out of order")
+
+    forbidden = (
+        "${{ secrets.",
+        "environment:",
+        "permissions: write-all",
+        "contents: write",
+        "packages: write",
+        "id-token: write",
+        "attestations: write",
+        "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM",
+        "environment: production-release",
+        "gh release ",
+        "docker push",
+        "--push",
+        "gh-action-pypi-publish",
+        "twine upload",
+        "hatch publish",
+        "mkdocs gh-deploy",
+        "--purge-data",
+    )
+    if any(item in rehearsal_text for item in forbidden):
+        reject("managed update rehearsal must not consume secrets, publish, or purge state")
+    if _publisher_channels(lifecycle):
+        reject("managed update rehearsal cannot contain a package or release publisher")
+
+    release_jobs = {job.name: job for job in _workflow_jobs(release_text)}
+    preflight = release_jobs.get("preflight")
+    caller = release_jobs.get("managed-update-rehearsal")
+    required_input = (
+        "managed_update_rehearsal:",
+        "default: false",
+        "type: boolean",
+    )
+    if any(item not in release_text for item in required_input):
+        reject("release dispatcher must expose an opt-in boolean rehearsal input")
+    if preflight is None or "if: ${{ !inputs.managed_update_rehearsal }}" not in preflight.text:
+        reject("ordinary release jobs must be disabled during managed update rehearsal")
+    if caller is None or any(
+        item not in caller.text
+        for item in (
+            "if: ${{ inputs.managed_update_rehearsal }}",
+            "permissions:\n      contents: read",
+            "uses: ./.github/workflows/managed-update-rehearsal.yml",
+        )
+    ):
+        reject("release dispatcher must call only the read-only managed update workflow")
+    return findings
+
+
 def ghcr_workflow_policy_findings(text: str) -> list[Finding]:
     """Keep the fixed GHCR rehearsal separate from production release policy."""
     path = Path(".github/workflows/ghcr.yml")
@@ -1600,12 +1771,26 @@ def find_release_policy_issues(
 ) -> list[Finding]:
     findings: list[Finding] = []
     path = Path(".github/workflows/release.yml")
+    release_text: str | None = None
     if targets_cover_path(path, repo_root, targets):
-        text = read_contract_text(repo_root / path)
-        if text is None:
+        release_text = read_contract_text(repo_root / path)
+        if release_text is None:
             findings.append(contract_finding(path, "release workflow policy file is missing"))
         else:
-            findings.extend(release_workflow_policy_findings(text, path))
+            findings.extend(release_workflow_policy_findings(release_text, path))
+    managed_rehearsal = Path(".github/workflows/managed-update-rehearsal.yml")
+    if (
+        targets_cover_path(managed_rehearsal, repo_root, targets)
+        and (repo_root / managed_rehearsal).is_file()
+    ):
+        if release_text is None:
+            release_text = read_contract_text(repo_root / path) or ""
+        findings.extend(
+            managed_update_rehearsal_policy_findings(
+                read_contract_text(repo_root / managed_rehearsal) or "",
+                release_text,
+            )
+        )
     staging = Path(".github/workflows/testpypi.yml")
     if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
         findings.extend(
@@ -1853,12 +2038,15 @@ def find_source_first_issues(
     repo_root: Path = REPO_ROOT,
     targets: Sequence[str] = DEFAULT_TARGETS,
 ) -> list[Finding]:
+    """Reject unsafe mutable routes and require journey-first portable onboarding."""
     findings: list[Finding] = []
-    unsupported_route = re.compile(
-        r"(?:releases/latest|ghcr\.io/kgmnotes/xferry|"
+    unsafe_route = re.compile(
+        r"(?:releases/latest|ghcr\.io/kgmnotes/xferry:latest\b|"
         r"(?<![\w.-])(?:python\s+-m\s+)?pip\s+install\b[^\n`]{0,160}?"
         r"(?<!\S)xferry(?:\b|\[)|"
-        r"(?<![\w-])xferry\s+update\b)",
+        r"curl[^\n|]{0,300}\|\s*(?:sudo\s+)?(?:ba)?sh\b|"
+        r"(?<![\w-])xferry\s+update\b"
+        r"(?!\s+--to\s+[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?(?:\s|`|$)))",
         re.IGNORECASE,
     )
     for path in (
@@ -1872,7 +2060,7 @@ def find_source_first_issues(
         text = read_contract_text(repo_root / path)
         if text is None:
             continue
-        match = unsupported_route.search(text)
+        match = unsafe_route.search(text)
         if match is None:
             continue
         line_number = text.count("\n", 0, match.start()) + 1
@@ -1882,7 +2070,7 @@ def find_source_first_issues(
                 path,
                 line_number,
                 lines[line_number - 1].strip() if lines else "",
-                "current user install docs must exclude an unsupported distribution channel",
+                "current user docs contain an unsafe distribution or lifecycle route",
             )
         )
 
@@ -1894,15 +2082,18 @@ def find_source_first_issues(
         return findings
     folded = text.casefold()
     markers = (
-        "git clone https://github.com/kgmnotes/xferry.git",
-        "python -m pip install .",
+        "## portable",
+        "pipx install xferry",
         "xferry run --preset local --open",
+        "## managed linux",
+        "## container",
     )
     offsets = tuple(folded.find(marker) for marker in markers)
     if any(offset < 0 for offset in offsets) or offsets != tuple(sorted(offsets)):
         findings.append(
             contract_finding(
-                path, "source install must precede launch and exclude unsupported channels"
+                path,
+                "quick start must order portable first success before managed and container paths",
             )
         )
     return findings
@@ -1992,20 +2183,79 @@ def find_version_consistency_issues(
     changelog_path = Path("CHANGELOG.md")
     if targets_cover_path(changelog_path, repo_root, targets):
         changelog = read_contract_text(repo_root / changelog_path) or ""
-        if f"## [{version}] - 2026-08-20" not in changelog:
-            findings.append(
-                contract_finding(
-                    changelog_path, f"CHANGELOG must contain the {version} section dated 2026-08-20"
+        headings = tuple(
+            (match.group(1), match.group(2), position)
+            for position, match in enumerate(
+                re.finditer(
+                    r"^## \[([^]]+)](?: - ([^\n]+))?$",
+                    changelog,
+                    re.MULTILINE,
                 )
             )
-        sections = tuple(
-            section
-            for section in re.findall(r"^## \[([^]]+)](?:\s+-[^\n]*)?$", changelog, re.MULTILINE)
-            if section.casefold() != "unreleased"
         )
-        if set(sections) != {version}:
+        released = tuple(
+            (released_version, released_date, position)
+            for released_version, released_date, position in headings
+            if released_version.casefold() != "unreleased"
+        )
+        release_counts: dict[str, int] = {}
+        for released_version, released_date, _position in released:
+            release_counts[released_version] = release_counts.get(released_version, 0) + 1
+            if released_date is None or re.fullmatch(r"\d{4}-\d{2}-\d{2}", released_date) is None:
+                displayed_date = released_date or "missing"
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        "CHANGELOG release date must use canonical ISO YYYY-MM-DD: "
+                        f"{displayed_date}",
+                    )
+                )
+                continue
+            try:
+                date.fromisoformat(released_date)
+            except ValueError:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG release date is not a valid ISO date: {released_date}",
+                    )
+                )
+
+        for released_version, count in release_counts.items():
+            if count > 1:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG released version {released_version} must not be duplicated",
+                    )
+                )
+
+        current_sections = tuple(item for item in released if item[0] == version)
+        if len(current_sections) != 1:
             findings.append(
-                contract_finding(changelog_path, f"CHANGELOG must contain only version {version}")
+                contract_finding(
+                    changelog_path,
+                    "CHANGELOG must contain exactly one released section for current package "
+                    f"version {version}",
+                )
+            )
+        unreleased_positions = tuple(
+            position
+            for heading, _heading_date, position in headings
+            if heading.casefold() == "unreleased"
+        )
+        if (
+            len(unreleased_positions) != 1
+            or not released
+            or released[0][0] != version
+            or released[0][2] <= unreleased_positions[0]
+        ):
+            findings.append(
+                contract_finding(
+                    changelog_path,
+                    f"CHANGELOG current package version {version} must be the first released "
+                    "section after [Unreleased]",
+                )
             )
 
     pyproject_path = Path("pyproject.toml")

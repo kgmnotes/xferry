@@ -7,6 +7,11 @@ on:
         description: Candidate identity vX.Y.Z; does not create or activate a tag
         required: true
         type: string
+      managed_update_rehearsal:
+        description: Run only the artifact-only STAGE-013 native lifecycle rehearsal
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: ${{ !inputs.managed_update_rehearsal }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
@@ -454,3 +460,9 @@ jobs:
           python tools/candidate_inventory.py verify --candidate-dir promoted \
             --tag "$CANDIDATE_TAG" --source-commit "$GITHUB_SHA" --workflow-run "$GITHUB_RUN_ID" \
             --expected-sha256 "$INVENTORY_SHA256"
+
+  managed-update-rehearsal:
+    if: ${{ inputs.managed_update_rehearsal }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/managed-update-rehearsal.yml

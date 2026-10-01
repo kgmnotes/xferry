@@ -28,6 +28,8 @@ from xferry.management.model import (  # noqa: E402
 )
 from xferry.management.release_contract import (  # noqa: E402
     MAX_ARTIFACT_DIGESTS,
+    MAX_MANIFEST_BYTES,
+    MAX_SIGNATURE_BYTES,
     SUPPORTED_PLATFORM_IDS,
     PlatformId,
     ReleaseManifest,
@@ -35,6 +37,7 @@ from xferry.management.release_contract import (  # noqa: E402
     current_platform_id,
     machine_aliases,
     platform_display_name,
+    release_manifest_asset_name,
     require_platform_id,
     require_signing_key_id,
     require_source_commit,
@@ -90,6 +93,7 @@ def _render_installer(
     manifest_payload: str,
     platform_id: PlatformId,
     manifest_signature_required: bool,
+    require_hosted_signature: bool,
 ) -> str:
     payload = executable.read_bytes()
     managed_os_cases = "|".join(
@@ -104,11 +108,15 @@ def _render_installer(
         "@EXECUTABLE_SHA256@": hashlib.sha256(payload).hexdigest(),
         "@MANIFEST_JSON@": manifest_payload.rstrip("\n"),
         "@MANIFEST_SIGNATURE_REQUIRED@": ("true" if manifest_signature_required else "false"),
+        "@HOSTED_SIGNATURE_REQUIRED@": ("true" if require_hosted_signature else "false"),
+        "@HOSTED_MANIFEST_NAME@": release_manifest_asset_name(platform_id),
         "@PLATFORM_ID@": platform_id,
         "@MACHINE_CASE_PATTERN@": "|".join(machine_aliases(platform_id)),
         "@MANAGED_HOST_DESCRIPTION@": SUPPORTED_MANAGED_HOST_SUMMARY,
         "@MANAGED_OS_CASE_PATTERN@": managed_os_cases,
         "@MAX_ARTIFACT_DIGESTS@": str(MAX_ARTIFACT_DIGESTS),
+        "@MAX_MANIFEST_BYTES@": str(MAX_MANIFEST_BYTES),
+        "@MAX_SIGNATURE_BYTES@": str(MAX_SIGNATURE_BYTES),
         "@PLATFORM_DESCRIPTION@": platform_display_name(platform_id),
         "@SUPPORTED_RELEASE_MAJOR@": SUPPORTED_RELEASE_MAJOR,
         "@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@": UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS,
@@ -158,6 +166,7 @@ def build_release_bundle(
     source_commit: str | None = None,
     workflow_run: str | None = None,
     signing_key_id: str | None = None,
+    require_hosted_signature: bool = False,
     wheel: Path | None = None,
     wheel_sha256: str | None = None,
 ) -> ReleaseBundle:
@@ -279,6 +288,7 @@ def build_release_bundle(
                 manifest_payload=manifest_payload,
                 platform_id=selected_platform,
                 manifest_signature_required=release_manifest.signing_scheme == "ed25519",
+                require_hosted_signature=require_hosted_signature,
             ),
             encoding="utf-8",
         )
@@ -302,6 +312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-commit")
     parser.add_argument("--workflow-run")
     parser.add_argument("--signing-key-id")
+    parser.add_argument(
+        "--require-hosted-signature",
+        action="store_true",
+        help="Require the hosted platform manifest and Ed25519 signature during installation.",
+    )
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--wheel-sha256")
     arguments = parser.parse_args(argv)
@@ -319,6 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_commit=arguments.source_commit,
         workflow_run=arguments.workflow_run,
         signing_key_id=arguments.signing_key_id,
+        require_hosted_signature=arguments.require_hosted_signature,
         wheel=arguments.wheel,
         wheel_sha256=arguments.wheel_sha256,
     )

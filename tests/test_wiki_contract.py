@@ -66,6 +66,20 @@ def test_mkdocs_navigation_is_english_and_task_oriented() -> None:
     assert "site_url: https://xferry.kgmnotes.ru/" in config
 
 
+def test_mkdocs_strict_validation_covers_nav_links_and_anchors() -> None:
+    config = _read("mkdocs.yml")
+
+    for marker in (
+        "validation:",
+        "omitted_files: warn",
+        "absolute_links: warn",
+        "absolute_links: relative_to_docs",
+        "unrecognized_links: warn",
+        "anchors: warn",
+    ):
+        assert marker in config
+
+
 def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
     workflow = _read(".github/workflows/docs-pages.yml")
 
@@ -88,6 +102,8 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
     contracts = workflow.index("python tools/render_contracts.py --check")
     mirrors = workflow.index("python tools/sync_docs.py --check")
     assert settings < contracts < mirrors
+    assert "workflow_dispatch:" not in workflow
+    assert "branches: [main]" in workflow
 
 
 def test_pre_commit_checks_settings_before_documentation_mirrors() -> None:

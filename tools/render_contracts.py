@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import sys
@@ -15,6 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from xferry.features import CoreMethodSpec, core_method_specs  # noqa: E402
+from xferry.management import cli as management_cli  # noqa: E402
+from xferry.management.model import supported_managed_host_matrix  # noqa: E402
 from xferry.smuggle.policy import build_smuggle_capabilities  # noqa: E402
 
 _ANY_MARKER_RE = re.compile(rb"(?m)^<!-- (?:BEGIN|END) GENERATED:[^\r\n]* -->\r?$")
@@ -110,6 +114,93 @@ def render_smuggle_capabilities() -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def render_managed_support_matrix() -> bytes:
+    """Render every supported distro/version/architecture pair from runtime data."""
+    contract = supported_managed_host_matrix()
+    distributions = contract.get("distributions")
+    architectures = contract.get("architectures")
+    init_system = contract.get("init_system")
+    if (
+        not isinstance(distributions, dict)
+        or not all(
+            isinstance(distribution, str)
+            and isinstance(versions, list)
+            and all(isinstance(version, str) for version in versions)
+            for distribution, versions in distributions.items()
+        )
+        or not isinstance(architectures, list)
+        or not all(isinstance(architecture, str) for architecture in architectures)
+        or not isinstance(init_system, str)
+    ):
+        raise ValueError("invalid managed host support contract")
+    lines = [
+        "| Distribution | Architecture | Init system |",
+        "| --- | --- | --- |",
+    ]
+    lines.extend(
+        f"| {_code_cell(f'{distribution} {version}')} | {_code_cell(architecture)} | "
+        f"{_code_cell(init_system)} |"
+        for distribution, versions in distributions.items()
+        for version in versions
+        for architecture in architectures
+    )
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+CLI_REFERENCE_COMMANDS: tuple[str, ...] = (
+    "run",
+    "setup",
+    "status",
+    "logs",
+    "start",
+    "stop",
+    "restart",
+    "doctor",
+    "credentials",
+    "examples",
+    "update",
+    "rollback",
+    "uninstall",
+)
+
+
+def _capture_english_help(arguments: list[str]) -> str:
+    """Capture the real dispatcher help under an explicit English selection."""
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    exit_code = 0
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            exit_code = management_cli.main(["--lang", "en", *arguments, "--help"])
+        except SystemExit as exc:
+            exit_code = exc.code if isinstance(exc.code, int) else 1
+    if exit_code != 0 or stderr.getvalue():
+        raise ValueError(f"CLI help failed for {' '.join(arguments) or 'root'}")
+    rendered = stdout.getvalue().rstrip()
+    if not rendered:
+        raise ValueError(f"CLI help was empty for {' '.join(arguments) or 'root'}")
+    return rendered
+
+
+def render_cli_reference() -> bytes:
+    """Render root and every public command's actual English help output."""
+    sections: list[str] = []
+    for command in (None, *CLI_REFERENCE_COMMANDS):
+        arguments = [] if command is None else [command]
+        invocation = "xferry --help" if command is None else f"xferry {command} --help"
+        sections.extend(
+            (
+                f"## `{invocation}`",
+                "",
+                "```text",
+                _capture_english_help(arguments),
+                "```",
+                "",
+            )
+        )
+    return "\n".join(sections).encode("utf-8")
+
+
 REGIONS: tuple[ContractRegion, ...] = (
     ContractRegion("xferry-contracts/core-methods", render_core_methods),
     ContractRegion(
@@ -117,7 +208,16 @@ REGIONS: tuple[ContractRegion, ...] = (
         render_smuggle_capabilities,
     ),
 )
-TARGETS: tuple[ContractTarget, ...] = (ContractTarget("API.md", REGIONS),)
+CLI_REGION = ContractRegion("xferry-contracts/cli-reference", render_cli_reference)
+MANAGED_HOSTS_REGION = ContractRegion(
+    "xferry-contracts/managed-hosts",
+    render_managed_support_matrix,
+)
+TARGETS: tuple[ContractTarget, ...] = (
+    ContractTarget("API.md", REGIONS),
+    ContractTarget("docs/cli-reference.md", (CLI_REGION,)),
+    ContractTarget("docs/managed-hosts.md", (MANAGED_HOSTS_REGION,)),
+)
 
 
 def replace_generated_regions(

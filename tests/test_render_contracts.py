@@ -10,10 +10,13 @@ import pytest
 
 from tools import render_contracts, sync_docs
 from xferry.features import CoreMethodSpec, core_method_specs
+from xferry.management.model import supported_managed_host_matrix
 from xferry.smuggle.policy import build_smuggle_capabilities
 
 CORE_REGION = "xferry-contracts/core-methods"
 SMUGGLE_REGION = "xferry-contracts/smuggle-capabilities"
+CLI_REGION = "xferry-contracts/cli-reference"
+MANAGED_HOSTS_REGION = "xferry-contracts/managed-hosts"
 
 
 def _marked_document(
@@ -40,6 +43,16 @@ def _generated() -> dict[str, bytes]:
         CORE_REGION: render_contracts.render_core_methods(),
         SMUGGLE_REGION: render_contracts.render_smuggle_capabilities(),
     }
+
+
+def _single_marked_document(region: str) -> bytes:
+    return (
+        b"human preamble\n"
+        + render_contracts.start_marker(region)
+        + b"\nstale body\n"
+        + render_contracts.end_marker(region)
+        + b"\nhuman suffix\n"
+    )
 
 
 def _table_cells(line: str) -> list[str]:
@@ -117,6 +130,56 @@ def test_smuggle_table_round_trips_every_root_value_in_runtime_order() -> None:
         assert _unquote_code(row[0]) == expected_name
         actual_value = json.loads(_unquote_code(row[1]))
         _assert_ordered_equal(actual_value, expected_value)
+
+
+def test_managed_support_table_contains_exactly_every_runtime_host_pair() -> None:
+    lines = render_contracts.render_managed_support_matrix().decode("utf-8").splitlines()
+    rows = [_table_cells(line) for line in lines[2:]]
+    contract = supported_managed_host_matrix()
+    expected = [
+        [f"`{distribution} {version}`", f"`{architecture}`", "`systemd`"]
+        for distribution, versions in contract["distributions"].items()
+        for version in versions
+        for architecture in contract["architectures"]
+    ]
+
+    assert rows == expected
+    assert len(rows) == 10
+
+
+def test_cli_reference_captures_real_english_root_and_per_command_help() -> None:
+    rendered = render_contracts.render_cli_reference().decode("utf-8")
+
+    assert rendered.startswith("## `xferry --help`\n")
+    assert "usage: xferry [--lang LANG] COMMAND [OPTIONS]" in rendered
+    for command in (
+        "run",
+        "setup",
+        "status",
+        "logs",
+        "start",
+        "stop",
+        "restart",
+        "doctor",
+        "credentials",
+        "examples",
+        "update",
+        "rollback",
+        "uninstall",
+    ):
+        assert f"## `xferry {command} --help`" in rendered
+    assert "Exact immutable release version to verify and install." in rendered
+    assert "Управляем" not in rendered
+
+
+def test_cli_and_managed_support_contracts_have_canonical_document_targets() -> None:
+    targets = {
+        target.path: tuple(region.name for region in target.regions)
+        for target in render_contracts.TARGETS
+    }
+
+    assert targets["docs/cli-reference.md"] == (CLI_REGION,)
+    assert targets["docs/managed-hosts.md"] == (MANAGED_HOSTS_REGION,)
 
 
 def test_replace_generated_regions_preserves_every_outside_byte() -> None:
@@ -214,6 +277,10 @@ def test_replace_generated_regions_fails_closed_for_malformed_markers(
 def test_render_all_detects_drift_writes_and_is_idempotent(tmp_path: Path) -> None:
     api_path = tmp_path / "API.md"
     api_path.write_bytes(_marked_document())
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    docs.joinpath("cli-reference.md").write_bytes(_single_marked_document(CLI_REGION))
+    docs.joinpath("managed-hosts.md").write_bytes(_single_marked_document(MANAGED_HOSTS_REGION))
 
     assert render_contracts.render_all(check=True, repo_root=tmp_path) == 1
     assert render_contracts.render_all(check=False, repo_root=tmp_path) == 0

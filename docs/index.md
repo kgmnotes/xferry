@@ -10,16 +10,18 @@ experiments in one local web UI and HTTP API.
 
 ## Start here
 
-- [Install from source and send a first file](quick-start.md)
+- [Choose portable, managed Linux, or container installation](quick-start.md)
+- [Check the managed Linux support matrix](managed-hosts.md)
 - [Choose a test workflow](scenarios.md)
 - [Use a disposable SSH tunnel](disposable-ssh-tunnel.md)
 - [Manage data and process lifecycle](operations.md)
 - [Configure a public-direct deployment](public-direct.md)
 - [Integrate with the HTTP and WebSocket API](api.md)
+- [Look up generated CLI help](cli-reference.md)
 
-The supported distribution is a reviewed source checkout. Automated workflows
-verify build products but do not publish packages, release binaries, or
-registry images.
+Portable installs are owned by pipx, managed Linux installs by the signed SCIE
+lifecycle, and containers by immutable GHCR version tags or digests. Contributor
+source builds remain documented separately and are not the first user path.
 
 Developer reference material includes the [architecture](architecture.md),
 [frontend contract](frontend-contract.md), and [active ADR set](ADR/README.md).

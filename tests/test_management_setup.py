@@ -567,6 +567,20 @@ def test_authenticated_ping_uses_basic_auth_and_requires_ready_json() -> None:
     assert f"Authorization: Basic {token}\r\n".encode() in received
 
 
+def test_authenticated_ping_reports_the_exact_ready_server_version() -> None:
+    """Managed release activation needs the authenticated PING process identity."""
+    body = b'{"health":"ready","server":"XFerry/0.2.0"}'
+
+    result, _received = _authenticated_ping_for_response(
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n\r\n"
+        + body
+    )
+
+    assert result == HealthResult(ok=True, detail="healthy", version="0.2.0")
+
+
 @pytest.mark.parametrize(
     "body",
     [
