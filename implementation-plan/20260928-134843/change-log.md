@@ -133,6 +133,7 @@
 - Hosted evidence: run `37111932008` at `f1361d0` passed identity and received a valid independent `testpypi` Environment approval from `gkumurzhi`; authenticated handoff artifact `11269958516` has digest `sha256:69a2b778d8ad3c9c84c6f7dcd32ef87f04fe6b70e1a4ae19f78fb5a1a2e3da25` and expires `2026-10-04T09:06:43Z`.
 - Exact blocker: TestPyPI rejected the valid OIDC token with `invalid-publisher` because the pending publisher mapping for `xferry` / `kgmnotes/xferry` / `testpypi.yml` / `testpypi` does not exist. No upload occurred; the three OS consumers skipped and TestPyPI remains 404.
 - Remaining: authenticated TestPyPI owner creates the mapping, failed jobs are rerun with fresh protected approval, and accepted wheel/sdist bytes plus Windows/macOS/Linux pipx receipts are verified.
+- Rerun attempt 2 received a new protected approval from `gkumurzhi` and failed at the same TestPyPI exchange with the same exact claims and `invalid-publisher`; this rules out stale approval/first-attempt state and leaves the account-level mapping as the sole upload blocker.
 - Report: `stage-reports/STAGE-010-20261003-122024.md`.
 
 ## 2026-10-03 12:19:45 +0300 — STAGE-013 hosted closure
