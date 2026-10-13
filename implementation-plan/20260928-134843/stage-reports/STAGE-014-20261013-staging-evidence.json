@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-10-13T21:50:00+03:00",
+  "purpose": "Preserve sanitized staged-journey evidence before transient GitHub artifacts expire; this is not a STAGE-014 closure record.",
+  "documentation_candidate": {
+    "pull_request": 42,
+    "state": "OPEN",
+    "merged": false,
+    "head": "fa06558008f1eed558fb171fb729e274fe947de3",
+    "branch": "codex/stage-013-managed-update-rehearsal",
+    "version_described": "0.2.0"
+  },
+  "substitution_matrix": {
+    "portable": {
+      "documented": "PyPI/pipx 0.2.0",
+      "staged": "TestPyPI 0.1.0",
+      "status": "BLOCKED",
+      "reason": "TestPyPI pending publisher mapping is absent; run 38448276887 failed invalid-publisher before the three-OS pipx matrix."
+    },
+    "managed": {
+      "documented": "0.1.0 to 0.2.0 with rollback to 0.1.0",
+      "staged": "signed artifact-only 0.1.1 to 0.1.2 with rollback to 0.1.1",
+      "status": "PASS"
+    },
+    "container": {
+      "documented": "ghcr.io/kgmnotes/xferry:v0.2.0",
+      "staged": "ghcr.io/kgmnotes/xferry:v0.1.0",
+      "status": "PASS"
+    },
+    "github_release": {
+      "documented": "public v0.2.0 release",
+      "staged": "draft prerelease xferry-stage-012-rehearsal-v0.1.0-36712344792-v2",
+      "status": "PASS",
+      "transport_difference": "Authenticated gh release download was used because draft assets have no anonymous public URL."
+    },
+    "pages": {
+      "documented": "production documentation",
+      "staged": "strict local build only",
+      "status": "DEFERRED_TO_STAGE_015"
+    }
+  },
+  "managed": {
+    "workflow_run": 36876624959,
+    "head": "fa06558008f1eed558fb171fb729e274fe947de3",
+    "artifacts": [
+      {
+        "id": 11169197338,
+        "name": "managed-update-linux-x86_64-36876624959-1",
+        "digest": "sha256:4416ea0d21fd589cbe9701fe7def3cbcaade235b98f727c1537e3e3d975be2a5",
+        "expires_at": "2026-10-15T14:29:56Z",
+        "runner": "ubuntu-24.04",
+        "platform": "linux-x86_64"
+      },
+      {
+        "id": 11169537119,
+        "name": "managed-update-linux-aarch64-36876624959-1",
+        "digest": "sha256:4590b15fed6a5dd99ef4cf164c065a6645c6af81b2e924f3a222cad7acc798fb",
+        "expires_at": "2026-10-15T14:29:47Z",
+        "runner": "ubuntu-24.04-arm",
+        "platform": "linux-aarch64"
+      }
+    ],
+    "results": {
+      "setup": "PASS",
+      "doctor": "PASS",
+      "update_dry_run": "0.1.1 verified for 0.1.2 without state mutation",
+      "update_apply": "0.1.2 verified and activated",
+      "exact_health": ["0.1.1", "0.1.2", "rollback-0.1.1"],
+      "rollback": "verified release 0.1.1 activated",
+      "uninstall": "runtime removed; config, data, and ACME state preserved"
+    },
+    "receipt_sha256": {
+      "linux-x86_64_host": "980ff2fbabd7d013f4e5394722e571ff28f239708c23ac321436e9ba42efbfba",
+      "linux-aarch64_host": "aa5be61228fd4cb2822e083094fe026a4004600d7797def0dd15bc911d1c8cf2",
+      "update_dry_run_each": "86353f27ac2d1aff351b610d769fe9604ce202208059281f1a362be94a15f36f",
+      "update_apply_each": "e6ef90322ac662d6cf84a3f0e0f5daf3e6666f081e62b22a34acaa1127ec0f54",
+      "rollback_each": "d9ec3911c11fb96458cbd50125139bd25e24dfc489437fd3c849dcd067eb09e7",
+      "uninstall_each": "cd88a22e22e4f90d5e8d576ff2f200d9fe69670b5a62ad2edd138f9dbd52a542"
+    }
+  },
+  "container": {
+    "workflow_run": 36779670844,
+    "head": "f0da2711b7bb111071bad926752bd31be065dc13",
+    "artifact": {
+      "id": 11126274289,
+      "name": "ghcr-publish-receipt-36779670844-1",
+      "digest": "sha256:f08b012fb05b5b34ae2531a74d33b4cd656f8779e808697a6a959b1effef9c1a",
+      "expires_at": "2026-10-14T21:29:51Z"
+    },
+    "image": "ghcr.io/kgmnotes/xferry",
+    "tag": "v0.1.0",
+    "index_digest": "sha256:38fa2dbd7e14edd7ad305620d4d8ee80cea1eb8857f500c757263dcdb88d3622",
+    "platforms": {
+      "linux/amd64": "sha256:db5bad001faa5e2d9abe8da5086a772607b8b8e17ded1bff7e689bf67a6967d5",
+      "linux/arm64": "sha256:e5be9406ca83fd3e1efe897e17dae4275292b5a2889d7752846d75aa88bd4711"
+    },
+    "attestations": ["https://slsa.dev/provenance/v1", "https://spdx.dev/Document"],
+    "native_pull_runtime_browser_smoke": ["linux/amd64", "linux/arm64"],
+    "latest_absent_at_publication": true,
+    "live_anonymous_manifest_check": "PASS"
+  },
+  "draft_release": {
+    "release_id": 400481506,
+    "draft": true,
+    "prerelease": true,
+    "tag": "xferry-stage-012-rehearsal-v0.1.0-36712344792-v2",
+    "download_verification": "PASS",
+    "signature_verification": "PASS",
+    "assets_sha256": {
+      "install-linux-x86_64.sh": "5ca0468976fd98e4963dd953ccd83aff9b879ce59b0c08ea7d178ce14390ff38",
+      "install-linux-x86_64.sh.sig": "7221bdf3a46785a526cf87673e662d7be7ddfcdba4cb7cd31497e692a3d39ece",
+      "xferry-release-linux-x86_64.json": "6de88c6aad202236e7f5cceab2a2778c34fa998b45c59726e0e2b59c1f10f6a9",
+      "xferry-release-linux-x86_64.json.sig": "52cb3fed9bcb6b38678e2bcd1394a86598d5e22834938b45c53fec67926d4d66"
+    }
+  },
+  "production_boundary": {
+    "remote_main": "55805f955fa04e37dab285bfd50684f2f435ecb2",
+    "latest_pages_run": 36782061133,
+    "public_site_still_source_install_first": true,
+    "pull_request_42_unmerged": true,
+    "production_tag_created": false,
+    "production_publication_performed": false
+  }
+}
