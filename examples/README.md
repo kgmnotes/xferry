@@ -1,14 +1,16 @@
 # Examples
 
-These examples exercise a reviewed source checkout. Start with the root
-[README](../README.md#install-from-source); packages, release binaries, and
-registry images are not supported distribution channels.
+These are contributor examples exercised from a reviewed source checkout. User
+installation starts with the root [README](../README.md#choose-an-installation);
+the local build examples here do not replace portable, managed, or immutable
+container release journeys.
 
 | Path | Scenario |
 | --- | --- |
 | [`basic_file_server.sh`](basic_file_server.sh) | Local HTTPS file share with random Basic Auth and uploads-only access |
 | [`advanced_upload_nginx.md`](advanced_upload_nginx.md) | Token-scoped Advanced upload with a custom method behind nginx |
 | [`notepad_client.py`](notepad_client.py) | Secure Notepad ECDH client flow |
+| [`large-files.ini`](large-files.ini) | Private encrypted-transfer resource settings to merge into an existing TLS/auth configuration |
 | [`docker/`](docker/) | Local multi-stage Docker build with named volumes |
 
 The Compose example builds `xferry:local` from the checkout. Running

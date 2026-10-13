@@ -4,27 +4,60 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      production_run:
+        description: Successful production release workflow run ID
+        required: true
+        type: string
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-${{ github.event_name }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
-    name: Build and deploy documentation
+  publication-gate:
+    name: Verify accepted public production release
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'kgmnotes/xferry' }}
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install offline signature verifier dependency
+        run: python -m pip install -c constraints/ci.txt 'cryptography>=50.0'
+      - name: Verify production run, signed public bytes, and source identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCTION_RUN: ${{ inputs.production_run }}
+          DOCUMENTATION_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python tools/docs_publication.py --production-run "$PRODUCTION_RUN" \
+            --documentation-commit "$DOCUMENTATION_COMMIT"
 
+  build:
+    name: Build strict documentation
+    needs: [publication-gate]
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.repository == 'kgmnotes/xferry' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && needs.publication-gate.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -36,7 +69,7 @@ jobs:
       - name: Install documentation toolchain
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[docs,lint]"
+          pip install -c constraints/ci.txt -e ".[docs,lint]"
 
       - name: Validate documentation contracts
         run: |
@@ -47,11 +80,35 @@ jobs:
           python tools/check_stale_docs.py
           mkdocs build --strict
 
-      - name: Upload Pages artifact
+      - name: Upload accepted Pages artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.publication-gate.result == 'success' }}
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # actions/upload-pages-artifact@v4
         with:
           path: site
 
+  deploy:
+    name: Deploy accepted production documentation
+    needs: [publication-gate, build]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'kgmnotes/xferry' && needs.publication-gate.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Recheck current main after publication approval
+        env:
+          DOCUMENTATION_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
+            --header 'Accept: application/vnd.github+json' --output current-main.json \
+            'https://api.github.com/repos/kgmnotes/xferry/git/ref/heads/main'
+          jq --exit-status --arg expected "$DOCUMENTATION_COMMIT" \
+            '.ref == "refs/heads/main" and .object.type == "commit" and .object.sha == $expected' \
+            current-main.json
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # actions/deploy-pages@v4

@@ -40,6 +40,14 @@ def make_server_config(**kwargs: Any) -> ServerConfig:
             kwargs[field_name] = None
     limits = ServerLimits(
         max_upload_size=kwargs.pop("max_upload_size", limit_defaults.max_upload_size),
+        encrypted_upload_max_size=kwargs.pop(
+            "encrypted_upload_max_size",
+            limit_defaults.encrypted_upload_max_size,
+        ),
+        encrypted_upload_incomplete_ttl=kwargs.pop(
+            "encrypted_upload_incomplete_ttl",
+            limit_defaults.encrypted_upload_incomplete_ttl,
+        ),
         upload_storage_limit=kwargs.pop(
             "upload_storage_limit", limit_defaults.upload_storage_limit
         ),
@@ -114,6 +122,7 @@ def make_server_config(**kwargs: Any) -> ServerConfig:
         host=kwargs.pop("host", config_defaults.host),
         port=kwargs.pop("port", config_defaults.port),
         root_dir=kwargs.pop("root_dir", config_defaults.root_dir),
+        encrypted_uploads=kwargs.pop("encrypted_uploads", config_defaults.encrypted_uploads),
         limits=limits,
         websocket=websocket,
         tls=tls,

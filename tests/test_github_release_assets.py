@@ -27,7 +27,7 @@ TAG = "v0.1.0"
 VERSION = "0.1.0"
 COMMIT = "40ac9bc031aa28b9adc2765857a8926f522e4005"
 RUN = "36712344792"
-REHEARSAL_TAG = "xferry-stage-012-rehearsal-v0.1.0-36712344792"
+REHEARSAL_TAG = "xferry-stage-012-rehearsal-v0.1.0-36712344792-v2"
 OCI_INDEX = "application/vnd.oci.image.index.v1+json"
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
@@ -110,6 +110,8 @@ def _candidate(root: Path) -> Path:
             f"version='{VERSION}'\nplatform_id='{platform}'\n"
             f"artifact_name='{executable.name}'\nartifact_size='{executable.stat().st_size}'\n"
             f"artifact_sha256='{manifest.executable_sha256}'\nmanifest_signature_required='false'\n"
+            "hosted_signature_required='true'\n"
+            f"hosted_manifest_name='xferry-release-{platform}.json'\n"
             "supported_release_major='0'\n"
             "cat > \"$candidate_release/xferry-release.json\" <<'XFERRY_CANDIDATE_MANIFEST'\n"
             + manifest.to_bytes().decode()
@@ -257,6 +259,59 @@ def test_api_identity_substitution_is_rejected(tmp_path: Path) -> None:
         assets.verify_api_identity(identity, artifact, run)
 
 
+def test_api_identity_accepts_explicit_production_producer_contract(tmp_path: Path) -> None:
+    from tools import github_release_assets as assets
+
+    identity, _candidate_root, _archive = _identity(tmp_path)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=2,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = _metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        run_attempt=2,
+        status="in_progress",
+        conclusion=None,
+    )
+
+    assets.verify_api_identity(identity, artifact, run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("producer_event", "workflow_dispatch"),
+        ("producer_workflow_path", ".github/workflows/release.yml"),
+        ("producer_run_attempt", 0),
+        ("producer_status", "completed"),
+        ("producer_conclusion", "success"),
+    ],
+)
+def test_api_identity_rejects_mixed_or_arbitrary_producer_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    from tools import github_release_assets as assets
+
+    identity, _candidate_root, _archive = _identity(tmp_path)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    identity[field] = value
+    artifact, run = _metadata(identity)
+
+    with pytest.raises(ValueError, match="producer contract"):
+        assets.verify_api_identity(identity, artifact, run)
+
+
 def test_release_asset_assembly_signs_manifests_and_preserves_candidate_bytes(
     tmp_path: Path,
 ) -> None:
@@ -321,6 +376,17 @@ def test_release_asset_assembly_signs_manifests_and_preserves_candidate_bytes(
     assert manifest.signing_scheme == "ed25519"
     assert manifest.signing_key_ids == (key_id,)
     assert manifest.source_commit == COMMIT
+    for name in (
+        "release-candidate.tar",
+        "candidate-inventory.json",
+        "xferry-0.1.0-py3-none-any.whl",
+        "xferry-0.1.0.tar.gz",
+        "xferry-dependency-sbom.cdx.json",
+    ):
+        assert (
+            dict(manifest.artifact_digests)[name]
+            == hashlib.sha256(signed.joinpath(name).read_bytes()).hexdigest()
+        )
     assert (
         dict(manifest.artifact_digests)["install-linux-x86_64.sh"]
         == hashlib.sha256(signed.joinpath("install-linux-x86_64.sh").read_bytes()).hexdigest()
@@ -445,6 +511,52 @@ def test_release_asset_verification_rejects_coherent_receipt_payload_substitutio
         assets.verify_downloaded_assets(identity, tmp_path / "signed", key_ring=key_ring)
 
 
+def test_signed_manifest_rejects_coherent_cross_channel_replacement(tmp_path: Path) -> None:
+    """An unsigned receipt must not authorize a rewritten wheel and OCI archive."""
+    from tools import github_release_assets as assets
+
+    identity, candidate, archive = _identity(tmp_path)
+    artifact, run = _metadata(identity)
+    key_id, key_ring = _private_key(tmp_path / "key.pem")
+    unsigned = tmp_path / "unsigned"
+    signed = tmp_path / "signed"
+    assets.prepare_unsigned_assets(
+        identity, artifact, run, archive, tmp_path / "promoted", unsigned
+    )
+    assets.sign_prepared_assets(
+        unsigned, signed, key_id=key_id, private_key=tmp_path / "key.pem", identity=identity
+    )
+
+    wheel_name = f"xferry-{VERSION}-py3-none-any.whl"
+    wheel = candidate / "python" / wheel_name
+    with zipfile.ZipFile(wheel, "a") as wheel_zip:
+        wheel_zip.writestr("xferry/foreign_payload.py", "foreign = True\n")
+    foreign_identity = dict(identity)
+    (candidate / "candidate-inventory.json").unlink()
+    foreign_identity["inventory_sha256"] = create_inventory(candidate, TAG, COMMIT, RUN)
+    foreign_archive = tmp_path / "foreign-candidate.tar"
+    foreign_identity["archive_sha256"] = pack_candidate(candidate, foreign_archive)
+    replacements = {
+        wheel_name: wheel,
+        "candidate-inventory.json": candidate / "candidate-inventory.json",
+        "release-candidate.tar": foreign_archive,
+    }
+    for name, replacement in replacements.items():
+        (signed / name).write_bytes(replacement.read_bytes())
+        _rewrite_release_asset_record(signed, name)
+    wrapper = signed / "github-release-assets.json"
+    document = json.loads(wrapper.read_bytes())
+    for field in ("archive_sha256", "inventory_sha256"):
+        document[field] = foreign_identity[field]
+    wrapper.write_bytes((json.dumps(document, sort_keys=True, indent=2) + "\n").encode())
+
+    # The entire rewritten archive and its aliases agree with the rewritten
+    # receipt. Only the still-original signed manifest rejects this attack.
+    assets._verify_candidate_aliases(foreign_identity, signed)
+    with pytest.raises(ValueError, match="signed manifest asset digest"):
+        assets.verify_downloaded_assets(foreign_identity, signed, key_ring=key_ring)
+
+
 def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
     tmp_path: Path,
 ) -> None:
@@ -485,7 +597,7 @@ def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
         ("environment: github-release-staging", "environment: production-release"),
         ("contents: write", "contents: read"),
         ("contents: read\n  actions: read", "contents: write\n  actions: read"),
-        ("xferry-stage-012-rehearsal-v0.1.0-36712344792", "v0.1.0"),
+        ("xferry-stage-012-rehearsal-v0.1.0-36712344792-v2", "v0.1.0"),
         ("--draft --prerelease --latest=false", "--prerelease"),
         ("gh release create", "gh release upload"),
         ("gh release create", "gh release edit"),
@@ -497,14 +609,26 @@ def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
             "python tools/github_release_assets.py sign --unsigned-dir unsigned-assets",
         ),
         (
-            'gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}"',
+            (
+                'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+                "--json tagName,isDraft,isPrerelease"
+            ),
             "true",
+        ),
+        ('gh release download "${RELEASE_TAG}"', "true"),
+        (
+            "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}",
+            "artifact-id: missing",
+        ),
+        (
+            "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}",
+            "artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}",
         ),
         (
             "python tools/github_release_assets.py verify-tamper",
             "python tools/github_release_assets.py verify",
         ),
-        ("refs/heads/codex/stage-012-draft-release-rehearsal", "refs/heads/main"),
+        ("refs/heads/codex/stage-012-draft-release-rehearsal-v2", "refs/heads/main"),
         ("run-id: 36712344792", "run-id: 1"),
         ("artifact-ids: 11095067140", "artifact-ids: 1"),
         ("persist-credentials: false", "persist-credentials: true"),
@@ -526,6 +650,36 @@ def test_github_release_rehearsal_policy_is_included_in_repository_guard() -> No
     from tools.check_stale_docs import find_release_policy_issues
 
     assert find_release_policy_issues(REPO_ROOT) == []
+
+
+def test_github_release_draft_postcondition_uses_draft_aware_lookup() -> None:
+    """A created draft must not be queried through the published-release tag endpoint."""
+    workflow = (REPO_ROOT / ".github/workflows/github-release-rehearsal.yml").read_text()
+    publish = workflow.split("\n  publish-draft:", 1)[1].split("\n  download-verify:", 1)[0]
+
+    assert (
+        'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+        "--json tagName,isDraft,isPrerelease"
+    ) in publish
+    assert "releases/tags/" not in publish
+    assert "jq -r '.tagName'" in publish
+    assert "jq -r '.isDraft'" in publish
+    assert "jq -r '.isPrerelease'" in publish
+
+
+def test_draft_assets_cross_the_write_boundary_only_as_an_actions_artifact() -> None:
+    """The read-only verifier must not need push access to discover a draft Release."""
+    workflow = (REPO_ROOT / ".github/workflows/github-release-rehearsal.yml").read_text()
+    publish = workflow.split("\n  publish-draft:", 1)[1].split("\n  download-verify:", 1)[0]
+    verify = workflow.split("\n  download-verify:", 1)[1]
+
+    assert 'gh release download "${RELEASE_TAG}"' in publish
+    assert "id: downloaded-assets" in publish
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in publish
+    assert "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}" in publish
+    assert "gh release download" not in verify
+    assert "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}" in verify
+    assert "path: downloaded" in verify
 
 
 def test_github_release_rehearsal_policy_rejects_secret_in_publisher_job() -> None:

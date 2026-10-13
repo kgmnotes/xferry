@@ -9,6 +9,7 @@ import re
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -383,31 +384,33 @@ STALE_DOCUMENT_PATTERNS: tuple[StalePattern, ...] = (
     ),
 )
 
-REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 12))
+REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 13))
 
 ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
     OrderedMarkersRequirement(
         Path("docs/quick-start.md"),
         (
-            "## Install",
+            "## Portable",
+            "## Managed Linux",
+            "## Container",
             "## Send a first file",
-            "## Try a custom method",
             "## Stop and protect data",
         ),
-        "quick start must keep source install, first file, custom method, and lifecycle ordered",
+        "quick start must keep portable, managed, container, first-success, and lifecycle ordered",
     ),
     OrderedMarkersRequirement(
         Path("docs/operations.md"),
         (
-            "## Source process",
+            "## Portable lifecycle",
+            "## Managed Linux lifecycle",
+            "## Container lifecycle",
             "## Data layout",
-            "## Docker from the checkout",
             "## Capacity",
             "## Health and diagnostics",
             "## Public services",
         ),
-        "operations must keep lifecycle, storage, capacity, diagnostics, and service "
-        "guidance ordered",
+        "operations must keep all three lifecycles, storage, capacity, diagnostics, and "
+        "service guidance ordered",
     ),
 )
 
@@ -415,36 +418,42 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("README.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*workflows[\s\S]*do\s+not\s+publish)"
-            r"(?=[\s\S]*python -m pip install \.)"
+            r"\A(?=[\s\S]*pipx install xferry)"
+            r"(?=[\s\S]*managed-hosts\.md)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*xferry run --preset local --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
             r"(?=[\s\S]*`none`[\s\S]*XOR[\s\S]*AES-256-GCM)[\s\S]*",
             re.IGNORECASE,
         ),
-        "README must keep source installation, UI, curl, Advanced Sessions, custom "
-        "methods, and crypto support discoverable",
+        "README must route portable, managed and container users while keeping UI, curl, "
+        "Advanced Sessions, custom methods, and crypto support discoverable",
     ),
     SemanticRequirement(
         Path("docs/quick-start.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*do\s+not\s+publish[\s\S]*GitHub Release[\s\S]*PyPI package)"
-            r"(?=[\s\S]*git clone https://github\.com/kgmnotes/xferry\.git)"
-            r"(?=[\s\S]*python -m pip install \.)"
+            r"\A(?=[\s\S]*py -m pip install --user pipx)"
+            r"(?![\s\S]*python3 -m pip install --user pipx)"
+            r"(?=[\s\S]*sudo apt install pipx)"
+            r"(?=[\s\S]*brew install pipx)"
+            r"(?=[\s\S]*pipx ensurepath)"
+            r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --preset local --open)"
+            r"(?=[\s\S]*managed-hosts\.md)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
-        "quick start must remain source-first and link lifecycle and exposure guidance",
+        "quick start must provide platform-specific pipx bootstrap, portable first success, "
+        "managed and "
+        "immutable container paths",
     ),
     SemanticRequirement(
         Path("SECURITY.md"),
         re.compile(
-            r"\A(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*automation[\s\S]*does\s+not\s+publish)"
+            r"\A(?=[\s\S]*portable[\s\S]*managed[\s\S]*container)"
+            r"(?=[\s\S]*immutable[\s\S]*version or digest)"
             r"(?=[\s\S]*authoriz\w*[\s\S]*test data)"
             r"(?=[\s\S]*## External exposure baseline)"
             r"(?=[\s\S]*TLS[\s\S]*Basic Auth[\s\S]*finite[\s\S]*quota)"
@@ -475,7 +484,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*Branch or pull-request publication)"
             r"(?=[\s\S]*Candidate substitution or publish-job rebuild)"
             r"(?=[\s\S]*Installer or update metadata tampering)"
-            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*protected `release-production`)"
             r"(?=[\s\S]*Rollback[\s\S]*previously verified)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -485,15 +494,14 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("CONTRIBUTING.md"),
         re.compile(
             r"\A(?=[\s\S]*python -m pip install -e)"
+            r"(?=[\s\S]*source checkout is the contributor workflow)"
             r"(?=[\s\S]*python tools/sync_docs\.py --check)"
             r"(?=[\s\S]*python tools/check_stale_docs\.py)"
-            r"(?=[\s\S]*supported distribution[\s\S]*source checkout)"
-            r"(?=[\s\S]*do not upload or[\s\S]*publish)"
-            r"(?=[\s\S]*documentation and[\s\S]*examples source-only)[\s\S]*",
+            r"(?=[\s\S]*generated\s+CLI\s+reference)"
+            r"(?=[\s\S]*managed\s+support\s+matrix)[\s\S]*",
             re.IGNORECASE,
         ),
-        "CONTRIBUTING must preserve local checks, documentation sync, and source-first "
-        "release status",
+        "CONTRIBUTING must preserve local checks, contributor-source scope, and generated docs",
     ),
     SemanticRequirement(
         Path("CONTRIBUTING.md"),
@@ -536,24 +544,27 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
     SemanticRequirement(
         Path("docs/operations.md"),
         re.compile(
-            r"\A(?=[\s\S]*distribution[\s\S]*source-only)"
-            r"(?=[\s\S]*remote updates[\s\S]*not[\s\S]*exposed[\s\S]*public CLI)"
+            r"\A(?=[\s\S]*pipx upgrade xferry)(?=[\s\S]*pipx uninstall xferry)"
+            r"(?=[\s\S]*xferry update --to 0\.2\.0)"
+            r"(?=[\s\S]*xferry rollback)(?=[\s\S]*xferry uninstall)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
             r"(?=[\s\S]*body-memory-budget[\s\S]*not an[\s\S]*RSS ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
             r"(?=[\s\S]*destructive)[\s\S]*",
             re.IGNORECASE,
         ),
-        "operations must own source lifecycle, persistent data, capacity, and destructive cleanup",
+        "operations must own portable, managed and container lifecycle plus persistent data",
     ),
     SemanticRequirement(
         Path("docs/public-direct.md"),
         re.compile(
             r"\A(?=[\s\S]*security\.md#external-exposure-baseline)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
+            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*--write-sample-config)"
             r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
-            r"(?=[\s\S]*direct TCP peer)"
-            r"(?=[\s\S]*no supported binary or container distribution)[\s\S]*",
+            r"(?=[\s\S]*direct TCP peer)[\s\S]*",
             re.IGNORECASE,
         ),
         "public-direct must defer to security policy and preserve validation and proxy boundaries",
@@ -664,6 +675,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             (9, "ADR-009-api-client-compatibility.md"),
             (10, "ADR-010-methods-and-presets.md"),
             (11, "ADR-011-controlled-distribution.md"),
+            (12, "ADR-012-encrypted-streaming-transfers.md"),
         )
     ),
     SemanticRequirement(
@@ -680,7 +692,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*Managed Linux[\s\S]*GitHub Release)"
             r"(?=[\s\S]*protected version-tag refs)"
             r"(?=[\s\S]*publisher jobs must not rebuild)"
-            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*protected `release-production`)"
             r"(?=[\s\S]*OIDC trusted publishing)"
             r"(?=[\s\S]*Signing and key ownership)"
             r"(?=[\s\S]*Rollback and incident response)"
@@ -771,6 +783,14 @@ def _workflow_jobs(text: str) -> tuple[WorkflowJob, ...]:
             )
         )
     return tuple(jobs)
+
+
+def _workflow_step_with_id(job_text: str, step_id: str) -> str | None:
+    marker = f"\n        id: {step_id}\n"
+    for step in re.split(r"(?=^      - )", job_text, flags=re.MULTILINE):
+        if marker in f"\n{step}\n":
+            return step
+    return None
 
 
 def _permission_entries(
@@ -906,10 +926,11 @@ def _publisher_channels(job: WorkflowJob) -> frozenset[str]:
     )
 
 
-def _uses_production_environment(job: WorkflowJob) -> bool:
+def _uses_named_environment(job: WorkflowJob, name: str) -> bool:
+    escaped = re.escape(name)
     if re.search(
         r"^    (?P<quote>[\"']?)environment(?P=quote):\s*"
-        r"[\"']?production[\"']?\s*(?:#.*)?$",
+        rf"[\"']?{escaped}[\"']?\s*(?:#.*)?$",
         job.text,
         re.MULTILINE,
     ):
@@ -927,12 +948,35 @@ def _uses_production_environment(job: WorkflowJob) -> bool:
         environment_block = environment_block[: end.start()]
     return (
         re.search(
-            r"^      name:\s*[\"']?production[\"']?\s*(?:#.*)?$",
+            rf"^      name:\s*[\"']?{escaped}[\"']?\s*(?:#.*)?$",
             environment_block,
             re.MULTILINE,
         )
         is not None
     )
+
+
+def _uses_production_environment(job: WorkflowJob) -> bool:
+    return _uses_named_environment(job, "release-production")
+
+
+def _job_dependencies(job: WorkflowJob) -> frozenset[str] | None:
+    """Read a literal dependency list; reject expressions and ambiguous YAML."""
+    matches = tuple(re.finditer(r"^    needs:\s*([^\n#]+)(?:\s*#.*)?$", job.text, re.MULTILINE))
+    if len(matches) != 1:
+        return None
+    value = matches[0].group(1).strip()
+    if value.startswith("[") and value.endswith("]"):
+        entries = tuple(item.strip().strip("\"'") for item in value[1:-1].split(","))
+    else:
+        entries = (value.strip("\"'"),)
+    if not entries or any(
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", item) is None for item in entries
+    ):
+        return None
+    if len(set(entries)) != len(entries):
+        return None
+    return frozenset(entries)
 
 
 def release_workflow_policy_findings(
@@ -975,11 +1019,23 @@ def release_workflow_policy_findings(
                 )
             )
 
-    publishers = tuple(
-        (job, _publisher_channels(job)) for job in _workflow_jobs(text) if _publisher_channels(job)
-    )
+    jobs = _workflow_jobs(text)
+    publishers = tuple((job, channels) for job in jobs if (channels := _publisher_channels(job)))
     if not publishers:
         return findings
+
+    publisher_names = {job.name for job, _channels in publishers}
+    for job in jobs:
+        if job.name not in publisher_names and _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    "`release-production` must be referenced only by publisher jobs; "
+                    f"{job.name!r} is not a publisher",
+                )
+            )
 
     events, push_block = _workflow_events(text)
     if "pull_request" in events or "pull_request_target" in events:
@@ -1009,7 +1065,8 @@ def release_workflow_policy_findings(
                     path,
                     job.start_line,
                     line,
-                    f"publisher job {job.name!r} must use the protected `production` environment",
+                    f"publisher job {job.name!r} must use the protected "
+                    "`release-production` environment",
                 )
             )
         if re.search(r"^    [\"']?needs[\"']?:", job.text, re.MULTILINE) is None or (
@@ -1103,6 +1160,301 @@ def release_workflow_policy_findings(
     return findings
 
 
+def production_release_workflow_policy_findings(
+    text: str,
+    path: Path = Path(".github/workflows/release-production.yml"),
+) -> list[Finding]:
+    """Validate the production tag workflow's approval and publisher boundaries."""
+    findings: list[Finding] = []
+    lines = text.splitlines()
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if reference.startswith("./"):
+            continue
+        action, separator, revision = reference.partition("@")
+        if separator and WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(revision):
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        received = revision if separator else "(missing ref)"
+        findings.append(
+            Finding(
+                path,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                f"external actions must use a lowercase 40-hex commit SHA; "
+                f"{action} uses {received}",
+            )
+        )
+
+    _, workflow_permissions = _permission_entries(text, 0)
+    for _scope, access, line_number in workflow_permissions:
+        if access.casefold() == "write-all" or access.casefold() == "write":
+            findings.append(
+                Finding(
+                    path,
+                    line_number,
+                    lines[line_number - 1].strip() if lines else "",
+                    "workflow-level write permission is forbidden; scope writes to one "
+                    "protected publisher job",
+                )
+            )
+
+    events, push_block = _workflow_events(text)
+    tag_filters = _push_tag_filters(push_block)
+    if (
+        events != frozenset({"push"})
+        or tag_filters != ("v*.*.*",)
+        or re.search(r"^    [\"']?tags-ignore[\"']?:", push_block, re.MULTILINE)
+        or re.search(r"^    [\"']?branches(?:-ignore)?[\"']?:", push_block, re.MULTILINE)
+    ):
+        reject(
+            "production release requires exact `vX.Y.Z` version tag filters on a "
+            "version-tag-only push trigger"
+        )
+    if "workflow_dispatch:" in text or "pull_request:" in text or "branches:" in text:
+        reject("production release must not have manual, PR, or branch triggers")
+    if 'test "$GITHUB_REF_PROTECTED" = "true"' not in text:
+        reject("production release must fail closed unless the tag ref is protected")
+    if "uses: ./.github/workflows/release.yml" not in text:
+        reject("production release must build candidates through the reusable candidate workflow")
+    if "actions/deploy-pages" in text or "pages: write" in text:
+        reject("production release must not deploy Pages before final evidence")
+    if "skip-existing" in text or "docker build" in text or "docker/build-push-action" in text:
+        reject("production publishers must not skip existing files or rebuild artifacts")
+
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    required_jobs = {
+        "sign-assets",
+        "create-draft-release",
+        "publish-pypi",
+        "publish-ghcr",
+        "publish-github-release",
+        "production-readiness",
+        "final-gate",
+    }
+    for name in sorted(required_jobs - set(jobs)):
+        reject(f"production release workflow is missing job {name!r}")
+
+    required_dependencies = {
+        "sign-assets": {"production-readiness"},
+        "create-draft-release": {"preflight", "sign-assets"},
+        "verify-pypi-identity": {"publish-pypi"},
+        "post-pypi": {"verify-pypi-identity"},
+        "publish-ghcr": {"publish-pypi", "post-pypi"},
+        "post-ghcr": {"publish-ghcr"},
+        "publish-github-release": {"create-draft-release", "post-pypi", "post-ghcr"},
+        "post-release": {"publish-github-release"},
+        "final-gate": {"post-pypi", "post-ghcr", "post-release", "production-readiness"},
+    }
+    for name, required in required_dependencies.items():
+        job = jobs.get(name)
+        dependencies = _job_dependencies(job) if job is not None else None
+        if dependencies is None or not required.issubset(dependencies):
+            reject(f"production job {name!r} must depend on {', '.join(sorted(required))}")
+        if name in {"publish-ghcr", "publish-github-release"} and job is not None:
+            if re.search(r"^    if:", job.text, re.MULTILINE):
+                reject(f"production writer {name!r} must not bypass successful dependencies")
+
+    pypi_consumer = jobs.get("post-pypi")
+    if pypi_consumer is not None:
+        checkout = pypi_consumer.text.find("actions/checkout@")
+        bootstrap = pypi_consumer.text.find("python -m pip install pipx")
+        if checkout < 0 or bootstrap < 0 or checkout > bootstrap:
+            reject("public pipx checks must materialize constraints before pip bootstrap")
+        if "ref: ${{ needs.preflight.outputs.source-commit }}" not in pypi_consumer.text:
+            reject("public pipx checks must checkout the exact release source")
+    ghcr_consumer = jobs.get("post-ghcr")
+    if ghcr_consumer is not None and re.search(
+        r"(?:GH_TOKEN|github.token|docker\s+login|packages:\s*read)", ghcr_consumer.text
+    ):
+        reject("public GHCR checks must prove anonymous access without registry credentials")
+
+    sign = jobs.get("sign-assets")
+    if sign is not None:
+        if not _uses_named_environment(sign, "production-release"):
+            reject("signing job must use the protected `production-release` environment")
+        if "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM" not in sign.text:
+            reject("signing job does not consume the protected signing key")
+
+    private_key = "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM"
+    for name, job in jobs.items():
+        if name != "sign-assets" and private_key in job.text:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    f"private signing key must not escape into job {name!r}",
+                )
+            )
+
+    publisher_writes = {
+        "create-draft-release": {"contents"},
+        "publish-pypi": {"id-token"},
+        "publish-ghcr": {"packages"},
+        "publish-github-release": {"contents"},
+    }
+    for name, required_writes in publisher_writes.items():
+        job = jobs.get(name)
+        if job is None:
+            continue
+        line = job.text.splitlines()[0].strip()
+        if not _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must use the protected "
+                    "`release-production` environment",
+                )
+            )
+        if re.search(r"^    [\"']?needs[\"']?:", job.text, re.MULTILINE) is None:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must depend on verified handoff jobs",
+                )
+            )
+        has_permissions, job_permissions = _permission_entries(job.text, 4)
+        if not has_permissions:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must declare explicit permissions",
+                )
+            )
+            continue
+        granted_writes = {
+            scope
+            for scope, access, _ in job_permissions
+            if access.casefold() in {"write", "write-all"}
+        }
+        if "*" in granted_writes or granted_writes != required_writes:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must grant only "
+                    f"{', '.join(sorted(required_writes))}: write",
+                )
+            )
+        if name == "publish-pypi":
+            if PYPI_STATIC_CREDENTIAL_PATTERN.search(job.text):
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        "production PyPI publisher must not use a static credential",
+                    )
+                )
+            if "pypa/gh-action-pypi-publish" not in job.text:
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        "production PyPI publisher must use trusted publishing",
+                    )
+                )
+
+    for name, job in jobs.items():
+        if name not in publisher_writes and _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    f"`release-production` must be referenced only by publisher jobs; "
+                    f"{name!r} is not a publisher",
+                )
+            )
+
+    readiness = jobs.get("production-readiness")
+    if readiness is not None and (
+        "Full managed ten-pair systemd evidence has not yet been verified for this release"
+        not in readiness.text
+        or "exit 1" not in readiness.text
+    ):
+        reject("production readiness must fail closed until ten-pair managed evidence exists")
+    final_gate = jobs.get("final-gate")
+    if final_gate is not None and (
+        "Pages deployment remains forbidden until all post-publish evidence passes"
+        not in final_gate.text
+    ):
+        reject("final gate must keep Pages blocked until post-publish evidence passes")
+    return findings
+
+
+def docs_pages_workflow_policy_findings(text: str) -> list[Finding]:
+    """Allow source merges while gating public docs on production evidence."""
+    path = Path(".github/workflows/docs-pages.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    events, push = _workflow_events(text)
+    if events != frozenset({"push", "workflow_dispatch"}) or "branches: [main]" not in push:
+        reject("Pages requires main-only builds and explicit production-evidence dispatch")
+    declared, permissions = _permission_entries(text, 0)
+    if not declared or {scope: access for scope, access, _ in permissions} not in (
+        {},
+        {"contents": "read"},
+    ):
+        reject("Pages workflow permissions must default to read-only or no permissions")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    if not {"build", "publication-gate", "deploy"}.issubset(jobs):
+        reject("Pages requires separate build, publication-gate and deploy jobs")
+        return findings
+    for name, job in jobs.items():
+        _, granted = _permission_entries(job.text, 4)
+        writes = {scope for scope, access, _ in granted if access == "write"}
+        if name == "deploy":
+            if writes != {"pages", "id-token"}:
+                reject("only the Pages deploy job may grant pages/id-token write")
+        elif writes:
+            reject(f"Pages job {name!r} must remain read-only")
+    for name in ("publication-gate", "deploy"):
+        job = jobs[name]
+        if not all(
+            marker in job.text
+            for marker in (
+                "github.event_name == 'workflow_dispatch'",
+                "github.ref == 'refs/heads/main'",
+                "github.repository == 'kgmnotes/xferry'",
+            )
+        ):
+            reject(f"Pages job {name!r} must require an explicit main dispatch in the owner repo")
+    deploy_dependencies = _job_dependencies(jobs["deploy"])
+    if deploy_dependencies is None or not {"build", "publication-gate"}.issubset(
+        deploy_dependencies
+    ):
+        reject("Pages deployment must depend on both strict build and successful publication gate")
+    if not _uses_named_environment(jobs["deploy"], "github-pages"):
+        reject("Pages deploy must use the protected github-pages environment")
+    if "python tools/docs_publication.py" not in jobs["publication-gate"].text:
+        reject("Pages publication gate must verify production and public channel evidence")
+    for job in jobs.values():
+        if "actions/deploy-pages@" in job.text and job.name != "deploy":
+            reject("Pages publication must be isolated to the gated deploy job")
+        if "actions/upload-pages-artifact@" in job.text and job.name == "build":
+            dependencies = _job_dependencies(job)
+            if dependencies is None or "publication-gate" not in dependencies:
+                reject("Pages artifact upload must wait for publication evidence")
+    return findings
+
+
 def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
     """Keep the fixed staging rehearsal separate from production release policy."""
     path = Path(".github/workflows/testpypi.yml")
@@ -1137,19 +1489,19 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         return findings
     expected_gate = (
         "    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' "
-        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}"
+        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}"
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
     protected_branch_contract = (
         "Require protected rehearsal branch",
-        'branches/codex%2Fstage-010-testpypi-rehearsal")',
+        'branches/codex%2Fstage-010-testpypi-rehearsal-v2")',
         '.commit.sha\' <<<"${branch_json}"',
         '.protected\' <<<"${branch_json}"',
     )
     if any(item not in jobs["identity"].text for item in protected_branch_contract):
         reject("TestPyPI identity must verify the exact protected rehearsal branch")
-    if "stage-010-testpypi-rehearsal/protection" in jobs["identity"].text:
+    if "stage-010-testpypi-rehearsal-v2/protection" in jobs["identity"].text:
         reject("TestPyPI cannot call the Administration-only branch protection endpoint")
     for command in ("identity", "prepare"):
         if (
@@ -1161,6 +1513,9 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             is None
         ):
             reject(f"TestPyPI identity must execute its {command} verifier")
+    handoff_step = _workflow_step_with_id(jobs["identity"].text, "staged-distributions")
+    if handoff_step is None or "retention-days: 14" not in handoff_step:
+        reject("TestPyPI authenticated handoff retention must be fourteen days")
     if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
         jobs["publish"]
     ) != frozenset({"pypi"}):
@@ -1171,7 +1526,7 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         "identity": (
             "inputs.confirm_testpypi",
             "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal'",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2'",
             "artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}",
             "testpypi_publish.py identity",
             "repository: kgmnotes/xferry",
@@ -1185,6 +1540,7 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             "id: staged-distributions",
             "authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}",
             "if-no-files-found: error",
+            "retention-days: 14",
         ),
         "publish": (
             "needs: identity",
@@ -1273,22 +1629,22 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
     expected_gate = (
         "    if: ${{ inputs.confirm_github_release_rehearsal && "
         "github.repository == 'kgmnotes/xferry' && "
-        "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal' }}"
+        "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal-v2' }}"
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("GitHub Release identity gate must enforce exact confirmation/repository/ref")
     protected_branch_contract = (
         "Require protected rehearsal branch",
-        'branches/codex%2Fstage-012-draft-release-rehearsal")',
+        'branches/codex%2Fstage-012-draft-release-rehearsal-v2")',
         '.commit.sha\' <<<"${branch_json}"',
         '.protected\' <<<"${branch_json}"',
     )
     if any(item not in jobs["identity"].text for item in protected_branch_contract):
         reject("GitHub Release identity must verify the exact protected rehearsal branch")
-    if "stage-012-draft-release-rehearsal/protection" in jobs["identity"].text:
+    if "stage-012-draft-release-rehearsal-v2/protection" in jobs["identity"].text:
         reject("GitHub Release rehearsal cannot call the Administration branch protection API")
 
-    exact_tag = "xferry-stage-012-rehearsal-v0.1.0-36712344792"
+    exact_tag = "xferry-stage-012-rehearsal-v0.1.0-36712344792-v2"
     if f"RELEASE_TAG: {exact_tag}" not in text or "RELEASE_TAG: v0.1.0" in text:
         reject("GitHub Release rehearsal must use only the fixed non-production release tag")
 
@@ -1296,7 +1652,7 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         "identity": (
             "inputs.confirm_github_release_rehearsal",
             "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal'",
+            "github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal-v2'",
             "gh api repos/kgmnotes/xferry/commits/${RELEASE_TAG}",
             "github_release_assets.py identity",
             "github_release_assets.py prepare",
@@ -1330,17 +1686,27 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
             "needs: sign-assets",
             "environment: github-release-staging",
             "artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}",
+            "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}",
             "gh release create",
             "--draft --prerelease --latest=false",
             "--verify-tag",
-            'gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}"',
-            ".tag_name",
-            ".draft",
-            ".prerelease",
+            (
+                'gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry '
+                "--json tagName,isDraft,isPrerelease"
+            ),
+            ".tagName",
+            ".isDraft",
+            ".isPrerelease",
+            'gh release download "${RELEASE_TAG}"',
+            "downloaded-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path: downloaded/",
+            "if-no-files-found: error",
         ),
         "download-verify": (
             "needs: publish-draft",
-            "gh release download",
+            "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}",
+            "merge-multiple: true",
+            "path: downloaded",
             "python tools/github_release_assets.py verify --assets-dir downloaded",
             "python tools/github_release_assets.py verify-tamper --assets-dir downloaded",
         ),
@@ -1370,8 +1736,11 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         match.group("reference").strip("\"'")
         for match in WORKFLOW_ACTION_PATTERN.finditer(publish.text)
     )
-    if publish_actions != ("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",):
-        reject("GitHub Release publisher may only download the signed asset artifact")
+    if publish_actions != (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ):
+        reject("GitHub Release publisher may only transfer signed and Release-downloaded assets")
     if "actions/checkout@" in publish.text or "python " in publish.text:
         reject("GitHub Release publisher must not checkout or execute repository code")
     if _publisher_channels(jobs["identity"]) or _publisher_channels(jobs["sign-assets"]):
@@ -1414,6 +1783,166 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         re.IGNORECASE,
     ):
         reject("GitHub Release rehearsal must not rebuild candidate artifacts")
+    return findings
+
+
+def managed_update_rehearsal_policy_findings(
+    rehearsal_text: str,
+    release_text: str,
+) -> list[Finding]:
+    """Keep STAGE-013 native lifecycle evidence read-only and non-publishing."""
+    path = Path(".github/workflows/managed-update-rehearsal.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    if _workflow_events(rehearsal_text)[0] != frozenset({"workflow_call"}):
+        reject("managed update rehearsal must be reusable-only")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(rehearsal_text):
+        reference = match.group("reference").strip("\"'")
+        if not reference.startswith("./") and (
+            "@" not in reference
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
+        ):
+            reject("managed update rehearsal actions must be commit-SHA pinned")
+
+    permissions_found, entries = _permission_entries(rehearsal_text, 0)
+    permissions = {scope: access for scope, access, _line in entries}
+    if not permissions_found or permissions != {"contents": "read"}:
+        reject("managed update rehearsal workflow must grant only contents read")
+
+    jobs = {job.name: job for job in _workflow_jobs(rehearsal_text)}
+    if set(jobs) != {"lifecycle"}:
+        reject("managed update rehearsal must contain only the native lifecycle matrix job")
+        return findings
+    lifecycle = jobs["lifecycle"]
+    job_permissions_found, job_entries = _permission_entries(lifecycle.text, 4)
+    job_permissions = {scope: access for scope, access, _line in job_entries}
+    if not job_permissions_found or job_permissions != {"contents": "read"}:
+        reject("managed update lifecycle job must grant only contents read")
+
+    required_boundary = (
+        "refs/heads/codex/stage-013-managed-update-rehearsal",
+        'test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"',
+        'test "$GITHUB_EVENT_NAME" = "workflow_dispatch"',
+        "fail-fast: false",
+        "runs-on: ${{ matrix.runner }}",
+    )
+    if any(item not in lifecycle.text for item in required_boundary):
+        reject("managed update lifecycle lost its exact repository/ref/native matrix boundary")
+
+    required_parent_normalization = (
+        "Normalize disposable runner managed parents",
+        'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
+        'test "$(sudo stat -c \'%u\' /opt)" = "0"',
+        "sudo chmod 0755 /opt",
+        'test "$(sudo stat -c \'%u:%a\' /opt)" = "0:755"',
+        'test "$(sudo stat -c \'%u\' /usr/local/bin)" = "0"',
+        "sudo chmod 0755 /usr/local/bin",
+        'test "$(sudo stat -c \'%u:%a\' /usr/local/bin)" = "0:755"',
+    )
+    normalization_marker = "      - name: Normalize disposable runner managed parents"
+    install_marker = "      - name: Install signed 0.1.1"
+    normalization_start = lifecycle.text.find(normalization_marker)
+    install_start = lifecycle.text.find(install_marker)
+    next_step_start = lifecycle.text.find(
+        "\n      - ",
+        normalization_start + len(normalization_marker),
+    )
+    normalization_step = (
+        ""
+        if normalization_start < 0 or next_step_start < 0
+        else lifecycle.text[normalization_start:next_step_start]
+    )
+    if any(item not in normalization_step for item in required_parent_normalization):
+        reject("managed update rehearsal must protect its disposable runner managed parents")
+    elif install_start < 0 or normalization_start > install_start:
+        reject("managed update rehearsal must protect managed parents before installation")
+
+    runner_lines = tuple(
+        line.strip() for line in rehearsal_text.splitlines() if line.strip().startswith("runner:")
+    )
+    if runner_lines != ("runner: ubuntu-24.04", "runner: ubuntu-24.04-arm"):
+        reject("managed update rehearsal requires exactly amd64 and arm64 native runners")
+
+    if (
+        'SOURCE_VERSION: "0.1.1"' not in rehearsal_text
+        or 'TARGET_VERSION: "0.1.2"' not in rehearsal_text
+    ):
+        reject("managed update rehearsal versions must remain fixed at 0.1.1 to 0.1.2")
+    if "MANAGED_XFERRY: /usr/local/bin/xferry" not in rehearsal_text:
+        reject("managed update rehearsal must pin the installed managed CLI path")
+    bare_managed_cli_patterns = (
+        r"\$\(\s*xferry\s",
+        r"\bsudo\s+xferry\s",
+        r"(?m)^\s+xferry\s+(?:setup|doctor|update|rollback|uninstall)\b",
+    )
+    if any(re.search(pattern, lifecycle.text) for pattern in bare_managed_cli_patterns):
+        reject("managed update rehearsal must not resolve lifecycle commands from PATH")
+
+    lifecycle_steps = (
+        "Install signed 0.1.1",
+        "Setup private managed service",
+        "Dry-run signed update to 0.1.2",
+        "Apply signed update to 0.1.2",
+        "Verify exact 0.1.2 health",
+        "Rollback to retained 0.1.1",
+        "Conservative uninstall",
+    )
+    try:
+        positions = [rehearsal_text.index(step) for step in lifecycle_steps]
+    except ValueError:
+        reject("managed update rehearsal is missing a required lifecycle step")
+    else:
+        if positions != sorted(positions):
+            reject("managed update rehearsal lifecycle steps are out of order")
+
+    forbidden = (
+        "${{ secrets.",
+        "environment:",
+        "permissions: write-all",
+        "contents: write",
+        "packages: write",
+        "id-token: write",
+        "attestations: write",
+        "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM",
+        "environment: production-release",
+        "gh release ",
+        "docker push",
+        "--push",
+        "gh-action-pypi-publish",
+        "twine upload",
+        "hatch publish",
+        "mkdocs gh-deploy",
+        "--purge-data",
+    )
+    if any(item in rehearsal_text for item in forbidden):
+        reject("managed update rehearsal must not consume secrets, publish, or purge state")
+    if _publisher_channels(lifecycle):
+        reject("managed update rehearsal cannot contain a package or release publisher")
+
+    release_jobs = {job.name: job for job in _workflow_jobs(release_text)}
+    preflight = release_jobs.get("preflight")
+    caller = release_jobs.get("managed-update-rehearsal")
+    required_input = (
+        "managed_update_rehearsal:",
+        "default: false",
+        "type: boolean",
+    )
+    if any(item not in release_text for item in required_input):
+        reject("release dispatcher must expose an opt-in boolean rehearsal input")
+    if preflight is None or "if: ${{ !inputs.managed_update_rehearsal }}" not in preflight.text:
+        reject("ordinary release jobs must be disabled during managed update rehearsal")
+    if caller is None or any(
+        item not in caller.text
+        for item in (
+            "if: ${{ inputs.managed_update_rehearsal }}",
+            "permissions:\n      contents: read",
+            "uses: ./.github/workflows/managed-update-rehearsal.yml",
+        )
+    ):
+        reject("release dispatcher must call only the read-only managed update workflow")
     return findings
 
 
@@ -1587,12 +2116,34 @@ def find_release_policy_issues(
 ) -> list[Finding]:
     findings: list[Finding] = []
     path = Path(".github/workflows/release.yml")
+    release_text: str | None = None
     if targets_cover_path(path, repo_root, targets):
-        text = read_contract_text(repo_root / path)
-        if text is None:
+        release_text = read_contract_text(repo_root / path)
+        if release_text is None:
             findings.append(contract_finding(path, "release workflow policy file is missing"))
         else:
-            findings.extend(release_workflow_policy_findings(text, path))
+            findings.extend(release_workflow_policy_findings(release_text, path))
+    production = Path(".github/workflows/release-production.yml")
+    if targets_cover_path(production, repo_root, targets) and (repo_root / production).is_file():
+        findings.extend(
+            production_release_workflow_policy_findings(
+                read_contract_text(repo_root / production) or "",
+                production,
+            )
+        )
+    managed_rehearsal = Path(".github/workflows/managed-update-rehearsal.yml")
+    if (
+        targets_cover_path(managed_rehearsal, repo_root, targets)
+        and (repo_root / managed_rehearsal).is_file()
+    ):
+        if release_text is None:
+            release_text = read_contract_text(repo_root / path) or ""
+        findings.extend(
+            managed_update_rehearsal_policy_findings(
+                read_contract_text(repo_root / managed_rehearsal) or "",
+                release_text,
+            )
+        )
     staging = Path(".github/workflows/testpypi.yml")
     if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
         findings.extend(
@@ -1611,6 +2162,11 @@ def find_release_policy_issues(
     ghcr = Path(".github/workflows/ghcr.yml")
     if targets_cover_path(ghcr, repo_root, targets) and (repo_root / ghcr).is_file():
         findings.extend(ghcr_workflow_policy_findings(read_contract_text(repo_root / ghcr) or ""))
+    pages = Path(".github/workflows/docs-pages.yml")
+    if targets_cover_path(pages, repo_root, targets) and (repo_root / pages).is_file():
+        findings.extend(
+            docs_pages_workflow_policy_findings(read_contract_text(repo_root / pages) or "")
+        )
     return findings
 
 
@@ -1840,12 +2396,15 @@ def find_source_first_issues(
     repo_root: Path = REPO_ROOT,
     targets: Sequence[str] = DEFAULT_TARGETS,
 ) -> list[Finding]:
+    """Reject unsafe mutable routes and require journey-first portable onboarding."""
     findings: list[Finding] = []
-    unsupported_route = re.compile(
-        r"(?:releases/latest|ghcr\.io/kgmnotes/xferry|"
+    unsafe_route = re.compile(
+        r"(?:releases/latest|ghcr\.io/kgmnotes/xferry:latest\b|"
         r"(?<![\w.-])(?:python\s+-m\s+)?pip\s+install\b[^\n`]{0,160}?"
         r"(?<!\S)xferry(?:\b|\[)|"
-        r"(?<![\w-])xferry\s+update\b)",
+        r"curl[^\n|]{0,300}\|\s*(?:sudo\s+)?(?:ba)?sh\b|"
+        r"(?<![\w-])xferry\s+update\b"
+        r"(?!\s+--to\s+[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?(?:\s|`|$)))",
         re.IGNORECASE,
     )
     for path in (
@@ -1859,7 +2418,7 @@ def find_source_first_issues(
         text = read_contract_text(repo_root / path)
         if text is None:
             continue
-        match = unsupported_route.search(text)
+        match = unsafe_route.search(text)
         if match is None:
             continue
         line_number = text.count("\n", 0, match.start()) + 1
@@ -1869,7 +2428,7 @@ def find_source_first_issues(
                 path,
                 line_number,
                 lines[line_number - 1].strip() if lines else "",
-                "current user install docs must exclude an unsupported distribution channel",
+                "current user docs contain an unsafe distribution or lifecycle route",
             )
         )
 
@@ -1881,15 +2440,18 @@ def find_source_first_issues(
         return findings
     folded = text.casefold()
     markers = (
-        "git clone https://github.com/kgmnotes/xferry.git",
-        "python -m pip install .",
+        "## portable",
+        "pipx install xferry",
         "xferry run --preset local --open",
+        "## managed linux",
+        "## container",
     )
     offsets = tuple(folded.find(marker) for marker in markers)
     if any(offset < 0 for offset in offsets) or offsets != tuple(sorted(offsets)):
         findings.append(
             contract_finding(
-                path, "source install must precede launch and exclude unsupported channels"
+                path,
+                "quick start must order portable first success before managed and container paths",
             )
         )
     return findings
@@ -1979,20 +2541,79 @@ def find_version_consistency_issues(
     changelog_path = Path("CHANGELOG.md")
     if targets_cover_path(changelog_path, repo_root, targets):
         changelog = read_contract_text(repo_root / changelog_path) or ""
-        if f"## [{version}] - 2026-08-20" not in changelog:
-            findings.append(
-                contract_finding(
-                    changelog_path, f"CHANGELOG must contain the {version} section dated 2026-08-20"
+        headings = tuple(
+            (match.group(1), match.group(2), position)
+            for position, match in enumerate(
+                re.finditer(
+                    r"^## \[([^]]+)](?: - ([^\n]+))?$",
+                    changelog,
+                    re.MULTILINE,
                 )
             )
-        sections = tuple(
-            section
-            for section in re.findall(r"^## \[([^]]+)](?:\s+-[^\n]*)?$", changelog, re.MULTILINE)
-            if section.casefold() != "unreleased"
         )
-        if set(sections) != {version}:
+        released = tuple(
+            (released_version, released_date, position)
+            for released_version, released_date, position in headings
+            if released_version.casefold() != "unreleased"
+        )
+        release_counts: dict[str, int] = {}
+        for released_version, released_date, _position in released:
+            release_counts[released_version] = release_counts.get(released_version, 0) + 1
+            if released_date is None or re.fullmatch(r"\d{4}-\d{2}-\d{2}", released_date) is None:
+                displayed_date = released_date or "missing"
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        "CHANGELOG release date must use canonical ISO YYYY-MM-DD: "
+                        f"{displayed_date}",
+                    )
+                )
+                continue
+            try:
+                date.fromisoformat(released_date)
+            except ValueError:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG release date is not a valid ISO date: {released_date}",
+                    )
+                )
+
+        for released_version, count in release_counts.items():
+            if count > 1:
+                findings.append(
+                    contract_finding(
+                        changelog_path,
+                        f"CHANGELOG released version {released_version} must not be duplicated",
+                    )
+                )
+
+        current_sections = tuple(item for item in released if item[0] == version)
+        if len(current_sections) != 1:
             findings.append(
-                contract_finding(changelog_path, f"CHANGELOG must contain only version {version}")
+                contract_finding(
+                    changelog_path,
+                    "CHANGELOG must contain exactly one released section for current package "
+                    f"version {version}",
+                )
+            )
+        unreleased_positions = tuple(
+            position
+            for heading, _heading_date, position in headings
+            if heading.casefold() == "unreleased"
+        )
+        if (
+            len(unreleased_positions) != 1
+            or not released
+            or released[0][0] != version
+            or released[0][2] <= unreleased_positions[0]
+        ):
+            findings.append(
+                contract_finding(
+                    changelog_path,
+                    f"CHANGELOG current package version {version} must be the first released "
+                    "section after [Unreleased]",
+                )
             )
 
     pyproject_path = Path("pyproject.toml")

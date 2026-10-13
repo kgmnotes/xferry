@@ -2,10 +2,7 @@ name: xferry-public-direct
 
 services:
   xferry:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    image: xferry:public-direct-local
+    image: ghcr.io/kgmnotes/xferry:v0.2.0
     restart: unless-stopped
     init: true
     read_only: true

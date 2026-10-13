@@ -18,12 +18,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: xferry-stage-012-rehearsal-v0.1.0-36712344792
+  RELEASE_TAG: xferry-stage-012-rehearsal-v0.1.0-36712344792-v2
   PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
 
 jobs:
   identity:
-    if: ${{ inputs.confirm_github_release_rehearsal && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal' }}
+    if: ${{ inputs.confirm_github_release_rehearsal && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-012-draft-release-rehearsal-v2' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-012-draft-release-rehearsal")"
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-012-draft-release-rehearsal-v2")"
           test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
           test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
           tag_sha="$(gh api repos/kgmnotes/xferry/commits/${RELEASE_TAG} --jq '.sha')"
@@ -144,6 +144,7 @@ jobs:
       contents: write
     outputs:
       release-tag: ${{ env.RELEASE_TAG }}
+      artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}
     steps:
       - name: Download signed assets only
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
@@ -160,10 +161,25 @@ jobs:
           gh release create "${RELEASE_TAG}" ./* --repo kgmnotes/xferry --draft --prerelease --latest=false --verify-tag \
             --title "STAGE-012 GitHub Release asset rehearsal" \
             --notes "Draft prerelease rehearsal for the immutable STAGE-009 xferry 0.1.0 candidate."
-          release_json="$(gh api repos/kgmnotes/xferry/releases/tags/"${RELEASE_TAG}")"
-          test "$(jq -r '.tag_name' <<<"${release_json}")" = "${RELEASE_TAG}"
-          test "$(jq -r '.draft' <<<"${release_json}")" = "true"
-          test "$(jq -r '.prerelease' <<<"${release_json}")" = "true"
+          release_json="$(gh release view "${RELEASE_TAG}" --repo kgmnotes/xferry --json tagName,isDraft,isPrerelease)"
+          test "$(jq -r '.tagName' <<<"${release_json}")" = "${RELEASE_TAG}"
+          test "$(jq -r '.isDraft' <<<"${release_json}")" = "true"
+          test "$(jq -r '.isPrerelease' <<<"${release_json}")" = "true"
+      - name: Download draft assets inside the secret-free write boundary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded
+          gh release download "${RELEASE_TAG}" --repo kgmnotes/xferry --dir downloaded --pattern '*'
+      - name: Preserve downloaded draft assets for read-only verification
+        id: downloaded-assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: downloaded-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: downloaded/
+          if-no-files-found: error
+          retention-days: 1
 
   download-verify:
     needs: publish-draft
@@ -180,13 +196,12 @@ jobs:
           python-version: "3.12"
       - name: Install release verifier dependency
         run: python -m pip install --upgrade pip cryptography==50.0.0
-      - name: Download draft assets through authenticated GitHub Release API
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p downloaded
-          gh release download "${RELEASE_TAG}" --repo kgmnotes/xferry --dir downloaded --pattern '*'
+      - name: Download assets captured from the draft Release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}
+          merge-multiple: true
+          path: downloaded
       - name: Verify downloaded signed assets and tamper rejection
         run: |
           set -euo pipefail

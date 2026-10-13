@@ -15,6 +15,7 @@ from .versions import is_canonical_release_version
 MANIFEST_NAME = "xferry-release.json"
 INSTALLED_EXECUTABLE_NAME = "xferry"
 MAX_MANIFEST_BYTES = 64 * 1024
+MAX_SIGNATURE_BYTES = 4 * 1024
 MAX_ARTIFACT_DIGESTS = 128
 MAX_SIGNING_KEY_IDS = 1
 
@@ -102,6 +103,12 @@ def artifact_name(version: str, platform_id: PlatformId) -> str:
         raise ValueError("invalid release version")
     selected = require_platform_id(platform_id)
     return f"xferry-{version}-{selected}"
+
+
+def release_manifest_asset_name(platform_id: PlatformId) -> str:
+    """Return the platform-unique signed manifest name used by hosted releases."""
+    selected = require_platform_id(platform_id)
+    return f"xferry-release-{selected}.json"
 
 
 def is_safe_artifact_name(value: object) -> TypeGuard[str]:

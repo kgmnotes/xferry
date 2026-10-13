@@ -56,6 +56,43 @@ def test_server_config_models_are_frozen_slotted_and_composed(tmp_path: Path) ->
     assert config.plugins is plugins
 
 
+def test_enabled_encrypted_uploads_derive_a_two_chunk_body_budget() -> None:
+    from xferry.encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE
+    from xferry.server_config import ServerConfig, ServerLimits, resolve_server_config
+
+    config = resolve_server_config(
+        ServerConfig(
+            encrypted_uploads=True,
+            limits=ServerLimits(max_upload_size=1024 * 1024, max_workers=2),
+        )
+    )
+
+    assert config.limits.body_memory_budget is not None
+    assert config.limits.body_memory_budget >= 2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE)
+
+
+def test_enabled_encrypted_uploads_reject_insufficient_request_capacity() -> None:
+    from xferry.encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE
+    from xferry.server_config import ServerConfig, ServerLimits, resolve_server_config
+
+    minimum_budget = 2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE)
+    with pytest.raises(ValueError, match="at least 2 workers"):
+        resolve_server_config(
+            ServerConfig(
+                encrypted_uploads=True,
+                limits=ServerLimits(max_workers=1, body_memory_budget=minimum_budget),
+            )
+        )
+
+    with pytest.raises(ValueError, match="two encrypted chunks"):
+        resolve_server_config(
+            ServerConfig(
+                encrypted_uploads=True,
+                limits=ServerLimits(max_workers=2, body_memory_budget=minimum_budget - 1),
+            )
+        )
+
+
 def test_direct_server_config_cannot_bypass_allowed_host_validation(tmp_path: Path) -> None:
     """Catch in-process server construction bypassing operator authority validation."""
     from xferry.server_config import (

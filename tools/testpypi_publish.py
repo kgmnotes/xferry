@@ -29,8 +29,48 @@ IDENTITY_FILE = REPO_ROOT / "packaging/testpypi-candidate.json"
 INDEX_JSON = "https://test.pypi.org/pypi/xferry/0.1.0/json"
 
 
+def _producer_contract(identity: dict) -> dict[str, object]:
+    legacy: dict[str, object] = {
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/release.yml",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    keys = {
+        "producer_run_attempt",
+        "producer_event",
+        "producer_workflow_path",
+        "producer_status",
+        "producer_conclusion",
+    }
+    if not any(key in identity for key in keys):
+        return legacy
+    if not keys.issubset(identity):
+        raise ValueError("GitHub candidate producer contract is incomplete")
+    attempt = identity["producer_run_attempt"]
+    production = {
+        "run_attempt": attempt,
+        "event": identity["producer_event"],
+        "path": identity["producer_workflow_path"],
+        "status": identity["producer_status"],
+        "conclusion": identity["producer_conclusion"],
+    }
+    if (
+        type(attempt) is not int
+        or attempt < 1
+        or production["event"] != "push"
+        or production["path"] != ".github/workflows/release-production.yml"
+        or production["status"] != "in_progress"
+        or production["conclusion"] is not None
+    ):
+        raise ValueError("GitHub candidate producer contract is not an allowed release path")
+    return production
+
+
 def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     """Reject foreign, expired, rerun, or unsuccessful producer artifacts."""
+    producer_contract = _producer_contract(identity)
     expected_artifact = {
         "id": identity["artifact_id"],
         "name": identity["artifact_name"],
@@ -40,12 +80,8 @@ def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     }
     expected_run = {
         "id": identity["workflow_run"],
-        "run_attempt": 1,
         "head_sha": identity["source_commit"],
-        "event": "workflow_dispatch",
-        "path": ".github/workflows/release.yml",
-        "status": "completed",
-        "conclusion": "success",
+        **producer_contract,
     }
     producer = artifact.get("workflow_run", {})
     repository = run.get("repository", {})
@@ -217,6 +253,7 @@ def pipx_smoke(wheel: Path, root: Path, workspace: Path, constraints: Path) -> N
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--identity-file", type=Path, default=IDENTITY_FILE)
     parser.add_argument("command", choices=("identity", "prepare", "verify-index", "smoke"))
     parser.add_argument("--artifact-metadata", type=Path)
     parser.add_argument("--run-metadata", type=Path)
@@ -226,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download-dir", type=Path)
     parser.add_argument("--fresh-root", type=Path)
     args = parser.parse_args(argv)
-    identity = json.loads(IDENTITY_FILE.read_bytes())
+    identity = json.loads(args.identity_file.read_bytes())
     try:
         if args.command in {"identity", "prepare"}:
             if args.artifact_metadata is None or args.run_metadata is None:

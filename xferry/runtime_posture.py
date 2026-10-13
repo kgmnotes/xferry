@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE
+
 if TYPE_CHECKING:
     from .settings import ServerSettings
 
@@ -17,6 +19,10 @@ BODY_ADMISSION_BUDGET_NOTE = (
     "ceiling; decoded, parsed, TLS, and Python overhead can coexist."
 )
 WEBSOCKET_WORKER_NOTE = "Each active WebSocket occupies one worker while connected."
+_MIB = 1024 * 1024
+_ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR_MB = (
+    2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE) + _MIB - 1
+) // _MIB
 
 
 class LaunchPreset(str, Enum):
@@ -59,6 +65,9 @@ class RuntimePosture:
     allowed_hosts_mode: Literal["auto", "explicit"]
     allowed_hosts: tuple[str, ...]
     max_upload_mb: int
+    encrypted_uploads: bool
+    encrypted_upload_max_size_mb: int
+    encrypted_upload_incomplete_ttl_seconds: int
     body_admission_budget_mb: int
     workers: int
     max_websocket_connections: int
@@ -90,6 +99,11 @@ class RuntimePosture:
             public_validation = "disabled by explicit configuration"
         else:
             public_validation = "not requested"
+        encrypted_max = (
+            f"{self.encrypted_upload_max_size_mb} MB"
+            if self.encrypted_upload_max_size_mb
+            else "automatic (quota/free space)"
+        )
 
         lines = [
             "Runtime posture:",
@@ -114,6 +128,15 @@ class RuntimePosture:
             (
                 f"  Body admission budget: {self.body_admission_budget_mb} MB; "
                 f"workers: {self.workers}; WebSockets: {self.max_websocket_connections}"
+            ),
+            (
+                "  Encrypted uploads: "
+                + (
+                    f"enabled (max: {encrypted_max}; "
+                    f"incomplete TTL: {self.encrypted_upload_incomplete_ttl_seconds}s)"
+                    if self.encrypted_uploads
+                    else "disabled"
+                )
             ),
         ]
         lines.extend(f"  NOTE: {note}" for note in self.notes)
@@ -209,6 +232,16 @@ def derive_runtime_posture(
     from .request_admission import normalize_allowed_hosts
 
     allowed_hosts = normalize_allowed_hosts(tuple(settings.allowed_hosts))
+    body_admission_budget_mb = (
+        settings.body_memory_budget_mb
+        if settings.body_memory_budget_mb is not None
+        else settings.max_size_mb * settings.workers
+    )
+    if settings.encrypted_uploads and settings.body_memory_budget_mb is None:
+        body_admission_budget_mb = max(
+            body_admission_budget_mb,
+            _ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR_MB,
+        )
     return RuntimePosture(
         preset=settings.preset,
         effective_url=effective_url,
@@ -224,11 +257,10 @@ def derive_runtime_posture(
         allowed_hosts_mode="explicit" if allowed_hosts else "auto",
         allowed_hosts=allowed_hosts,
         max_upload_mb=settings.max_size_mb,
-        body_admission_budget_mb=(
-            settings.body_memory_budget_mb
-            if settings.body_memory_budget_mb is not None
-            else settings.max_size_mb * settings.workers
-        ),
+        encrypted_uploads=settings.encrypted_uploads,
+        encrypted_upload_max_size_mb=settings.encrypted_upload_max_size_mb,
+        encrypted_upload_incomplete_ttl_seconds=(settings.encrypted_upload_incomplete_ttl_seconds),
+        body_admission_budget_mb=body_admission_budget_mb,
         workers=settings.workers,
         max_websocket_connections=(
             settings.max_websocket_connections

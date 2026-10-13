@@ -44,7 +44,7 @@ jobs:
   publish-pypi:
     needs: build
     runs-on: ubuntu-latest
-    environment: production
+    environment: release-production
     permissions:
       contents: read
       id-token: write
@@ -143,11 +143,12 @@ def test_future_distribution_contract_language_is_not_unconditionally_stale(
     "route",
     (
         "https://github.com/kgmnotes/xferry/releases/latest",
-        "ghcr.io/kgmnotes/xferry:v1.2.3",
+        "ghcr.io/kgmnotes/xferry:latest",
         "pip install xferry==1.2.3",
         "pip install --upgrade xferry",
-        "python -m pip install --upgrade xferry",
-        "pip install -U xferry",
+        "curl https://example.test/install.sh | sudo sh",
+        "xferry update",
+        "xferry update --to latest",
         "xferry update --version 1.2.3",
     ),
 )
@@ -160,7 +161,7 @@ def test_future_distribution_contract_language_is_not_unconditionally_stale(
         Path("docs/public-direct.md"),
     ),
 )
-def test_current_user_install_docs_reject_unavailable_distribution_routes(
+def test_current_user_install_docs_reject_unsafe_distribution_routes(
     tmp_path: Path,
     route: str,
     path: Path,
@@ -171,7 +172,33 @@ def test_current_user_install_docs_reject_unavailable_distribution_routes(
 
     findings = check_stale_docs.find_source_first_issues(tmp_path, (str(path),))
 
-    assert any("unsupported distribution channel" in item.message for item in findings)
+    assert any("unsafe distribution or lifecycle route" in item.message for item in findings)
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        "pipx install xferry",
+        "python3 -m pip install --user pipx",
+        "ghcr.io/kgmnotes/xferry:v1.2.3",
+        "ghcr.io/kgmnotes/xferry@sha256:" + "a" * 64,
+        "xferry update --to 1.2.3",
+    ),
+)
+def test_current_user_docs_allow_immutable_supported_routes(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    path = tmp_path / "docs" / "quick-start.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(f"Use `{route}`.\n", encoding="utf-8")
+
+    findings = check_stale_docs.find_source_first_issues(
+        tmp_path,
+        ("docs/quick-start.md",),
+    )
+
+    assert not any("unsafe distribution or lifecycle route" in item.message for item in findings)
 
 
 def test_safe_future_controlled_publisher_workflow_is_expressible() -> None:
@@ -191,6 +218,109 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
     )
 
     assert check_stale_docs.release_workflow_policy_findings(workflow) == []
+
+
+def test_production_release_policy_accepts_current_workflow() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert check_stale_docs.production_release_workflow_policy_findings(workflow) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "message"),
+    (
+        (
+            '          test "$GITHUB_REF_PROTECTED" = "true"\n',
+            "tag ref is protected",
+        ),
+        (
+            "    environment: release-production\n",
+            "protected `release-production` environment",
+        ),
+    ),
+)
+def test_production_release_policy_rejects_boundary_regressions(
+    before: str,
+    message: str,
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    assert before in workflow
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(
+        workflow.replace(before, "", 1)
+    )
+
+    assert any(message in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("job_name", "dependency"),
+    (
+        ("sign-assets", "production-readiness"),
+        ("publish-ghcr", "post-pypi"),
+        ("publish-github-release", "post-ghcr"),
+    ),
+)
+def test_production_policy_rejects_bypassed_readiness_and_consumer_dependencies(
+    job_name: str, dependency: str
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == job_name)
+    line = next(line for line in job.text.splitlines() if line.startswith("    needs:"))
+    dependencies = check_stale_docs._job_dependencies(job)
+    assert dependencies is not None and dependency in dependencies
+    rewritten = "    needs: [" + ", ".join(sorted(dependencies - {dependency})) + "]"
+    changed = workflow.replace(job.text, job.text.replace(line, rewritten, 1), 1)
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(changed)
+
+    assert any(
+        job_name in finding.message and dependency in finding.message for finding in findings
+    )
+
+
+def test_production_policy_rejects_authenticated_public_registry_smoke() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(
+        item for item in check_stale_docs._workflow_jobs(workflow) if item.name == "post-ghcr"
+    )
+    changed = workflow.replace(job.text, job.text + "      - run: docker login ghcr.io\n", 1)
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(changed)
+
+    assert any("anonymous access" in finding.message for finding in findings)
+
+
+def test_pages_policy_accepts_release_gated_workflow() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/docs-pages.yml").read_text(
+        encoding="utf-8"
+    )
+    assert check_stale_docs.docs_pages_workflow_policy_findings(workflow) == []
+
+
+@pytest.mark.parametrize("dependency", ("build", "publication-gate"))
+def test_pages_policy_rejects_deployment_without_successful_prerequisite(dependency: str) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/docs-pages.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == "deploy")
+    line = next(line for line in job.text.splitlines() if line.startswith("    needs:"))
+    dependencies = check_stale_docs._job_dependencies(job)
+    assert dependencies is not None and dependency in dependencies
+    rewritten = "    needs: [" + ", ".join(sorted(dependencies - {dependency})) + "]"
+    changed = workflow.replace(job.text, job.text.replace(line, rewritten, 1), 1)
+
+    findings = check_stale_docs.docs_pages_workflow_policy_findings(changed)
+
+    assert any("successful publication gate" in finding.message for finding in findings)
 
 
 @pytest.mark.parametrize(
@@ -263,8 +393,8 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
             "must not rebuild release artifacts",
         ),
         (
-            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    environment: production\n", ""),
-            "protected `production` environment",
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    environment: release-production\n", ""),
+            "protected `release-production` environment",
         ),
         (
             SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
@@ -277,16 +407,16 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
             "exact `vX.Y.Z` version tag filters",
         ),
         (
-            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("  publish-pypi:", "  _publish-pypi:").replace(
-                "    environment: production\n", ""
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "  build:\n", "  build:\n    environment: release-production\n", 1
             ),
-            "protected `production` environment",
+            "`release-production` must be referenced only by publisher jobs",
         ),
         (
             SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
                 "  publish-pypi:", '  "publish-pypi":'
-            ).replace("    environment: production\n", ""),
-            "protected `production` environment",
+            ).replace("    environment: release-production\n", ""),
+            "protected `release-production` environment",
         ),
     ),
     ids=(
@@ -302,7 +432,7 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
         "unprotected-production",
         "wildcard-tag",
         "tags-ignore",
-        "underscore-job-id",
+        "non-publisher-environment",
         "quoted-job-id",
     ),
 )
@@ -507,10 +637,10 @@ render `error.message` for operators.
 @pytest.mark.parametrize(
     ("path", "message"),
     (
-        ("README.md", "README must keep source installation"),
+        ("README.md", "README must route portable"),
         ("SECURITY.md", "SECURITY must preserve authorized-use"),
         ("CONTRIBUTING.md", "CONTRIBUTING must preserve local checks"),
-        ("docs/operations.md", "operations must own source lifecycle"),
+        ("docs/operations.md", "operations must own portable"),
         ("docs/public-direct.md", "public-direct must defer"),
         ("docs/threat-model.md", "duplicate Content-Length"),
     ),
@@ -529,7 +659,7 @@ def test_public_document_owner_rejects_missing_contract(
     assert any(message in finding.message for finding in findings)
 
 
-def test_quick_start_order_and_source_route_are_enforced(tmp_path: Path) -> None:
+def test_quick_start_order_and_journey_route_are_enforced(tmp_path: Path) -> None:
     quick_start = tmp_path / "docs" / "quick-start.md"
     quick_start.parent.mkdir(parents=True)
     quick_start.write_text(
@@ -564,25 +694,111 @@ def test_adr_navigation_requires_every_current_decision(tmp_path: Path) -> None:
         ("docs/ADR/README.md",),
     )
 
-    assert any("ADR-010" in finding.message for finding in findings)
+    assert any("ADR-011" in finding.message for finding in findings)
+    assert any("ADR-012" in finding.message for finding in findings)
 
 
-def test_version_consistency_reports_ui_and_api_drift(tmp_path: Path) -> None:
+def test_version_consistency_accepts_current_release_before_retained_history(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "xferry" / "config.py"
     config.parent.mkdir()
-    config.write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
     html = tmp_path / "xferry" / "data" / "index.html"
     html.parent.mkdir()
     html.write_text('<p id="appVersion" data-app-version="0.2.0">v0.2.0</p>\n', encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)\n",
+        encoding="utf-8",
+    )
     (tmp_path / "API.md").write_text('{"server": "XFerry/0.2.0"}\n', encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-10-01\n\n## [0.1.0] - 2026-08-20\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        'version = {attr = "xferry.config.__version__"}\n', encoding="utf-8"
+    )
 
     findings = check_stale_docs.find_version_consistency_issues(
         tmp_path,
-        ("xferry", "API.md"),
+        ("xferry", "README.md", "API.md", "CHANGELOG.md", "pyproject.toml"),
+    )
+
+    assert findings == []
+
+
+def test_version_consistency_reports_ui_readme_and_api_drift(tmp_path: Path) -> None:
+    config = tmp_path / "xferry" / "config.py"
+    config.parent.mkdir()
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
+    html = tmp_path / "xferry" / "data" / "index.html"
+    html.parent.mkdir()
+    html.write_text('<p id="appVersion" data-app-version="0.1.0">v0.1.0</p>\n', encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "API.md").write_text('{"server": "XFerry/0.1.0"}\n', encoding="utf-8")
+
+    findings = check_stale_docs.find_version_consistency_issues(
+        tmp_path,
+        ("xferry", "README.md", "API.md"),
     )
 
     assert any("UI version" in finding.message for finding in findings)
+    assert any("README badge" in finding.message for finding in findings)
     assert any("API server example" in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("changelog", "message"),
+    (
+        (
+            "## [Unreleased]\n\n## [0.1.0] - 2026-08-20\n",
+            "exactly one released section for current package version 0.2.0",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-10-01\n\n## [0.2.0] - 2026-10-02\n",
+            "released version 0.2.0 must not be duplicated",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-02-30\n",
+            "release date is not a valid ISO date: 2026-02-30",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.2.0] - 2026-1-01\n",
+            "release date must use canonical ISO YYYY-MM-DD: 2026-1-01",
+        ),
+        (
+            "## [Unreleased]\n\n## [0.1.0] - 2026-08-20\n\n## [0.2.0] - 2026-10-01\n",
+            "current package version 0.2.0 must be the first released section",
+        ),
+        (
+            "## [Unreleased]\n\n"
+            "## [0.2.0] - 2026-10-01\n\n"
+            "## [0.1.0] - 2026-08-20\n\n"
+            "## [0.1.0] - 2026-08-21\n",
+            "released version 0.1.0 must not be duplicated",
+        ),
+    ),
+)
+def test_version_consistency_rejects_invalid_release_history(
+    tmp_path: Path,
+    changelog: str,
+    message: str,
+) -> None:
+    config = tmp_path / "xferry" / "config.py"
+    config.parent.mkdir()
+    config.write_text('__version__ = "0.2.0"\n', encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+
+    findings = check_stale_docs.find_version_consistency_issues(
+        tmp_path,
+        ("xferry/config.py", "CHANGELOG.md"),
+    )
+
+    assert any(message in finding.message for finding in findings)
 
 
 def test_contributor_commands_must_match_ci(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ from xferry.management.release_contract import (  # noqa: E402
     PlatformId,
     ReleaseManifest,
     artifact_name,
+    release_manifest_asset_name,
 )
 from xferry.management.release_trust import (  # noqa: E402
     DEFAULT_RELEASE_KEY_RING,
@@ -96,7 +97,7 @@ def _unsigned_asset_names(identity: Mapping[str, object]) -> set[str]:
 def _signed_asset_names(identity: Mapping[str, object]) -> set[str]:
     names = _unsigned_asset_names(identity)
     for platform in SUPPORTED_PLATFORM_IDS:
-        manifest_name = f"xferry-release-{platform}.json"
+        manifest_name = release_manifest_asset_name(platform)
         names.update(
             {
                 manifest_name,
@@ -182,6 +183,42 @@ def _verify_asset_records(
 
 def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     """Reject foreign, expired, rerun, or unsuccessful producer artifacts."""
+    legacy: dict[str, object] = {
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/release.yml",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    producer_keys = {
+        "producer_run_attempt",
+        "producer_event",
+        "producer_workflow_path",
+        "producer_status",
+        "producer_conclusion",
+    }
+    if any(key in identity for key in producer_keys):
+        if not producer_keys.issubset(identity):
+            raise ValueError("GitHub Release producer contract is incomplete")
+        attempt = identity["producer_run_attempt"]
+        producer_contract = {
+            "run_attempt": attempt,
+            "event": identity["producer_event"],
+            "path": identity["producer_workflow_path"],
+            "status": identity["producer_status"],
+            "conclusion": identity["producer_conclusion"],
+        }
+        if (
+            type(attempt) is not int
+            or attempt < 1
+            or producer_contract["event"] != "push"
+            or producer_contract["path"] != ".github/workflows/release-production.yml"
+            or producer_contract["status"] != "in_progress"
+            or producer_contract["conclusion"] is not None
+        ):
+            raise ValueError("GitHub Release producer contract is not an allowed release path")
+    else:
+        producer_contract = legacy
     expected_artifact = {
         "id": identity["artifact_id"],
         "name": identity["artifact_name"],
@@ -191,12 +228,8 @@ def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     }
     expected_run = {
         "id": identity["workflow_run"],
-        "run_attempt": 1,
         "head_sha": identity["source_commit"],
-        "event": "workflow_dispatch",
-        "path": ".github/workflows/release.yml",
-        "status": "completed",
-        "conclusion": "success",
+        **producer_contract,
     }
     producer = artifact.get("workflow_run", {})
     repository = run.get("repository", {})
@@ -379,6 +412,16 @@ def _write_signed_platform_assets(
         installer_name: _sha256(installer),
         checksums_name: _sha256(checksums),
     }
+    # Bind the Python distributions and the OCI graph (inside the candidate
+    # archive) to the same public trust root as the managed executable. The
+    # unsigned asset inventory alone is not an authority for those channels.
+    for name in sorted(
+        set(_candidate_aliases(identity)) | {_ARCHIVE_NAME, _CANDIDATE_INVENTORY_NAME}
+    ):
+        path = signed_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"prepared cross-channel asset is not a regular file: {name}")
+        artifact_digests[name] = _sha256(path)
     manifest = ReleaseManifest.create_v2(
         version=version,
         platform=platform,
@@ -389,7 +432,7 @@ def _write_signed_platform_assets(
         artifact_digests=artifact_digests,
         signing_key_ids=(key_id,),
     )
-    manifest_name = f"xferry-release-{platform}.json"
+    manifest_name = release_manifest_asset_name(platform)
     manifest_path = signed_dir / manifest_name
     manifest_path.write_bytes(manifest.to_bytes())
     manifest_path.chmod(0o644)
@@ -469,7 +512,7 @@ def _verify_platform_assets(
     key_ring: ReleaseKeyRing,
     platform: PlatformId,
 ) -> None:
-    manifest_name = f"xferry-release-{platform}.json"
+    manifest_name = release_manifest_asset_name(platform)
     installer_name = f"install-{platform}.sh"
     manifest_payload = (assets_dir / manifest_name).read_bytes()
     manifest = verify_signed_manifest(

@@ -581,6 +581,7 @@ def test_russian_locale_uses_russian_swg_tool_copy() -> None:
 
     assert extract_top_tab_buttons(html) == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -690,6 +691,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
 
     expected_ru_labels = {
         "topTabUpload": "Отправить",
+        "topTabLargeFiles": "Большие файлы",
         "topTabFiles": "Получить",
         "tabRequests": "Запросы",
         "tabOpsec": "Расширенные",
@@ -697,6 +699,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
     }
     expected_en_labels = {
         "topTabUpload": "Upload",
+        "topTabLargeFiles": "Large files",
         "topTabFiles": "Download",
         "tabRequests": "Requests",
         "tabOpsec": "Advanced",
@@ -709,6 +712,7 @@ def test_primary_navigation_uses_manual_tool_actions() -> None:
 
     assert extract_top_tab_buttons(html) == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -726,7 +730,7 @@ def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_head
         encoding="utf-8"
     )
 
-    assert extract_top_tab_buttons(html)[:2] == [
+    assert [tab for tab in extract_top_tab_buttons(html) if tab[0] != "tab-large-files"][:2] == [
         ("tab-upload", "topTabUpload", "Upload"),
         ("tab-files", "topTabFiles", "Download"),
     ]
@@ -735,7 +739,7 @@ def test_transfer_tabs_use_upload_download_copy_without_redundant_workspace_head
     assert 'topTabUpload: "Upload"' in core_js
     assert 'topTabFiles: "Download"' in core_js
 
-    for panel_id in ("upload-tab", "files-tab", "opsec-tab", "notepad-tab"):
+    for panel_id in ("upload-tab", "large-files-tab", "files-tab", "opsec-tab", "notepad-tab"):
         panel = extract_workspace_panel(html, panel_id)
         assert 'class="workspace-view__header"' not in panel
 
@@ -1598,6 +1602,7 @@ def test_navigation_tabs_use_stage005_order_labels_and_default_active_send() -> 
     top_tabs = extract_top_tab_buttons(html)
     assert top_tabs == [
         ("tab-upload", "topTabUpload", "Upload"),
+        ("tab-large-files", "topTabLargeFiles", "Large files"),
         ("tab-files", "topTabFiles", "Download"),
         ("tab-request", "tabRequests", "Requests"),
         ("tab-opsec", "tabOpsec", "Advanced"),
@@ -1675,6 +1680,10 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "/static/ui/advanced-compiler.js",
         "/static/ui/upload.js",
         "/static/ui/requests.js",
+        "/static/ui/encrypted-transfer-crypto.js",
+        "/static/ui/encrypted-transfer-persistence.js",
+        "/static/ui/encrypted-transfer-network.js",
+        "/static/ui/encrypted-transfer.js",
         "/static/ui/smuggle.js",
         "/static/ui/files.js",
         "/static/ui/opsec.js",
@@ -1698,6 +1707,10 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         "http-errors.js": "initializeHttpErrors",
         "upload.js": "initializeUpload",
         "requests.js": "initializeRequests",
+        "encrypted-transfer-crypto.js": "initializeEncryptedTransferCrypto",
+        "encrypted-transfer-persistence.js": "initializeEncryptedTransferPersistence",
+        "encrypted-transfer-network.js": "initializeEncryptedTransferNetwork",
+        "encrypted-transfer.js": "initializeEncryptedTransfer",
         "smuggle.js": "initializeSmuggle",
         "files.js": "initializeFiles",
         "opsec.js": "initializeAdvancedUpload",
@@ -1708,6 +1721,79 @@ def test_static_ui_uses_one_explicit_namespace_and_stable_load_order() -> None:
         source = (UI_ROOT / filename).read_text(encoding="utf-8")
         assert source.startswith(f"(function {initializer}(app) {{")
         assert source.rstrip().endswith("})(window.XferryApp);")
+
+
+def test_inspector_redacts_encrypted_content_key_in_every_supported_spelling() -> None:
+    """The one-shot decrypt key must never survive in inspector state or raw JSON."""
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+let inspector;
+const app = {
+  events: { LOCALE_CHANGED: 'locale.changed' },
+  service(name) {
+    if (name !== 'core') throw new Error(`unexpected service ${name}`);
+    return {
+      t: key => key === 'exchangeRedacted' ? 'REDACTED' : key,
+      escapeHtml: value => String(value),
+      formatSize: value => String(value),
+      parseJsonSafe(value) {
+        try { return JSON.parse(value); } catch (_error) { return null; }
+      },
+      formatHttpStatusLabel: value => String(value),
+      formatActionErrorMessage: value => String(value),
+      writeTextToClipboard: async () => {},
+      announceLiveRegion() {},
+    };
+  },
+  hasWorkflow() { return false; },
+  on() { return () => {}; },
+  registerService(name, api) {
+    if (name === 'inspector') inspector = api;
+  },
+};
+globalThis.window = { XferryApp: app };
+globalThis.document = {
+  getElementById() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+};
+vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'), { filename: process.argv[1] });
+
+const secret = 'S'.repeat(43);
+const spellings = ['content_key', 'content-key', 'ContentKey'];
+const message = inspector.redactMessage({
+  method: 'POST',
+  path: '/_xferry/encrypted-files/file/decrypt?content_key=' + secret,
+  headers: { 'Content-Key': secret },
+  body: inspector.createJsonBody(
+    Object.fromEntries(spellings.map(key => [key, secret])),
+    { rawText: JSON.stringify(Object.fromEntries(spellings.map(key => [key, secret]))) }
+  ),
+});
+process.stdout.write(JSON.stringify({
+  spellings: Object.fromEntries(spellings.map(key => [key, inspector.isSecretKey(key)])),
+  message,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script, str(UI_ROOT / "inspector.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert observed["spellings"] == {
+        "content_key": True,
+        "content-key": True,
+        "ContentKey": True,
+    }
+    serialized = json.dumps(observed["message"])
+    assert "S" * 43 not in serialized
+    assert "[REDACTED]" in serialized
 
 
 def test_workflow_state_events_and_user_lists_are_explicit_and_safe() -> None:
@@ -2376,7 +2462,7 @@ def test_static_ui_version_matches_package_version() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
 
-    assert 'id="appVersion" data-app-version="0.1.0">v0.1.0</p>' in html
+    assert 'id="appVersion" data-app-version="0.2.0">v0.2.0</p>' in html
     assert "function updateVisibleAppVersionFromPing" in core_js
     assert "match(/^XFerry\\/" in core_js
 

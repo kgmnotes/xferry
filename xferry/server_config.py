@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE, EUF_MAX_FILE_SIZE
 from .extensions import PluginSpec
 from .features import registry_methods
 from .request_admission import is_unspecified_host, normalize_allowed_hosts, parse_http_origin
@@ -15,6 +16,7 @@ from .runtime_posture import RuntimePosture
 DEFAULT_STREAM_SEND_IDLE_TIMEOUT = 5.0
 DEFAULT_STREAM_SEND_TIMEOUT = 300.0
 DEFAULT_WEBSOCKET_FRAME_IDLE_TIMEOUT = 5.0
+_ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR = 2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE)
 
 _MODULE_PART_RE = re.compile(r"^[A-Za-z_]\w*$")
 
@@ -24,6 +26,8 @@ class ServerLimits:
     """Request, storage, and worker limits used by one server instance."""
 
     max_upload_size: int = 100 * 1024 * 1024
+    encrypted_upload_max_size: int = EUF_MAX_FILE_SIZE
+    encrypted_upload_incomplete_ttl: float = 86400
     upload_storage_limit: int | None = None
     upload_file_limit: int | None = None
     upload_reserved_free_space: int = 0
@@ -104,6 +108,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     root_dir: Path | str = Path()
+    encrypted_uploads: bool = False
     limits: ServerLimits = field(default_factory=ServerLimits)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     tls: TLSConfig = field(default_factory=TLSConfig)
@@ -129,6 +134,17 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
 
     limits = config.limits
     _require_int("max_upload_size", limits.max_upload_size, minimum=1)
+    _require_int(
+        "encrypted_upload_max_size",
+        limits.encrypted_upload_max_size,
+        minimum=0,
+        maximum=EUF_MAX_FILE_SIZE,
+    )
+    _require_number(
+        "encrypted_upload_incomplete_ttl",
+        limits.encrypted_upload_incomplete_ttl,
+        minimum_exclusive=0,
+    )
     _require_optional_int("upload_storage_limit", limits.upload_storage_limit, minimum=0)
     _require_optional_int("upload_file_limit", limits.upload_file_limit, minimum=0)
     _require_int("upload_reserved_free_space", limits.upload_reserved_free_space, minimum=0)
@@ -152,10 +168,27 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
     body_memory_budget = limits.body_memory_budget
     if config.public_direct and body_memory_budget is None:
         raise ValueError("public_direct requires body_memory_budget")
+    if config.encrypted_uploads:
+        if limits.max_workers < 2:
+            raise ValueError("encrypted_uploads requires at least 2 workers")
+        if (
+            body_memory_budget is not None
+            and body_memory_budget < _ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR
+        ):
+            raise ValueError(
+                "body_memory_budget must admit two encrypted chunks when "
+                "encrypted_uploads is enabled"
+            )
     if body_memory_budget is None:
         body_memory_budget = limits.max_upload_size * limits.max_workers
+        if config.encrypted_uploads:
+            body_memory_budget = max(
+                body_memory_budget,
+                _ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR,
+            )
     limits = replace(
         limits,
+        encrypted_upload_max_size=limits.encrypted_upload_max_size or EUF_MAX_FILE_SIZE,
         upload_storage_limit=limits.upload_storage_limit or None,
         upload_file_limit=limits.upload_file_limit or None,
         note_storage_limit=limits.note_storage_limit or None,

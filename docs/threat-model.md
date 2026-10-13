@@ -13,7 +13,8 @@ external.
 ## Assets
 
 - Basic Auth credentials, ACME account keys, and certificate private keys
-- uploaded files, note ciphertext and metadata, and the client-held note key
+- uploaded files, client-encrypted file ciphertext and metadata, note
+  ciphertext and metadata, and client-held content, resume, and note keys
 - runtime and configuration integrity
 - worker, memory, disk, socket, and file-descriptor capacity
 - log, metric, and diagnostic privacy
@@ -38,6 +39,11 @@ external.
 | Secret disclosure | Redacted configuration, bounded diagnostics, low-cardinality metrics, and file-backed auth |
 | Advanced token abuse | High-entropy bearer token, auth or direct-loopback ownership, prefix match, expiry, idle timeout, revocation |
 | Lost Notepad key | Explicit non-recovery contract; the server stores no durable client key |
+| Lost encrypted-transfer password | Explicit non-recovery contract; the server does not know the password or content key by default |
+| Mixed-file or forged resume | Authenticated metadata plus per-chunk `K_resume` HMACs recomputed from the reselected local file |
+| Encrypted-file tampering | Per-chunk AES-GCM tags, position/length AAD, fail-closed download, and aborted partial output |
+| Malicious or compromised xferry host | Browser-side decryption by default; no password or key upload; ciphertext alone does not reveal plaintext |
+| One-shot server decryption exposure | Separate confirmation, exact `content_key` body, TLS or a direct loopback peer, no key logging/persistence, no plaintext artifact |
 | Abandoned one-shot artifacts | Age, count, and byte retention plus startup cleanup |
 | Branch or pull-request publication | Production publishers accept protected version-tag refs only and require protected-environment approval |
 | Workflow or third-party action compromise | Reviewed workflow changes, full commit-SHA action pins, non-persisted checkout credentials, and least-privilege job permissions |
@@ -70,10 +76,17 @@ limited to a direct loopback peer.
 A protected version tag is the release identity boundary. Repository and tag
 rules admit a candidate into trusted build jobs; they do not by themselves
 authorize an external write. Exact candidate artifacts and recorded digests
-cross from build jobs into separate publisher jobs. Those jobs cross the
-protected `production` environment and receive only the write scope for their
-one channel. Pull-request code and branch-triggered jobs remain outside that
-boundary.
+cross from build jobs into the protected `production-release` signing boundary.
+Signed artifacts, recorded digests, and approval dependency then cross into the
+protected `release-production` secret-free publication boundary. The current
+production writer and publisher jobs for draft GitHub Release creation, PyPI,
+GHCR, and public GitHub Release activation use that boundary directly and
+receive only those signed artifacts, recorded digests, and the write scope for
+their one channel. Pages publication crosses the separate `github-pages`
+approval boundary after checking successful production and signed public
+channel evidence. The Pages workflow receives no signing key. Pull-request
+code and branch-triggered jobs remain outside the production publication
+boundaries; main pushes only build documentation.
 
 PyPI, GHCR, and GitHub Releases are separate distribution boundaries. Their
 availability metadata is not sufficient proof of artifact identity. Consumers
@@ -106,11 +119,27 @@ trust root is shipped in the client. This enrollment authenticates a publisher;
 it does not make the managed channel public before the release-assets and final
 activation stages close.
 
+For encrypted transfers, the browser-to-server API boundary contains only
+ciphertext, public manifest values, and resume MACs. The server does not know
+the password or content key by default. Browser-side decryption therefore
+protects against disclosure by an honest-but-curious storage service, a stolen
+ciphertext backup, or a malicious or compromised xferry host that did not
+obtain the browser runtime or password. It does not hide sizes, timing, file
+IDs, chunk completion, or creation/update times.
+
+The one-shot server decryption path deliberately crosses that boundary. After explicit
+confirmation, `K_content` and plaintext are trusted to the server process for
+one response. The route is restricted to effective TLS or a direct loopback
+peer; a TLS-terminating reverse proxy remains able to observe plaintext and the
+key. Basic Auth and same-origin checks remain mandatory controls rather than
+cryptographic substitutes.
+
 ## Out of scope
 
 - multi-tenant isolation
 - safe exposure to arbitrary internet clients without operator controls
 - durable recovery of a Secure Notepad key
+- recovery of a forgotten encrypted-transfer password or content key
 - confidentiality from XOR or a generated SMUGGLE artifact
 - protection from a host administrator, TLS-terminating provider, or
   compromised browser

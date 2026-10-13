@@ -14,14 +14,15 @@ async (page) => {
   const rootUrl = String(baseUrl || "").replace(/#.*$/, "");
   const topTabContract = [
     { id: "tab-upload", target: "upload", key: "topTabUpload" },
+    { id: "tab-large-files", target: "large-files", key: "topTabLargeFiles", optional: true },
     { id: "tab-files", target: "files", key: "topTabFiles" },
     { id: "tab-request", target: "request", key: "tabRequests" },
     { id: "tab-opsec", target: "opsec", key: "tabOpsec" },
     { id: "tab-notepad", target: "notepad", key: "tabNotepad" },
   ];
   const topTabLabels = {
-    ru: ["Отправить", "Получить", "Запросы", "Расширенные", "Блокнот"],
-    en: ["Upload", "Download", "Requests", "Advanced", "Notepad"],
+    ru: ["Отправить", "Большие файлы", "Получить", "Запросы", "Расширенные", "Блокнот"],
+    en: ["Upload", "Large files", "Download", "Requests", "Advanced", "Notepad"],
   };
 
   function requestPathname(request) {
@@ -1125,6 +1126,9 @@ async (page) => {
       await waitForUploadMethodState("POST", { focused: true });
 
       for (const tab of topTabContract) {
+        if (await page.locator(`#${tab.id}`).isHidden()) {
+          continue;
+        }
         await page.locator(`#${tab.id}`).click();
         await waitForTabState(tab.target, { focused: true });
         const originalDisclosureState = await page.evaluate((target) => {
@@ -4129,9 +4133,13 @@ async (page) => {
             tab.dataset.toolEntry === expectedTabs[index].target &&
             tab.dataset.i18n === expectedTabs[index].key &&
             tab.textContent.trim() === expectedLabels[index] &&
-            !tab.hidden
+            (expectedTabs[index].optional || !tab.hidden)
           ));
-        const rects = tabs.map((tab) => {
+        const visibleTabs = tabs.filter((tab) => !tab.hidden);
+        const encryptedState = window.XferryApp?.getState("encrypted-transfer");
+        const largeFilesTab = document.getElementById("tab-large-files");
+        const gatingOk = largeFilesTab.hidden === !Boolean(encryptedState?.enabled);
+        const rects = visibleTabs.map((tab) => {
           const rect = tab.getBoundingClientRect();
           return {
             id: tab.id,
@@ -4145,7 +4153,9 @@ async (page) => {
           .slice()
           .sort((a, b) => (a.top - b.top) || (a.left - b.left))
           .map((item) => item.id);
-        const expectedIds = expectedTabs.map((tab) => tab.id);
+        const expectedIds = expectedTabs.filter((tab) => (
+          !tab.optional || !document.getElementById(tab.id).hidden
+        )).map((tab) => tab.id);
         const visibleOk = rects.every((rect) => rect.width > 0 && rect.height > 0);
         const redundantHeadingsAbsent = ["upload", "files", "opsec", "notepad"].every(
           (target) => !document.querySelector(`#${target}-tab > .workspace-view__header`)
@@ -4161,6 +4171,7 @@ async (page) => {
         );
         return (
           domOrderOk &&
+          gatingOk &&
           visibleOk &&
           redundantHeadingsAbsent &&
           visualOrder.join(",") === expectedIds.join(",") &&
@@ -4182,7 +4193,12 @@ async (page) => {
       null,
       timeout
     );
-    for (const target of ["files", "request", "opsec", "notepad"]) {
+    const keyboardTargets = await page.evaluate(() => (
+      Array.from(document.querySelectorAll('.mode-tabs .tab[role="tab"][data-tab-target]'))
+        .filter((tab) => !tab.hidden && tab.dataset.tabTarget !== "upload")
+        .map((tab) => tab.dataset.tabTarget)
+    ));
+    for (const target of keyboardTargets) {
       await page.keyboard.press("ArrowRight");
       await waitForTabState(target, { focused: true }, timeout);
     }
@@ -4195,7 +4211,9 @@ async (page) => {
       await page.goto(`${rootUrl}#${tab.target}`, { waitUntil: "domcontentloaded" });
       await waitForSpaReady();
       await waitForAdvancedUploadReady();
-      await waitForTabState(tab.target, {}, timeout);
+      const expectedTarget = tab.optional && await page.locator(`#${tab.id}`).isHidden()
+        ? "upload" : tab.target;
+      await waitForTabState(expectedTarget, {}, timeout);
     }
   }
 
@@ -4328,7 +4346,7 @@ async (page) => {
     }
     await waitForPageCondition("mode tabs are ordered", () => {
       const ids = Array.from(document.querySelectorAll('.tab[role="tab"][data-tab-target]')).map((tab) => tab.id);
-      return ids.join(",") === "tab-upload,tab-files,tab-request,tab-opsec,tab-notepad";
+      return ids.join(",") === "tab-upload,tab-large-files,tab-files,tab-request,tab-opsec,tab-notepad";
     });
     await waitForText(page.locator("#notepadNoteList"), noteListText);
     await waitForText(page.locator("#notepadCharCount"), charCountText);
@@ -11886,6 +11904,258 @@ async (page) => {
     }
   }
 
+  async function runEncryptedTransferJourney() {
+    const password = "correct horse battery staple";
+    const encryptedUploadName = fixtureName(uploadFilePath);
+    const expectedDownload = Array.from(new TextEncoder().encode("browser smoke upload\n"));
+    const encryptedRequests = [];
+    const recordEncryptedRequest = (request) => {
+      if (!requestPathname(request).includes("/_xferry/encrypted-")) {
+        return;
+      }
+      encryptedRequests.push({
+        url: request.url(),
+        path: requestPathname(request),
+        method: request.method(),
+        headers: request.headers(),
+        body: request.postData() || "",
+      });
+    };
+    page.on("request", recordEncryptedRequest);
+
+    try {
+      await page.locator("#tab-large-files").waitFor({ state: "visible", timeout: 30000 });
+      await page.locator("#tab-large-files").click();
+      await page.locator("#encryptedTransferPanel").waitFor({ state: "visible", timeout: 30000 });
+      await waitForPageCondition(
+        "encrypted transfer capability is ready",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(state?.enabled && state.capabilityStatus === "valid");
+        },
+        null,
+        30000
+      );
+
+      await page.locator("#encryptedRefreshBtn").click();
+      await waitForPageCondition(
+        "encrypted transfer lists were requested",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state &&
+            Array.isArray(state.partialUploads) &&
+            Array.isArray(state.encryptedFiles)
+          );
+        },
+        null,
+        30000
+      );
+
+      await page.evaluate(() => {
+        window.__xferryEncryptedSmokeDownloads = [];
+        Object.defineProperty(window, "showSaveFilePicker", {
+          configurable: true,
+          value: async (options = {}) => {
+            const record = {
+              suggestedName: String(options.suggestedName || ""),
+              chunks: [],
+              closed: false,
+              aborted: false,
+            };
+            window.__xferryEncryptedSmokeDownloads.push(record);
+            return {
+              async createWritable() {
+                return {
+                  write: async (value) => {
+                    const view = value instanceof Uint8Array
+                      ? value
+                      : new Uint8Array(value);
+                    record.chunks.push(Array.from(view));
+                  },
+                  close: async () => {
+                    record.closed = true;
+                  },
+                  abort: async () => {
+                    record.aborted = true;
+                  },
+                };
+              },
+            };
+          },
+        });
+      });
+
+      await page.locator("#encryptedFileInput").setInputFiles(uploadFilePath);
+      await page.locator("#encryptedPasswordInput").fill(password);
+      await page.locator("#encryptedPasswordConfirmInput").fill(password);
+      await page.locator("#encryptedUploadStartBtn").click();
+      await waitForPageCondition(
+        "encrypted upload completed through the real UI",
+        () => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state?.phase === "complete" &&
+            state.activeId === null &&
+            state.encryptedFiles?.length === 1
+          );
+        },
+        null,
+        120000
+      );
+
+      const completedState = await page.evaluate(() => (
+        window.XferryApp.getState("encrypted-transfer")
+      ));
+      const fileId = completedState.encryptedFiles[0]?.id || "";
+      if (!/^[0-9a-f]{32}$/.test(fileId)) {
+        throw new Error(`Encrypted upload returned an invalid id: ${fileId}`);
+      }
+      const clearedUploadSecrets = await page.evaluate(() => ({
+        password: document.getElementById("encryptedPasswordInput")?.value || "",
+        confirmation: document.getElementById("encryptedPasswordConfirmInput")?.value || "",
+      }));
+      if (clearedUploadSecrets.password || clearedUploadSecrets.confirmation) {
+        throw new Error("Encrypted upload password fields were not cleared");
+      }
+
+      await page.locator('[data-encrypted-action="unlock"]').click();
+      const unlockPasswordInput = page.locator("#encryptedUnlockPasswordInput");
+      await unlockPasswordInput.fill(password);
+      await page.locator("#encryptedUnlockSelectedBtn").click();
+      await waitForPageCondition(
+        "encrypted file unlocked through the real UI",
+        ([targetId, targetName]) => {
+          const state = window.XferryApp?.getState("encrypted-transfer");
+          return Boolean(
+            state?.encryptedFiles?.some((entry) => (
+              entry.id === targetId &&
+              entry.unlocked &&
+              entry.name === targetName
+            ))
+          );
+        },
+        [fileId, encryptedUploadName],
+        120000
+      );
+      if (await unlockPasswordInput.inputValue()) {
+        throw new Error("Encrypted unlock password field was not cleared");
+      }
+
+      await page.locator('[data-encrypted-action="download-client"]').click();
+      await waitForPageCondition(
+        "client-side encrypted download closed its writable stream",
+        () => {
+          const downloads = window.__xferryEncryptedSmokeDownloads || [];
+          return downloads.length >= 1 && downloads[0].closed && !downloads[0].aborted;
+        },
+        null,
+        30000
+      );
+      const downloadedBytes = await page.evaluate(() => (
+        (window.__xferryEncryptedSmokeDownloads?.[0]?.chunks || []).flat()
+      ));
+      if (JSON.stringify(downloadedBytes) !== JSON.stringify(expectedDownload)) {
+        throw new Error(`Client-side decrypted bytes differ: ${JSON.stringify(downloadedBytes)}`);
+      }
+
+      await page.locator('[data-encrypted-action="unlock"]').click();
+      await page.locator('#encryptedUnlockPasswordInput').fill(password);
+      await page.locator('#encryptedUnlockSelectedBtn').click();
+      await waitForPageCondition("unlock again after keys were cleared", ([id]) =>
+        window.XferryApp.getState("encrypted-transfer").encryptedFiles.some(file => file.id === id && file.unlocked), [fileId], 30000);
+      await page.locator('details').filter({ has: page.locator('[data-encrypted-action="download-server"]') }).locator(':scope > summary').click();
+      await page.locator('[data-encrypted-action="download-server"]').click();
+      await confirmAppDialog(/decrypt|расшифр/i, 30000);
+      await waitForPageCondition(
+        "server-side encrypted download closed its writable stream",
+        () => {
+          const downloads = window.__xferryEncryptedSmokeDownloads || [];
+          return downloads.length >= 2 && downloads[1].closed && !downloads[1].aborted;
+        },
+        null,
+        30000
+      );
+      const serverDownloadedBytes = await page.evaluate(() => (
+        (window.__xferryEncryptedSmokeDownloads?.[1]?.chunks || []).flat()
+      ));
+      if (JSON.stringify(serverDownloadedBytes) !== JSON.stringify(expectedDownload)) {
+        throw new Error(
+          `Server-side decrypted bytes differ: ${JSON.stringify(serverDownloadedBytes)}`
+        );
+      }
+
+      const createRequest = encryptedRequests.find((request) => (
+        request.method === "PUT" && request.path === `/_xferry/encrypted-uploads/${fileId}`
+      ));
+      const chunkRequest = encryptedRequests.find((request) => (
+        request.method === "PUT" && request.path.includes(`/${fileId}/chunks/`)
+      ));
+      const completeRequest = encryptedRequests.find((request) => (
+        request.method === "POST" &&
+        request.path === `/_xferry/encrypted-uploads/${fileId}/complete`
+      ));
+      const ciphertextRequest = encryptedRequests.find((request) => (
+        request.method === "GET" &&
+        request.path === `/_xferry/encrypted-files/${fileId}/chunks/0`
+      ));
+      const decryptRequest = encryptedRequests.find((request) => (
+        request.method === "POST" &&
+        request.path === `/_xferry/encrypted-files/${fileId}/decrypt`
+      ));
+      if (!createRequest || !chunkRequest || !completeRequest || !ciphertextRequest || !decryptRequest) {
+        throw new Error(
+          `Encrypted request coverage is incomplete: ${JSON.stringify(encryptedRequests)}`
+        );
+      }
+      const createBody = JSON.parse(createRequest.body);
+      const expectedCreateKeys = [
+        "chunk_count",
+        "chunk_size",
+        "encrypted_metadata",
+        "nonce_prefix",
+        "plaintext_size",
+        "salt",
+        "version",
+      ];
+      if (Object.keys(createBody).sort().join(",") !== expectedCreateKeys.join(",")) {
+        throw new Error(`Encrypted create request leaked fields: ${JSON.stringify(createBody)}`);
+      }
+      if (!chunkRequest.headers["x-xferry-chunk-mac"]) {
+        throw new Error("Encrypted chunk request omitted X-XFerry-Chunk-MAC");
+      }
+      const decryptBody = JSON.parse(decryptRequest.body);
+      if (
+        Object.keys(decryptBody).join(",") !== "content_key" ||
+        !/^[A-Za-z0-9_-]{43}$/.test(String(decryptBody.content_key || ""))
+      ) {
+        throw new Error(`Server decrypt key envelope is invalid: ${decryptRequest.body}`);
+      }
+      encryptedRequests.forEach((request) => {
+        const serializedHeaders = JSON.stringify(request.headers);
+        if (
+          request.url.includes(password) ||
+          request.body.includes(password) ||
+          serializedHeaders.includes(password)
+        ) {
+          throw new Error(`Encrypted request leaked its password: ${request.method} ${request.url}`);
+        }
+        if (request !== decryptRequest && request.body.includes("content_key")) {
+          throw new Error(`Encrypted request leaked its content key: ${request.method} ${request.url}`);
+        }
+      });
+
+      return {
+        fileId,
+        encryptedRequestCount: encryptedRequests.length,
+        clientDownloadedBytes: downloadedBytes.length,
+        serverDownloadedBytes: serverDownloadedBytes.length,
+      };
+    } finally {
+      page.off("request", recordEncryptedRequest);
+    }
+  }
+
   async function runUiContractsJourney() {
     await assertOutputLiveRegionContracts();
     await assertStaticUiAssetsLoaded();
@@ -14239,6 +14509,7 @@ async (page) => {
   const namedJourneys = {
     "first-run": runFirstRunJourney,
     "basic-upload-profiles": runBasicUploadProfilesJourney,
+    "encrypted-transfer": runEncryptedTransferJourney,
     "ui-contracts": runUiContractsJourney,
     "http-errors": runHttpErrorsJourney,
     "recovery": runRecoveryJourney,

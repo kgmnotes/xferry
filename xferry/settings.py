@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
 
+from .encrypted_transfer import EUF_MAX_FILE_SIZE
 from .handlers.smuggle import (
     DEFAULT_SMUGGLE_TEMP_MAX_AGE_SECONDS,
     DEFAULT_SMUGGLE_TEMP_MAX_BYTES,
@@ -76,8 +77,11 @@ class ServerSettings:
     open_browser: bool = False
     json_log: bool = False
     public_direct: bool = False
+    encrypted_uploads: bool = False
 
     max_size_mb: int = 100
+    encrypted_upload_max_size_mb: int = 0
+    encrypted_upload_incomplete_ttl_seconds: int = 86400
     upload_storage_limit_mb: int = 0
     upload_file_limit: int = 0
     upload_reserve_free_mb: int = 0
@@ -136,6 +140,17 @@ class ServerSettings:
             raise SettingsError("host must not be empty")
         _require_int_range("port", self.port, minimum=1, maximum=65535)
         _require_int_range("max_size_mb", self.max_size_mb, minimum=1)
+        _require_int_range(
+            "encrypted_upload_max_size_mb",
+            self.encrypted_upload_max_size_mb,
+            minimum=0,
+            maximum=EUF_MAX_FILE_SIZE // _MIB,
+        )
+        _require_int_range(
+            "encrypted_upload_incomplete_ttl_seconds",
+            self.encrypted_upload_incomplete_ttl_seconds,
+            minimum=1,
+        )
         _require_int_range("upload_storage_limit_mb", self.upload_storage_limit_mb, minimum=0)
         _require_int_range("upload_file_limit", self.upload_file_limit, minimum=0)
         _require_int_range("upload_reserve_free_mb", self.upload_reserve_free_mb, minimum=0)
@@ -269,8 +284,11 @@ class ServerSettings:
                 host=self.host,
                 port=self.port,
                 root_dir=self.root_dir,
+                encrypted_uploads=self.encrypted_uploads,
                 limits=ServerLimits(
                     max_upload_size=self.max_size_mb * _MIB,
+                    encrypted_upload_max_size=self.encrypted_upload_max_size_mb * _MIB,
+                    encrypted_upload_incomplete_ttl=(self.encrypted_upload_incomplete_ttl_seconds),
                     upload_storage_limit=(
                         self.upload_storage_limit_mb * _MIB
                         if self.upload_storage_limit_mb

@@ -7,8 +7,10 @@ service. Use it only with explicit authorization and test data. Binding to a
 public address, enabling TLS, or adding Basic Auth does not by itself make an
 internet-facing deployment safe.
 
-The supported distribution is a reviewed source checkout. Project automation
-does not publish packages, release binaries, or registry images.
+The supported user journeys are portable pipx, managed Linux, and immutable
+container distribution. Select an exact version or digest, keep lifecycle
+ownership with that channel, and use a reviewed source checkout only for
+contributor work.
 
 ## Report a vulnerability
 
@@ -67,10 +69,9 @@ configuration procedure.
 
 ## Release and update supply chain
 
-ADR-011 accepts a staged controlled-distribution architecture, but it does not
-activate a public channel. The supported distribution remains a reviewed source
-checkout, and the current Release Verification workflow must remain unable to
-write to PyPI, GHCR, or GitHub Releases until the channel-specific stages close.
+ADR-011 defines a controlled-distribution architecture. Public artifacts are
+promoted from one verified candidate, never rebuilt by a publisher, and remain
+unadvertised until the protected production activation completes.
 
 Release tags, workflow definitions, publisher identities, candidate artifacts,
 digests, manifests, checksums, SBOMs, provenance, signing identities, registry
@@ -87,8 +88,14 @@ The following controls govern every future publisher:
    versions. Build jobs create one candidate; publisher jobs promote those exact
    verified bytes or OCI digests and never rebuild them.
 3. External actions use full commit-SHA pins. Workflow permissions default to
-   read-only, with channel-specific write scopes granted only to a publisher job
-   behind the protected `production` environment and required review.
+   read-only. The production publication approval boundary is the protected
+   `release-production` environment with required review. Writer and publisher
+   jobs use that environment directly so environment-scoped publisher
+   identities bind to the actual writer job. The private
+   signing-key custody boundary is the separate protected `production-release`
+   environment; downstream publisher jobs receive only signed artifacts,
+   recorded digests, approval dependency, and their channel-specific write
+   scope.
 4. PyPI uses OIDC trusted publishing and never a static API token. Registry,
    release, attestation, and signing credentials are short-lived and scoped to
    the one job and environment that need them wherever the service supports it.
@@ -108,8 +115,10 @@ publishes updated trust or revocation metadata before release work resumes.
 
 ### Signed release metadata contract
 
-Remote managed releases use manifest schema v2 plus the detached
-`xferry-release.json.sig` envelope. The signed bytes are exactly the UTF-8 bytes
+Remote managed releases use platform-specific manifest schema v2 plus detached
+`xferry-release-linux-ARCH.json.sig` envelopes. Installed metadata retains the
+local names `xferry-release.json` and `xferry-release.json.sig`. Signed bytes are
+exactly the UTF-8 bytes
 emitted by `ReleaseManifest.to_bytes()`: fixed field order, two-space JSON
 indentation, lexically sorted artifact digests, and one trailing newline. A
 signed manifest declares `ed25519` and exactly one lowercase key ID. The
@@ -149,13 +158,15 @@ The matching environment variable `XFERRY_RELEASE_SIGNING_KEY_ID` carries the
 non-secret key ID. Test suites generate separate disposable keys in memory;
 test keys must never enter the production ring.
 
-`production-release` is the private signing-key boundary. It is deliberately
-separate from the `production` publisher-approval environment required by
-ADR-011. Later release jobs may pass only signed artifacts and recorded digests
-between those boundaries; they must never pass or export private key material.
-Before any workflow is allowed to consume the signing secret, its environment
-ref policy must be restricted to the reviewed release workflow and authorized
-release refs.
+`production-release` is the private signing-key boundary. `release-production`
+is the secret-free production publication approval boundary. The current
+production workflow has four writer/publisher jobs under that boundary: draft
+GitHub Release creation, PyPI publication, GHCR publication, and public GitHub
+Release activation. They may receive only signed artifacts, recorded digests,
+and an approval dependency from the signer; they must never receive or export
+private key material. Before any workflow is allowed to consume the signing
+secret, its environment ref policy must be restricted to the reviewed release
+workflow and authorized release refs.
 
 If the signing identity may be compromised, stop every release and promotion
 job, preserve the workflow and artifact evidence, and disable use of the
@@ -175,18 +186,29 @@ material. Release automation must sign both `xferry-release.json` and
 
 ### Privileged installer verification order
 
-The production key is enrolled, but the managed channel is not public until the
-release-assets stage closes. The required shape is download, offline verification
-with the shipped public-key ring, and only then explicit privileged execution:
+The required shape is download, offline verification with the shipped
+public-key ring, and only then explicit privileged execution. Prerequisites
+are Python available as `python` and a reviewed checkout containing
+`tools/verify_release_signature.py`; run the commands from that checkout's root.
+For x86_64, use:
 
 ```console
-curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json"
-curl --fail --silent --show-error --remote-name "$release_url/xferry-release.json.sig"
-curl --fail --silent --show-error --remote-name "$release_url/install.sh"
-curl --fail --silent --show-error --remote-name "$release_url/install.sh.sig"
-python tools/verify_release_signature.py --manifest xferry-release.json --signature xferry-release.json.sig
-python tools/verify_release_signature.py --installer install.sh --signature install.sh.sig
-sudo sh ./install.sh
+release_url='https://github.com/kgmnotes/xferry/releases/download/v0.2.0'
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/xferry-release-linux-x86_64.json"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/xferry-release-linux-x86_64.json.sig"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/install-linux-x86_64.sh"
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+  --remote-name "$release_url/install-linux-x86_64.sh.sig"
+python tools/verify_release_signature.py \
+  --manifest xferry-release-linux-x86_64.json \
+  --signature xferry-release-linux-x86_64.json.sig
+python tools/verify_release_signature.py \
+  --installer install-linux-x86_64.sh \
+  --signature install-linux-x86_64.sh.sig
+sudo sh ./install-linux-x86_64.sh
 ```
 
 Run the verifier from a reviewed checkout. Never stream a network response into

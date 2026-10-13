@@ -65,6 +65,10 @@ in the Docker and systemd INI examples come from the operator settings schema;
 the marked method and capability tables in `API.md` come from the runtime
 contract registries. Regenerate all derived files in this order:
 
+`docs/cli-reference.md` is the generated CLI reference captured from the real
+English dispatcher. `docs/managed-hosts.md` is the generated managed support
+matrix sourced from the runtime host contract.
+
 ```bash
 python tools/render_settings.py --write
 python tools/render_contracts.py --write
@@ -127,12 +131,13 @@ each require explicit operator opt-in.
 
 ## Distribution verification
 
-The supported distribution is a reviewed source checkout. CI and the manual
-Release Verification workflow build wheel, source-distribution, container, and
-SCIE products only inside their verification jobs. They do not upload or
-publish packages, release binaries, or registry images. Keep documentation and
-examples source-only; adding a distribution channel requires a new reviewed
-architecture decision and an explicit policy change.
+The source checkout is the contributor workflow; it is not the first user
+installation path. Public user documentation separates portable pipx, managed
+Linux, and immutable container lifecycles. Release automation must promote one
+verified candidate without rebuilding, and production publication remains
+behind protected approvals. Do not deploy release-branch documentation before
+the corresponding artifacts are activated. Local Compose examples may build
+the checkout only when they are clearly labelled as contributor examples.
 
 ## Security reports
 

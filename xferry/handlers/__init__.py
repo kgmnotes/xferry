@@ -23,6 +23,7 @@ from ..features import core_method_specs
 from ..http import HTTPRequest, HTTPResponse, error_response, json_response
 from .advanced_upload import AdvancedUploadHandlersMixin
 from .base import BaseHandler
+from .encrypted_files import EncryptedFileHandlersMixin
 from .files import FileHandlersMixin
 from .info import InfoHandlersMixin
 from .notepad import NotepadHandlersMixin
@@ -64,6 +65,7 @@ def _is_advanced_session_control_target(request: HTTPRequest) -> bool:
 
 
 class HandlerMixin(
+    EncryptedFileHandlersMixin,
     FileHandlersMixin,
     InfoHandlersMixin,
     NotepadHandlersMixin,
@@ -93,6 +95,9 @@ class HandlerMixin(
         """Look up and invoke the handler for ``request.method``."""
         if not request.is_valid:
             return self._bad_request("Bad Request")
+
+        if self._is_encrypted_transfer_route(request):
+            return self.handle_encrypted_transfer(request)
 
         if _is_advanced_session_control_target(request):
             return self._handle_advanced_session_control(request)
