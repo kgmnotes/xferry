@@ -231,6 +231,37 @@ def test_staging_policy_requires_explicit_top_level_permissions():
     assert any("permissions" in finding.message.lower() for finding in findings)
 
 
+def test_staging_policy_preserves_authenticated_handoff_for_fourteen_days():
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+
+    assert "retention-days: 14" in workflow.split("  publish:", 1)[0]
+    findings = staging_policy_findings(
+        workflow.replace("retention-days: 14", "retention-days: 1", 1)
+    )
+
+    assert any("retention" in finding.message.lower() for finding in findings)
+
+
+def test_staging_policy_scopes_handoff_retention_to_authenticated_upload():
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+    anchor = "      - name: Preserve authenticated distributions for the OIDC job\n"
+    compromised = workflow.replace("retention-days: 14", "retention-days: 1", 1).replace(
+        anchor,
+        (
+            "      - name: Unrelated identity retention\n"
+            "        run: true\n"
+            "        env:\n"
+            "          EXPECTED_RETENTION: retention-days: 14\n"
+            f"{anchor}"
+        ),
+        1,
+    )
+
+    findings = staging_policy_findings(compromised)
+
+    assert any("retention" in finding.message.lower() for finding in findings)
+
+
 @pytest.mark.parametrize(
     "unsafe_step",
     [
