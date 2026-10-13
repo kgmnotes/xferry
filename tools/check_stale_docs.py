@@ -784,6 +784,14 @@ def _workflow_jobs(text: str) -> tuple[WorkflowJob, ...]:
     return tuple(jobs)
 
 
+def _workflow_step_with_id(job_text: str, step_id: str) -> str | None:
+    marker = f"\n        id: {step_id}\n"
+    for step in re.split(r"(?=^      - )", job_text, flags=re.MULTILINE):
+        if marker in f"\n{step}\n":
+            return step
+    return None
+
+
 def _permission_entries(
     text: str,
     indent: int,
@@ -1172,6 +1180,9 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             is None
         ):
             reject(f"TestPyPI identity must execute its {command} verifier")
+    handoff_step = _workflow_step_with_id(jobs["identity"].text, "staged-distributions")
+    if handoff_step is None or "retention-days: 14" not in handoff_step:
+        reject("TestPyPI authenticated handoff retention must be fourteen days")
     if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
         jobs["publish"]
     ) != frozenset({"pypi"}):
@@ -1196,6 +1207,7 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             "id: staged-distributions",
             "authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}",
             "if-no-files-found: error",
+            "retention-days: 14",
         ),
         "publish": (
             "needs: identity",
