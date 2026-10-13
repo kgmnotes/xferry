@@ -144,3 +144,13 @@
 - Verification: fresh 3,723-test full suite, Ruff, strict MyPy for 71 files, generated settings/contracts/docs checks, stale-doc guard, and strict MkDocs passed. Independent correctness and security reviews had no material findings; `gkumurzhi` approved the exact head.
 - Boundary: PR #42 remains open and unmerged; STAGE-014/Public Pages and every production action remain gated by STAGE-010 and separate STAGE-015 authorization.
 - Report: `stage-reports/STAGE-013-20261003-121945.md`.
+
+## 2026-10-13 21:39:04 +0300 — STAGE-010 v2 hosted follow-up
+- Status: PARTIALLY_CLOSED; production remains inactive.
+- Implementation: branch `codex/stage-010-testpypi-rehearsal-v2` was pushed at `7bdf671fe58e7617c80c3a9ca0f1a1728208398f`, carrying retention commit `5918be2` plus v2 workflow, protected-branch preflight, stale-doc guard, and regression updates.
+- External controls: v2 branch protection is locked with required approval and last-push approval; `testpypi` Environment allowlist now contains only policy `62941759` for v2, with self-review prevention and disabled admin bypass preserved. Old policy `61529000` was removed. PR #43 was closed as superseded without merge.
+- Verification: 149 targeted tests, 372 expanded release/CLI policy tests, stale-doc guard, Ruff lint/format, and actionlint v1.7.7 passed.
+- Hosted evidence: run `38448276887` proved v2 identity, protected `gkumurzhi` approval, and authenticated handoff artifact `11838578507` (`sha256:ca5c847ad5af745c0a16d460afed3f670716cfd772bebed54a3064915882eb8a`, expires `2026-10-27T18:38:00Z`).
+- Blocker: TestPyPI again returned `invalid-publisher` for the valid OIDC token; no upload occurred, the exact-version endpoint remains 404, and `pipx-smoke` skipped. Accepted-byte and three-OS consumer evidence remain impossible until the TestPyPI pending publisher mapping exists.
+- Boundary: no production tag, production publication, `main` merge, environment weakening, or private-key read/export occurred. Existing `production-release` secret metadata was observed only by name and was not overwritten.
+- Report: `stage-reports/STAGE-010-20261013-213904.md`.
