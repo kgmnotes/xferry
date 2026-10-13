@@ -3909,10 +3909,31 @@
 
 .encrypted-transfer__details > summary,
 .encrypted-transfer__item details > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     padding-block: var(--space-3);
     cursor: pointer;
     color: var(--text-secondary);
     font-weight: 600;
+    list-style: none;
+}
+
+.encrypted-transfer__details > summary::-webkit-details-marker,
+.encrypted-transfer__item details > summary::-webkit-details-marker {
+    display: none;
+}
+
+.encrypted-transfer__details > summary::before,
+.encrypted-transfer__item details > summary::before {
+    content: "[+]" / "";
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+}
+
+.encrypted-transfer__details[open] > summary::before,
+.encrypted-transfer__item details[open] > summary::before {
+    content: "[-]" / "";
 }
 
 .encrypted-transfer__details > p {
