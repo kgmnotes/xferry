@@ -172,3 +172,15 @@
 - Boundary: no production tag, PyPI/GHCR/GitHub Release/Pages publication, `main` merge, or signing-secret read occurred. `.github/workflows/release-production.yml` intentionally fails closed at `production-readiness` until immutable full managed ten-pair evidence exists.
 - Remaining: STAGE-010 and STAGE-014 are still blocked by the missing TestPyPI pending publisher; final STAGE-015 closure requires an exact production go/no-go, full release gates, public publication receipts, post-publish consumer checks, and release notes with immutable identities.
 - Report: `stage-reports/STAGE-015-20261013-222201.md`.
+
+## 2026-10-13 22:30:43 +0300 — STAGE-010 v2 rerun follow-up
+- Status: PARTIALLY_CLOSED; production remains inactive.
+- Hosted evidence: run `38448276887` attempt 2 received a fresh protected `testpypi` approval from `gkumurzhi`; publish job `115496291238` reached TestPyPI with the exact expected claims.
+- Blocker: TestPyPI again returned `invalid-publisher`; no upload occurred and `pipx-smoke` skipped. Further retries are stopped until the pending publisher mapping exists.
+- Report: `stage-reports/STAGE-010-20261013-223044.md`.
+
+## 2026-10-13 22:55:00 +0300 — STAGE-015 independent review
+- Status: PARTIALLY_CLOSED; production remains inactive.
+- Review: PR #44 is open and `gkumurzhi` approved exact head `ca323692e2b350c9aaea155e810f9485440ca8f0`; no merge, tag, or publication was performed.
+- Remaining: TestPyPI pending publisher, full ten-host managed evidence, and a separate exact production go/no-go.
+- Report: `stage-reports/STAGE-015-20261013-222201.md`.
