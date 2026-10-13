@@ -1,5 +1,14 @@
 # Change Log
 
+## 2026-10-14 00:20:31 +0300 — consolidated main integration
+- STAGE-015 status remains PARTIALLY_CLOSED; merge request is complete.
+- Main commit: `0230ea99e72827f8c526370bb2bc0ae1a2d34619`; final source head `79842b2` passed all 23 checks, 4,100 tests and 87.20% coverage.
+- Integrated all release work and seven local encrypted-transfer commits through one existing PR #45; superseded PRs #34/#41/#42/#44 are closed.
+- Fixed draft numeric-ID recovery, constraint materialization, pre-exposure anonymous consumers, cross-channel signed payloads, and gated Pages publication.
+- Original encrypted plan/spec bytes are preserved in `source-evidence/`; original local history is retained in a backup ref. Workspace active-plan pointer now selects the canonical execution artifacts.
+- Remaining full-goal requirements: TestPyPI pending publisher, full managed systemd/public lifecycle evidence, and production acceptance.
+- Report: `stage-reports/STAGE-015-20261014-002031.md`.
+
 ## 2026-09-28 14:43:22 +0300 — STAGE-001
 - Status: CLOSED
 - Files changed: `xferry/handlers/notepad.py`, `plan.md`, `stage-status.md`, `stages/STAGE-001-restore-strict-typing-baseline.md`, and the stage report.

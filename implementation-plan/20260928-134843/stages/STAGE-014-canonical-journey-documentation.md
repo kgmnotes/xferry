@@ -82,6 +82,7 @@ Prepare a canonical English documentation set, validated against staged artifact
 - Rollback: keep changes on the release branch, preserve current public source-only docs until go-live, and deploy docs only with STAGE-015.
 
 ## Completion notes
+- Follow-up 2026-10-14 00:20:31 +0300: documentation implementation and both feature lines are now included in main `0230ea9` through PR #45; PR #42 is closed as superseded. Generated contracts, mirror sync, strict MkDocs, packaged OS journeys and browser checks passed on the combined source. Pages run `38468423923` built strictly and skipped deployment as designed; full stage closure still requires the missing TestPyPI portable receipt.
 - Attempt: 2026-10-13 21:52:58 +0300; result PARTIALLY_CLOSED. Report: `stage-reports/STAGE-014-20261013-215258.md`.
 - Documentation implementation is present in PR #42 at `fa06558008f1eed558fb171fb729e274fe947de3` and remains open/unmerged so public docs are not deployed before production activation.
 - Independent review by `gkumurzhi` explicitly covered STAGE-014 documentation implementation at the exact head, with the condition that PR #42 is not merged into a public deployment path before STAGE-010 closes and STAGE-015 go/no-go is granted.
