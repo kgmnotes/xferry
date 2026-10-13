@@ -1,7 +1,7 @@
 # STAGE-015 - Activate and rehearse production release
 
 ## Status
-OPEN
+PARTIALLY_CLOSED
 
 ## Priority
 HIGH
@@ -82,4 +82,12 @@ Activate the production tag-triggered release path only after a full rehearsal, 
 - Rollback: never overwrite a version; stop remaining publishers, yank the PyPI release when justified, deprecate/deny the GHCR tag while preserving digest evidence, mark the GitHub Release withdrawn, revoke the signing key, and direct managed operators to the retained previous release via `xferry rollback`.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Attempt: 2026-10-13 22:22:01 +0300; result PARTIALLY_CLOSED. Report: `stage-reports/STAGE-015-20261013-222201.md`.
+- Implemented production preparation on branch/worktree `codex/stage-015-production-prep`: reusable release verification outputs, fail-closed `.github/workflows/release-production.yml`, production identity derivation, channel handoff hardening for PyPI/GHCR/GitHub Release, release policy tests, production release runbook, and incident-response tabletop.
+- Final implementation commit `ca32369` (`Prepare production release readiness`) is pushed to `origin/codex/stage-015-production-prep`.
+- Split environments according to the final boundary model: `production-release` remains the private signing-key custody Environment, while new secret-free `release-production` is the production publication approval Environment. `release-production` has reviewers `kgmnotes` and `gkumurzhi`, self-review prevention, disabled admin bypass, custom tag policy `v*.*.*` (policy `62945859`), and no secrets or variables.
+- Repository protections are in place: `main` is protected and ruleset `25022921` protects `refs/tags/v*.*.*`.
+- Final review fixed the unsigned production release handoff retention window from 1 day to 14 days and added a release-policy regression guard for that approval-window risk.
+- Verification passed: 307 production/release/doc policy tests; full 3,796-test repository suite; Ruff check and format on 12 touched Python files; docs mirror sync; stale-doc policy; strict MkDocs via a temporary pinned docs environment; and actionlint v1.7.7 for release, production-release, TestPyPI, GHCR, GitHub Release rehearsal, and managed update workflows.
+- Production remains intentionally inactive: no tag was created, no PyPI/GHCR/GitHub Release/Pages publication occurred, and the signing private key was not read or exported. The production workflow contains a fail-closed managed-evidence readiness job before signing or publication.
+- Remaining blockers: STAGE-010 and STAGE-014 are still `PARTIALLY_CLOSED` because TestPyPI lacks the pending publisher mapping; full STAGE-015 closure also requires an exact production go/no-go, full release gates, public publication receipts, post-publish portable/container/managed checks, and final release notes with immutable identities.

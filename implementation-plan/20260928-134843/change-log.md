@@ -162,3 +162,13 @@
 - Staging matrix: managed, container, and draft GitHub Release substitutions have hosted receipts in `stage-reports/STAGE-014-20261013-staging-evidence.json`; Pages is deferred to STAGE-015.
 - Remaining: portable PyPI/pipx receipt is blocked by STAGE-010's missing TestPyPI pending publisher. Browser follow-up found no reachable authenticated TestPyPI UI session; Playwright received `407 Proxy Authentication Required` before the TestPyPI form, and no secrets/private storage were read.
 - Report: `stage-reports/STAGE-014-20261013-215258.md`.
+
+## 2026-10-13 22:22:01 +0300 — STAGE-015 production preparation
+- Status: PARTIALLY_CLOSED; production remains inactive.
+- Implementation: branch `codex/stage-015-production-prep` is pushed at commit `ca32369` with a fail-closed production tag workflow, reusable candidate identity outputs, dynamic production channel identities, hardened PyPI/GHCR/GitHub Release handoffs, production policy tests, release runbook, and incident-response tabletop.
+- External controls: created secret-free GitHub Environment `release-production` with reviewers `kgmnotes` and `gkumurzhi`, self-review prevention, disabled admin bypass, custom tag policy `v*.*.*` (`62945859`), and no secrets or variables. Existing `production-release` remains only the signing-key custody boundary and also allows protected `v*.*.*` tags; the private key was not read or exported. `main` is protected and ruleset `25022921` protects `refs/tags/v*.*.*`.
+- Final review: raised unsigned production release handoff retention from 1 day to 14 days and added a policy regression guard so protected approvals cannot expire the exact assets before signing.
+- Verification: 307 focused production/release/docs tests and the full 3,796-test repository suite passed; Ruff check/format passed on 12 touched Python files; docs sync and stale-doc guard passed; strict MkDocs passed in a temporary pinned docs environment; actionlint v1.7.7 passed on relevant release/staging workflows.
+- Boundary: no production tag, PyPI/GHCR/GitHub Release/Pages publication, `main` merge, or signing-secret read occurred. `.github/workflows/release-production.yml` intentionally fails closed at `production-readiness` until immutable full managed ten-pair evidence exists.
+- Remaining: STAGE-010 and STAGE-014 are still blocked by the missing TestPyPI pending publisher; final STAGE-015 closure requires an exact production go/no-go, full release gates, public publication receipts, post-publish consumer checks, and release notes with immutable identities.
+- Report: `stage-reports/STAGE-015-20261013-222201.md`.
