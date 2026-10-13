@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_candidate_promotion import COMMIT, RUN, TAG, _candidate
+from tools import ghcr_publish as publisher
 from tools.candidate_inventory import create_inventory, pack_candidate
 from tools.check_stale_docs import (
     find_release_policy_issues,
@@ -21,6 +22,7 @@ from tools.check_stale_docs import (
 from tools.ghcr_publish import (
     IMAGE_NAME,
     prepare_oci_candidate,
+    verify_api_identity,
     verify_registry_layout,
 )
 
@@ -256,6 +258,98 @@ def test_ghcr_candidate_identity_tracks_the_fixed_stage009_artifact(
     ):
         assert ghcr_identity[field] == testpypi_identity[field]
     assert ghcr_identity["image"] == IMAGE_NAME
+
+
+def test_api_identity_accepts_explicit_production_producer_contract(
+    ghcr_identity: dict,
+) -> None:
+    identity = dict(ghcr_identity)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=4,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = _metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        run_attempt=4,
+        status="in_progress",
+        conclusion=None,
+    )
+
+    verify_api_identity(identity, artifact, run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("producer_event", "workflow_dispatch"),
+        ("producer_workflow_path", ".github/workflows/release.yml"),
+        ("producer_run_attempt", 0),
+        ("producer_status", "completed"),
+        ("producer_conclusion", "success"),
+    ],
+)
+def test_api_identity_rejects_mixed_or_arbitrary_producer_contract(
+    ghcr_identity: dict, field: str, value: object
+) -> None:
+    identity = dict(ghcr_identity)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    identity[field] = value
+    artifact, run = _metadata(identity)
+
+    with pytest.raises(ValueError, match="producer contract"):
+        verify_api_identity(identity, artifact, run)
+
+
+def test_global_identity_file_selects_dynamic_candidate(
+    tmp_path: Path, ghcr_identity: dict
+) -> None:
+    identity = dict(ghcr_identity)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = _metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        status="in_progress",
+        conclusion=None,
+    )
+    identity_path = tmp_path / "production-ghcr.json"
+    artifact_path = tmp_path / "artifact.json"
+    run_path = tmp_path / "run.json"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    assert (
+        publisher.main(
+            [
+                "--identity-file",
+                str(identity_path),
+                "identity",
+                "--artifact-metadata",
+                str(artifact_path),
+                "--run-metadata",
+                str(run_path),
+            ]
+        )
+        == 0
+    )
 
 
 def test_prepare_oci_candidate_records_publish_digest_platforms_and_attestations(

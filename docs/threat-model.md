@@ -70,10 +70,16 @@ limited to a direct loopback peer.
 A protected version tag is the release identity boundary. Repository and tag
 rules admit a candidate into trusted build jobs; they do not by themselves
 authorize an external write. Exact candidate artifacts and recorded digests
-cross from build jobs into separate publisher jobs. Those jobs cross the
-protected `production` environment and receive only the write scope for their
-one channel. Pull-request code and branch-triggered jobs remain outside that
-boundary.
+cross from build jobs into the protected `production-release` signing boundary.
+Signed artifacts, recorded digests, and approval dependency then cross into the
+protected `release-production` secret-free publication boundary. The current
+production writer and publisher jobs for draft GitHub Release creation, PyPI,
+GHCR, and public GitHub Release activation use that boundary directly and
+receive only those signed artifacts, recorded digests, and the write scope for
+their one channel. A future Pages publisher must stay outside the signing
+boundary and use the same secret-free publication boundary only after final
+release evidence exists. Pull-request code and branch-triggered jobs remain
+outside both boundaries.
 
 PyPI, GHCR, and GitHub Releases are separate distribution boundaries. Their
 availability metadata is not sufficient proof of artifact identity. Consumers

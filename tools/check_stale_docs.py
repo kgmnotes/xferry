@@ -484,7 +484,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*Branch or pull-request publication)"
             r"(?=[\s\S]*Candidate substitution or publish-job rebuild)"
             r"(?=[\s\S]*Installer or update metadata tampering)"
-            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*protected `release-production`)"
             r"(?=[\s\S]*Rollback[\s\S]*previously verified)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -691,7 +691,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*Managed Linux[\s\S]*GitHub Release)"
             r"(?=[\s\S]*protected version-tag refs)"
             r"(?=[\s\S]*publisher jobs must not rebuild)"
-            r"(?=[\s\S]*protected `production` environment)"
+            r"(?=[\s\S]*protected `release-production`)"
             r"(?=[\s\S]*OIDC trusted publishing)"
             r"(?=[\s\S]*Signing and key ownership)"
             r"(?=[\s\S]*Rollback and incident response)"
@@ -925,10 +925,11 @@ def _publisher_channels(job: WorkflowJob) -> frozenset[str]:
     )
 
 
-def _uses_production_environment(job: WorkflowJob) -> bool:
+def _uses_named_environment(job: WorkflowJob, name: str) -> bool:
+    escaped = re.escape(name)
     if re.search(
         r"^    (?P<quote>[\"']?)environment(?P=quote):\s*"
-        r"[\"']?production[\"']?\s*(?:#.*)?$",
+        rf"[\"']?{escaped}[\"']?\s*(?:#.*)?$",
         job.text,
         re.MULTILINE,
     ):
@@ -946,12 +947,16 @@ def _uses_production_environment(job: WorkflowJob) -> bool:
         environment_block = environment_block[: end.start()]
     return (
         re.search(
-            r"^      name:\s*[\"']?production[\"']?\s*(?:#.*)?$",
+            rf"^      name:\s*[\"']?{escaped}[\"']?\s*(?:#.*)?$",
             environment_block,
             re.MULTILINE,
         )
         is not None
     )
+
+
+def _uses_production_environment(job: WorkflowJob) -> bool:
+    return _uses_named_environment(job, "release-production")
 
 
 def release_workflow_policy_findings(
@@ -994,11 +999,23 @@ def release_workflow_policy_findings(
                 )
             )
 
-    publishers = tuple(
-        (job, _publisher_channels(job)) for job in _workflow_jobs(text) if _publisher_channels(job)
-    )
+    jobs = _workflow_jobs(text)
+    publishers = tuple((job, channels) for job in jobs if (channels := _publisher_channels(job)))
     if not publishers:
         return findings
+
+    publisher_names = {job.name for job, _channels in publishers}
+    for job in jobs:
+        if job.name not in publisher_names and _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    "`release-production` must be referenced only by publisher jobs; "
+                    f"{job.name!r} is not a publisher",
+                )
+            )
 
     events, push_block = _workflow_events(text)
     if "pull_request" in events or "pull_request_target" in events:
@@ -1028,7 +1045,8 @@ def release_workflow_policy_findings(
                     path,
                     job.start_line,
                     line,
-                    f"publisher job {job.name!r} must use the protected `production` environment",
+                    f"publisher job {job.name!r} must use the protected "
+                    "`release-production` environment",
                 )
             )
         if re.search(r"^    [\"']?needs[\"']?:", job.text, re.MULTILINE) is None or (
@@ -1119,6 +1137,208 @@ def release_workflow_policy_findings(
                         f"publisher job {job.name!r} must use PyPI trusted publishing",
                     )
                 )
+    return findings
+
+
+def production_release_workflow_policy_findings(
+    text: str,
+    path: Path = Path(".github/workflows/release-production.yml"),
+) -> list[Finding]:
+    """Validate the production tag workflow's approval and publisher boundaries."""
+    findings: list[Finding] = []
+    lines = text.splitlines()
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        reference = match.group("reference").strip("\"'")
+        if reference.startswith("./"):
+            continue
+        action, separator, revision = reference.partition("@")
+        if separator and WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(revision):
+            continue
+        line_number = text.count("\n", 0, match.start()) + 1
+        received = revision if separator else "(missing ref)"
+        findings.append(
+            Finding(
+                path,
+                line_number,
+                lines[line_number - 1].strip() if lines else "",
+                f"external actions must use a lowercase 40-hex commit SHA; "
+                f"{action} uses {received}",
+            )
+        )
+
+    _, workflow_permissions = _permission_entries(text, 0)
+    for _scope, access, line_number in workflow_permissions:
+        if access.casefold() == "write-all" or access.casefold() == "write":
+            findings.append(
+                Finding(
+                    path,
+                    line_number,
+                    lines[line_number - 1].strip() if lines else "",
+                    "workflow-level write permission is forbidden; scope writes to one "
+                    "protected publisher job",
+                )
+            )
+
+    events, push_block = _workflow_events(text)
+    tag_filters = _push_tag_filters(push_block)
+    if (
+        events != frozenset({"push"})
+        or tag_filters != ("v*.*.*",)
+        or re.search(r"^    [\"']?tags-ignore[\"']?:", push_block, re.MULTILINE)
+        or re.search(r"^    [\"']?branches(?:-ignore)?[\"']?:", push_block, re.MULTILINE)
+    ):
+        reject(
+            "production release requires exact `vX.Y.Z` version tag filters on a "
+            "version-tag-only push trigger"
+        )
+    if "workflow_dispatch:" in text or "pull_request:" in text or "branches:" in text:
+        reject("production release must not have manual, PR, or branch triggers")
+    if 'test "$GITHUB_REF_PROTECTED" = "true"' not in text:
+        reject("production release must fail closed unless the tag ref is protected")
+    if "uses: ./.github/workflows/release.yml" not in text:
+        reject("production release must build candidates through the reusable candidate workflow")
+    if "actions/deploy-pages" in text or "pages: write" in text:
+        reject("production release must not deploy Pages before final evidence")
+    if "skip-existing" in text or "docker build" in text or "docker/build-push-action" in text:
+        reject("production publishers must not skip existing files or rebuild artifacts")
+
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    required_jobs = {
+        "sign-assets",
+        "create-draft-release",
+        "publish-pypi",
+        "publish-ghcr",
+        "publish-github-release",
+        "production-readiness",
+        "final-gate",
+    }
+    for name in sorted(required_jobs - set(jobs)):
+        reject(f"production release workflow is missing job {name!r}")
+
+    sign = jobs.get("sign-assets")
+    if sign is not None:
+        if not _uses_named_environment(sign, "production-release"):
+            reject("signing job must use the protected `production-release` environment")
+        if "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM" not in sign.text:
+            reject("signing job does not consume the protected signing key")
+
+    private_key = "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM"
+    for name, job in jobs.items():
+        if name != "sign-assets" and private_key in job.text:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    f"private signing key must not escape into job {name!r}",
+                )
+            )
+
+    publisher_writes = {
+        "create-draft-release": {"contents"},
+        "publish-pypi": {"id-token"},
+        "publish-ghcr": {"packages"},
+        "publish-github-release": {"contents"},
+    }
+    for name, required_writes in publisher_writes.items():
+        job = jobs.get(name)
+        if job is None:
+            continue
+        line = job.text.splitlines()[0].strip()
+        if not _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must use the protected "
+                    "`release-production` environment",
+                )
+            )
+        if re.search(r"^    [\"']?needs[\"']?:", job.text, re.MULTILINE) is None:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must depend on verified handoff jobs",
+                )
+            )
+        has_permissions, job_permissions = _permission_entries(job.text, 4)
+        if not has_permissions:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must declare explicit permissions",
+                )
+            )
+            continue
+        granted_writes = {
+            scope
+            for scope, access, _ in job_permissions
+            if access.casefold() in {"write", "write-all"}
+        }
+        if "*" in granted_writes or granted_writes != required_writes:
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    line,
+                    f"production publisher job {name!r} must grant only "
+                    f"{', '.join(sorted(required_writes))}: write",
+                )
+            )
+        if name == "publish-pypi":
+            if PYPI_STATIC_CREDENTIAL_PATTERN.search(job.text):
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        "production PyPI publisher must not use a static credential",
+                    )
+                )
+            if "pypa/gh-action-pypi-publish" not in job.text:
+                findings.append(
+                    Finding(
+                        path,
+                        job.start_line,
+                        line,
+                        "production PyPI publisher must use trusted publishing",
+                    )
+                )
+
+    for name, job in jobs.items():
+        if name not in publisher_writes and _uses_production_environment(job):
+            findings.append(
+                Finding(
+                    path,
+                    job.start_line,
+                    job.text.splitlines()[0].strip(),
+                    f"`release-production` must be referenced only by publisher jobs; "
+                    f"{name!r} is not a publisher",
+                )
+            )
+
+    readiness = jobs.get("production-readiness")
+    if readiness is not None and (
+        "Full managed ten-pair systemd evidence is not available on hosted runners"
+        not in readiness.text
+        or "exit 1" not in readiness.text
+    ):
+        reject("production readiness must fail closed until ten-pair managed evidence exists")
+    final_gate = jobs.get("final-gate")
+    if final_gate is not None and (
+        "main merge and Pages deployment remain forbidden until all post-publish evidence passes"
+        not in final_gate.text
+    ):
+        reject("final gate must keep main and Pages blocked until post-publish evidence passes")
     return findings
 
 
@@ -1790,6 +2010,14 @@ def find_release_policy_issues(
             findings.append(contract_finding(path, "release workflow policy file is missing"))
         else:
             findings.extend(release_workflow_policy_findings(release_text, path))
+    production = Path(".github/workflows/release-production.yml")
+    if targets_cover_path(production, repo_root, targets) and (repo_root / production).is_file():
+        findings.extend(
+            production_release_workflow_policy_findings(
+                read_contract_text(repo_root / production) or "",
+                production,
+            )
+        )
     managed_rehearsal = Path(".github/workflows/managed-update-rehearsal.yml")
     if (
         targets_cover_path(managed_rehearsal, repo_root, targets)

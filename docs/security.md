@@ -90,8 +90,14 @@ The following controls govern every future publisher:
    versions. Build jobs create one candidate; publisher jobs promote those exact
    verified bytes or OCI digests and never rebuild them.
 3. External actions use full commit-SHA pins. Workflow permissions default to
-   read-only, with channel-specific write scopes granted only to a publisher job
-   behind the protected `production` environment and required review.
+   read-only. The production publication approval boundary is the protected
+   `release-production` environment with required review. Writer and publisher
+   jobs use that environment directly so environment-scoped publisher
+   identities bind to the actual writer job. The private
+   signing-key custody boundary is the separate protected `production-release`
+   environment; downstream publisher jobs receive only signed artifacts,
+   recorded digests, approval dependency, and their channel-specific write
+   scope.
 4. PyPI uses OIDC trusted publishing and never a static API token. Registry,
    release, attestation, and signing credentials are short-lived and scoped to
    the one job and environment that need them wherever the service supports it.
@@ -154,13 +160,15 @@ The matching environment variable `XFERRY_RELEASE_SIGNING_KEY_ID` carries the
 non-secret key ID. Test suites generate separate disposable keys in memory;
 test keys must never enter the production ring.
 
-`production-release` is the private signing-key boundary. It is deliberately
-separate from the `production` publisher-approval environment required by
-ADR-011. Later release jobs may pass only signed artifacts and recorded digests
-between those boundaries; they must never pass or export private key material.
-Before any workflow is allowed to consume the signing secret, its environment
-ref policy must be restricted to the reviewed release workflow and authorized
-release refs.
+`production-release` is the private signing-key boundary. `release-production`
+is the secret-free production publication approval boundary. The current
+production workflow has four writer/publisher jobs under that boundary: draft
+GitHub Release creation, PyPI publication, GHCR publication, and public GitHub
+Release activation. They may receive only signed artifacts, recorded digests,
+and an approval dependency from the signer; they must never receive or export
+private key material. Before any workflow is allowed to consume the signing
+secret, its environment ref policy must be restricted to the reviewed release
+workflow and authorized release refs.
 
 If the signing identity may be compromised, stop every release and promotion
 job, preserve the workflow and artifact evidence, and disable use of the

@@ -44,7 +44,7 @@ jobs:
   publish-pypi:
     needs: build
     runs-on: ubuntu-latest
-    environment: production
+    environment: release-production
     permissions:
       contents: read
       id-token: write
@@ -220,6 +220,43 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
     assert check_stale_docs.release_workflow_policy_findings(workflow) == []
 
 
+def test_production_release_policy_accepts_current_workflow() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert check_stale_docs.production_release_workflow_policy_findings(workflow) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "message"),
+    (
+        (
+            '          test "$GITHUB_REF_PROTECTED" = "true"\n',
+            "tag ref is protected",
+        ),
+        (
+            "    environment: release-production\n",
+            "protected `release-production` environment",
+        ),
+    ),
+)
+def test_production_release_policy_rejects_boundary_regressions(
+    before: str,
+    message: str,
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    assert before in workflow
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(
+        workflow.replace(before, "", 1)
+    )
+
+    assert any(message in finding.message for finding in findings)
+
+
 @pytest.mark.parametrize(
     ("workflow", "message"),
     (
@@ -290,8 +327,8 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
             "must not rebuild release artifacts",
         ),
         (
-            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    environment: production\n", ""),
-            "protected `production` environment",
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("    environment: release-production\n", ""),
+            "protected `release-production` environment",
         ),
         (
             SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
@@ -304,16 +341,16 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
             "exact `vX.Y.Z` version tag filters",
         ),
         (
-            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace("  publish-pypi:", "  _publish-pypi:").replace(
-                "    environment: production\n", ""
+            SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
+                "  build:\n", "  build:\n    environment: release-production\n", 1
             ),
-            "protected `production` environment",
+            "`release-production` must be referenced only by publisher jobs",
         ),
         (
             SAFE_CONTROLLED_PUBLISH_WORKFLOW.replace(
                 "  publish-pypi:", '  "publish-pypi":'
-            ).replace("    environment: production\n", ""),
-            "protected `production` environment",
+            ).replace("    environment: release-production\n", ""),
+            "protected `release-production` environment",
         ),
     ),
     ids=(
@@ -329,7 +366,7 @@ def test_safe_future_publisher_accepts_inline_least_privilege_permissions() -> N
         "unprotected-production",
         "wildcard-tag",
         "tags-ignore",
-        "underscore-job-id",
+        "non-publisher-environment",
         "quoted-job-id",
     ),
 )

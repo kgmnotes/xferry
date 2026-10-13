@@ -175,11 +175,11 @@ def _workflow_job(workflow: str, job_name: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def _assert_manual_only_release_trigger(workflow: str) -> None:
+def _assert_candidate_release_trigger(workflow: str) -> None:
     trigger_header = workflow.split("\npermissions:", maxsplit=1)[0]
 
     events, _ = check_stale_docs._workflow_events(workflow)
-    assert events == frozenset({"workflow_dispatch"})
+    assert events == frozenset({"workflow_call", "workflow_dispatch"})
     assert "candidate_tag:" in trigger_header
     assert "required: true" in trigger_header
     assert "type: string" in trigger_header
@@ -462,7 +462,7 @@ def test_release_verification_workflow_is_manual_read_only_and_non_publishing() 
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     scie = (REPO_ROOT / ".github/workflows/candidate-scie.yml").read_text(encoding="utf-8")
     assert check_stale_docs.release_workflow_policy_findings(workflow) == []
-    _assert_manual_only_release_trigger(workflow)
+    _assert_candidate_release_trigger(workflow)
     build = _workflow_job(workflow, "build")
     assert "needs: [preflight, quality-gates, security-gates]" in build
     assert "uses: ./.github/workflows/ci.yml" in workflow
@@ -570,15 +570,14 @@ def test_reusable_candidate_source_gates_preserve_normal_ci_checks() -> None:
         "  pull_request:",
         "  schedule:\n    - cron: '0 0 * * *'",
         "  repository_dispatch:",
-        "  workflow_call:",
     ),
 )
-def test_release_workflow_guard_rejects_nonmanual_triggers(trigger: str) -> None:
+def test_release_workflow_guard_rejects_unsafe_extra_triggers(trigger: str) -> None:
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     mutated = workflow.replace("\npermissions:", f"\n{trigger}\npermissions:", 1)
 
     with pytest.raises(AssertionError):
-        _assert_manual_only_release_trigger(mutated)
+        _assert_candidate_release_trigger(mutated)
 
 
 def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:

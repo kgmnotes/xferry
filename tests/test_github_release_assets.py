@@ -259,6 +259,59 @@ def test_api_identity_substitution_is_rejected(tmp_path: Path) -> None:
         assets.verify_api_identity(identity, artifact, run)
 
 
+def test_api_identity_accepts_explicit_production_producer_contract(tmp_path: Path) -> None:
+    from tools import github_release_assets as assets
+
+    identity, _candidate_root, _archive = _identity(tmp_path)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=2,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = _metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        run_attempt=2,
+        status="in_progress",
+        conclusion=None,
+    )
+
+    assets.verify_api_identity(identity, artifact, run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("producer_event", "workflow_dispatch"),
+        ("producer_workflow_path", ".github/workflows/release.yml"),
+        ("producer_run_attempt", 0),
+        ("producer_status", "completed"),
+        ("producer_conclusion", "success"),
+    ],
+)
+def test_api_identity_rejects_mixed_or_arbitrary_producer_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    from tools import github_release_assets as assets
+
+    identity, _candidate_root, _archive = _identity(tmp_path)
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    identity[field] = value
+    artifact, run = _metadata(identity)
+
+    with pytest.raises(ValueError, match="producer contract"):
+        assets.verify_api_identity(identity, artifact, run)
+
+
 def test_release_asset_assembly_signs_manifests_and_preserves_candidate_bytes(
     tmp_path: Path,
 ) -> None:

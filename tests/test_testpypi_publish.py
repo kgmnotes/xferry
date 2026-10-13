@@ -70,6 +70,99 @@ def test_api_identity_substitution_is_rejected(identity, document, field, value)
         publisher.verify_api_identity(identity, *documents)
 
 
+def test_api_identity_accepts_explicit_production_producer_contract(identity) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=3,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        run_attempt=3,
+        status="in_progress",
+        conclusion=None,
+    )
+
+    publisher.verify_api_identity(identity, artifact, run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("producer_event", "workflow_dispatch"),
+        ("producer_workflow_path", ".github/workflows/release.yml"),
+        ("producer_run_attempt", 0),
+        ("producer_status", "completed"),
+        ("producer_conclusion", "success"),
+    ],
+)
+def test_api_identity_rejects_mixed_or_arbitrary_producer_contract(
+    identity: dict, field: str, value: object
+) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    identity[field] = value
+    artifact, run = metadata(identity)
+
+    with pytest.raises(ValueError, match="producer contract"):
+        publisher.verify_api_identity(identity, artifact, run)
+
+
+def test_api_identity_rejects_incomplete_production_contract(identity: dict) -> None:
+    identity["producer_event"] = "push"
+    artifact, run = metadata(identity)
+
+    with pytest.raises(ValueError, match="incomplete"):
+        publisher.verify_api_identity(identity, artifact, run)
+
+
+def test_global_identity_file_selects_dynamic_candidate(tmp_path: Path, identity: dict) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        status="in_progress",
+        conclusion=None,
+    )
+    identity_path = tmp_path / "production-testpypi.json"
+    artifact_path = tmp_path / "artifact.json"
+    run_path = tmp_path / "run.json"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    assert (
+        publisher.main(
+            [
+                "--identity-file",
+                str(identity_path),
+                "identity",
+                "--artifact-metadata",
+                str(artifact_path),
+                "--run-metadata",
+                str(run_path),
+            ]
+        )
+        == 0
+    )
+
+
 def index_document(identity: dict) -> dict:
     return {
         "info": {"name": "xferry", "version": "0.1.0"},

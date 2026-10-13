@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Production release and release-incident runbooks covering exact-version
+  go/no-go, publish order, partial-release recovery, signing-key custody, and
+  operator rollback communication.
+
+### Changed
+
+- Release security documentation now separates `production-release` signing-key
+  custody from the secret-free `release-production` publication approval
+  boundary.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added

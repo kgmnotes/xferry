@@ -183,6 +183,42 @@ def _verify_asset_records(
 
 def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     """Reject foreign, expired, rerun, or unsuccessful producer artifacts."""
+    legacy: dict[str, object] = {
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/release.yml",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    producer_keys = {
+        "producer_run_attempt",
+        "producer_event",
+        "producer_workflow_path",
+        "producer_status",
+        "producer_conclusion",
+    }
+    if any(key in identity for key in producer_keys):
+        if not producer_keys.issubset(identity):
+            raise ValueError("GitHub Release producer contract is incomplete")
+        attempt = identity["producer_run_attempt"]
+        producer_contract = {
+            "run_attempt": attempt,
+            "event": identity["producer_event"],
+            "path": identity["producer_workflow_path"],
+            "status": identity["producer_status"],
+            "conclusion": identity["producer_conclusion"],
+        }
+        if (
+            type(attempt) is not int
+            or attempt < 1
+            or producer_contract["event"] != "push"
+            or producer_contract["path"] != ".github/workflows/release-production.yml"
+            or producer_contract["status"] != "in_progress"
+            or producer_contract["conclusion"] is not None
+        ):
+            raise ValueError("GitHub Release producer contract is not an allowed release path")
+    else:
+        producer_contract = legacy
     expected_artifact = {
         "id": identity["artifact_id"],
         "name": identity["artifact_name"],
@@ -192,12 +228,8 @@ def verify_api_identity(identity: dict, artifact: dict, run: dict) -> None:
     }
     expected_run = {
         "id": identity["workflow_run"],
-        "run_attempt": 1,
         "head_sha": identity["source_commit"],
-        "event": "workflow_dispatch",
-        "path": ".github/workflows/release.yml",
-        "status": "completed",
-        "conclusion": "success",
+        **producer_contract,
     }
     producer = artifact.get("workflow_run", {})
     repository = run.get("repository", {})

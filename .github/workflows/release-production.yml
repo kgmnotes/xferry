@@ -1,0 +1,813 @@
+name: Production Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+
+jobs:
+  preflight:
+    if: ${{ github.repository == 'kgmnotes/xferry' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release-tag: ${{ steps.identity.outputs.release-tag }}
+      release-version: ${{ steps.identity.outputs.release-version }}
+      source-commit: ${{ steps.identity.outputs.source-commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Enforce the exact production tag and source identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          RELEASE_VERSION="$(python tools/check_release_preflight.py --tag "$RELEASE_TAG")"
+          test "$RELEASE_TAG" = "v${RELEASE_VERSION}"
+          echo "release-tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release-version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source-commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Refuse an already published PyPI version
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.release-version }}
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.error
+          import urllib.request
+
+          url = f"https://pypi.org/pypi/xferry/{os.environ['RELEASE_VERSION']}/json"
+          try:
+              with urllib.request.urlopen(url, timeout=30):
+                  pass
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  raise SystemExit(0)
+              raise
+          raise SystemExit("refusing to reuse an existing PyPI version")
+          PY
+
+  candidate:
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release.yml
+    with:
+      candidate_tag: ${{ needs.preflight.outputs.release-tag }}
+      managed_update_rehearsal: false
+
+  prepare-candidate:
+    needs: [preflight, candidate]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      python-artifact-id: ${{ steps.python-handoff.outputs.artifact-id }}
+      ghcr-artifact-id: ${{ steps.ghcr-handoff.outputs.artifact-id }}
+      unsigned-artifact-id: ${{ steps.unsigned-handoff.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.source-commit }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install candidate verification dependency
+        run: python -m pip install cryptography==50.0.0
+      - name: Bind reusable candidate outputs to this production run
+        env:
+          CANDIDATE_TAG: ${{ needs.candidate.outputs.candidate-tag }}
+          CANDIDATE_SOURCE: ${{ needs.candidate.outputs.source-commit }}
+          CANDIDATE_RUN: ${{ needs.candidate.outputs.workflow-run }}
+          EXPECTED_TAG: ${{ needs.preflight.outputs.release-tag }}
+          EXPECTED_SOURCE: ${{ needs.preflight.outputs.source-commit }}
+        run: |
+          set -euo pipefail
+          test "$CANDIDATE_TAG" = "$EXPECTED_TAG"
+          test "$CANDIDATE_SOURCE" = "$EXPECTED_SOURCE"
+          test "$CANDIDATE_RUN" = "$GITHUB_RUN_ID"
+      - name: Read exact candidate and run metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${CANDIDATE_ARTIFACT_ID}" > artifact.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > run.json
+      - name: Download exact candidate artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
+          run-id: ${{ github.run_id }}
+          repository: kgmnotes/xferry
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: downloaded
+      - name: Create dynamic production identities from verified bytes
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+        run: |
+          set -euo pipefail
+          python tools/production_release.py prepare \
+            --artifact-metadata artifact.json \
+            --run-metadata run.json \
+            --artifact-id "${{ needs.candidate.outputs.artifact-id }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --source-commit "$SOURCE_COMMIT" \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --archive downloaded/release-candidate.tar \
+            --archive-sha256 "${{ needs.candidate.outputs.archive-sha256 }}" \
+            --inventory-sha256 "${{ needs.candidate.outputs.inventory-sha256 }}" \
+            --output-dir identities
+      - name: Prepare exact Python distributions without rebuilding
+        run: |
+          set -euo pipefail
+          python tools/testpypi_publish.py --identity-file identities/testpypi-candidate.json \
+            prepare --artifact-metadata artifact.json --run-metadata run.json \
+            --archive downloaded/release-candidate.tar --candidate-dir promoted-python \
+            --packages-dir handoffs/python/packages
+      - name: Prepare exact OCI graph without rebuilding
+        run: |
+          set -euo pipefail
+          python tools/ghcr_publish.py --identity-file identities/ghcr-candidate.json \
+            prepare --artifact-metadata artifact.json --run-metadata run.json \
+            --archive downloaded/release-candidate.tar --candidate-dir promoted-ghcr \
+            --oci-dir handoffs/ghcr/oci --receipt handoffs/ghcr/ghcr-candidate-receipt.json
+      - name: Prepare unsigned GitHub Release assets without rebuilding
+        run: |
+          set -euo pipefail
+          python tools/github_release_assets.py --identity-file identities/github-release-candidate.json \
+            prepare --artifact-metadata artifact.json --run-metadata run.json \
+            --archive downloaded/release-candidate.tar --candidate-dir promoted-release \
+            --unsigned-dir handoffs/release/unsigned-assets
+      - name: Preserve exact Python publisher handoff
+        id: python-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: production-python-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            identities/testpypi-candidate.json
+            handoffs/python/packages/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve exact GHCR publisher handoff
+        id: ghcr-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: production-ghcr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            identities/ghcr-candidate.json
+            handoffs/ghcr/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve unsigned assets for protected signing
+        id: unsigned-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: production-unsigned-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            identities/github-release-candidate.json
+            handoffs/release/unsigned-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  production-readiness:
+    needs: [preflight, candidate, prepare-candidate]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Fail closed until the managed ten-pair matrix has immutable evidence
+        run: |
+          echo "Full managed ten-pair systemd evidence is not available on hosted runners." >&2
+          echo "A dedicated immutable, signed evidence source must replace this fail-closed gate before publication." >&2
+          exit 1
+
+  sign-assets:
+    needs: [preflight, prepare-candidate, production-readiness]
+    runs-on: ubuntu-latest
+    environment: production-release
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.signed-handoff.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.source-commit }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install signing verifier dependency
+        run: python -m pip install cryptography==50.0.0
+      - name: Download unsigned assets by authenticated artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare-candidate.outputs.unsigned-artifact-id }}
+          merge-multiple: true
+          path: unsigned-handoff
+      - name: Sign only inside protected key custody
+        env:
+          XFERRY_RELEASE_SIGNING_KEY_ID: ${{ vars.XFERRY_RELEASE_SIGNING_KEY_ID }}
+          XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM: ${{ secrets.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          test "$XFERRY_RELEASE_SIGNING_KEY_ID" = "xferry-release-2026-09"
+          key_file="${RUNNER_TEMP}/xferry-release-ed25519.pem"
+          cleanup() {
+            if [ -f "$key_file" ]; then
+              shred -u "$key_file" 2>/dev/null || rm -f "$key_file"
+            fi
+          }
+          trap cleanup EXIT
+          umask 077
+          printf '%s' "$XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM" > "$key_file"
+          python tools/github_release_assets.py \
+            --identity-file unsigned-handoff/identities/github-release-candidate.json \
+            sign --unsigned-dir unsigned-handoff/handoffs/release/unsigned-assets \
+            --signed-dir signed-handoff/signed-assets \
+            --key-id "$XFERRY_RELEASE_SIGNING_KEY_ID" --private-key "$key_file"
+          python tools/github_release_assets.py \
+            --identity-file unsigned-handoff/identities/github-release-candidate.json \
+            verify --assets-dir signed-handoff/signed-assets
+          python tools/github_release_assets.py \
+            --identity-file unsigned-handoff/identities/github-release-candidate.json \
+            verify-tamper --assets-dir signed-handoff/signed-assets
+          cleanup
+          trap - EXIT
+          mkdir -p signed-handoff/identities
+          cp unsigned-handoff/identities/github-release-candidate.json signed-handoff/identities/
+      - name: Preserve signed assets for secret-free publishing
+        id: signed-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: production-signed-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signed-handoff/
+          if-no-files-found: error
+          retention-days: 14
+
+  create-draft-release:
+    needs: [preflight, sign-assets]
+    runs-on: ubuntu-latest
+    environment: release-production
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.source-commit }}
+      - name: Download signed assets only
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}
+          merge-multiple: true
+          path: signed-handoff
+      - name: Validate the signed handoff inventory
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("signed-handoff/signed-assets")
+          inventory = json.loads((root / "github-release-assets.json").read_bytes())
+          expected = set(inventory["assets"]) | {"github-release-assets.json"}
+          actual = {path.name for path in root.iterdir() if path.is_file() and not path.is_symlink()}
+          if actual != expected:
+              raise SystemExit("signed handoff asset set differs from its inventory")
+          for name, record in inventory["assets"].items():
+              path = root / name
+              if path.stat().st_size != record["size"]:
+                  raise SystemExit(f"signed handoff size differs: {name}")
+              if hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
+                  raise SystemExit(f"signed handoff digest differs: {name}")
+          PY
+      - name: Render deterministic preliminary release notes
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          identity = json.loads(
+              Path("signed-handoff/identities/github-release-candidate.json").read_bytes()
+          )
+          assets = json.loads(
+              Path("signed-handoff/signed-assets/github-release-assets.json").read_bytes()
+          )
+          Path("preliminary-release-notes.md").write_text(
+              "\n".join(
+                  [
+                      f"# xferry {identity['version']}",
+                      "",
+                      "Prepared from an immutable candidate without rebuilding.",
+                      "",
+                      f"- Tag: `{identity['tag']}`",
+                      f"- Source commit: `{identity['source_commit']}`",
+                      f"- Candidate workflow run: `{identity['workflow_run']}`",
+                      f"- Candidate artifact ID: `{identity['artifact_id']}`",
+                      f"- Candidate archive SHA256: `{identity['archive_sha256']}`",
+                      f"- Candidate inventory SHA256: `{identity['inventory_sha256']}`",
+                      f"- Signing key ID: `{assets['signing_key_id']}`",
+                      "",
+                      "Recovery: follow `docs/release-runbook.md` and `docs/incident-response.md`; ",
+                      "never overwrite or reuse this version.",
+                      "",
+                  ]
+              ),
+              encoding="utf-8",
+          )
+          PY
+      - name: Create or resume the exact draft without overwriting assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --output release.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          if [ "$status" = 404 ]; then
+            gh release create "$RELEASE_TAG" signed-handoff/signed-assets/* \
+              --repo "$GITHUB_REPOSITORY" --title "xferry ${RELEASE_TAG}" \
+              --notes-file preliminary-release-notes.md --target "$SOURCE_COMMIT" \
+              --draft --latest=false --verify-tag
+          elif [ "$status" != 200 ]; then
+            echo "unable to establish existing Release state (HTTP ${status})" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+          test "$(jq -r '.tag_name' release.json)" = "$RELEASE_TAG"
+          test "$(jq -r '.draft' release.json)" = true
+          test "$(jq -r '.prerelease' release.json)" = false
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = Path("preliminary-release-notes.md").read_text(encoding="utf-8")
+          actual = json.loads(Path("release.json").read_bytes()).get("body")
+          if actual != expected:
+              raise SystemExit("preliminary immutable notes differ from existing draft body")
+          PY
+          mapfile -t expected < <(find signed-handoff/signed-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+          mapfile -t existing < <(jq -r '.assets[].name' release.json | sort)
+          comm -13 <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${existing[@]}") > unexpected.txt
+          test ! -s unexpected.txt
+          for name in "${existing[@]}"; do
+            mkdir -p "existing/${name}"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$name" --dir "existing/${name}"
+            cmp "signed-handoff/signed-assets/${name}" "existing/${name}/${name}"
+          done
+          mapfile -t missing < <(comm -23 <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${existing[@]}"))
+          for name in "${missing[@]}"; do
+            gh release upload "$RELEASE_TAG" "signed-handoff/signed-assets/${name}" \
+              --repo "$GITHUB_REPOSITORY"
+          done
+          mkdir downloaded-draft
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*' \
+            --dir downloaded-draft
+          for name in "${expected[@]}"; do
+            cmp "signed-handoff/signed-assets/${name}" "downloaded-draft/${name}"
+          done
+          test "$(find downloaded-draft -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+
+  publish-pypi:
+    needs: [preflight, prepare-candidate, create-draft-release]
+    runs-on: ubuntu-latest
+    environment: release-production
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Download authenticated Python distributions only
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare-candidate.outputs.python-artifact-id }}
+          merge-multiple: true
+          path: python-handoff
+      - name: Publish exact candidate distributions through PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: python-handoff/handoffs/python/packages
+          print-hash: true
+
+  publish-ghcr:
+    needs: [preflight, prepare-candidate, publish-pypi]
+    runs-on: ubuntu-24.04
+    environment: release-production
+    permissions:
+      actions: read
+      packages: write
+    outputs:
+      digest: ${{ steps.registry.outputs.digest }}
+    steps:
+      - name: Download authenticated OCI graph only
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare-candidate.outputs.ghcr-artifact-id }}
+          merge-multiple: true
+          path: ghcr-handoff
+      - name: Install pinned registry copier
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y skopeo=1.13.3+ds1-2ubuntu0.24.04.3
+          skopeo --version
+      - name: Promote the exact versioned OCI graph and refuse latest
+        id: registry
+        env:
+          GHCR_IMAGE: ghcr.io/kgmnotes/xferry
+          GHCR_TAG: ${{ needs.preflight.outputs.release-tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_is_absent() {
+            grep -Eiq '(manifest unknown|MANIFEST_UNKNOWN)' "$1"
+          }
+          test "$GHCR_TAG" = "${GITHUB_REF#refs/tags/}"
+          EXPECTED_DIGEST="$(python -c 'import json; print(json.load(open("ghcr-handoff/handoffs/ghcr/ghcr-candidate-receipt.json"))["oci"]["publish_digest"])')"
+          printf '%s' "$GH_TOKEN" | skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:latest" > latest.json 2> latest.err; then
+            echo "refusing mutable latest: it already exists" >&2
+            exit 1
+          elif ! manifest_is_absent latest.err; then
+            echo "unable to establish latest-tag absence" >&2
+            cat latest.err >&2
+            exit 1
+          fi
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:${GHCR_TAG}" > existing.json 2> existing.err; then
+            existing_digest="sha256:$(sha256sum existing.json | cut -d ' ' -f 1)"
+            test "$existing_digest" = "$EXPECTED_DIGEST"
+          else
+            inspect_status=$?
+            if ! manifest_is_absent existing.err; then
+              cat existing.err >&2
+              exit "$inspect_status"
+            fi
+            skopeo copy --all --preserve-digests \
+              "oci:ghcr-handoff/handoffs/ghcr/oci" "docker://${GHCR_IMAGE}:${GHCR_TAG}"
+          fi
+          skopeo inspect --raw "docker://${GHCR_IMAGE}:${GHCR_TAG}" > published.json
+          published_digest="sha256:$(sha256sum published.json | cut -d ' ' -f 1)"
+          test "$published_digest" = "$EXPECTED_DIGEST"
+          if skopeo inspect --raw "docker://${GHCR_IMAGE}:latest" > latest.json 2> latest.err; then
+            echo "publication created forbidden latest tag" >&2
+            exit 1
+          elif ! manifest_is_absent latest.err; then
+            cat latest.err >&2
+            exit 1
+          fi
+          echo "digest=$published_digest" >> "$GITHUB_OUTPUT"
+
+  publish-github-release:
+    needs: [preflight, prepare-candidate, sign-assets, create-draft-release, publish-ghcr]
+    runs-on: ubuntu-latest
+    environment: release-production
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download authenticated Python identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare-candidate.outputs.python-artifact-id }}
+          merge-multiple: true
+          path: final-python-handoff
+      - name: Download authenticated signed asset identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}
+          merge-multiple: true
+          path: final-signed-handoff
+      - name: Render deterministic final release notes
+        env:
+          GHCR_DIGEST: ${{ needs.publish-ghcr.outputs.digest }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          python_identity = json.loads(
+              Path("final-python-handoff/identities/testpypi-candidate.json").read_bytes()
+          )
+          release_identity = json.loads(
+              Path(
+                  "final-signed-handoff/identities/github-release-candidate.json"
+              ).read_bytes()
+          )
+          signed_root = Path("final-signed-handoff/signed-assets")
+          signed_inventory = json.loads(
+              (signed_root / "github-release-assets.json").read_bytes()
+          )
+          for field in (
+              "repository",
+              "version",
+              "tag",
+              "source_commit",
+              "workflow_run",
+              "artifact_id",
+              "archive_sha256",
+              "inventory_sha256",
+          ):
+              if python_identity[field] != release_identity[field]:
+                  raise SystemExit(f"channel identity differs before final notes: {field}")
+          ghcr_digest = os.environ["GHCR_DIGEST"]
+          if not ghcr_digest.startswith("sha256:") or len(ghcr_digest) != 71:
+              raise SystemExit("published GHCR digest is not a SHA256 identity")
+
+          lines = [
+              f"# xferry {release_identity['version']}",
+              "",
+              "Immutable production release promoted without rebuilding.",
+              "",
+              "## Release identity",
+              "",
+              f"- Tag: `{release_identity['tag']}`",
+              f"- Source commit: `{release_identity['source_commit']}`",
+              f"- Candidate workflow run: `{release_identity['workflow_run']}`",
+              f"- Candidate artifact ID: `{release_identity['artifact_id']}`",
+              f"- Candidate archive SHA256: `{release_identity['archive_sha256']}`",
+              f"- Candidate inventory SHA256: `{release_identity['inventory_sha256']}`",
+              f"- Signing key ID: `{signed_inventory['signing_key_id']}`",
+              "",
+              "## PyPI distributions",
+              "",
+          ]
+          for name, record in sorted(python_identity["distributions"].items()):
+              lines.append(
+                  f"- `{name}`: SHA256 `{record['sha256']}`, size `{record['size']}` bytes"
+              )
+          lines.extend(
+              [
+                  "",
+                  "## GHCR image",
+                  "",
+                  f"- `ghcr.io/kgmnotes/xferry@{ghcr_digest}`",
+                  f"- Version tag: `{release_identity['tag']}` (no `latest` tag)",
+                  "",
+                  "## Signed GitHub Release assets",
+                  "",
+              ]
+          )
+          inventory_records = signed_inventory["assets"]
+          for path in sorted(signed_root.iterdir(), key=lambda item: item.name):
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit("signed asset handoff contains a non-regular entry")
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              size = path.stat().st_size
+              if path.name != "github-release-assets.json":
+                  record = inventory_records.get(path.name)
+                  if record is None or record["sha256"] != digest or record["size"] != size:
+                      raise SystemExit(f"signed asset identity differs: {path.name}")
+              lines.append(f"- `{path.name}`: SHA256 `{digest}`, size `{size}` bytes")
+          source = release_identity["source_commit"]
+          lines.extend(
+              [
+                  "",
+                  "## Recovery",
+                  "",
+                  "Never overwrite or reuse this version. Follow:",
+                  "",
+                  f"- https://github.com/kgmnotes/xferry/blob/{source}/docs/release-runbook.md",
+                  f"- https://github.com/kgmnotes/xferry/blob/{source}/docs/incident-response.md",
+                  "",
+              ]
+          )
+          Path("final-release-notes.md").write_text("\n".join(lines), encoding="utf-8")
+          PY
+      - name: Expose the verified draft with exact final notes and unchanged assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-before.json
+          test "$(jq -r '.tag_name' release-before.json)" = "$RELEASE_TAG"
+          test "$(jq -r '.prerelease' release-before.json)" = false
+          if [ "$(jq -r '.draft' release-before.json)" = true ]; then
+            gh release edit "$RELEASE_TAG" --notes-file final-release-notes.md \
+              --draft=false --latest=false --repo "$GITHUB_REPOSITORY"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > public-release.json
+          test "$(jq -r '.tag_name' public-release.json)" = "$RELEASE_TAG"
+          test "$(jq -r '.draft' public-release.json)" = false
+          test "$(jq -r '.prerelease' public-release.json)" = false
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = Path("final-release-notes.md").read_text(encoding="utf-8")
+          actual = json.loads(Path("public-release.json").read_bytes()).get("body")
+          if actual != expected:
+              raise SystemExit("final immutable notes differ from public Release body")
+          PY
+
+  verify-pypi-identity:
+    needs: [preflight, prepare-candidate, publish-github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download authenticated distribution identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare-candidate.outputs.python-artifact-id }}
+          merge-multiple: true
+          path: python-handoff
+      - name: Verify public PyPI exposes exactly the promoted bytes
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release-version }}
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --output pypi.json "https://pypi.org/pypi/xferry/${RELEASE_VERSION}/json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          identity = json.loads(Path("python-handoff/identities/testpypi-candidate.json").read_bytes())
+          public = json.loads(Path("pypi.json").read_bytes())
+          files = {entry["filename"]: entry for entry in public["urls"]}
+          if public["info"]["version"] != identity["version"]:
+              raise SystemExit("PyPI version differs from candidate")
+          if set(files) != set(identity["distributions"]):
+              raise SystemExit("PyPI distribution set differs from candidate")
+          for name, expected in identity["distributions"].items():
+              actual = files[name]
+              if actual["digests"]["sha256"] != expected["sha256"]:
+                  raise SystemExit(f"PyPI digest differs: {name}")
+              if actual["size"] != expected["size"] or actual["yanked"] is not False:
+                  raise SystemExit(f"PyPI size/yank state differs: {name}")
+          PY
+
+  post-pypi:
+    needs: [preflight, publish-github-release, verify-pypi-identity]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+        python: ["3.10", "3.12", "3.14"]
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install pipx bootstrap
+        run: python -m pip install pipx
+      - name: Install and exercise the exact public PyPI version
+        shell: bash
+        env:
+          PIPX_HOME: ${{ runner.temp }}/xferry-pipx
+          PIPX_BIN_DIR: ${{ runner.temp }}/xferry-bin
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release-version }}
+        run: |
+          set -euo pipefail
+          python -m pipx install --pip-args='--index-url https://pypi.org/simple/ --no-cache-dir' \
+            "xferry==${RELEASE_VERSION}"
+          executable="${PIPX_BIN_DIR}/xferry"
+          if [ "$RUNNER_OS" = Windows ]; then executable="${executable}.exe"; fi
+          "$executable" --version
+          "$executable" run --print-config
+
+  post-ghcr:
+    needs: [preflight, publish-ghcr, publish-github-release]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Pull the immutable GHCR digest on its native architecture
+        env:
+          GHCR_DIGEST: ${{ needs.publish-ghcr.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull --platform 'linux/${{ matrix.arch }}' "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}"
+          docker image inspect "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" >/dev/null
+          docker run --rm "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" --version
+          docker run --rm "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" run --print-config
+
+  post-release:
+    needs: [preflight, sign-assets, publish-github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.source-commit }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install public signature verifier dependency
+        run: python -m pip install cryptography==50.0.0
+      - name: Download authenticated signed identity only
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}
+          merge-multiple: true
+          path: signed-handoff
+      - name: Download every public asset anonymously and verify signatures
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          mkdir anonymous-assets
+          api_url="https://api.github.com/repos/kgmnotes/xferry/releases/tags/${RELEASE_TAG}"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --output public-release.json "$api_url"
+          test "$(jq -r '.draft' public-release.json)" = false
+          test "$(jq -r '.prerelease' public-release.json)" = false
+          base="https://github.com/kgmnotes/xferry/releases/download/${RELEASE_TAG}/"
+          for source in signed-handoff/signed-assets/*; do
+            name="$(basename "$source")"
+            curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+              --output "anonymous-assets/${name}" "${base}${name}"
+          done
+          find signed-handoff/signed-assets -maxdepth 1 -type f -printf '%f\n' | sort > expected.txt
+          jq -r '.assets[].name' public-release.json | sort > public.txt
+          cmp expected.txt public.txt
+          python tools/github_release_assets.py \
+            --identity-file signed-handoff/identities/github-release-candidate.json \
+            verify --assets-dir anonymous-assets
+          python tools/github_release_assets.py \
+            --identity-file signed-handoff/identities/github-release-candidate.json \
+            verify-tamper --assets-dir anonymous-assets
+
+  final-gate:
+    if: ${{ always() }}
+    needs: [post-pypi, post-ghcr, post-release, production-readiness]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Keep main and Pages gated on complete production evidence
+        env:
+          PYPI_RESULT: ${{ needs.post-pypi.result }}
+          GHCR_RESULT: ${{ needs.post-ghcr.result }}
+          RELEASE_RESULT: ${{ needs.post-release.result }}
+          READINESS_RESULT: ${{ needs.production-readiness.result }}
+        run: |
+          set -euo pipefail
+          echo "main merge and Pages deployment remain forbidden until all post-publish evidence passes"
+          test "$PYPI_RESULT" = success
+          test "$GHCR_RESULT" = success
+          test "$RELEASE_RESULT" = success
+          test "$READINESS_RESULT" = success

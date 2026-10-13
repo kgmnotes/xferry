@@ -35,6 +35,45 @@ _PROVENANCE_PREDICATES = {
 }
 
 
+def _producer_contract(identity: Mapping[str, Any]) -> dict[str, object]:
+    legacy: dict[str, object] = {
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/release.yml",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    keys = {
+        "producer_run_attempt",
+        "producer_event",
+        "producer_workflow_path",
+        "producer_status",
+        "producer_conclusion",
+    }
+    if not any(key in identity for key in keys):
+        return legacy
+    if not keys.issubset(identity):
+        raise ValueError("GitHub candidate producer contract is incomplete")
+    attempt = identity["producer_run_attempt"]
+    production = {
+        "run_attempt": attempt,
+        "event": identity["producer_event"],
+        "path": identity["producer_workflow_path"],
+        "status": identity["producer_status"],
+        "conclusion": identity["producer_conclusion"],
+    }
+    if (
+        type(attempt) is not int
+        or attempt < 1
+        or production["event"] != "push"
+        or production["path"] != ".github/workflows/release-production.yml"
+        or production["status"] != "in_progress"
+        or production["conclusion"] is not None
+    ):
+        raise ValueError("GitHub candidate producer contract is not an allowed release path")
+    return production
+
+
 def _json(path: Path) -> dict[str, Any]:
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
@@ -220,6 +259,7 @@ def verify_api_identity(
     identity: Mapping[str, Any], artifact: Mapping[str, Any], run: Mapping[str, Any]
 ) -> None:
     """Reject foreign, expired, rerun, or unsuccessful producer artifacts."""
+    producer_contract = _producer_contract(identity)
     expected_artifact = {
         "id": identity["artifact_id"],
         "name": identity["artifact_name"],
@@ -229,12 +269,8 @@ def verify_api_identity(
     }
     expected_run = {
         "id": identity["workflow_run"],
-        "run_attempt": 1,
         "head_sha": identity["source_commit"],
-        "event": "workflow_dispatch",
-        "path": ".github/workflows/release.yml",
-        "status": "completed",
-        "conclusion": "success",
+        **producer_contract,
     }
     producer = artifact.get("workflow_run", {})
     repository = run.get("repository", {})
@@ -317,6 +353,7 @@ def verify_registry_layout(receipt: Mapping[str, Any], registry_oci: Path) -> No
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--identity-file", type=Path, default=IDENTITY_FILE)
     subparsers = parser.add_subparsers(dest="command", required=True)
     identity_parser = subparsers.add_parser("identity")
     identity_parser.add_argument("--artifact-metadata", type=Path, required=True)
@@ -332,7 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify_parser.add_argument("--receipt", type=Path, required=True)
     verify_parser.add_argument("--registry-oci-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    identity = _json(IDENTITY_FILE)
+    identity = _json(args.identity_file)
     try:
         if args.command in {"identity", "prepare"}:
             verify_api_identity(

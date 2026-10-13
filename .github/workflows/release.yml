@@ -1,6 +1,36 @@
 name: Release Verification
 
 on:
+  workflow_call:
+    inputs:
+      candidate_tag:
+        description: Exact candidate identity vX.Y.Z
+        required: true
+        type: string
+      managed_update_rehearsal:
+        description: Run only the artifact-only STAGE-013 native lifecycle rehearsal
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      artifact-id:
+        description: Immutable digest-indexed release candidate artifact ID
+        value: ${{ jobs.inventory.outputs.artifact-id }}
+      archive-sha256:
+        description: SHA256 of release-candidate.tar
+        value: ${{ jobs.inventory.outputs.archive-sha256 }}
+      inventory-sha256:
+        description: SHA256 of candidate-inventory.json
+        value: ${{ jobs.inventory.outputs.inventory-sha256 }}
+      candidate-tag:
+        description: Exact candidate tag identity
+        value: ${{ jobs.inventory.outputs.candidate-tag }}
+      source-commit:
+        description: Exact source commit used for the candidate
+        value: ${{ jobs.inventory.outputs.source-commit }}
+      workflow-run:
+        description: Producer workflow run ID embedded in the inventory
+        value: ${{ jobs.inventory.outputs.workflow-run }}
   workflow_dispatch:
     inputs:
       candidate_tag:
@@ -345,6 +375,9 @@ jobs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       archive-sha256: ${{ steps.inventory.outputs.archive-sha256 }}
       inventory-sha256: ${{ steps.inventory.outputs.inventory-sha256 }}
+      candidate-tag: ${{ steps.inventory.outputs.candidate-tag }}
+      source-commit: ${{ steps.inventory.outputs.source-commit }}
+      workflow-run: ${{ steps.inventory.outputs.workflow-run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
@@ -421,6 +454,9 @@ jobs:
           echo "inventory-sha256=$inventory_sha256" >> "$GITHUB_OUTPUT"
           archive_sha256="$(python tools/candidate_inventory.py pack --candidate-dir candidate --archive release-candidate.tar)"
           echo "archive-sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "candidate-tag=$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source-commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "workflow-run=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Upload digest-indexed release candidate
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
