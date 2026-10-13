@@ -29,7 +29,7 @@ STAGE-010, STAGE-011, and STAGE-012 are parallelizable after STAGE-009. All othe
 | STAGE-011 | HIGH | CLOSED | Add multi-arch GHCR publication path | 009 | exact OCI promotion; native amd64+arm64 pull/smoke; registry/SBOM/SLSA verification | GHCR workflow, candidate identity, promotion/verification tooling/tests |
 | STAGE-012 | HIGH | CLOSED | Publish signed GitHub Release assets | 007, 009 | exact draft asset set; protected signing; downloaded signature/tamper verification | release workflow, release tools/tests |
 | STAGE-013 | HIGH | CLOSED | Expose safe managed update lifecycle | 005, 007, 012 | CLI normal/failure/recovery tests | management CLI/releases/service/i18n/tests |
-| STAGE-014 | MEDIUM | OPEN | Publish canonical journey documentation | 010, 011, 012, 013 | docs guards, generated contracts, strict MkDocs | README/docs/examples/MkDocs/guards/tests |
+| STAGE-014 | MEDIUM | PARTIALLY_CLOSED | Publish canonical journey documentation | 010, 011, 012, 013 | docs guards, generated contracts, strict MkDocs | README/docs/examples/MkDocs/guards/tests |
 | STAGE-015 | HIGH | OPEN | Activate and rehearse production release | 010, 011, 012, 013, 014 | protected tag release and post-publish matrix | release orchestration, runbooks, changelog |
 
 ## How to close a stage

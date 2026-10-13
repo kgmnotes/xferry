@@ -154,3 +154,11 @@
 - Blocker: TestPyPI again returned `invalid-publisher` for the valid OIDC token; no upload occurred, the exact-version endpoint remains 404, and `pipx-smoke` skipped. Accepted-byte and three-OS consumer evidence remain impossible until the TestPyPI pending publisher mapping exists.
 - Boundary: no production tag, production publication, `main` merge, environment weakening, or private-key read/export occurred. Existing `production-release` secret metadata was observed only by name and was not overwritten.
 - Report: `stage-reports/STAGE-010-20261013-213904.md`.
+
+## 2026-10-13 21:52:58 +0300 — STAGE-014 documentation verification
+- Status: PARTIALLY_CLOSED; production and public Pages remain inactive.
+- Implementation evidence: PR #42 remains open/unmerged at exact head `fa06558008f1eed558fb171fb729e274fe947de3`; `gkumurzhi` approval explicitly covers STAGE-014 documentation implementation with the no-public-activation condition.
+- Verification: 304 targeted docs/policy tests passed, plus generated settings/contracts checks, docs mirror sync, stale-doc policy, and strict MkDocs.
+- Staging matrix: managed, container, and draft GitHub Release substitutions have hosted receipts in `stage-reports/STAGE-014-20261013-staging-evidence.json`; Pages is deferred to STAGE-015.
+- Remaining: portable PyPI/pipx receipt is blocked by STAGE-010's missing TestPyPI pending publisher. Browser follow-up found no reachable authenticated TestPyPI UI session; Playwright received `407 Proxy Authentication Required` before the TestPyPI form, and no secrets/private storage were read.
+- Report: `stage-reports/STAGE-014-20261013-215258.md`.

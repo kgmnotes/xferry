@@ -1,7 +1,7 @@
 # STAGE-014 - Publish canonical journey documentation
 
 ## Status
-OPEN
+PARTIALLY_CLOSED
 
 ## Priority
 MEDIUM
@@ -82,4 +82,9 @@ Prepare a canonical English documentation set, validated against staged artifact
 - Rollback: keep changes on the release branch, preserve current public source-only docs until go-live, and deploy docs only with STAGE-015.
 
 ## Completion notes
-Filled by `close-plan-stage`.
+- Attempt: 2026-10-13 21:52:58 +0300; result PARTIALLY_CLOSED. Report: `stage-reports/STAGE-014-20261013-215258.md`.
+- Documentation implementation is present in PR #42 at `fa06558008f1eed558fb171fb729e274fe947de3` and remains open/unmerged so public docs are not deployed before production activation.
+- Independent review by `gkumurzhi` explicitly covered STAGE-014 documentation implementation at the exact head, with the condition that PR #42 is not merged into a public deployment path before STAGE-010 closes and STAGE-015 go/no-go is granted.
+- Local verification on the documentation branch passed 304 targeted docs/policy tests, generated settings/contracts checks, docs mirror sync, stale-doc policy, and strict MkDocs.
+- Staging substitution evidence is recorded in `stage-reports/STAGE-014-20261013-staging-evidence.json`. Managed, container, and draft Release substitutions have hosted receipts; Pages deployment is intentionally deferred to STAGE-015.
+- Remaining blocker: the portable PyPI/pipx staged receipt is impossible until STAGE-010's TestPyPI pending publisher mapping exists. A fresh browser attempt could not reach the TestPyPI form because Playwright received `407 Proxy Authentication Required`; no secrets or private browser storage were read.
