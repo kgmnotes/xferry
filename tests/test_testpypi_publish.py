@@ -194,11 +194,11 @@ def test_prepare_does_not_write_before_archive_identity_verifies(tmp_path, ident
         ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
         ("python tools/testpypi_publish.py prepare", "python -m build"),
         ("attestations: true", "password: ${{ secrets.PYPI_TOKEN }}"),
-        ("refs/heads/codex/stage-010-testpypi-rehearsal", "refs/heads/main"),
+        ("refs/heads/codex/stage-010-testpypi-rehearsal-v2", "refs/heads/main"),
         ("needs: publish", "needs: identity"),
         (
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' || true }}",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' || true }}",
         ),
         ("    if: ${{ inputs.confirm_testpypi", "    # if: ${{ inputs.confirm_testpypi"),
         (
@@ -292,7 +292,7 @@ def test_staging_policy_rejects_repository_execution_in_oidc_job(unsafe_step):
     ("before", "after"),
     [
         ("Require protected rehearsal branch", "Trust mutable rehearsal branch"),
-        ('branches/codex%2Fstage-010-testpypi-rehearsal")', 'branches/main")'),
+        ('branches/codex%2Fstage-010-testpypi-rehearsal-v2")', 'branches/main")'),
         ('.commit.sha\' <<<"${branch_json}"', '.name\' <<<"${branch_json}"'),
         (
             '.protected\' <<<"${branch_json}"',
@@ -316,7 +316,7 @@ def test_staging_policy_rejects_administration_only_branch_endpoint():
     assert anchor in workflow
     injection = (
         'protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
-        'codex%2Fstage-010-testpypi-rehearsal/protection")"\n          '
+        'codex%2Fstage-010-testpypi-rehearsal-v2/protection")"\n          '
     )
 
     findings = staging_policy_findings(workflow.replace(anchor, injection + anchor, 1))
