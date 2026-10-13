@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   identity:
-    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}
+    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}
@@ -35,7 +35,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-010-testpypi-rehearsal")"
+          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-010-testpypi-rehearsal-v2")"
           test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
           test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
       - name: Verify fixed producer identity

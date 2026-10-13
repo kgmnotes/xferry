@@ -1145,19 +1145,19 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         return findings
     expected_gate = (
         "    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' "
-        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}"
+        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}"
     )
     if expected_gate not in jobs["identity"].text.splitlines():
         reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
     protected_branch_contract = (
         "Require protected rehearsal branch",
-        'branches/codex%2Fstage-010-testpypi-rehearsal")',
+        'branches/codex%2Fstage-010-testpypi-rehearsal-v2")',
         '.commit.sha\' <<<"${branch_json}"',
         '.protected\' <<<"${branch_json}"',
     )
     if any(item not in jobs["identity"].text for item in protected_branch_contract):
         reject("TestPyPI identity must verify the exact protected rehearsal branch")
-    if "stage-010-testpypi-rehearsal/protection" in jobs["identity"].text:
+    if "stage-010-testpypi-rehearsal-v2/protection" in jobs["identity"].text:
         reject("TestPyPI cannot call the Administration-only branch protection endpoint")
     for command in ("identity", "prepare"):
         if (
@@ -1182,7 +1182,7 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         "identity": (
             "inputs.confirm_testpypi",
             "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal'",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2'",
             "artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}",
             "testpypi_publish.py identity",
             "repository: kgmnotes/xferry",
