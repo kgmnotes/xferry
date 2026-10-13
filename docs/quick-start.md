@@ -4,6 +4,12 @@ Choose one lifecycle owner. Use pipx for a portable CLI, the signed installer
 for a managed Linux service, or an immutable GHCR image for a container. Do not
 mix their upgrade or uninstall commands.
 
+!!! note "Release availability"
+    The `0.2.0` packages, signed installers, and container image are being
+    prepared for publication. Until the release is available, follow the
+    [source installation](contributing.md). The packaged journeys below
+    apply after publication.
+
 ## Portable
 
 Python 3.10 through 3.14 is supported. If pipx is already available, first

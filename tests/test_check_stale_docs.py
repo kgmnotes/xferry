@@ -258,6 +258,72 @@ def test_production_release_policy_rejects_boundary_regressions(
 
 
 @pytest.mark.parametrize(
+    ("job_name", "dependency"),
+    (
+        ("sign-assets", "production-readiness"),
+        ("publish-ghcr", "post-pypi"),
+        ("publish-github-release", "post-ghcr"),
+    ),
+)
+def test_production_policy_rejects_bypassed_readiness_and_consumer_dependencies(
+    job_name: str, dependency: str
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == job_name)
+    line = next(line for line in job.text.splitlines() if line.startswith("    needs:"))
+    dependencies = check_stale_docs._job_dependencies(job)
+    assert dependencies is not None and dependency in dependencies
+    rewritten = "    needs: [" + ", ".join(sorted(dependencies - {dependency})) + "]"
+    changed = workflow.replace(job.text, job.text.replace(line, rewritten, 1), 1)
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(changed)
+
+    assert any(
+        job_name in finding.message and dependency in finding.message for finding in findings
+    )
+
+
+def test_production_policy_rejects_authenticated_public_registry_smoke() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(
+        item for item in check_stale_docs._workflow_jobs(workflow) if item.name == "post-ghcr"
+    )
+    changed = workflow.replace(job.text, job.text + "      - run: docker login ghcr.io\n", 1)
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(changed)
+
+    assert any("anonymous access" in finding.message for finding in findings)
+
+
+def test_pages_policy_accepts_release_gated_workflow() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/docs-pages.yml").read_text(
+        encoding="utf-8"
+    )
+    assert check_stale_docs.docs_pages_workflow_policy_findings(workflow) == []
+
+
+@pytest.mark.parametrize("dependency", ("build", "publication-gate"))
+def test_pages_policy_rejects_deployment_without_successful_prerequisite(dependency: str) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/docs-pages.yml").read_text(
+        encoding="utf-8"
+    )
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == "deploy")
+    line = next(line for line in job.text.splitlines() if line.startswith("    needs:"))
+    dependencies = check_stale_docs._job_dependencies(job)
+    assert dependencies is not None and dependency in dependencies
+    rewritten = "    needs: [" + ", ".join(sorted(dependencies - {dependency})) + "]"
+    changed = workflow.replace(job.text, job.text.replace(line, rewritten, 1), 1)
+
+    findings = check_stale_docs.docs_pages_workflow_policy_findings(changed)
+
+    assert any("successful publication gate" in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
     ("workflow", "message"),
     (
         (

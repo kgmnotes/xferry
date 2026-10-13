@@ -26,8 +26,12 @@ Do not use a generic production environment or an unreviewed replacement name.
 
 All items in this list are blocking. Stop on the first missing item.
 
+- The reviewed release code is merged into protected `main` before creating
+  the production tag. A `main` push builds and validates documentation;
+  public Pages deployment requires a separate dispatch with successful
+  production and public-channel evidence.
 - STAGE-010, STAGE-011, STAGE-012, STAGE-013, and STAGE-014 are `CLOSED` in
-  `implementation-plan/20260928-134843/stage-status.md`.
+  the operator's release evidence log, with passing staging receipts.
 - The version is one exact tag, `vX.Y.Z`, and matches source version,
   changelog entry, package metadata, release manifests, filenames, and release
   notes.
@@ -129,11 +133,14 @@ Use this order so a partial release has a clear recovery point.
 8. Prepare separate Pages publication.
    The current production workflow does not deploy Pages. Publish public
    documentation only after all public artifacts exist and the post-publish
-   checks pass, using a separately reviewed docs deployment. If a future Pages
-   publisher is added, it must use the secret-free `release-production`
-   boundary, run after final release evidence, and receive no signing secret.
-   The docs must describe the released version and recorded digests, not a
-   branch-only staging state.
+   checks pass. Dispatch `Documentation Pages` on `main` with `production_run`
+   set to that completed Production Release run ID. Its read-only gate checks
+   the successful run and all consumer jobs, signed public assets, exact PyPI
+   bytes, and anonymous GHCR access before the protected `github-pages`
+   deployment job receives its Pages permissions. The release source must
+   match `main`, or differ only by documentation changes. Remove the staged
+   availability notices only after these public checks pass. No signing secret
+   is used by the documentation workflow.
 
 ## Post-Publish Evidence
 

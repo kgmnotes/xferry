@@ -412,6 +412,16 @@ def _write_signed_platform_assets(
         installer_name: _sha256(installer),
         checksums_name: _sha256(checksums),
     }
+    # Bind the Python distributions and the OCI graph (inside the candidate
+    # archive) to the same public trust root as the managed executable. The
+    # unsigned asset inventory alone is not an authority for those channels.
+    for name in sorted(
+        set(_candidate_aliases(identity)) | {_ARCHIVE_NAME, _CANDIDATE_INVENTORY_NAME}
+    ):
+        path = signed_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"prepared cross-channel asset is not a regular file: {name}")
+        artifact_digests[name] = _sha256(path)
     manifest = ReleaseManifest.create_v2(
         version=version,
         platform=platform,

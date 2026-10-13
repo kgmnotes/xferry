@@ -959,6 +959,25 @@ def _uses_production_environment(job: WorkflowJob) -> bool:
     return _uses_named_environment(job, "release-production")
 
 
+def _job_dependencies(job: WorkflowJob) -> frozenset[str] | None:
+    """Read a literal dependency list; reject expressions and ambiguous YAML."""
+    matches = tuple(re.finditer(r"^    needs:\s*([^\n#]+)(?:\s*#.*)?$", job.text, re.MULTILINE))
+    if len(matches) != 1:
+        return None
+    value = matches[0].group(1).strip()
+    if value.startswith("[") and value.endswith("]"):
+        entries = tuple(item.strip().strip("\"'") for item in value[1:-1].split(","))
+    else:
+        entries = (value.strip("\"'"),)
+    if not entries or any(
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", item) is None for item in entries
+    ):
+        return None
+    if len(set(entries)) != len(entries):
+        return None
+    return frozenset(entries)
+
+
 def release_workflow_policy_findings(
     text: str,
     path: Path = Path(".github/workflows/release.yml"),
@@ -1219,6 +1238,40 @@ def production_release_workflow_policy_findings(
     for name in sorted(required_jobs - set(jobs)):
         reject(f"production release workflow is missing job {name!r}")
 
+    required_dependencies = {
+        "sign-assets": {"production-readiness"},
+        "create-draft-release": {"preflight", "sign-assets"},
+        "verify-pypi-identity": {"publish-pypi"},
+        "post-pypi": {"verify-pypi-identity"},
+        "publish-ghcr": {"publish-pypi", "post-pypi"},
+        "post-ghcr": {"publish-ghcr"},
+        "publish-github-release": {"create-draft-release", "post-pypi", "post-ghcr"},
+        "post-release": {"publish-github-release"},
+        "final-gate": {"post-pypi", "post-ghcr", "post-release", "production-readiness"},
+    }
+    for name, required in required_dependencies.items():
+        job = jobs.get(name)
+        dependencies = _job_dependencies(job) if job is not None else None
+        if dependencies is None or not required.issubset(dependencies):
+            reject(f"production job {name!r} must depend on {', '.join(sorted(required))}")
+        if name in {"publish-ghcr", "publish-github-release"} and job is not None:
+            if re.search(r"^    if:", job.text, re.MULTILINE):
+                reject(f"production writer {name!r} must not bypass successful dependencies")
+
+    pypi_consumer = jobs.get("post-pypi")
+    if pypi_consumer is not None:
+        checkout = pypi_consumer.text.find("actions/checkout@")
+        bootstrap = pypi_consumer.text.find("python -m pip install pipx")
+        if checkout < 0 or bootstrap < 0 or checkout > bootstrap:
+            reject("public pipx checks must materialize constraints before pip bootstrap")
+        if "ref: ${{ needs.preflight.outputs.source-commit }}" not in pypi_consumer.text:
+            reject("public pipx checks must checkout the exact release source")
+    ghcr_consumer = jobs.get("post-ghcr")
+    if ghcr_consumer is not None and re.search(
+        r"(?:GH_TOKEN|github.token|docker\s+login|packages:\s*read)", ghcr_consumer.text
+    ):
+        reject("public GHCR checks must prove anonymous access without registry credentials")
+
     sign = jobs.get("sign-assets")
     if sign is not None:
         if not _uses_named_environment(sign, "production-release"):
@@ -1328,17 +1381,76 @@ def production_release_workflow_policy_findings(
 
     readiness = jobs.get("production-readiness")
     if readiness is not None and (
-        "Full managed ten-pair systemd evidence is not available on hosted runners"
+        "Full managed ten-pair systemd evidence has not yet been verified for this release"
         not in readiness.text
         or "exit 1" not in readiness.text
     ):
         reject("production readiness must fail closed until ten-pair managed evidence exists")
     final_gate = jobs.get("final-gate")
     if final_gate is not None and (
-        "main merge and Pages deployment remain forbidden until all post-publish evidence passes"
+        "Pages deployment remains forbidden until all post-publish evidence passes"
         not in final_gate.text
     ):
-        reject("final gate must keep main and Pages blocked until post-publish evidence passes")
+        reject("final gate must keep Pages blocked until post-publish evidence passes")
+    return findings
+
+
+def docs_pages_workflow_policy_findings(text: str) -> list[Finding]:
+    """Allow source merges while gating public docs on production evidence."""
+    path = Path(".github/workflows/docs-pages.yml")
+    findings: list[Finding] = []
+
+    def reject(reason: str) -> None:
+        findings.append(contract_finding(path, reason))
+
+    events, push = _workflow_events(text)
+    if events != frozenset({"push", "workflow_dispatch"}) or "branches: [main]" not in push:
+        reject("Pages requires main-only builds and explicit production-evidence dispatch")
+    declared, permissions = _permission_entries(text, 0)
+    if not declared or {scope: access for scope, access, _ in permissions} not in (
+        {},
+        {"contents": "read"},
+    ):
+        reject("Pages workflow permissions must default to read-only or no permissions")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    if not {"build", "publication-gate", "deploy"}.issubset(jobs):
+        reject("Pages requires separate build, publication-gate and deploy jobs")
+        return findings
+    for name, job in jobs.items():
+        _, granted = _permission_entries(job.text, 4)
+        writes = {scope for scope, access, _ in granted if access == "write"}
+        if name == "deploy":
+            if writes != {"pages", "id-token"}:
+                reject("only the Pages deploy job may grant pages/id-token write")
+        elif writes:
+            reject(f"Pages job {name!r} must remain read-only")
+    for name in ("publication-gate", "deploy"):
+        job = jobs[name]
+        if not all(
+            marker in job.text
+            for marker in (
+                "github.event_name == 'workflow_dispatch'",
+                "github.ref == 'refs/heads/main'",
+                "github.repository == 'kgmnotes/xferry'",
+            )
+        ):
+            reject(f"Pages job {name!r} must require an explicit main dispatch in the owner repo")
+    deploy_dependencies = _job_dependencies(jobs["deploy"])
+    if deploy_dependencies is None or not {"build", "publication-gate"}.issubset(
+        deploy_dependencies
+    ):
+        reject("Pages deployment must depend on both strict build and successful publication gate")
+    if not _uses_named_environment(jobs["deploy"], "github-pages"):
+        reject("Pages deploy must use the protected github-pages environment")
+    if "python tools/docs_publication.py" not in jobs["publication-gate"].text:
+        reject("Pages publication gate must verify production and public channel evidence")
+    for job in jobs.values():
+        if "actions/deploy-pages@" in job.text and job.name != "deploy":
+            reject("Pages publication must be isolated to the gated deploy job")
+        if "actions/upload-pages-artifact@" in job.text and job.name == "build":
+            dependencies = _job_dependencies(job)
+            if dependencies is None or "publication-gate" not in dependencies:
+                reject("Pages artifact upload must wait for publication evidence")
     return findings
 
 
@@ -2049,6 +2161,11 @@ def find_release_policy_issues(
     ghcr = Path(".github/workflows/ghcr.yml")
     if targets_cover_path(ghcr, repo_root, targets) and (repo_root / ghcr).is_file():
         findings.extend(ghcr_workflow_policy_findings(read_contract_text(repo_root / ghcr) or ""))
+    pages = Path(".github/workflows/docs-pages.yml")
+    if targets_cover_path(pages, repo_root, targets) and (repo_root / pages).is_file():
+        findings.extend(
+            docs_pages_workflow_policy_findings(read_contract_text(repo_root / pages) or "")
+        )
     return findings
 
 

@@ -20,6 +20,11 @@ Documentation: <https://xferry.kgmnotes.ru/>
 
 ## Choose an installation
 
+> [!NOTE]
+> The `0.2.0` packages and signed installers are being prepared for publication.
+> Until the release is available, use the [source installation](CONTRIBUTING.md).
+> The packaged journeys below apply after publication.
+
 For a portable CLI on Windows, macOS, or Linux, install with pipx and start the
 loopback server:
 

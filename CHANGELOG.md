@@ -12,6 +12,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Production drafts are resolved through authenticated paginated listings and
+  bound numeric Release IDs; public pipx and anonymous native image checks run
+  before the signed GitHub Release becomes visible.
+- Main pushes validate documentation; Pages publication now requires successful
+  production and signed public-channel evidence for the documented source.
+- Signed platform manifests also authenticate the Python distributions,
+  candidate inventory, and archive containing the complete OCI graph.
+
 - Release security documentation now separates `production-release` signing-key
   custody from the secret-free `release-production` publication approval
   boundary.

@@ -376,6 +376,17 @@ def test_release_asset_assembly_signs_manifests_and_preserves_candidate_bytes(
     assert manifest.signing_scheme == "ed25519"
     assert manifest.signing_key_ids == (key_id,)
     assert manifest.source_commit == COMMIT
+    for name in (
+        "release-candidate.tar",
+        "candidate-inventory.json",
+        "xferry-0.1.0-py3-none-any.whl",
+        "xferry-0.1.0.tar.gz",
+        "xferry-dependency-sbom.cdx.json",
+    ):
+        assert (
+            dict(manifest.artifact_digests)[name]
+            == hashlib.sha256(signed.joinpath(name).read_bytes()).hexdigest()
+        )
     assert (
         dict(manifest.artifact_digests)["install-linux-x86_64.sh"]
         == hashlib.sha256(signed.joinpath("install-linux-x86_64.sh").read_bytes()).hexdigest()
@@ -498,6 +509,52 @@ def test_release_asset_verification_rejects_coherent_receipt_payload_substitutio
 
     with pytest.raises(ValueError, match="candidate"):
         assets.verify_downloaded_assets(identity, tmp_path / "signed", key_ring=key_ring)
+
+
+def test_signed_manifest_rejects_coherent_cross_channel_replacement(tmp_path: Path) -> None:
+    """An unsigned receipt must not authorize a rewritten wheel and OCI archive."""
+    from tools import github_release_assets as assets
+
+    identity, candidate, archive = _identity(tmp_path)
+    artifact, run = _metadata(identity)
+    key_id, key_ring = _private_key(tmp_path / "key.pem")
+    unsigned = tmp_path / "unsigned"
+    signed = tmp_path / "signed"
+    assets.prepare_unsigned_assets(
+        identity, artifact, run, archive, tmp_path / "promoted", unsigned
+    )
+    assets.sign_prepared_assets(
+        unsigned, signed, key_id=key_id, private_key=tmp_path / "key.pem", identity=identity
+    )
+
+    wheel_name = f"xferry-{VERSION}-py3-none-any.whl"
+    wheel = candidate / "python" / wheel_name
+    with zipfile.ZipFile(wheel, "a") as wheel_zip:
+        wheel_zip.writestr("xferry/foreign_payload.py", "foreign = True\n")
+    foreign_identity = dict(identity)
+    (candidate / "candidate-inventory.json").unlink()
+    foreign_identity["inventory_sha256"] = create_inventory(candidate, TAG, COMMIT, RUN)
+    foreign_archive = tmp_path / "foreign-candidate.tar"
+    foreign_identity["archive_sha256"] = pack_candidate(candidate, foreign_archive)
+    replacements = {
+        wheel_name: wheel,
+        "candidate-inventory.json": candidate / "candidate-inventory.json",
+        "release-candidate.tar": foreign_archive,
+    }
+    for name, replacement in replacements.items():
+        (signed / name).write_bytes(replacement.read_bytes())
+        _rewrite_release_asset_record(signed, name)
+    wrapper = signed / "github-release-assets.json"
+    document = json.loads(wrapper.read_bytes())
+    for field in ("archive_sha256", "inventory_sha256"):
+        document[field] = foreign_identity[field]
+    wrapper.write_bytes((json.dumps(document, sort_keys=True, indent=2) + "\n").encode())
+
+    # The entire rewritten archive and its aliases agree with the rewritten
+    # receipt. Only the still-original signed manifest rejects this attack.
+    assets._verify_candidate_aliases(foreign_identity, signed)
+    with pytest.raises(ValueError, match="signed manifest asset digest"):
+        assets.verify_downloaded_assets(foreign_identity, signed, key_ring=key_ring)
 
 
 def test_tamper_probe_uses_fixed_identity_not_mutable_release_inventory(
