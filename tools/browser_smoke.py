@@ -23,6 +23,7 @@ PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.9"
 SMOKE_MODES = (
     "first-run",
     "basic-upload-profiles",
+    "encrypted-transfer",
     "ui-contracts",
     "http-errors",
     "recovery",
@@ -99,6 +100,7 @@ class _LiveServer:
                 host="127.0.0.1",
                 port=_find_free_port(),
                 root_dir=root_dir,
+                encrypted_uploads=True,
                 logging=LoggingConfig(quiet=True),
             )
         )

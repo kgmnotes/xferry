@@ -107,6 +107,14 @@ class RequestPipelineServer(Protocol):
 
     def _is_browser_mutation_allowed(self, request: HTTPRequest) -> bool: ...
 
+    def _is_encrypted_transfer_route(self, request: HTTPRequest) -> bool: ...
+
+    def _authorize_encrypted_transfer_request(
+        self,
+        request: HTTPRequest,
+        client_address: tuple[str, int],
+    ) -> HTTPResponse | None: ...
+
     def _is_advanced_session_control_route(self, request: HTTPRequest) -> bool: ...
 
     def _authorize_advanced_session_control(
@@ -192,6 +200,14 @@ class RequestPipeline:
                 self._send_direct_response(response, client_socket, build_args)
                 return False
             request.set_admission_context(admitted)
+            encrypted_transfer_route = getattr(
+                self._server,
+                "_is_encrypted_transfer_route",
+                None,
+            )
+            is_encrypted_transfer_route = bool(
+                callable(encrypted_transfer_route) and encrypted_transfer_route(request)
+            )
             is_session_control_route = False
             session_control_route = getattr(
                 self._server,
@@ -225,7 +241,20 @@ class RequestPipeline:
                 )
                 return False
 
-            if is_session_control_route:
+            if is_encrypted_transfer_route:
+                encrypted_authorization_error = self._server._authorize_encrypted_transfer_request(
+                    request,
+                    client_address,
+                )
+                if encrypted_authorization_error is not None:
+                    self._send_direct_response(
+                        encrypted_authorization_error,
+                        client_socket,
+                        build_args,
+                    )
+                    return False
+
+            if is_session_control_route and not is_encrypted_transfer_route:
                 session_control_authorize = getattr(
                     self._server,
                     "_authorize_advanced_session_control",
@@ -241,17 +270,22 @@ class RequestPipeline:
                 self._send_direct_response(response, client_socket, build_args)
                 return False
 
-            session_admission = getattr(self._server, "_prepare_advanced_session_dispatch", None)
-            if callable(session_admission):
-                admission_error = session_admission(request)
-                if admission_error is not None:
-                    self._send_direct_response(
-                        admission_error,
-                        client_socket,
-                        build_args,
-                        request_id=direct_response_request_id,
-                    )
-                    return False
+            if not is_encrypted_transfer_route:
+                session_admission = getattr(
+                    self._server,
+                    "_prepare_advanced_session_dispatch",
+                    None,
+                )
+                if callable(session_admission):
+                    admission_error = session_admission(request)
+                    if admission_error is not None:
+                        self._send_direct_response(
+                            admission_error,
+                            client_socket,
+                            build_args,
+                            request_id=direct_response_request_id,
+                        )
+                        return False
 
             if invalid_request_id:
                 response = self._server._build_error_response(
@@ -268,7 +302,9 @@ class RequestPipeline:
                 )
                 return False
 
-            if self._server._is_websocket_upgrade_attempt(request):
+            if not is_encrypted_transfer_route and self._server._is_websocket_upgrade_attempt(
+                request
+            ):
                 return self._process_websocket_upgrade(
                     request,
                     client_socket,
@@ -276,7 +312,9 @@ class RequestPipeline:
                     request_id,
                 )
 
-            if not self._server._is_browser_mutation_allowed(request):
+            if not is_encrypted_transfer_route and not self._server._is_browser_mutation_allowed(
+                request
+            ):
                 response = self._server._build_error_response(
                     403,
                     "Forbidden cross-origin browser mutation",
@@ -290,10 +328,11 @@ class RequestPipeline:
                 )
                 return False
 
-            build_args["cors_origin"] = self._server._resolve_cors_origin(request)
-            cors_methods = getattr(self._server, "_cors_allow_methods_header", None)
-            if callable(cors_methods):
-                build_args["cors_allow_methods"] = cors_methods()
+            if not is_encrypted_transfer_route:
+                build_args["cors_origin"] = self._server._resolve_cors_origin(request)
+                cors_methods = getattr(self._server, "_cors_allow_methods_header", None)
+                if callable(cors_methods):
+                    build_args["cors_allow_methods"] = cors_methods()
 
             size_error = self._server._check_payload_size(request)
             if size_error is not None:
@@ -315,7 +354,7 @@ class RequestPipeline:
                 error=response.status_code >= 500,
             )
 
-            if response.stream_path is not None:
+            if response.is_streaming:
                 use_keep_alive = False
 
             duration_ms = (time.monotonic() - start_time) * 1000

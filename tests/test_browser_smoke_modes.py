@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MODES = (
     "first-run",
     "basic-upload-profiles",
+    "encrypted-transfer",
     "ui-contracts",
     "http-errors",
     "recovery",
@@ -31,6 +32,28 @@ EXPECTED_MODES = (
 
 def test_browser_smoke_exposes_independent_journeys() -> None:
     assert browser_smoke.SMOKE_MODES == EXPECTED_MODES
+
+
+def test_encrypted_transfer_smoke_uses_real_ui_and_streaming_file_picker() -> None:
+    """The browser journey must cross the real upload, unlock, and client-download UI."""
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+
+    start = script.index("async function runEncryptedTransferJourney() {")
+    end = script.index("async function", start + 1)
+    journey = script[start:end]
+    assert '"encrypted-transfer": runEncryptedTransferJourney' in script
+    assert 'page.locator("#encryptedFileInput").setInputFiles(uploadFilePath)' in journey
+    assert 'page.locator("#encryptedUploadStartBtn").click()' in journey
+    assert 'page.locator("#encryptedUnlockPasswordInput")' in journey
+    assert 'data-encrypted-action="download-client"' in journey
+    assert "showSaveFilePicker" in journey
+    assert "createWritable" in journey
+    assert "downloadedBytes" in journey
+    assert 'requestPathname(request).includes("/_xferry/encrypted-")' in journey
+    assert "const encryptedUploadName = fixtureName(uploadFilePath);" in journey
+    assert "entry.name === targetName" in journey
+    assert "[fileId, encryptedUploadName]" in journey
+    assert 'entry.name === "browser-smoke-upload.txt"' not in journey
 
 
 def test_browser_issue_checkpoint_accepts_only_exact_unavailable_notepad_501() -> None:

@@ -46,3 +46,5 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Local, local-secure, and public-direct launch presets.
 - TLS, Basic Auth, browser-origin checks, request limits, storage quotas, path
   containment, and redacted diagnostics.
+- Opt-in resumable client-encrypted streaming transfers up to 2 GiB, with
+  browser-side download and confirmed one-shot server decryption.

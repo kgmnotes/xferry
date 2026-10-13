@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 These records describe accepted architecture and retain superseded decisions
-as historical context. Ten decisions are active and accepted; ADR-006 is
+as historical context. Eleven decisions are active and accepted; ADR-006 is
 superseded by ADR-011.
 
 | ID | Status | Decision |
@@ -17,6 +17,7 @@ superseded by ADR-011.
 | [ADR-009](ADR-009-api-client-compatibility.md) | Accepted | API and client compatibility, including curl |
 | [ADR-010](ADR-010-methods-and-presets.md) | Accepted | Always-on methods and launch presets |
 | [ADR-011](ADR-011-controlled-distribution.md) | Accepted | Controlled distribution and staged activation |
+| [ADR-012](ADR-012-encrypted-streaming-transfers.md) | Accepted | Client-encrypted streaming transfers |
 
 A new decision should state its context, choice, and consequences. Change the
 active set when implementation changes; use Git history for earlier text.

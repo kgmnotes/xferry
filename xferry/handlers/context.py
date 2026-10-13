@@ -8,9 +8,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..metrics import MetricsCollector
 from ..storage import UploadStorageService
+
+if TYPE_CHECKING:
+    from ..encrypted_storage import EncryptedStorageService
 
 
 class SmuggleTempRegistry:
@@ -128,6 +132,7 @@ class HandlerRuntimeContext:
 
     upload_dir: Path
     upload_storage: UploadStorageService
+    encrypted_storage: EncryptedStorageService | None
     metrics: MetricsCollector | None
     smuggle_temp: SmuggleTempCoordinator
 

@@ -24,6 +24,7 @@ def test_handler_runtime_context_has_only_documented_dependencies(tmp_path: Path
     context = HandlerRuntimeContext(
         upload_dir=upload_dir,
         upload_storage=storage,
+        encrypted_storage=None,
         metrics=metrics,
         smuggle_temp=SmuggleTempCoordinator(),
     )
@@ -31,6 +32,7 @@ def test_handler_runtime_context_has_only_documented_dependencies(tmp_path: Path
     assert [field.name for field in fields(HandlerRuntimeContext)] == [
         "upload_dir",
         "upload_storage",
+        "encrypted_storage",
         "metrics",
         "smuggle_temp",
     ]

@@ -4,7 +4,7 @@ HTTP Response builder.
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +26,7 @@ class HTTPResponse:
         self.headers: dict[str, str] = {}
         self.body: bytes = b""
         self.stream_path: Path | None = None
+        self.stream_iterator: Iterator[bytes] | None = None
         self.stream_cleanup: Callable[[], None] | None = None
         self._additional_cors_expose_headers: list[str] = []
 
@@ -47,6 +48,7 @@ class HTTPResponse:
             body = body.encode("utf-8")
         self.body = body
         self.stream_path = None
+        self.stream_iterator = None
         self.stream_cleanup = None
         self.set_header("Content-Type", content_type)
         self.set_header("Content-Length", str(len(self.body)))
@@ -60,11 +62,39 @@ class HTTPResponse:
     ) -> None:
         """Set a file for streaming response (no memory copy)."""
         self.stream_path = file_path
+        self.stream_iterator = None
         self.stream_cleanup = stream_cleanup
         self.body = b""
         size = file_path.stat().st_size
         self.set_header("Content-Type", content_type)
         self.set_header("Content-Length", str(size))
+
+    def set_iterator(
+        self,
+        chunks: Iterator[bytes],
+        content_type: str,
+        *,
+        content_length: int,
+        stream_cleanup: Callable[[], None] | None = None,
+    ) -> None:
+        """Set a one-shot bounded iterator for transformed response streaming."""
+        if (
+            isinstance(content_length, bool)
+            or not isinstance(content_length, int)
+            or content_length < 0
+        ):
+            raise ValueError("content_length must be a non-negative integer")
+        self.stream_path = None
+        self.stream_iterator = iter(chunks)
+        self.stream_cleanup = stream_cleanup
+        self.body = b""
+        self.set_header("Content-Type", content_type)
+        self.set_header("Content-Length", str(content_length))
+
+    @property
+    def is_streaming(self) -> bool:
+        """Return whether this response owns a file or iterator stream."""
+        return self.stream_path is not None or self.stream_iterator is not None
 
     def build_headers(
         self,

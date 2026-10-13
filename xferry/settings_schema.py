@@ -281,6 +281,16 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
         ),
     ),
     (
+        "encrypted_uploads",
+        _c(
+            "--encrypted-uploads",
+            dest="encrypted_uploads",
+            group="Modes",
+            action="boolean_optional",
+            help="Enable resumable browser-encrypted large-file transfers",
+        ),
+    ),
+    (
         "max_size_mb",
         _c(
             "-m",
@@ -292,6 +302,33 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
             parser_label="max size",
             minimum=1,
             help="Max per-request upload body size in MB (default: {default})",
+        ),
+    ),
+    (
+        "encrypted_upload_max_size_mb",
+        _c(
+            "--encrypted-upload-max-size",
+            dest="encrypted_upload_max_size",
+            group="Limits",
+            metavar="MB",
+            parser_kind="integer",
+            parser_label="encrypted upload max size",
+            minimum=0,
+            maximum=32768,
+            help="Max encrypted-upload plaintext size in MB; 0 = automatic (default: {default})",
+        ),
+    ),
+    (
+        "encrypted_upload_incomplete_ttl_seconds",
+        _c(
+            "--encrypted-upload-incomplete-ttl",
+            dest="encrypted_upload_incomplete_ttl",
+            group="Limits",
+            metavar="SECONDS",
+            parser_kind="integer",
+            parser_label="encrypted upload incomplete TTL",
+            minimum=1,
+            help="Expiry for inactive encrypted uploads in seconds (default: {default})",
         ),
     ),
     (
@@ -788,11 +825,32 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         ("active", "active", "active", "active"),
     ),
     _s(
+        "encrypted_uploads",
+        "server",
+        "boolean",
+        "none",
+        ("omitted", "omitted", "omitted", "omitted"),
+    ),
+    _s(
         "max_size_mb",
         "limits",
         "integer",
         "none",
         ("active", "active", "active", "active"),
+    ),
+    _s(
+        "encrypted_upload_max_size_mb",
+        "limits",
+        "integer",
+        "none",
+        ("omitted", "omitted", "omitted", "omitted"),
+    ),
+    _s(
+        "encrypted_upload_incomplete_ttl_seconds",
+        "limits",
+        "integer",
+        "none",
+        ("omitted", "omitted", "omitted", "omitted"),
     ),
     _s(
         "upload_storage_limit_mb",

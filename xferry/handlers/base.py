@@ -171,6 +171,7 @@ class BaseHandler:
         context = HandlerRuntimeContext(
             upload_dir=self.upload_dir,
             upload_storage=self._get_upload_storage(),
+            encrypted_storage=getattr(self, "encrypted_storage", None),
             metrics=self._get_metrics_collector(),
             smuggle_temp=SmuggleTempCoordinator(
                 lock=coordination_lock,
