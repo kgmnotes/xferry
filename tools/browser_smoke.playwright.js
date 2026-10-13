@@ -4038,20 +4038,38 @@ async (page) => {
     );
   }
 
-  async function assertHomeToolEntryState(expectedTabs, timeout = 10000) {
+  async function assertHomeToolEntryState(timeout = 10000) {
     await waitForPageCondition(
-      `home tool entry state (${expectedTabs.join(",")})`,
-      ([targetTabs]) => {
+      "home tool entry state (resolved capabilities)",
+      ([expectedTabs]) => {
+        const encryptedState = window.XferryApp?.getState("encrypted-transfer");
+        if (
+          !encryptedState ||
+          !["valid", "disabled"].includes(encryptedState.capabilityStatus) ||
+          encryptedState.enabled !== (encryptedState.capabilityStatus === "valid")
+        ) {
+          return false;
+        }
         const navCards = document.querySelectorAll(".nav-card");
-        const tabTargets = Array.from(document.querySelectorAll('.tab[role="tab"][data-tab-target]'))
+        const tabs = Array.from(document.querySelectorAll('.tab[role="tab"][data-tab-target]'));
+        const targetTabs = expectedTabs
+          .filter((tab) => !tab.optional || encryptedState.enabled)
+          .map((tab) => tab.target);
+        const tabTargets = tabs
           .filter((button) => !button.hidden)
           .map((button) => button.dataset.tabTarget || "");
         return (
           navCards.length === 0 &&
+          tabs.length === expectedTabs.length &&
+          tabs.every((tab, index) => (
+            tab.id === expectedTabs[index].id &&
+            tab.dataset.tabTarget === expectedTabs[index].target &&
+            tab.hidden === Boolean(expectedTabs[index].optional && !encryptedState.enabled)
+          )) &&
           tabTargets.join(",") === targetTabs.join(",")
         );
       },
-      [expectedTabs],
+      [topTabContract],
       timeout
     );
   }
@@ -8860,7 +8878,7 @@ async (page) => {
             button.getAttribute("aria-checked") === "false" && button.tabIndex === -1
           )) &&
           summary?.getClientRects().length > 0 &&
-          requestLine?.textContent?.includes("POST /uploads") &&
+          requestLine?.textContent?.trim() === "POST /upload" &&
           /multipart/i.test(bodyKind?.textContent || "") &&
           mime?.textContent?.includes("application/octet-stream") &&
           (filenameSource?.textContent || "").trim().length > 0 &&
@@ -12197,7 +12215,7 @@ async (page) => {
       verifyFocusOrder: false,
     });
     await assertRequestPreviewStorageContract();
-    await assertHomeToolEntryState(["upload", "files", "request", "opsec", "notepad"]);
+    await assertHomeToolEntryState();
     await assertHeroResponsePanelState("idle");
     const multipleFileSelection = await assertMultipleFileSelectionSummary();
     const visualReviewScreenshots = await captureSharedVisualReview();
@@ -14130,7 +14148,7 @@ async (page) => {
       verifyFocusOrder: false,
     });
     await assertRequestPreviewStorageContract();
-    await assertHomeToolEntryState(["upload", "files", "request", "opsec", "notepad"]);
+    await assertHomeToolEntryState();
     await assertHeroResponsePanelState("idle");
     await waitForTabState("request");
     const requestPanelFetchPath = await fetchViaRequestPanelAndAssert();

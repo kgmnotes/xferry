@@ -56,6 +56,126 @@ def test_encrypted_transfer_smoke_uses_real_ui_and_streaming_file_picker() -> No
     assert 'entry.name === "browser-smoke-upload.txt"' not in journey
 
 
+def test_home_tool_entry_oracle_accepts_only_exact_resolved_capability_tabs() -> None:
+    """Run the real browser predicate for enabled and disabled encrypted fixtures."""
+    node_script = r"""
+const fs = require("node:fs");
+
+const source = fs.readFileSync(process.argv[1], "utf8");
+const contractStart = source.indexOf("  const topTabContract = [");
+const contractEnd = source.indexOf("  const topTabLabels =", contractStart);
+const helperStart = source.indexOf("  async function assertHomeToolEntryState(");
+const helperEnd = source.indexOf("  async function assertHeroResponsePanelState(", helperStart);
+if ([contractStart, contractEnd, helperStart, helperEnd].some(index => index < 0)) {
+  throw new Error("home tool entry contract/helper is missing");
+}
+const contractSource = source.slice(contractStart, contractEnd);
+const contract = new Function(`${contractSource}\nreturn topTabContract;`)();
+const loadHelper = new Function("window", "document", "waitForPageCondition", `
+${contractSource}
+${source.slice(helperStart, helperEnd)}
+return assertHomeToolEntryState;
+`);
+
+async function assertFixture(label, options, expected) {
+  const enabled = options.enabled ?? true;
+  const state = options.noState ? undefined : {
+    enabled,
+    capabilityStatus: options.capabilityStatus ?? (enabled ? "valid" : "disabled"),
+  };
+  const tabs = contract.map(tab => ({
+    id: tab.id,
+    dataset: { tabTarget: tab.target },
+    hidden: Boolean(tab.optional && !enabled),
+  }));
+  if (options.mutateTabs) options.mutateTabs(tabs);
+  const document = {
+    querySelectorAll(selector) {
+      if (selector === ".nav-card") return options.navCards ? [{}] : [];
+      if (selector === '.tab[role="tab"][data-tab-target]') return tabs;
+      throw new Error(`Unexpected selector: ${selector}`);
+    },
+  };
+  const window = { XferryApp: { getState: workflow => {
+    if (workflow !== "encrypted-transfer") throw new Error(`Unexpected workflow: ${workflow}`);
+    return state;
+  } } };
+  let observed;
+  let calls = 0;
+  const helper = loadHelper(window, document, async (_label, predicate, arg, timeout) => {
+    calls += 1;
+    if (timeout !== 10000) throw new Error("home tool entry timeout changed");
+    observed = predicate(arg);
+  });
+  await helper();
+  if (calls !== 1 || observed !== expected) {
+    throw new Error(`${label}: expected ${expected}, got ${observed} (${calls} calls)`);
+  }
+}
+
+async function main() {
+  await assertFixture("enabled capability shows six ordered tabs", {}, true);
+  await assertFixture("disabled capability shows five ordered tabs", { enabled: false }, true);
+  for (const capabilityStatus of ["pending", "invalid", "unavailable"]) {
+    await assertFixture(`${capabilityStatus} cannot pass as hidden`, {
+      enabled: false, capabilityStatus,
+    }, false);
+  }
+  await assertFixture("missing workflow state rejected", { noState: true }, false);
+  await assertFixture("valid capability cannot claim disabled", {
+    enabled: false, capabilityStatus: "valid",
+  }, false);
+  await assertFixture("disabled capability cannot claim enabled", {
+    enabled: true, capabilityStatus: "disabled",
+  }, false);
+  await assertFixture("missing required tab rejected", {
+    mutateTabs: tabs => tabs.splice(2, 1),
+  }, false);
+  await assertFixture("missing hidden optional tab rejected", {
+    enabled: false, mutateTabs: tabs => tabs.splice(1, 1),
+  }, false);
+  for (const hidden of [false, true]) {
+    await assertFixture(`extra ${hidden ? "hidden" : "visible"} tab rejected`, {
+      mutateTabs: tabs => tabs.push({ id: "tab-extra", dataset: { tabTarget: "extra" }, hidden }),
+    }, false);
+  }
+  await assertFixture("reordered tabs rejected", {
+    mutateTabs: tabs => { [tabs[2], tabs[3]] = [tabs[3], tabs[2]]; },
+  }, false);
+  await assertFixture("hidden required tab rejected", {
+    mutateTabs: tabs => { tabs[2].hidden = true; },
+  }, false);
+  await assertFixture("enabled large-files tab must be visible", {
+    mutateTabs: tabs => { tabs[1].hidden = true; },
+  }, false);
+  await assertFixture("disabled large-files tab must be hidden", {
+    enabled: false, mutateTabs: tabs => { tabs[1].hidden = false; },
+  }, false);
+  await assertFixture("wrong tab id rejected", {
+    mutateTabs: tabs => { tabs[2].id = "tab-other"; },
+  }, false);
+  await assertFixture("wrong tab target rejected", {
+    mutateTabs: tabs => { tabs[2].dataset.tabTarget = "other"; },
+  }, false);
+  await assertFixture("duplicate home nav-card rejected", { navCards: true }, false);
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            node_script,
+            str(REPO_ROOT / "tools/browser_smoke.playwright.js"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_browser_issue_checkpoint_accepts_only_exact_unavailable_notepad_501() -> None:
     """The unavailable checkpoint may consume one exact Chromium 501 issue only."""
     node_script = r"""
@@ -311,6 +431,7 @@ def test_live_server_constructs_a_single_server_config_with_smoke_values(
     assert config.host == "127.0.0.1"
     assert config.port == 49152
     assert config.root_dir == tmp_path
+    assert config.encrypted_uploads is True
     assert config.logging.quiet is True
     assert live.port == 49152
 
@@ -514,6 +635,93 @@ def test_first_run_upload_download_assertion_uses_the_default_upload_endpoint() 
 
     assert '"POST /upload HTTP/1.1"' in upload_helper
     assert '"POST /uploads HTTP/1.1"' not in upload_helper
+
+
+def test_full_upload_default_summary_oracle_requires_exact_request_line() -> None:
+    """Execute the full-only predicate against the canonical default and stale paths."""
+    node_script = r"""
+const fs = require("node:fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const start = source.indexOf("  async function assertUploadHelpUx() {");
+const end = source.indexOf("  async function uploadOpsecViaUiAndAssertMethodStable(", start);
+if (start < 0 || end < 0) throw new Error("upload default summary helper is missing");
+const loadHelper = new Function(
+  "document", "waitForTabState", "waitForPageCondition", "assertVisibleUploadMethodComposer", `
+${source.slice(start, end)}
+return assertUploadHelpUx;
+`);
+
+async function assertRequestLine(requestLine, expected) {
+  const fields = {
+    "request-line": requestLine,
+    "body-kind": "multipart/form-data, file field",
+    mime: "application/octet-stream",
+    "filename-source": "Multipart part filename",
+  };
+  const summary = {
+    getClientRects: () => [{}],
+    querySelector(selector) {
+      const key = selector.match(/^\[data-upload-summary="([a-z-]+)"\]$/)?.[1];
+      if (!Object.hasOwn(fields, key)) throw new Error(`Unexpected summary selector: ${selector}`);
+      return { textContent: fields[key] };
+    },
+  };
+  const profiles = ["multipart", "raw-url", "raw-header", "raw-generated"].map(
+    (profile, index) => ({
+      dataset: { uploadProfile: profile },
+      tabIndex: index === 0 ? 0 : -1,
+      getAttribute: name => {
+        if (name !== "aria-checked") throw new Error(`Unexpected attribute: ${name}`);
+        return String(index === 0);
+      },
+    })
+  );
+  const document = {
+    getElementById: id => id === "uploadRequestSummary" ? summary : null,
+    querySelector: () => null,
+    querySelectorAll: selector => {
+      if (selector !== "#uploadProfileGroup [data-upload-profile]") {
+        throw new Error(`Unexpected selector: ${selector}`);
+      }
+      return profiles;
+    },
+  };
+  let observed;
+  let calls = 0;
+  const helper = loadHelper(document, async () => {}, async (_label, predicate) => {
+    calls += 1;
+    observed = predicate();
+  }, async () => {});
+  await helper();
+  if (calls !== 1 || observed !== expected) {
+    throw new Error(`${JSON.stringify(requestLine)}: expected ${expected}, got ${observed}`);
+  }
+}
+
+async function main() {
+  await assertRequestLine("POST /upload", true);
+  for (const requestLine of [
+    "POST /uploads", "POST /upload-extra", "POST /upload/", "PUT /upload",
+    "POST /other", "extra POST /upload", "POST /upload extra", "",
+  ]) {
+    await assertRequestLine(requestLine, false);
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            node_script,
+            str(REPO_ROOT / "tools/browser_smoke.playwright.js"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_advanced_smoke_uses_per_tab_session_and_canonical_send() -> None:
@@ -789,7 +997,10 @@ def test_ci_gates_source_wheel_image_and_preserves_diagnostics() -> None:
         "                --host 127.0.0.1"
     ) in ci
     assert 'if [ "${CANDIDATE_GATES}" != "true" ]; then' in ci
-    assert "Full browser aggregate on main" in ci
-    assert "--mode full" in ci
+    full_step = ci.split("- name: Full browser aggregate before release acceptance", 1)[1].split(
+        "\n      - ", 1
+    )[0]
+    assert "\n        if:" not in full_step
+    assert "--mode full" in full_step
     assert "Upload browser journey diagnostics" in ci
     assert "if: always()" in ci
