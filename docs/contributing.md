@@ -59,6 +59,22 @@ Browser changes also require the affected browser smoke mode. Available modes
 include `first-run`, `ui-contracts`, `request-matrix`, `advanced`, `files`,
 `notepad`, `mobile`, and `full`.
 
+```bash
+python tools/browser_smoke.py --mode full
+```
+
+Without `--target-url`, `full` runs the cross-tool scenario and every named
+journey in separate browser sessions and temporary server roots, including
+encrypted transfers. Each journey keeps its own diagnostics; any failure
+fails the complete aggregate. The aggregate receipt records completed
+journeys, not merely the available mode names.
+
+With `--target-url`, `full` retains only the cross-tool scenario against that
+external server and reports that narrower coverage explicitly. It is not an
+isolated full-aggregate receipt. Prefer an explicit named mode for external
+checks, and use only a disposable server you own: browser journeys modify
+files and notes.
+
 ## Documentation
 
 The root files `API.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`

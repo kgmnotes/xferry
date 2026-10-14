@@ -3375,6 +3375,16 @@ async (page) => {
         if (!row || !details || !summary || !panel || !download) {
           throw new Error("Files overflow fixture is incomplete");
         }
+        const closedDownloadRect = download.getBoundingClientRect();
+        const closedTriggerRect = summary.getBoundingClientRect();
+        const closedGeometry = {
+          menuClosed: !details.open,
+          rowHeight: row.getBoundingClientRect().height,
+          controlsAligned: Math.abs(closedDownloadRect.top - closedTriggerRect.top) <= 1,
+          controlsMeetTouchTarget:
+            closedDownloadRect.width >= 44 && closedDownloadRect.height >= 44 &&
+            closedTriggerRect.width >= 44 && closedTriggerRect.height >= 44,
+        };
         details.open = true;
         const rect = element => {
           const box = element.getBoundingClientRect();
@@ -3406,6 +3416,7 @@ async (page) => {
         };
         const separator = panel.querySelector(".file-row__menu-separator");
         return {
+          closedGeometry,
           triggerText: summary.textContent.trim(),
           triggerName: summary.getAttribute("aria-label") || "",
           triggerRect: rect(summary),
@@ -3459,25 +3470,32 @@ async (page) => {
       const vertical = menu.actions.every((item, index) => index === 0 ||
         item.rect.top >= menu.actions[index - 1].rect.bottom - 1);
       const fullWidthItems = menu.actions.every(item =>
+        item.rect.width >= 44 &&
         item.rect.height >= 44 &&
         item.rect.left >= menu.panelRect.left - 1 &&
         item.rect.right <= menu.panelRect.right + 1 &&
         Math.abs(item.rect.width - menu.actions[0].rect.width) <= 1
       );
       const triggerSquare =
-        menu.triggerRect.width >= 43 && menu.triggerRect.width <= 45 &&
-        menu.triggerRect.height >= 43 && menu.triggerRect.height <= 45;
+        menu.triggerRect.width >= 44 && menu.triggerRect.width <= 45 &&
+        menu.triggerRect.height >= 44 && menu.triggerRect.height <= 45;
+      const inFlowBounds =
+        menu.closedGeometry.menuClosed &&
+        menu.closedGeometry.controlsAligned && menu.closedGeometry.controlsMeetTouchTarget &&
+        menu.rowRect.height > menu.closedGeometry.rowHeight &&
+        menu.panelPosition === "static" && menu.panelColumns === 1 &&
+        menu.panelRect.left >= menu.rowRect.left - 1 &&
+        menu.panelRect.right <= menu.rowRect.right + 1 &&
+        menu.panelRect.top >= menu.rowRect.top - 1 &&
+        menu.panelRect.bottom <= menu.rowRect.bottom + 1 &&
+        menu.panelRect.top >= Math.max(menu.downloadRect.bottom, menu.triggerRect.bottom) - 1;
       const desktopBounds =
         menu.panelRect.width >= 279 && menu.panelRect.width <= 281 &&
-        menu.panelRect.left >= -1 && menu.panelRect.right <= width + 1 &&
-        menu.panelPosition === "absolute" && menu.panelColumns === 1;
+        menu.panelRect.left >= -1 && menu.panelRect.right <= width + 1;
       const mobileBounds =
         menu.panelRect.left >= menu.actionsRect.left - 1 &&
         menu.panelRect.right <= menu.actionsRect.right + 1 &&
-        Math.abs(menu.panelRect.width - menu.actionsRect.width) <= 1 &&
-        menu.panelRect.top >= menu.downloadRect.bottom - 1 &&
-        Math.abs(menu.downloadRect.top - menu.triggerRect.top) <= 1 &&
-        menu.panelPosition === "absolute" && menu.panelColumns === 1;
+        Math.abs(menu.panelRect.width - menu.actionsRect.width) <= 1;
       const dangerStyle = Boolean(
         menu.neutralStyle && menu.deleteStyle && menu.accentDangerStyle &&
         menu.deleteStyle.color === menu.accentDangerStyle.color &&
@@ -3507,7 +3525,7 @@ async (page) => {
         menu.separator?.semantic &&
         menu.separator.rect.top >= menu.actions[1].rect.bottom - 1 &&
         menu.separator.rect.bottom <= menu.actions[2].rect.top + 1 &&
-        triggerSquare &&
+        triggerSquare && inFlowBounds &&
         (width <= 640 ? mobileBounds : desktopBounds) &&
         dangerStyle && (!menu.compact || cautionStyle) &&
         !menu.listOverflow && !menu.rowOverflow && !menu.documentOverflow;
@@ -3516,6 +3534,12 @@ async (page) => {
           `Files overflow menu contract failed (${width}/${lang}/${theme}): ${JSON.stringify(menu)}`
         );
       }
+      await assertFileMenuContainedInRow(
+        longName,
+        `ui-contracts ${width}/${lang}/${theme}`,
+        timeout,
+        `/compact-contract/${longName}`
+      );
       await page.screenshot({
         path: `${artifactDir}/files-overflow-${width <= 640 ? "mobile" : "desktop"}-${lang}-${theme}.png`,
         fullPage: true,
@@ -5508,32 +5532,37 @@ async (page) => {
     checked,
     filter,
     visibleCount,
-    emptyText = "",
+    expectNoIssues = false,
     timeout = 10000,
   }) {
     await waitForPageCondition(
       `assertRequestBatchIssuesFilter(${filter},${visibleCount})`,
-      ([targetChecked, targetFilter, targetVisibleCount, targetEmptyText]) => {
+      ([targetChecked, targetFilter, targetVisibleCount, targetNoIssues]) => {
         const toggle = document.getElementById("requestBatchIssuesOnlyToggle");
         const summary = document.getElementById("requestBatchSummary");
         const rows = Array.from(document.querySelectorAll("#requestBatchSummary .request-batch-summary__row"));
         const empty = summary?.querySelector(".request-batch-summary__empty");
+        const noIssuesText = {
+          ru: "Все методы отработали без ошибок.",
+          en: "All methods completed without issues.",
+        }[document.documentElement.lang];
 
         return Boolean(
           toggle &&
           summary &&
+          typeof noIssuesText === "string" &&
           toggle.checked === targetChecked &&
           summary.dataset.batchFilter === targetFilter &&
           summary.dataset.batchVisibleCount === String(targetVisibleCount) &&
           rows.length === targetVisibleCount &&
           (
-            targetEmptyText
-              ? empty && (empty.textContent || "").includes(targetEmptyText)
+            targetNoIssues
+              ? empty && (empty.textContent || "").trim() === noIssuesText
               : !empty
           )
         );
       },
-      [checked, filter, visibleCount, emptyText],
+      [checked, filter, visibleCount, expectNoIssues],
       timeout
     );
   }
@@ -6173,7 +6202,7 @@ async (page) => {
       checked: false,
       filter: "all",
       visibleCount: 0,
-      emptyText: "",
+      expectNoIssues: false,
       timeout: 10000,
     });
     await assertRequestPreviewVisibility(true);
@@ -6425,7 +6454,7 @@ async (page) => {
       checked: true,
       filter: "issues",
       visibleCount: 0,
-      emptyText: "Все методы отработали без ошибок.",
+      expectNoIssues: true,
       timeout: 15000,
     });
     await page.locator("#requestBatchIssuesOnlyToggle").uncheck();
@@ -6433,7 +6462,7 @@ async (page) => {
       checked: false,
       filter: "all",
       visibleCount: 13,
-      emptyText: "",
+      expectNoIssues: false,
       timeout: 15000,
     });
     await page.locator('#requestBatchSummary [data-batch-rerun-method="OPTIONS"]').click();
@@ -6484,7 +6513,7 @@ async (page) => {
       checked: false,
       filter: "all",
       visibleCount: 0,
-      emptyText: "",
+      expectNoIssues: false,
       timeout: 15000,
     });
     await page.locator('[data-request-preview-mode="raw"]').click();
@@ -6805,7 +6834,104 @@ async (page) => {
     }
   }
 
+  async function assertFileActionMenusClosed(label, encodedPath = null) {
+    await waitForPageCondition(
+      label,
+      ([targetPath]) => {
+        if (document.querySelectorAll("#serverFiles .file-row__more[open]").length !== 0) {
+          return false;
+        }
+        if (!targetPath) {
+          return true;
+        }
+        const active = document.activeElement;
+        return Boolean(
+          active?.matches(".file-row__more > summary") &&
+          active.closest(".file-row__more")?.querySelector(
+            `[data-file-action="smuggle"][data-path="${targetPath}"]`
+          )
+        );
+      },
+      [encodedPath]
+    );
+  }
+
+  async function assertFileMenuContainedInRow(
+    name, viewportLabel, timeout = 10000, storedPath = `/uploads/${name}`
+  ) {
+    const encodedPath = encodeURIComponent(storedPath);
+    const disclosure = page.locator(
+      `#serverFiles [data-file-action="smuggle"][data-path="${encodedPath}"]`
+    ).first().locator("xpath=ancestor::details[1]");
+    await disclosure.locator(":scope > .file-row__actions-secondary")
+      .scrollIntoViewIfNeeded({ timeout });
+    await waitForPageCondition(
+      `file menu contained in row and viewport (${viewportLabel}, ${name})`,
+      ([targetPath]) => {
+        const action = document.querySelector(
+          `#serverFiles [data-file-action="smuggle"][data-path="${targetPath}"]`
+        );
+        const menu = action?.closest(".file-row__more");
+        const row = menu?.closest(".uploaded-file--file");
+        const panel = menu?.querySelector(":scope > .file-row__actions-secondary");
+        if (!menu?.open || !row || !panel) {
+          return false;
+        }
+        const panelRect = panel.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        const viewportWidth = document.documentElement.clientWidth;
+        const tolerance = 1;
+        const otherRows = Array.from(document.querySelectorAll("#serverFiles .uploaded-file"))
+          .filter((candidate) => candidate !== row);
+        const otherControls = otherRows.flatMap((candidate) => Array.from(candidate.querySelectorAll(
+          ".file-row__more > summary, .file-select, .file-row__action-main, [data-file-details-trigger]"
+        )));
+        const coversOtherControl = otherControls.some((control) => {
+          const rect = control.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 &&
+            panelRect.left < rect.right - tolerance &&
+            panelRect.right > rect.left + tolerance &&
+            panelRect.top < rect.bottom - tolerance &&
+            panelRect.bottom > rect.top + tolerance;
+        });
+        return (
+          getComputedStyle(panel).position === "static" &&
+          panelRect.width > 0 && panelRect.height > 0 &&
+          panelRect.left >= rowRect.left - tolerance &&
+          panelRect.right <= rowRect.right + tolerance &&
+          panelRect.top >= rowRect.top - tolerance &&
+          panelRect.bottom <= rowRect.bottom + tolerance &&
+          panelRect.left >= -tolerance && panelRect.right <= viewportWidth + tolerance &&
+          panelRect.top >= -tolerance && panelRect.bottom <= window.innerHeight + tolerance &&
+          document.documentElement.scrollWidth <= viewportWidth + tolerance &&
+          (document.body?.scrollWidth || 0) <= viewportWidth + tolerance &&
+          !coversOtherControl
+        );
+      },
+      [encodedPath],
+      timeout
+    );
+  }
+
   async function assertFileDisclosureInteractions(firstName, secondName) {
+    const originalViewport = page.viewportSize();
+    try {
+      for (const viewport of [
+        { width: 1440, height: 1024, label: "desktop" },
+        { width: 390, height: 844, label: "mobile" },
+      ]) {
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        await assertFileDisclosureInteractionsAtViewport(firstName, secondName, viewport.label);
+      }
+    } finally {
+      if (originalViewport) {
+        await page.setViewportSize(originalViewport);
+      }
+    }
+  }
+
+  async function assertFileDisclosureInteractionsAtViewport(firstName, secondName, viewportLabel) {
+    await assertFileActionMenusClosed("file disclosure interactions start with closed row menus");
     const disclosureFor = (name) => {
       const encodedPath = encodeURIComponent(`/uploads/${name}`);
       return page.locator(
@@ -6840,6 +6966,7 @@ async (page) => {
       ),
       [firstEncodedPath]
     );
+    await assertFileMenuContainedInRow(firstName, viewportLabel);
     await secondSummary.click();
     await waitForPageCondition(
       "opening another file disclosure closes the first",
@@ -6849,6 +6976,7 @@ async (page) => {
       },
       [secondName]
     );
+    await assertFileMenuContainedInRow(secondName, viewportLabel);
 
     const secondSmuggleAction = second.locator('[data-file-action="smuggle"]');
     await secondSmuggleAction.focus();
@@ -7172,6 +7300,10 @@ async (page) => {
 
     await page.locator("#smuggleCancelBtn").click();
     await modal.waitFor({ state: "detached", timeout: 10000 });
+    await assertFileActionMenusClosed(
+      `smuggle cancel closes row menus and restores summary focus (${name})`,
+      encodeURIComponent(`/uploads/${name}`)
+    );
     await page.evaluate(() => new Promise(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(resolve));
     }));
@@ -9701,8 +9833,11 @@ async (page) => {
         return Boolean(
           Number.isInteger(filesState?.browseGeneration) &&
           filesState.browseGeneration > previousGeneration &&
-          ["complete", "empty"].includes(browseStatus?.dataset.browsePhase || "") &&
-          list?.getAttribute("aria-busy") === "false"
+          browseStatus?.dataset.browsePhase === "complete" &&
+          list?.dataset.browsePhase === "complete" &&
+          list.getAttribute("aria-busy") === "false" &&
+          list.dataset.stale === "false" &&
+          !document.querySelector("#filesHttpErrorHost .http-error-card")
         );
       },
       [browseGenerationBeforeActivation],
@@ -10223,12 +10358,40 @@ async (page) => {
     const mobileDisclosure = page.locator(".uploaded-file--file .file-row__more").first();
     const mobileSecondary = mobileDisclosure.locator(".file-row__actions-secondary");
     const mobileRow = mobileDisclosure.locator("xpath=ancestor::*[contains(@class, 'uploaded-file')][1]");
-    const closedRowHeight = await mobileRow.evaluate((row) => row.getBoundingClientRect().height);
+    const closedActionLayout = await mobileRow.evaluate((row) => {
+      const rowRect = row.getBoundingClientRect();
+      const downloadRect = row.querySelector('[data-file-action="download"]')?.getBoundingClientRect();
+      const triggerRect = row.querySelector(".file-row__more > summary")?.getBoundingClientRect();
+      return {
+        rowHeight: rowRect.height,
+        controlsAligned: Boolean(
+          downloadRect && triggerRect && Math.abs(downloadRect.top - triggerRect.top) <= 1
+        ),
+        controlsMeetTouchTarget: Boolean(
+          downloadRect && triggerRect &&
+          downloadRect.width >= 44 && downloadRect.height >= 44 &&
+          triggerRect.width >= 44 && triggerRect.height >= 44
+        ),
+        hasOverflow: row.scrollWidth > row.clientWidth + 2,
+        documentOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+      };
+    });
+    if (
+      !closedActionLayout.controlsAligned ||
+      !closedActionLayout.controlsMeetTouchTarget ||
+      closedActionLayout.hasOverflow ||
+      closedActionLayout.documentOverflow
+    ) {
+      throw new Error(`Mobile closed file action geometry failed: ${JSON.stringify(closedActionLayout)}`);
+    }
+    const closedRowHeight = closedActionLayout.rowHeight;
     if (await mobileSecondary.isVisible()) {
       throw new Error("Mobile file secondary actions are visible before More is expanded");
     }
     await mobileDisclosure.locator(":scope > summary").click();
     await mobileSecondary.waitFor({ state: "visible", timeout });
+    const mobileFileName = (await mobileRow.locator(".file-name").innerText()).trim();
+    await assertFileMenuContainedInRow(mobileFileName, "mobile compact explorer", timeout);
     const fileActionLayout = await mobileRow.evaluate((row, beforeHeight) => {
       const rowRect = row.getBoundingClientRect();
       const actions = row.querySelector(".file-row__actions");
@@ -10249,6 +10412,12 @@ async (page) => {
         beforeHeight,
         afterHeight: rowRect.height,
         secondaryPosition: getComputedStyle(secondary).position,
+        actionArea: actionsRect ? {
+          left: actionsRect.left, right: actionsRect.right, width: actionsRect.width,
+        } : null,
+        panelArea: secondaryRect ? {
+          left: secondaryRect.left, right: secondaryRect.right, width: secondaryRect.width,
+        } : null,
         panelMatchesActionArea: Boolean(
           secondaryRect && actionsRect &&
           Math.abs(secondaryRect.left - actionsRect.left) <= 1 &&
@@ -10257,8 +10426,7 @@ async (page) => {
         ),
         panelBelowActionRow: Boolean(
           secondaryRect && downloadRect && triggerRect &&
-          secondaryRect.top >= Math.max(downloadRect.bottom, triggerRect.bottom) - 1 &&
-          Math.abs(downloadRect.top - triggerRect.top) <= 1
+          secondaryRect.top >= Math.max(downloadRect.bottom, triggerRect.bottom) - 1
         ),
         hasOverflow: row.scrollWidth > row.clientWidth + 2,
         documentOverflow: document.documentElement.scrollWidth > innerWidth + 1,
@@ -10266,7 +10434,8 @@ async (page) => {
       };
     }, closedRowHeight);
     if (
-      fileActionLayout.secondaryPosition !== "absolute" ||
+      fileActionLayout.secondaryPosition !== "static" ||
+      fileActionLayout.afterHeight <= fileActionLayout.beforeHeight ||
       !fileActionLayout.panelMatchesActionArea ||
       !fileActionLayout.panelBelowActionRow ||
       fileActionLayout.hasOverflow ||
@@ -10274,7 +10443,7 @@ async (page) => {
       fileActionLayout.actionRects.length === 0 ||
       fileActionLayout.actionRects.some((rect) => rect.width < 44 || rect.height < 44)
     ) {
-      throw new Error(`Mobile More overlay geometry failed: ${JSON.stringify(fileActionLayout)}`);
+      throw new Error(`Mobile More in-flow geometry failed: ${JSON.stringify(fileActionLayout)}`);
     }
     await page.screenshot({
       path: `${artifactDir}/files-compact-mobile-expanded.png`,
@@ -12344,8 +12513,7 @@ async (page) => {
       () => document.activeElement?.id === "themeBtn"
     );
 
-    await page.locator("#tab-files").click();
-    await waitForTabState("files", { focused: true });
+    await activateFilesAndWaitForSettledBrowse();
     await page.locator("#themeBtn").focus();
     const truncation = await page.evaluate(() => {
       const service = window.XferryApp.service("http-errors");
@@ -12594,8 +12762,7 @@ async (page) => {
       delete window.__xferryHttpErrorNetworkAttempts;
     });
 
-    await page.locator("#tab-files").click();
-    await waitForTabState("files", { focused: true });
+    await activateFilesAndWaitForSettledBrowse();
     await page.evaluate(() => {
       window.__xferryHttpErrorOriginalXhr = window.XMLHttpRequest;
       window.__xferryFetchTimeout = 0;
@@ -12712,8 +12879,9 @@ async (page) => {
       const calls = [];
       const originalAdapter = http["set-adapter"]((method, url, body, headers, progress, options) => {
         const requestUrl = String(url);
-        calls.push({ method, path: new URL(requestUrl, location.href).pathname });
-        if (requestUrl.includes("/uploads/")) {
+        const pathname = new URL(requestUrl, location.href).pathname;
+        calls.push({ method, path: pathname });
+        if (method === "POST" && pathname === "/upload/single-403.txt") {
           return Promise.resolve(new Response(JSON.stringify({ error: {
             code: "forbidden", message: "Forbidden upload", field: null, details: {},
           } }), {
@@ -12768,6 +12936,14 @@ async (page) => {
       const advancedRequests = [];
       let advancedAttempts = 0;
       const uploadFailureFixtures = new Map();
+      const basicUploadPaths = new Set([
+        "/upload/single-403.txt",
+        "/upload/all-failed-a.txt",
+        "/upload/all-failed-b.txt",
+        "/upload/status-zero.txt",
+        "/upload/status-mixed-zero.txt",
+        "/upload/status-mixed-forbidden.txt",
+      ]);
       let advancedRetryShouldSucceed = false;
       const sessionIssuedAt = Date.now();
       const sessionMetadata = {
@@ -12803,7 +12979,7 @@ async (page) => {
           }
           return Promise.resolve(next);
         }
-        if (pathname.startsWith("/uploads/")) {
+        if (method === "POST" && basicUploadPaths.has(pathname)) {
           uploadCalls.push(pathname);
           const fixture = uploadFailureFixtures.get(pathname);
           if (fixture?.kind === "network") {
@@ -12831,6 +13007,9 @@ async (page) => {
               "X-Request-ID": `upload-${uploadCalls.length}`,
             },
           }));
+        }
+        if (!pathname.startsWith("/advanced/")) {
+          return Promise.reject(new Error(`Unexpected recovery request: ${method} ${requestUrl}`));
         }
         advancedAttempts += 1;
         advancedRequests.push({ method, pathname });
@@ -12946,7 +13125,7 @@ async (page) => {
           responseStatus: inspectorState?.response?.status ?? null,
         };
       };
-      uploadFailureFixtures.set("/uploads/status-zero.txt", {
+      uploadFailureFixtures.set("/upload/status-zero.txt", {
         kind: "network",
         message: "offline status zero",
       });
@@ -12956,11 +13135,11 @@ async (page) => {
       closeError("uploadHttpErrorHost");
       findUploadRow("status-zero.txt")?.querySelector("[data-remove-index]")?.click();
 
-      uploadFailureFixtures.set("/uploads/status-mixed-zero.txt", {
+      uploadFailureFixtures.set("/upload/status-mixed-zero.txt", {
         kind: "network",
         message: "mixed offline",
       });
-      uploadFailureFixtures.set("/uploads/status-mixed-forbidden.txt", {
+      uploadFailureFixtures.set("/upload/status-mixed-forbidden.txt", {
         kind: "http",
         status: 403,
         statusText: "Forbidden",
@@ -13114,11 +13293,11 @@ async (page) => {
       recovery.failedRowControls.length !== 3 ||
       recovery.failedRowControls.some(control => !control.details || !control.retry || !control.remove) ||
       !recovery.reselectionReset ||
-      recovery.retryOnlyCalls.join(",") !== "/uploads/all-failed-a.txt" ||
+      recovery.retryOnlyCalls.join(",") !== "/upload/all-failed-a.txt" ||
       !recovery.detailsCardStatus.includes("403 Forbidden") ||
       !recovery.closeFocusRestored ||
       !recovery.escapeFocusRestored ||
-      recovery.retryCardOnlyCalls.join(",") !== "/uploads/all-failed-a.txt" ||
+      recovery.retryCardOnlyCalls.join(",") !== "/upload/all-failed-a.txt" ||
       !recovery.retryEscapeFocusRestored ||
       !recovery.differentRemovalKeepsActiveCard ||
       !recovery.removedErrorCardClosed ||
@@ -14586,11 +14765,13 @@ async (page) => {
 
     const happyPath = await runHappyPath();
     await assertNoBrowserIssues("full happy path");
-    const aggregateJourneys = Object.keys(namedJourneys);
+    // Available dispatch modes are not proof that those isolated journeys ran.
+    // Python owns the local full aggregate and its actual completion receipts.
+    const availableJourneys = Object.keys(namedJourneys);
     if (!unavailableUrl) {
       return {
         journey: "full",
-        aggregateJourneys,
+        availableJourneys,
         happyPath,
       };
     }
@@ -14606,7 +14787,7 @@ async (page) => {
     });
     return {
       journey: "full",
-      aggregateJourneys,
+      availableJourneys,
       happyPath,
       unavailablePath,
     };
