@@ -9024,62 +9024,68 @@ async (page) => {
     await assertVisibleUploadMethodComposer("upload methods visible at first render");
   }
 
+  async function waitForCheckdataRequestPreview(noGzip) {
+    await waitForPageCondition(
+      "opsec CHECKDATA request preview is session-aligned",
+      ([expectedNoGzip]) => {
+        const app = window.XferryApp;
+        const state = app?.getState("advanced");
+        const session = app?.service("advanced-session")?.getSnapshot();
+        const request = app?.service("inspector")?.getInspectorState("opsec")?.request;
+        const area = document.getElementById("opsecRequestArea");
+        const text = area?.innerText || area?.textContent || "";
+        const path = (text.match(/^CHECKDATA\s+(\/[^\s]+)\s+HTTP\/1\.1/) || [])[1] || "";
+        const button = document.querySelector('[data-exchange-download-area="opsecRequestArea"]');
+        return Boolean(
+          state &&
+          session &&
+          state.sessionActive === true &&
+          session.active === true &&
+          session.phase === "active" &&
+          state.previewPlanReady === true &&
+          state.previewPending === false &&
+          state.previewPlanIdentity === state.previewSequence &&
+          state.previewSessionExpiresAt === session.expires_at &&
+          typeof session.prefix === "string" &&
+          path.startsWith(`${session.prefix.replace(/\/$/, "")}/`) &&
+          request?.method === "CHECKDATA" &&
+          request.path === path &&
+          area &&
+          area.dataset.exchangePath === path &&
+          area.dataset.exchangePhase === "ready" &&
+          text.includes("Content-Type: application/json") &&
+          !text.includes("X-Exphttp-No-Gzip: 1") &&
+          text.includes("X-XFerry-No-Gzip: 1") === expectedNoGzip &&
+          button &&
+          !button.disabled &&
+          document.getElementById("opsecUploadBtn")?.disabled === false
+        );
+      },
+      [noGzip],
+      10000
+    );
+  }
+
   async function uploadOpsecViaUiAndAssertMethodStable(fixturePath) {
     await page.locator("#tab-opsec").click();
     await waitForTabState("opsec", { focused: true });
     await switchLanguage("en");
+    await waitForAdvancedSessionReady();
     await openToolTrace("opsec");
     await page.locator("#opsecConstructorMode").selectOption("managed");
     await page.locator("#opsecProfileSelect").selectOption("body-json");
 
     await page.locator("#opsecMethodInput").fill("CHECKDATA");
     await page.locator("#opsecFileInput").setInputFiles(fixturePath);
-    await waitForPageCondition(
-      "opsec upload button enabled",
-      () => {
-        const button = document.getElementById("opsecUploadBtn");
-        return Boolean(button && !button.disabled);
-      },
-      null,
-      10000
-    );
-
-    await waitForPageCondition(
-      "opsec request preview omits no-gzip header by default",
-      () => {
-        const area = document.getElementById("opsecRequestArea");
-        const text = area?.innerText || area?.textContent || "";
-        const button = document.querySelector('[data-exchange-download-area="opsecRequestArea"]');
-        return Boolean(
-          area &&
-          area.dataset.exchangePhase === "ready" &&
-          /CHECKDATA\s+\/[^\s]+\s+HTTP\/1\.1/.test(text) &&
-          text.includes("Content-Type: application/json") &&
-          !text.includes("X-Exphttp-No-Gzip: 1") &&
-          !text.includes("X-XFerry-No-Gzip: 1") &&
-          button &&
-          !button.disabled
-        );
-      },
-      null,
-      10000
-    );
+    await waitForCheckdataRequestPreview(false);
 
     await page.locator("#tab-upload").click();
     await waitForTabState("upload", { focused: true });
     await page.locator("#responseNoGzip").check();
     await page.locator("#tab-opsec").click();
     await waitForTabState("opsec", { focused: true });
-    await waitForPageCondition(
-      "opsec request preview includes canonical no-gzip header when enabled",
-      () => {
-        const text = document.getElementById("opsecRequestArea")?.innerText || "";
-        return text.includes("X-XFerry-No-Gzip: 1") &&
-          !text.includes("X-Exphttp-No-Gzip: 1");
-      },
-      null,
-      10000
-    );
+    await waitForAdvancedSessionReady();
+    await waitForCheckdataRequestPreview(true);
     const opsecPreviewPath = await page.evaluate(() => {
       const text = document.getElementById("opsecRequestArea")?.innerText || "";
       return (text.match(/CHECKDATA\s+(\/[^\s]+)\s+HTTP\/1\.1/) || [])[1] || "";
@@ -12094,7 +12100,9 @@ async (page) => {
   async function runEncryptedTransferJourney() {
     const password = "correct horse battery staple";
     const encryptedUploadName = fixtureName(uploadFilePath);
-    const expectedDownload = Array.from(new TextEncoder().encode("browser smoke upload\n"));
+    const expectedDownload = await page.evaluate(() => (
+      Array.from(new TextEncoder().encode("browser smoke upload\n"))
+    ));
     const encryptedRequests = [];
     const recordEncryptedRequest = (request) => {
       if (!requestPathname(request).includes("/_xferry/encrypted-")) {

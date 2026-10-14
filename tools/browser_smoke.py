@@ -21,6 +21,7 @@ from uuid import uuid4
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.9"
+MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS = 65536
 SMOKE_MODES = (
     "first-run",
     "basic-upload-profiles",
@@ -129,17 +130,12 @@ class _LiveServer:
 
 
 def _playwright_command() -> list[str]:
-    """Return the preferred Playwright CLI invocation."""
+    """Use the CI-pinned CLI unless an operator explicitly supplies a wrapper."""
     env_pwcli = os.environ.get("PWCLI")
     if env_pwcli:
         pwcli_path = Path(env_pwcli).expanduser()
         if pwcli_path.exists():
             return ["bash", str(pwcli_path)]
-
-    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
-    bundled_pwcli = codex_home / "skills" / "playwright" / "scripts" / "playwright_cli.sh"
-    if bundled_pwcli.exists():
-        return ["bash", str(bundled_pwcli)]
 
     if shutil.which("npx"):
         return ["npx", "--yes", "--package", PLAYWRIGHT_CLI_PACKAGE, "playwright-cli"]
@@ -181,15 +177,21 @@ def _write_cli_config(config_path: Path) -> None:
 
 
 def _parse_playwright_json(output: str) -> dict[str, object]:
-    """Extract the trailing JSON object from Playwright CLI output."""
-    for line in reversed([item.strip() for item in output.splitlines() if item.strip()]):
+    """Extract a known journey receipt, never JSON embedded in a CLI error."""
+    lines = [item.strip() for item in output.splitlines() if item.strip()]
+    diagnostic = output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS]
+    if "### Error" in lines:
+        raise RuntimeError(f"Playwright CLI reported an error. Raw output: {diagnostic!r}")
+    for line in reversed(lines):
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and payload.get("journey") in SMOKE_MODES:
             return payload
-    raise RuntimeError(f"Playwright CLI did not return a JSON object. Raw output: {output!r}")
+    raise RuntimeError(
+        f"Playwright CLI did not return a browser-smoke journey receipt. Raw output: {diagnostic!r}"
+    )
 
 
 def normalize_target_url(value: str) -> str:
@@ -365,6 +367,7 @@ def _run_single_journey(
                 str(config_path),
                 cwd=REPO_ROOT,
             )
+            raw_output = ""
             try:
                 raw_output = _run_playwright(
                     playwright,
@@ -383,7 +386,14 @@ def _run_single_journey(
                     )
             except Exception as exc:
                 failure_path = resolved_artifacts_dir / f"{smoke_mode}-failure.log"
-                failure_path.write_text(f"[{smoke_mode}] {exc}\n", encoding="utf-8")
+                failure_path.write_text(
+                    f"[{smoke_mode}] {str(exc)[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS]}\n",
+                    encoding="utf-8",
+                )
+                if raw_output:
+                    (resolved_artifacts_dir / f"{smoke_mode}-cli-output.log").write_text(
+                        raw_output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS], encoding="utf-8"
+                    )
                 raise RuntimeError(f"[{smoke_mode}] {exc}") from exc
             result["serverModulePath"] = (
                 str(server_module_path) if server_module_path is not None else None

@@ -34,6 +34,105 @@ def test_browser_smoke_exposes_independent_journeys() -> None:
     assert browser_smoke.SMOKE_MODES == EXPECTED_MODES
 
 
+def test_browser_cli_defaults_to_ci_pin_even_when_an_ambient_wrapper_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PWCLI", raising=False)
+    monkeypatch.setattr(Path, "exists", lambda self: str(self).endswith("playwright_cli.sh"))
+    monkeypatch.setattr(browser_smoke.shutil, "which", lambda name: "/usr/bin/npx")
+
+    assert browser_smoke._playwright_command() == [
+        "npx",
+        "--yes",
+        "--package",
+        "@playwright/cli@0.1.9",
+        "playwright-cli",
+    ]
+
+
+def test_browser_cli_preserves_an_explicit_wrapper_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wrapper = tmp_path / "custom-browser-cli.sh"
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("PWCLI", str(wrapper))
+    monkeypatch.setattr(browser_smoke.shutil, "which", lambda name: None)
+
+    assert browser_smoke._playwright_command() == ["bash", str(wrapper)]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '{"journey":"full","happyPath":{}}',
+        '### Result\n{"journey":"full"}\n{"unrelated":"diagnostic"}',
+    ],
+)
+def test_browser_cli_parser_accepts_only_known_journey_receipts(output: str) -> None:
+    assert browser_smoke._parse_playwright_json(output)["journey"] == "full"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '{"data":"[redacted]","encryption":"none"}',
+        '{"journey":"unknown"}',
+        '### Error\nError: actual composite failure\n{"data":"[redacted]"}',
+        '{"journey":"full"}\n### Error\nError: later failure',
+    ],
+)
+def test_browser_cli_parser_rejects_error_frames_and_unrelated_json(output: str) -> None:
+    with pytest.raises(RuntimeError, match="Playwright CLI"):
+        browser_smoke._parse_playwright_json(output)
+
+
+def test_encrypted_download_expectation_uses_the_browser_encoder_realm() -> None:
+    node_script = r"""
+const fs = require("node:fs");
+const vm = require("node:vm");
+const { TextEncoder: BrowserTextEncoder } = require("node:util");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const start = source.indexOf("  async function runEncryptedTransferJourney() {");
+const end = source.indexOf("    const encryptedRequests = [];", start);
+if (start < 0 || end < 0) throw new Error("actual encrypted initializer missing");
+let browserCalls = 0;
+const sandbox = {
+  fixtureName: () => "browser-smoke-upload.txt",
+  uploadFilePath: "/fixture/browser-smoke-upload.txt",
+  page: { evaluate: async callback => {
+    browserCalls += 1;
+    return vm.runInNewContext(`(${callback.toString()})()`, {
+      TextEncoder: BrowserTextEncoder,
+    });
+  } },
+};
+if (vm.runInNewContext("typeof TextEncoder", sandbox) !== "undefined") {
+  throw new Error("driver unexpectedly has an ambient encoder");
+}
+(async () => {
+  const bytes = await vm.runInNewContext(
+    `${source.slice(start, end)} return expectedDownload; }
+runEncryptedTransferJourney();`, sandbox
+  );
+  const expected = Array.from(Buffer.from("browser smoke upload\n", "utf8"));
+  if (browserCalls !== 1 || JSON.stringify(bytes) !== JSON.stringify(expected)) {
+    throw new Error("actual initializer did not preserve exact browser UTF-8 bytes");
+  }
+  if (vm.runInNewContext("typeof TextEncoder", sandbox) !== "undefined") {
+    throw new Error("browser encoder leaked into driver globals");
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script, str(REPO_ROOT / "tools/browser_smoke.playwright.js")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_encrypted_transfer_smoke_uses_real_ui_and_streaming_file_picker() -> None:
     """The browser journey must cross the real upload, unlock, and client-download UI."""
     script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
@@ -1491,6 +1590,38 @@ def test_external_target_failure_is_labeled_and_persisted(
     assert "semantic outcome missing" in failure
 
 
+def test_browser_cli_failure_preserves_bounded_original_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    raw = '### Error\nError: actual composite failure\n{"data":"' + "x" * 1000 + '"}'
+
+    def fake_run_playwright(
+        base_cmd: list[str],
+        session: str,
+        *args: str,
+        cwd: Path,
+    ) -> str:
+        del base_cmd, session, cwd
+        return raw if "run-code" in args else ""
+
+    monkeypatch.setattr(browser_smoke, "MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS", 64)
+    monkeypatch.setattr(browser_smoke, "_playwright_command", lambda: ["fake-playwright"])
+    monkeypatch.setattr(browser_smoke, "_run_playwright", fake_run_playwright)
+    artifacts = tmp_path / "artifacts"
+
+    with pytest.raises(RuntimeError, match="actual composite failure"):
+        browser_smoke.run_browser_smoke(
+            mode="files",
+            target_url="http://127.0.0.1:9876/",
+            artifacts_dir=artifacts,
+        )
+
+    assert (artifacts / "files-cli-output.log").read_text(encoding="utf-8") == raw[:64]
+    assert len((artifacts / "files-failure.log").read_text(encoding="utf-8")) <= 73
+    assert not (artifacts / "files-result.json").exists()
+
+
 def test_installed_package_and_external_target_are_mutually_exclusive() -> None:
     with pytest.raises(ValueError, match="cannot be combined"):
         browser_smoke.run_browser_smoke(
@@ -2066,6 +2197,129 @@ def test_full_smoke_advanced_request_export_oracle_proves_redaction_without_payl
     assert '"encryption":"none"' in export_assertion
     assert '["QUFBQUFBQUFB"]' in export_assertion
     assert '["[redacted]"' not in export_assertion
+
+
+def test_full_smoke_checkdata_preview_requires_current_session_and_plan() -> None:
+    """Reject the stale pre-session path before exporting or sending CHECKDATA."""
+    node_script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const start = source.indexOf("  async function waitForCheckdataRequestPreview(noGzip) {");
+const end = source.indexOf("  async function uploadOpsecViaUiAndAssertMethodStable(", start);
+assert.ok(start >= 0 && end > start, "actual CHECKDATA preview readiness helper missing");
+const load = new Function("window", "document", "waitForPageCondition", `
+${source.slice(start, end)}
+return waitForCheckdataRequestPreview;
+`);
+async function check(label, patch, expected) {
+  const state = {
+    sessionActive: true, previewPlanReady: true, previewPending: false,
+    previewPlanIdentity: 7, previewSequence: 7, previewSessionExpiresAt: "expiry-current",
+    ...patch.state,
+  };
+  const session = {
+    active: true, phase: "active", prefix: "/advanced", expires_at: "expiry-current",
+    ...patch.session,
+  };
+  const noGzip = patch.noGzip ?? true;
+  const text = patch.text ?? "CHECKDATA /advanced/token HTTP/1.1\n" +
+    "Content-Type: application/json\n" + (noGzip ? "X-XFerry-No-Gzip: 1\n" : "");
+  const path = (text.match(/^CHECKDATA\s+(\/[^\s]+)\s+HTTP\/1\.1/) || [])[1] || "";
+  const area = { innerText: text, dataset: {
+    exchangePhase: patch.phase ?? "ready", exchangePath: patch.areaPath ?? path,
+  } };
+  const window = { XferryApp: {
+    getState: name => { assert.equal(name, "advanced"); return state; },
+    service: name => {
+      if (name === "inspector") return { getInspectorState: scope => {
+        assert.equal(scope, "opsec");
+        return { request: { method: "CHECKDATA", path, ...patch.request } };
+      } };
+      assert.equal(name, "advanced-session");
+      return { getSnapshot: () => session };
+    },
+  } };
+  const document = {
+    getElementById: id => {
+      if (id === "opsecRequestArea") return area;
+      assert.equal(id, "opsecUploadBtn");
+      return { disabled: patch.uploadDisabled ?? false };
+    },
+    querySelector: selector => {
+      assert.equal(selector, '[data-exchange-download-area="opsecRequestArea"]');
+      return { disabled: patch.downloadDisabled ?? false };
+    },
+  };
+  let calls = 0;
+  const helper = load(window, document, async (label, predicate, args) => {
+    calls += 1;
+    assert.equal(Boolean(predicate(args)), expected, label);
+  });
+  await helper(noGzip);
+  assert.equal(calls, 1, label);
+}
+(async () => {
+  await check("current canonical preview", {}, true);
+  await check("current default no-gzip preview", { noGzip: false }, true);
+  await check("valid root session prefix", { session: { prefix: "/" },
+    text: "CHECKDATA /token HTTP/1.1\nContent-Type: application/json\n" +
+      "X-XFerry-No-Gzip: 1" }, true);
+  for (const [label, patch] of [
+    ["inactive session", { session: { active: false } }],
+    ["checking session", { session: { phase: "checking" } }],
+    ["inactive workflow", { state: { sessionActive: false } }],
+    ["pending preview", { state: { previewPending: true } }],
+    ["invalid plan", { state: { previewPlanReady: false } }],
+    ["old plan identity", { state: { previewPlanIdentity: 6 } }],
+    ["old session plan", { state: { previewSessionExpiresAt: "expiry-old" } }],
+    ["no session prefix", { session: { prefix: null } }],
+    ["stale unprefixed path", { text: "CHECKDATA /token HTTP/1.1\n" +
+      "Content-Type: application/json\nX-XFerry-No-Gzip: 1" }],
+    ["wrong prefix boundary", { text: "CHECKDATA /advanced-other/token HTTP/1.1\n" +
+      "Content-Type: application/json\nX-XFerry-No-Gzip: 1" }],
+    ["wrong method", { text: "POST /advanced/token HTTP/1.1\n" +
+      "Content-Type: application/json\nX-XFerry-No-Gzip: 1" }],
+    ["missing content type", { text: "CHECKDATA /advanced/token HTTP/1.1\n" +
+      "X-XFerry-No-Gzip: 1" }],
+    ["missing canonical header", { text: "CHECKDATA /advanced/token HTTP/1.1\n" +
+      "Content-Type: application/json" }],
+    ["unexpected canonical header", { noGzip: false,
+      text: "CHECKDATA /advanced/token HTTP/1.1\nContent-Type: application/json\n" +
+        "X-XFerry-No-Gzip: 1" }],
+    ["legacy header", { text: "CHECKDATA /advanced/token HTTP/1.1\n" +
+      "Content-Type: application/json\nX-XFerry-No-Gzip: 1\nX-Exphttp-No-Gzip: 1" }],
+    ["pending inspector", { phase: "sending" }],
+    ["inspector path drift", { request: { path: "/advanced/old-token" } }],
+    ["inspector method drift", { request: { method: "POST" } }],
+    ["DOM path drift", { areaPath: "/advanced/old-token" }],
+    ["disabled download", { downloadDisabled: true }],
+    ["disabled upload", { uploadDisabled: true }],
+  ]) await check(label, patch, false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script, str(REPO_ROOT / "tools/browser_smoke.playwright.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+    script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
+    journey = script.split(
+        "async function uploadOpsecViaUiAndAssertMethodStable(fixturePath) {", 1
+    )[1].split("async function installNotepadWsActionRecorder()", 1)[0]
+    initial = journey.index("await waitForCheckdataRequestPreview(false);")
+    updated = journey.index("await waitForCheckdataRequestPreview(true);")
+    capture = journey.index("const opsecPreviewPath = await page.evaluate")
+    export = journey.index('await assertExchangeDownload(\n      "opsecRequestArea"')
+    send = journey.index('await page.locator("#opsecUploadBtn").click();')
+    assert initial < updated < capture < export < send
+    assert journey.count("await waitForAdvancedSessionReady();") == 2
+    assert "await waitForAdvancedSessionReady();" in journey[:initial]
+    assert "await waitForAdvancedSessionReady();" in journey[initial:updated]
+    assert "[opsecPreviewPath]" in journey[send:]
 
 
 def test_smuggle_modal_helper_uses_canonical_builder_result() -> None:

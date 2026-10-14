@@ -61,6 +61,13 @@ include `first-run`, `ui-contracts`, `request-matrix`, `advanced`, `files`,
 python tools/browser_smoke.py --mode full
 ```
 
+The helper defaults to the same pinned `@playwright/cli@0.1.9` as CI. An
+explicit `PWCLI` wrapper overrides that default; implicitly discovered,
+unversioned wrappers do not. Keep browser Web APIs inside `page.evaluate`
+callbacks: the CLI driver sandbox need not expose them. On failure, bounded
+CLI output is retained beside the journey's diagnostics, and JSON embedded
+in an error is never accepted as a successful journey receipt.
+
 Without `--target-url`, `full` runs the cross-tool scenario and every named
 journey in separate browser sessions and temporary server roots, including
 encrypted transfers. Each journey keeps its own diagnostics; any failure
