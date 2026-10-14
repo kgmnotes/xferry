@@ -5163,33 +5163,35 @@ async (page) => {
   }
 
   async function browseUploadsAndAssert(name) {
-    await page.locator("#tab-files").click();
-    await waitForTabState("files", { focused: true });
+    await activateFilesAndWaitForSettledBrowse();
+    const browseGenerationBeforeRequest = await page.evaluate(() => (
+      window.XferryApp.getState("files")?.browseGeneration ?? -1
+    ));
     await page.locator("#browsePathInput").fill("/uploads");
     await page.getByRole("button", { name: /^(Обзор(?: \(INFO\))?|Browse(?: \(INFO\))?)$/ }).click();
     await waitForPageCondition(
-      `uploads browse shows ${name}`,
-      ([targetName]) => {
-        const list = document.getElementById("serverFiles");
-        const content = list?.innerText || list?.textContent || "";
-        return Boolean(list && content.includes(targetName));
-      },
-      [name],
-      10000
-    );
-    await waitForPageCondition(
-      `uploads browse completed (${name})`,
-      () => {
+      `current uploads browse completed with exact file (${name})`,
+      ([targetName, targetPath, previousGeneration]) => {
+        const filesState = window.XferryApp.getState("files");
+        const pathInput = document.getElementById("browsePathInput");
         const status = document.getElementById("filesBrowseStatus");
         const list = document.getElementById("serverFiles");
+        const row = list?.querySelector(
+          `[data-file-details-trigger][data-path="${targetPath}"]`
+        )?.closest(".uploaded-file--file");
         return Boolean(
-          status &&
-          status.dataset.browsePhase === "complete" &&
-          list &&
-          list.getAttribute("aria-busy") === "false"
+          Number.isInteger(filesState?.browseGeneration) &&
+          filesState.browseGeneration > previousGeneration &&
+          pathInput?.value === "/uploads" &&
+          status?.dataset.browsePhase === "complete" &&
+          list?.dataset.browsePhase === "complete" &&
+          list.getAttribute("aria-busy") === "false" &&
+          list.dataset.stale === "false" &&
+          !document.querySelector("#filesHttpErrorHost .http-error-card") &&
+          row?.querySelector(".file-name")?.textContent === targetName
         );
       },
-      null,
+      [name, encodeURIComponent(`/uploads/${name}`), browseGenerationBeforeRequest],
       10000
     );
   }
@@ -9652,7 +9654,41 @@ async (page) => {
     const encodedPath = encodeURIComponent(path);
 
     await browseUploadsAndAssert(name);
+    const browseGenerationBeforeSelection = await page.evaluate(() => (
+      window.XferryApp.getState("files")?.browseGeneration ?? -1
+    ));
     await page.locator(`#serverFiles [data-file-select][data-path="${encodedPath}"]`).check();
+    await waitForPageCondition(
+      `exact upload selection committed before delete (${name})`,
+      ([targetPath, expectedGeneration]) => {
+        const filesState = window.XferryApp.getState("files");
+        const pathInput = document.getElementById("browsePathInput");
+        const status = document.getElementById("filesBrowseStatus");
+        const list = document.getElementById("serverFiles");
+        const checkbox = list?.querySelector(`[data-file-select][data-path="${targetPath}"]`);
+        const row = checkbox?.closest(".uploaded-file--file");
+        const selectionBar = document.getElementById("filesSelectionBar");
+        const deleteButton = document.getElementById("deleteSelectedUploadsBtn");
+        return Boolean(
+          Number.isInteger(filesState?.browseGeneration) &&
+          filesState.browseGeneration === expectedGeneration &&
+          filesState.selectedCount === 1 &&
+          pathInput?.value === "/uploads" &&
+          status?.dataset.browsePhase === "complete" &&
+          list?.dataset.browsePhase === "complete" &&
+          list.getAttribute("aria-busy") === "false" &&
+          list.dataset.stale === "false" &&
+          !document.querySelector("#filesHttpErrorHost .http-error-card") &&
+          checkbox?.checked && !checkbox.disabled &&
+          row?.classList.contains("is-selected") &&
+          selectionBar && !selectionBar.hidden && selectionBar.getClientRects().length > 0 &&
+          deleteButton && !deleteButton.hidden && !deleteButton.disabled &&
+          deleteButton.dataset.count === "1" && deleteButton.getClientRects().length > 0
+        );
+      },
+      [encodedPath, browseGenerationBeforeSelection],
+      10000
+    );
     await page.evaluate(() => {
       const previous = window.__filesBulkDeleteToastFocusContract;
       if (previous?.listener) {
