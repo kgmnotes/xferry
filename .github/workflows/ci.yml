@@ -480,8 +480,7 @@ jobs:
               --artifacts-dir "${artifacts}/wheel-first-run"
           fi
 
-      - name: Full browser aggregate on main
-        if: github.event_name == 'push'
+      - name: Full browser aggregate before release acceptance
         run: |
           set -euo pipefail
           python tools/browser_smoke.py \

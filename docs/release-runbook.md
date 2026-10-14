@@ -81,6 +81,38 @@ Record the answer and evidence link for every item before creating the tag.
 
 Any `No`, `Unknown`, or expired evidence is a no-go.
 
+## Native Systemd Fixture Rehearsal
+
+After the reviewed implementation is merged into protected `main`, dispatch
+`Native Systemd Fixture Matrix` (`managed-systemd-matrix.yml`) on `main`.
+It builds signed, nonproduction 0.1.1 and 0.1.2 fixtures separately on native
+x86_64 and aarch64 runners. Each runner exercises Ubuntu 22.04, 24.04 and
+26.04 plus Debian 12 and 13 with actual systemd as PID 1, a private cgroup
+namespace and no host runtime mounts or external container network.
+The fixture containers keep `/tmp` non-executable and give the signed installer
+a separate container-only `/var/tmp` tmpfs (`exec,nosuid,nodev`, sticky mode
+1777) via standard `TMPDIR`, also used when applying the version-changing
+update. Readiness verifies these mount boundaries before
+the app probe; signature, TLS, checksum and size checks remain mandatory.
+
+Every pair must pass install, private setup, deep doctor, dry-run update,
+version-changing update, authenticated exact-version health, rollback and
+conservative uninstall. Configuration, authentication and sentinel data must
+be preserved. The final job requires both architectures and all ten passing
+receipts, bound to source commit, run, attempt and the checked-out verifier
+hashes; a missing, failed or duplicate pair fails the matrix.
+
+Only sanitized JSON receipts are uploaded. Raw command output, generated
+credentials, private loopback TLS material and authentication/configuration
+hashes must not be uploaded. Ephemeral signing keys remain in memory; the
+production signing Environment is not used.
+
+The receipt explicitly records `publicReleaseEvidence: false`. This rehearsal
+does not replace staging publication receipts or post-publish acceptance,
+and does not unlock the production-readiness gate. Actual public update and
+rollback acceptance requires two distinct public managed versions; a
+first-release install or same-version update cannot prove that lifecycle.
+
 ## Release Order
 
 Use this order so a partial release has a clear recovery point.
