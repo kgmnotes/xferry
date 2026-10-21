@@ -9,7 +9,7 @@ bandit==1.9.4
 boolean.py==5.0
 build==1.4.3
 CacheControl==0.14.4
-certifi==2026.2.25
+certifi==2026.10.19
 cffi==2.0.0
 cfgv==3.5.0
 charset-normalizer==3.4.7
