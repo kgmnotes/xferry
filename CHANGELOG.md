@@ -12,6 +12,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Refresh runtime dependencies and contributor tooling together, keeping CI,
+  pre-commit hooks, and release verification dependency pins aligned.
 - Production drafts are resolved through authenticated paginated listings and
   bound numeric Release IDs; public pipx and anonymous native image checks run
   before the signed GitHub Release becomes visible.
