@@ -2232,7 +2232,7 @@ def test_files_compact_explorer_exposes_accessible_navigation_and_resilient_list
     assert ".file-row__menu-item" in features_css
     assert ".file-row__menu-separator" in features_css
     assert "grid-template-columns: minmax(0, 1fr);" in features_css
-    assert "width: 280px;" in features_css
+    assert "flex: 0 1 min(280px, 100%);" in features_css
 
 
 def test_files_bulk_delete_success_uses_non_modal_toast_and_empty_tool_result() -> None:

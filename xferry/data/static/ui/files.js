@@ -306,7 +306,9 @@ if (serverFilesEl) {
         if (filesState.listActionsDisabled) return;
 
         const path = decodeURIComponent(encodedPath);
-        const disclosureTrigger = actionBtn.closest('.file-row__more')?.querySelector('summary') || actionBtn;
+        const disclosure = actionBtn.closest('.file-row__more');
+        const disclosureTrigger = disclosure?.querySelector('summary') || actionBtn;
+        if (disclosure) disclosure.open = false;
 
         if (action === 'download' && isFileDownloadSupported()) {
             downloadFile(path);
