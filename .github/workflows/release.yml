@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - name: Enforce candidate release identity
@@ -97,7 +97,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -218,7 +218,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - name: Download exact Python candidate
@@ -289,7 +289,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - name: Download exact OCI candidate
@@ -311,7 +311,7 @@ jobs:
           skopeo --insecure-policy copy --override-os linux --override-arch '${{ matrix.arch }}' \
             oci:image-input/oci docker-daemon:xferry:candidate
       - name: Set up Node.js for native image first-run
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # actions/setup-node@v7.0.0
         with:
           node-version: "22"
       - name: Install Chromium for image first-run
@@ -339,7 +339,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python }}
       - name: Install verifier bootstrap
@@ -382,7 +382,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - name: Download producer python
@@ -475,7 +475,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - name: Download immutable candidate by artifact ID
