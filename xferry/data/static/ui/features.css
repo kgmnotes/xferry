@@ -2546,12 +2546,13 @@
 
 .file-row__actions {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: flex-end;
     gap: var(--space-3);
     margin-left: auto;
     flex-wrap: wrap;
     min-width: 0;
+    max-width: 100%;
 }
 
 .file-row__actions-primary,
@@ -2593,6 +2594,10 @@
 .file-row__more {
     position: relative;
     min-width: 44px;
+    display: grid;
+    justify-items: end;
+    flex: 0 1 44px;
+    max-width: 100%;
 }
 
 .file-row__more > summary {
@@ -2610,6 +2615,11 @@
     color: var(--text-secondary);
     cursor: pointer;
     list-style: none;
+    justify-self: end;
+}
+
+.file-row__more[open] {
+    flex: 0 1 min(280px, 100%);
 }
 
 .file-row__more > summary::-webkit-details-marker {
@@ -2622,14 +2632,15 @@
 }
 
 .file-row__more .file-row__actions-secondary {
-    position: absolute;
-    z-index: 2;
-    right: 0;
-    top: calc(100% + var(--space-1));
+    position: static;
+    z-index: auto;
+    justify-self: stretch;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    width: 280px;
-    max-width: min(280px, calc(100vw - var(--space-6)));
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-top: var(--space-1);
     gap: var(--space-2);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
@@ -4431,11 +4442,12 @@
     }
 
     .uploaded-file--file .file-row__actions {
-        position: relative;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 44px;
+        position: static;
+        display: flex;
+        flex-wrap: wrap;
         gap: var(--space-2);
-        align-items: stretch;
+        align-items: flex-start;
+        justify-content: flex-end;
         width: 100%;
     }
 
@@ -4463,12 +4475,29 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr);
         gap: var(--space-2);
-        width: 100%;
+        flex: 1 1 0;
+        min-width: 0;
+        width: auto;
     }
 
     .uploaded-file--file .file-row__more {
-        position: static;
-        width: 44px;
+        position: relative;
+        flex: 0 1 44px;
+        width: auto;
+        max-width: 100%;
+    }
+
+    .uploaded-file--file .file-row__more[open] {
+        flex: 0 1 100%;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .uploaded-file--file .file-row__more[open] > summary {
+        grid-column: 1;
+    }
+
+    .uploaded-file--file .file-row__more[open] .file-row__actions-secondary {
+        grid-column: 1 / -1;
     }
 
     .uploaded-file--file .file-row__more > summary {
@@ -4476,13 +4505,13 @@
     }
 
     .uploaded-file--file .file-row__more .file-row__actions-secondary {
-        position: absolute;
-        right: 0;
-        left: 0;
-        top: calc(100% + var(--space-2));
+        position: static;
+        right: auto;
+        left: auto;
+        top: auto;
         width: 100%;
-        max-width: none;
-        margin: 0;
+        max-width: 100%;
+        margin-top: var(--space-2);
     }
 
     .uploaded-file--file .file-row__actions .btn--sm {

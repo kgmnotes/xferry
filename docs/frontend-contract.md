@@ -112,6 +112,20 @@ then streams the plaintext response to that writable. The inspector treats
 `content_key` as a secret. Refreshing the encrypted-file list clears unlocked
 keys from the workflow closure.
 
+## File action disclosures
+
+Activating an action from a file row's More menu closes that disclosure before
+dispatching the action. Dialogs retain the row summary as their focus-return
+origin, so canceling or closing a dialog does not leave an open menu obscuring
+other rows. Disabled list actions do not dispatch or change disclosure state.
+
+An open More panel participates in its own row's layout on desktop and mobile.
+It reserves space instead of overlaying neighboring rows, so their More,
+Download, selection and details controls remain available to ordinary pointer
+interaction. Narrow layouts expand the menu within the row's available width
+without horizontal page overflow. Native disclosure, single-open-menu, Escape
+and focus-return behavior remains unchanged.
+
 ## Events and DOM
 
 The closed event set is `locale.changed`, `server.methods.changed`,
