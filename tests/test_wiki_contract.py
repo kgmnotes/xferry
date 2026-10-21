@@ -91,8 +91,8 @@ def test_pages_workflow_builds_strict_docs_and_gates_manual_publication() -> Non
         "python tools/sync_docs.py --check",
         "python tools/check_stale_docs.py",
         "mkdocs build --strict",
-        "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
-        "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+        "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
+        "actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346",
         "environment:",
         "name: github-pages",
     ):
