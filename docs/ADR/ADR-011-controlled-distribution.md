@@ -59,9 +59,19 @@ digests, not the release page or a mutable URL, are the update authority.
 
 - Production publishers run only for protected version-tag refs. Branch and
   pull-request events cannot reach a production publisher.
-- Each production publisher targets the protected `production` environment.
-  Repository administrators configure required reviewers and restrict that
-  environment to protected release tags.
+- Production publication approval uses the protected `release-production`
+  environment. Repository administrators configure required reviewers and
+  restrict that environment to authorized release refs. Writer and publisher
+  jobs use this environment directly so environment-scoped identities,
+  including PyPI trusted publishing, bind to the actual writer job.
+- Signing-key custody uses the separate protected `production-release`
+  environment. Only the signer job may read private signing material.
+- Production writer and publisher jobs for draft GitHub Release creation,
+  PyPI, GHCR, and public GitHub Release activation depend on the approved
+  signing and publication boundaries and receive only signed artifacts,
+  recorded digests, and channel-scoped write permissions. They do not receive
+  private signing material. A future Pages publisher must use the same
+  secret-free publication boundary after final release evidence exists.
 - Workflow permissions default to read-only. Write scopes exist only on the job
   that needs them: `id-token: write` for PyPI trusted publishing,
   `packages: write` for GHCR, and `contents: write` for GitHub Release assets.
@@ -79,8 +89,8 @@ digests, not the release page or a mutable URL, are the update authority.
 Designated release maintainers own the release-signing identity and its
 rotation and revocation procedure. Private signing material must not be stored
 in the repository, build products, logs, or general workflow configuration; it
-is exposed only to the protected signing/publisher boundary. Approval of that
-boundary must be independent from untrusted pull-request execution.
+is exposed only to the protected signing boundary. Approval of that boundary
+must be independent from untrusted pull-request execution.
 
 Verifier trust roots, key identifiers, validity windows, and rotation metadata
 are reviewed repository content. Update clients and installers fail closed on

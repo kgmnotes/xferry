@@ -181,18 +181,81 @@ def test_module_entrypoint_keeps_direct_command_help_portable_without_linux_back
 
 @pytest.mark.parametrize(
     "argv",
-    (("update",), ("update", "--help"), ("help", "update")),
+    (("update", "--help"), ("help", "update")),
 )
-def test_update_is_not_a_public_management_command(
+def test_update_help_requires_exact_version_and_states_managed_root_scope(
     argv: tuple[str, ...],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The source-only policy must not leave a hidden parser or help route."""
-    assert main(argv) == 2
+    """Update help must prevent portable or mutable-channel use before backend import."""
+    assert main(argv) == 0
 
-    captured = capsys.readouterr()
-    assert "update" not in captured.out
-    assert "usage" in captured.err.lower()
+    output = capsys.readouterr().out
+    assert "usage: xferry update" in output
+    assert "--to VERSION" in output
+    assert "managed Linux/systemd" in output
+    assert "root" in output
+    assert "pipx upgrade xferry" in output
+
+
+def test_update_requires_target_before_backend_import(tmp_path: Path) -> None:
+    """Omitting an immutable target must stop before release/network dependencies load."""
+    child = _run_module_with_blocked_management_backends(tmp_path, ["update", "--dry-run"])
+
+    assert child.returncode == 2
+    assert "--to" in child.stderr
+    assert "required" in child.stderr
+    assert "blocked management backend" not in child.stderr
+
+
+def test_internal_release_envelope_verifier_is_hidden_and_forwards_exact_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The installer needs a read-only trust seam without advertising a user lifecycle command."""
+    observed: list[tuple[Path, Path, Path, str, str]] = []
+
+    def verify(
+        manifest: Path,
+        signature: Path,
+        executable: Path,
+        *,
+        expected_version: str,
+        expected_platform: str,
+    ) -> object:
+        observed.append((manifest, signature, executable, expected_version, expected_platform))
+        return object()
+
+    monkeypatch.setattr(
+        "xferry.management.release_verifier.verify_release_envelope",
+        verify,
+    )
+    paths = [tmp_path / name for name in ("manifest", "signature", "xferry")]
+
+    assert (
+        main(
+            [
+                "_verify-release-envelope",
+                "--manifest",
+                str(paths[0]),
+                "--signature",
+                str(paths[1]),
+                "--executable",
+                str(paths[2]),
+                "--version",
+                "0.2.0",
+                "--platform",
+                "linux-x86_64",
+            ]
+        )
+        == 0
+    )
+
+    assert observed == [(*paths, "0.2.0", "linux-x86_64")]
+    assert capsys.readouterr().out == "Release envelope verified.\n"
+    assert main(["help"]) == 0
+    assert "_verify-release-envelope" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -206,6 +269,7 @@ def test_update_is_not_a_public_management_command(
         ["stop"],
         ["restart"],
         ["doctor"],
+        ["update", "--to", "0.1.0", "--dry-run"],
         ["rollback", "--dry-run"],
         ["uninstall", "--dry-run"],
     ],
@@ -254,11 +318,132 @@ def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
         ),
     ]
 
+    assert main(["--lang", "ru", "update", "--to", "0.2.0", "--dry-run", "--json"]) == 4
+    update_payload = json.loads(capsys.readouterr().out)
+    update_detail = update_payload.pop("detail")
+    assert update_payload == {
+        "active": None,
+        "before": None,
+        "code": "unsupported-platform",
+        "dry_run": True,
+        "exit_code": 4,
+        "message": "Managed commands are Linux/systemd-only on supported hosts.",
+        "next_actions": payload["next_actions"],
+        "rollback": "not_attempted",
+        "status": "error",
+        "target": "0.2.0",
+        "version": "0.2.0",
+    }
+    assert display_name in update_detail
+    assert "Supported matrix:" in update_detail
+
     assert main(["status"]) == 4
     text = capsys.readouterr().err
     assert "Linux/systemd-only" in text
     assert display_name in text
     assert "pipx install xferry" in text
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=("apply", "dry-run"))
+@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize("json_output", [False, True], ids=("text", "json"))
+def test_non_root_linux_update_renders_conditional_actions_from_real_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+    language: str,
+    json_output: bool,
+) -> None:
+    """A real non-root update must render both routes without touching managed state."""
+    from xferry.management import releases
+    from xferry.management.model import ManagedLayout
+    from xferry.management.system import CommandResult
+
+    class ForbiddenEffects:
+        def read(self, url: str, max_bytes: int) -> bytes:
+            pytest.fail("non-root CLI update read a remote asset")
+
+        def download(self, url: str, destination: Path, max_bytes: int) -> None:
+            pytest.fail("non-root CLI update downloaded a remote asset")
+
+        def run(self, argv: Sequence[str]) -> CommandResult:
+            pytest.fail("non-root CLI update executed a command")
+
+    layout = ManagedLayout(
+        release_root=tmp_path / "opt/xferry",
+        config_file=tmp_path / "etc/xferry/xferry.ini",
+        auth_file=tmp_path / "etc/xferry/auth",
+        data_root=tmp_path / "var/lib/xferry",
+        lock_file=tmp_path / "run/lock/xferry-ops.lock",
+        unit_file=tmp_path / "etc/systemd/system/xferry.service",
+        cli_link=tmp_path / "usr/local/bin/xferry",
+    )
+    effects = ForbiddenEffects()
+    manager = releases.ReleaseManager(
+        layout=layout,
+        unit_path=layout.unit_file,
+        cli_link=layout.cli_link,
+        downloader=effects,
+        runner=effects,
+        effective_uid=lambda: 1000,
+        remote_updates_enabled=True,
+        host_facts=lambda: pytest.fail("non-root CLI update inspected the host"),
+        platform_id=lambda: pytest.fail("non-root CLI update inspected the platform"),
+        staging_parent=tmp_path / "staging",
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(releases, "default_update_manager", lambda: manager)
+    argv = ["--lang", language, "update", "--to", "0.2.0"]
+    if dry_run:
+        argv.append("--dry-run")
+    if json_output:
+        argv.append("--json")
+
+    def forbidden_boundary(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("non-root CLI update crossed a filesystem or lock boundary")
+
+    with monkeypatch.context() as boundary:
+        for method in ("stat", "lstat", "exists", "open", "iterdir", "readlink"):
+            boundary.setattr(Path, method, forbidden_boundary)
+        boundary.setattr(releases, "managed_mutation", forbidden_boundary)
+        boundary.setattr(releases, "has_unsupported_managed_state", forbidden_boundary)
+        assert main(argv) == 3
+
+    captured = capsys.readouterr()
+    if json_output:
+        assert captured.err == ""
+        assert json.loads(captured.out) == {
+            "active": None,
+            "before": None,
+            "code": "release_requires_root",
+            "detail": "",
+            "dry_run": dry_run,
+            "exit_code": 3,
+            "message": "This release operation requires root.",
+            "next_actions": [
+                "For a managed installation, rerun this update as root with `sudo`.",
+                "For a portable installation, run `pipx upgrade xferry`.",
+            ],
+            "rollback": "not_attempted",
+            "status": "error",
+            "target": "0.2.0",
+            "version": "0.2.0",
+        }
+    else:
+        assert captured.out == ""
+        message, prefix = (
+            ("This release operation requires root.", "Next action: ")
+            if language == "en"
+            else ("Для этой операции с выпуском нужны права root.", "Следующее действие: ")
+        )
+        assert captured.err.splitlines() == [
+            message,
+            f"{prefix}For a managed installation, rerun this update as root with `sudo`.",
+            f"{prefix}For a portable installation, run `pipx upgrade xferry`.",
+        ]
+    assert list(tmp_path.iterdir()) == []
+    assert not layout.lock_file.exists()
 
 
 @pytest.mark.parametrize(
@@ -495,13 +680,13 @@ def test_root_help_separates_optional_long_lived_maintenance(
     assert main(argv) == 0
     output = capsys.readouterr().out
     assert maintenance_heading in output
-    assert "  update" not in output
+    assert "  update" in output
     assert "  rollback" in output
     assert "Legacy server options" not in output
     assert "xferry [SERVER OPTIONS]" not in output
 
 
-@pytest.mark.parametrize("command", ["rollback"])
+@pytest.mark.parametrize("command", ["update", "rollback"])
 def test_optional_maintenance_commands_keep_focused_help(
     command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -513,7 +698,8 @@ def test_optional_maintenance_commands_keep_focused_help(
 @pytest.mark.parametrize(
     ("command", "example"),
     [
-        ("rollback", f"sudo xferry rollback --to {__version__}"),
+        ("update", f"sudo xferry update --to {__version__}"),
+        ("rollback", "sudo xferry rollback"),
     ],
 )
 def test_maintenance_help_uses_only_the_authoritative_release_examples(
@@ -522,7 +708,9 @@ def test_maintenance_help_uses_only_the_authoritative_release_examples(
     """Maintenance help must derive copy-paste examples from package authority."""
     assert main(["help", command]) == 0
     output = capsys.readouterr().out
-    assert f"Example: {example}" in output
+    assert [line for line in output.splitlines() if line.startswith("Example:")] == [
+        f"Example: {example}"
+    ]
 
 
 def test_help_run_shows_the_canonical_copy_paste_example(

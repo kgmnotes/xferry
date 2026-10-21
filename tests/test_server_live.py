@@ -946,10 +946,10 @@ class TestLiveAdvancedUploadRouting:
                 )
                 status, headers, body = _recv_http_response(sock)
                 assert status.startswith("HTTP/1.1 200")
-                assert headers["server"] == "XFerry/0.1.0"
+                assert headers["server"] == "XFerry/0.2.0"
                 ping = json.loads(body)
                 assert ping["health"] == "ready"
-                assert ping["server"] == "XFerry/0.1.0"
+                assert ping["server"] == "XFerry/0.2.0"
                 assert "version" not in ping
                 assert "profile" not in ping
                 assert "advanced_upload" not in ping

@@ -171,7 +171,7 @@ class TestHTTPResponse:
         response.set_body("OK", "text/plain")
         built = response.build()
 
-        assert b"Server: XFerry/0.1.0\r\n" in built
+        assert b"Server: XFerry/0.2.0\r\n" in built
 
     def test_build_sets_nosniff_header(self):
         response = HTTPResponse(200)
@@ -272,6 +272,23 @@ class TestHTTPResponse:
         assert response.body == b""  # body stays empty
         assert response.headers["Content-Length"] == "256"
         assert response.headers["Content-Type"] == "application/octet-stream"
+
+    def test_set_iterator_streaming_sets_exact_length_without_buffering(self):
+        chunks = iter((b"first", b"second"))
+        response = HTTPResponse(200)
+
+        response.set_iterator(
+            chunks,
+            "application/octet-stream",
+            content_length=11,
+        )
+
+        assert response.stream_iterator is chunks
+        assert response.stream_path is None
+        assert response.body == b""
+        assert response.headers["Content-Length"] == "11"
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert response.is_streaming is True
 
     def test_build_headers_only(self):
         """Test build_headers returns header bytes without body."""

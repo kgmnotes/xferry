@@ -1,0 +1,181 @@
+name: Native Systemd Fixture Matrix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: systemd-fixture-matrix-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
+
+jobs:
+  lifecycle:
+    if: ${{ github.repository == 'kgmnotes/xferry' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    name: Systemd fixture lifecycle (${{ matrix.platform }}, native)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Require protected manual fixture boundary
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: constraints/ci.txt
+
+      - name: Confirm exact native source and local Docker daemon
+        env:
+          MATRIX_MACHINE: ${{ matrix.machine }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(uname -m)" = "$MATRIX_MACHINE"
+          test -z "${DOCKER_HOST:-}"
+          test "$(docker context show)" = "default"
+          docker info > /dev/null
+
+      - name: Install pinned fixture build toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install build pex==2.99.0 cryptography
+          python -m pip check
+
+      - name: Build signed ephemeral 0.1.1 and 0.1.2 fixtures
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python tools/managed_update_rehearsal.py prepare \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --work-root "$RUNNER_TEMP/systemd-matrix-work" \
+            --serve-root "$RUNNER_TEMP/systemd-matrix-fixtures" \
+            --evidence "$RUNNER_TEMP/systemd-matrix-fixtures.json" \
+            --platform "$MATRIX_PLATFORM" \
+            --release-base-url https://127.0.0.1:44443/releases \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --base-commit "$GITHUB_SHA"
+
+      - name: Prepare private loopback TLS outside fixtures and receipts
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/systemd-matrix-tls"
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/systemd-matrix-tls/server.key" \
+            -out "$RUNNER_TEMP/systemd-matrix-tls/server.crt" \
+            -days 1 -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 \
+            > /dev/null 2>&1
+
+      - name: Verify signed sources and exercise all five native systemd userspaces
+        id: probe
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python tools/managed_systemd_matrix.py run \
+            --fixtures-root "$RUNNER_TEMP/systemd-matrix-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/systemd-matrix-fixtures.json" \
+            --sources-root "$RUNNER_TEMP/systemd-matrix-work/sources" \
+            --tls-dir "$RUNNER_TEMP/systemd-matrix-tls" \
+            --evidence-root "$RUNNER_TEMP/systemd-matrix-evidence" \
+            --platform "$MATRIX_PLATFORM" \
+            --source-commit "$GITHUB_SHA" \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Preserve only sanitized lifecycle receipts
+        if: ${{ always() && steps.probe.outcome != 'skipped' && steps.probe.outcome != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: systemd-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/systemd-matrix-evidence/architecture.json
+            ${{ runner.temp }}/systemd-matrix-evidence/ubuntu-22.04.json
+            ${{ runner.temp }}/systemd-matrix-evidence/ubuntu-24.04.json
+            ${{ runner.temp }}/systemd-matrix-evidence/ubuntu-26.04.json
+            ${{ runner.temp }}/systemd-matrix-evidence/debian-12.json
+            ${{ runner.temp }}/systemd-matrix-evidence/debian-13.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-matrix:
+    if: ${{ always() && github.repository == 'kgmnotes/xferry' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    needs: lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require both architecture jobs to pass
+        env:
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+        run: |
+          set -euo pipefail
+          test "$LIFECYCLE_RESULT" = "success"
+          test "$GITHUB_REF_PROTECTED" = "true"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download this attempt's two isolated receipt artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          pattern: systemd-matrix-${{ github.run_id }}-${{ github.run_attempt }}-linux-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/systemd-matrix-downloaded
+
+      - name: Require all ten native source-bound fixture lifecycle results
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python tools/managed_systemd_matrix.py verify-matrix \
+            --evidence-root "$RUNNER_TEMP/systemd-matrix-downloaded" \
+            --source-commit "$GITHUB_SHA" \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/systemd-matrix-verified.json"
+
+      - name: Preserve verified nonproduction ten-pair receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: systemd-matrix-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/systemd-matrix-verified.json
+          if-no-files-found: error
+          retention-days: 14

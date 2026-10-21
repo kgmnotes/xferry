@@ -132,6 +132,8 @@ def _candidate(
             f"version='{VERSION}'\nplatform_id='{platform}'\n"
             f"artifact_name='{executable.name}'\nartifact_size='{executable.stat().st_size}'\n"
             f"artifact_sha256='{manifest.executable_sha256}'\nmanifest_signature_required='false'\n"
+            "hosted_signature_required='true'\n"
+            f"hosted_manifest_name='xferry-release-{platform}.json'\n"
             "supported_release_major='0'\n"
             "cat > \"$candidate_release/xferry-release.json\" <<'XFERRY_CANDIDATE_MANIFEST'\n"
             + manifest.to_bytes().decode()
@@ -901,6 +903,11 @@ def test_source_preflight_rejects_unsupported_major_even_when_source_and_changel
         ("artifact_name='xferry-0.1.0-linux-x86_64'", "artifact_name='other'"),
         ("artifact_size='17'", "artifact_size='18'"),
         ("manifest_signature_required='false'", "manifest_signature_required='true'"),
+        ("hosted_signature_required='true'", "hosted_signature_required='false'"),
+        (
+            "hosted_manifest_name='xferry-release-linux-x86_64.json'",
+            "hosted_manifest_name='xferry-release-linux-aarch64.json'",
+        ),
         ("supported_release_major='0'", "supported_release_major='1'"),
         ('"workflow_run": "123456"', '"workflow_run": "123457"'),
     ],

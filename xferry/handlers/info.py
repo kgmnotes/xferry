@@ -268,6 +268,13 @@ class InfoHandlersMixin(BaseHandler):
         get_smuggle_capabilities = getattr(self, "get_smuggle_capabilities", None)
         if callable(get_smuggle_capabilities) and "SMUGGLE" not in plugin_methods:
             ping_info["smuggle_capabilities"] = get_smuggle_capabilities()
+        get_encrypted_upload_capabilities = getattr(
+            self,
+            "get_encrypted_upload_capabilities",
+            None,
+        )
+        if callable(get_encrypted_upload_capabilities):
+            ping_info["encrypted_uploads"] = get_encrypted_upload_capabilities()
         get_metrics = getattr(self, "get_metrics", None)
         if callable(get_metrics):
             ping_info["metrics"] = get_metrics()

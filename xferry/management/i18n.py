@@ -64,6 +64,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Restart the managed service.",
         "command_doctor": "Check the managed installation.",
         "command_credentials": "Manage service credentials.",
+        "command_update": (
+            "Update a managed Linux/systemd installation as root to an exact signed version. "
+            "Portable installations use `pipx upgrade xferry`."
+        ),
         "command_rollback": "Restore a verified release on a long-lived installation.",
         "command_uninstall": "Remove the managed installation safely.",
         "command_examples": "Print copy-paste management command examples.",
@@ -128,6 +132,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_restart": "Перезапустить управляемую службу.",
         "command_doctor": "Проверить управляемую установку.",
         "command_credentials": "Управлять учётными данными службы.",
+        "command_update": (
+            "Обновить управляемую установку Linux/systemd от root до точной подписанной версии. "
+            "Для переносимой установки используйте `pipx upgrade xferry`."
+        ),
         "command_rollback": "Восстановить проверенный выпуск долгоживущей установки.",
         "command_uninstall": "Безопасно удалить управляемую установку.",
         "command_examples": "Показать готовые к копированию примеры команд управления.",
@@ -150,6 +158,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
 _RELEASE_TEXT: dict[str, dict[str, str]] = {
     "en": {
         "update_complete": "XFerry {version} was verified and activated.",
+        "update_noop": "XFerry {version} is already the verified active release.",
         "update_dry_run": "XFerry {version} passed update verification; no managed state changed.",
         "remote_updates_disabled": ("Remote updates are disabled; use a reviewed source checkout."),
         "rollback_complete": "XFerry rolled back to verified release {version}.",
@@ -205,6 +214,12 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
             "no changes were made. Back up its configuration and data, remove it with its "
             "original tooling, then install XFerry in a clean environment."
         ),
+        "managed_host_unsupported": (
+            "Managed update requires a supported Linux/systemd host; no changes were made."
+        ),
+        "portable_installation": (
+            "No managed installation was found; portable XFerry is upgraded with pipx."
+        ),
         "managed_installation_invalid": "The managed release layout is invalid.",
         "managed_config_unavailable": "The managed configuration or credentials are unavailable.",
         "installed_release_conflict": "The installed release conflicts with verified metadata.",
@@ -219,6 +234,7 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
     },
     "ru": {
         "update_complete": "XFerry {version} проверен и активирован.",
+        "update_noop": "XFerry {version} уже является проверенным активным выпуском.",
         "update_dry_run": "XFerry {version} прошёл проверку обновления; состояние не изменено.",
         "remote_updates_disabled": (
             "Удалённые обновления отключены; используйте проверенную копию исходного кода."
@@ -264,6 +280,13 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
             "Обнаружено неподдерживаемое или неоднозначное управляемое состояние XFerry; "
             "оно сохранено, изменения не внесены. Создайте резервную копию его настроек и данных, "
             "удалите его исходными инструментами, затем установите XFerry в чистом окружении."
+        ),
+        "managed_host_unsupported": (
+            "Для управляемого обновления нужна поддерживаемая система Linux/systemd; "
+            "изменения не внесены."
+        ),
+        "portable_installation": (
+            "Управляемая установка не найдена; переносимый XFerry обновляется через pipx."
         ),
         "managed_installation_invalid": "Структура управляемых выпусков недействительна.",
         "managed_config_unavailable": "Управляемые настройки или учётные данные недоступны.",

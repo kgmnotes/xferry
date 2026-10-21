@@ -875,7 +875,7 @@ class TestHandlePing:
         assert data["health"] == "ready"
         assert "status" not in data
         assert "X-Ping-Response" not in resp.headers
-        assert data["server"] == "XFerry/0.1.0"
+        assert data["server"] == "XFerry/0.2.0"
         assert "version" not in data
         assert "timestamp" in data
         assert data["metrics"] == _json_transport(server.get_metrics())

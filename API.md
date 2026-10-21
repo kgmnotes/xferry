@@ -136,8 +136,9 @@ The receive layer enforces protocol framing before handler dispatch:
 
 - Request headers are capped by `--max-header-size KB` (`64` KiB by default)
   before the terminating blank line.
-- Request bodies are capped by `--max-size MB` (`100` MiB by default) using the
-  declared `Content-Length` and the bytes actually read.
+- Ordinary request bodies are capped by `--max-size MB` (`100` MiB by default)
+  using the declared `Content-Length` and the bytes actually read. Enabled
+  encrypted-transfer routes use their exact route-specific caps instead.
 - Concurrent in-flight request bodies are reserved against
   `--body-memory-budget MB`. The default budget is `--workers * --max-size`.
   Aggregate budget exhaustion returns `503` before the remaining body bytes are
@@ -529,7 +530,7 @@ PING / HTTP/1.1
 ```json
 {
   "health": "ready",
-  "server": "XFerry/0.1.0",
+  "server": "XFerry/0.2.0",
   "timestamp": "2026-08-14T00:00:00+00:00",
   "supported_methods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "FETCH", "INFO", "PING", "NONE", "NOTE", "SMUGGLE"],
   "method_groups": {
@@ -772,6 +773,255 @@ Increase the probe interval, or use a TCP-only liveness probe when process
 liveness is sufficient, if storage grows too large for frequent exact scans.
 
 ---
+
+## Encrypted Streaming Transfers (EUF v1)
+
+Encrypted transfers are an opt-in, same-origin API for resumable files admitted
+by remaining shared quota and free space. `encrypted_upload_max_size_mb = 0`
+(the default) selects automatic admission; a positive value sets a lower per-file
+limit. The recovery implementation has a 4096-chunk / 32 GiB technical boundary,
+independent of the operator's shared quota. The browser encrypts metadata and file bytes
+before upload; the server stores only ciphertext and resumability records. The
+feature is disabled by default and does not change Basic or Advanced upload
+routes.
+
+When disabled, `PING.encrypted_uploads` is exactly:
+
+```json
+{"enabled": false}
+```
+
+When enabled, it has this closed shape (the maximum is the currently admissible
+plaintext size in bytes, bounded by remaining quota, disk space and file slots):
+
+```json
+{
+  "enabled": true,
+  "version": 1,
+  "max_plaintext_size": 2147483648,
+  "chunk_size": 8388608,
+  "parallel_chunks": 2,
+  "browser_decryption": true,
+  "server_decryption": true
+}
+```
+
+`server_decryption` is true only when one-shot server decryption is safe for
+the current listener: effective TLS is active or the listener is direct
+loopback. Clients must fail closed on a missing, malformed, or unsupported
+capability object. Every reserved route still enforces normal Basic Auth and
+the stricter same-origin browser mutation policy; general CORS cannot make
+cross-origin encrypted-transfer requests valid.
+
+### EUF v1 cryptographic envelope
+
+- `id` is 16 random bytes encoded as exactly 32 lowercase hexadecimal
+  characters. `salt` is 16 random bytes and `nonce_prefix` is 8 random bytes.
+- Passwords contain at least 14 Unicode code points and at most 1024 UTF-8
+  bytes. They are encoded exactly as entered: no trimming or Unicode
+  normalization occurs.
+- PBKDF2-HMAC-SHA256 with 600,000 iterations and `salt` derives a 32-byte
+  master key. HKDF-SHA256 uses the raw file ID as its salt and expands the
+  master key into `K_content` with info `xferry-euf-v1/content` and `K_resume`
+  with info `xferry-euf-v1/resume`.
+- AES-256-GCM uses a 12-byte nonce: `nonce_prefix || index_u32_be`. Content
+  indexes begin at zero; `0xffffffff` is reserved for metadata. Each tag is
+  16 bytes.
+- Metadata plaintext is exact compact UTF-8 JSON with fields `name`,
+  `content_type`, and `last_modified_ms`, in that order, and is at most 4096
+  bytes. Names are non-empty and contain no NUL; content types contain no CR or
+  LF; timestamps are non-negative JavaScript-safe integers.
+- Metadata AAD is `XFERRY-EUF1-META\0 || file_id || plaintext_size_u64_be ||
+  chunk_size_u32_be || chunk_count_u32_be`.
+- Plaintext is split into fixed 8 MiB chunks, except for the final chunk.
+  Chunk AAD is `XFERRY-EUF1-CHUNK\0 || file_id || plaintext_size_u64_be ||
+  chunk_size_u32_be || chunk_count_u32_be || index_u32_be ||
+  plaintext_length_u32_be`.
+- A chunk `resume_mac` is HMAC-SHA256 with `K_resume` over
+  `XFERRY-EUF1-RESUME\0 || file_id || index_u32_be ||
+  plaintext_length_u32_be || plaintext`.
+- Binary JSON values and `X-XFerry-Chunk-MAC` use canonical unpadded base64url.
+  The encrypted data stream is the ordered concatenation of chunk ciphertext
+  and its GCM tag, with no extra frame bytes.
+
+The browser reads only `File.slice(...).arrayBuffer()` chunks and uploads at
+most two chunks concurrently. It must never create a whole-file buffer.
+
+### Public record shape
+
+Partial and complete records use the same closed object. Metadata remains
+encrypted; timestamps are Unix seconds used for lifecycle bookkeeping.
+The record fields are `id`, `version`, `plaintext_size`, `ciphertext_size`,
+`chunk_size`, `chunk_count`, `salt`, `nonce_prefix`, `encrypted_metadata`,
+`status`, `received_chunks`, `created_at`, and `updated_at`; each received
+entry contains `index` and `resume_mac`. The decrypt request contains only
+`content_key`.
+
+```json
+{
+  "id": "00112233445566778899aabbccddeeff",
+  "version": 1,
+  "plaintext_size": 5,
+  "ciphertext_size": 21,
+  "chunk_size": 8388608,
+  "chunk_count": 1,
+  "salt": "AAECAwQFBgcICQoLDA0ODw",
+  "nonce_prefix": "AAECAwQFBgc",
+  "encrypted_metadata": "<unpadded base64url>",
+  "status": "partial",
+  "received_chunks": [
+    {"index": 0, "resume_mac": "<43-character unpadded base64url>"}
+  ],
+  "created_at": 1790600000.0,
+  "updated_at": 1790600001.0
+}
+```
+
+`chunk_count` is `ceil(plaintext_size / 8388608)`, including zero chunks for an
+empty file. `ciphertext_size` is `plaintext_size + chunk_count * 16`.
+
+### Routes and state transitions
+
+| Request | Success response |
+| --- | --- |
+| `GET /_xferry/encrypted-uploads` | `200 {"encrypted_uploads": [...], "incomplete_ttl_seconds": 86400, "storage": {...}}`; retention and capacity reflect server configuration |
+| `PUT /_xferry/encrypted-uploads/{id}` | `201` when created, `200` for an identical retry; body contains `encrypted_upload` |
+| `GET /_xferry/encrypted-uploads/{id}` | `200 {"encrypted_upload": {...}}` for a partial upload |
+| `DELETE /_xferry/encrypted-uploads/{id}` | `200 {"deleted_encrypted_upload": {"id": "..."}}` |
+| `PUT /_xferry/encrypted-uploads/{id}/chunks/{index}` | `201` when stored, `200` for an identical retry; body contains `encrypted_chunk` |
+| `POST /_xferry/encrypted-uploads/{id}/complete` | `200` with `encrypted_file.completed=true|false` |
+| `GET /_xferry/encrypted-files` | `200 {"encrypted_files": [...]}` |
+| `GET /_xferry/encrypted-files/{id}` | `200 {"encrypted_file": {...}}` for a complete file |
+| `DELETE /_xferry/encrypted-files/{id}` | `200 {"deleted_encrypted_file": {"id": "..."}}` |
+| `GET /_xferry/encrypted-files/{id}/data` | `200 application/octet-stream`, the concatenated EUF ciphertext |
+| `GET /_xferry/encrypted-files/{id}/chunks/{index}` | `200 application/octet-stream`, exactly one complete file's ciphertext chunk and GCM tag |
+| `POST /_xferry/encrypted-files/{id}/decrypt` | `200`, a streaming plaintext attachment |
+
+All targets are canonical paths with no query or fragment. `{id}` is the
+lowercase 32-hex ID; `{index}` is canonical unsigned decimal without a leading
+zero. Responses use `Cache-Control: no-store`.
+
+Create uses `Content-Type: application/json` and exactly these request fields:
+
+```json
+{
+  "version": 1,
+  "plaintext_size": 5,
+  "chunk_size": 8388608,
+  "chunk_count": 1,
+  "salt": "AAECAwQFBgcICQoLDA0ODw",
+  "nonce_prefix": "AAECAwQFBgc",
+  "encrypted_metadata": "<unpadded base64url>"
+}
+```
+
+A chunk request uses `Content-Type: application/octet-stream`, carries exactly
+one chunk ciphertext plus tag, and supplies its 32-byte MAC as the single
+`X-XFerry-Chunk-MAC` header. Identical create, chunk, and completion retries
+are idempotent. A different manifest for an existing ID or different bytes/MAC
+for an acknowledged chunk is a conflict. Completion succeeds only after every
+chunk is durably acknowledged and transitions `partial -> committing ->
+complete`.
+
+The browser stores the original encrypted manifest and a non-secret IndexedDB
+nonce journal. Before first encrypting each content chunk it durably commits
+that chunk's plaintext `K_resume` HMAC to the journal. Resume reselects the
+original local file, re-enters the password, authenticates the metadata, and
+checks every journaled chunk, including chunks whose acknowledgement was lost,
+as well as the server's acknowledged `resume_mac` values. The same file ID,
+content key and nonce must never encrypt changed bytes. If the journal is
+missing, including for legacy incomplete uploads, start a new session with a
+new ID and keys; do not automatically delete the old partial. The server never
+accepts a filename or password in this API.
+
+The partial-list envelope's `incomplete_ttl_seconds` reports the configured
+inactivity retention as a positive number of seconds, separately from the
+closed per-record shape. The project default remains 86400 seconds; operators
+may configure 604800 seconds for seven days. Completed files have no automatic
+expiry.
+
+The additive `storage` object contains `used_bytes`, `quota_bytes` (nullable),
+`disk_free_bytes`, `reserved_free_bytes`, `available_bytes`, `file_count`,
+`file_limit` (nullable), `remaining_files` (nullable), `max_plaintext_size`,
+`configured_max_plaintext_size`, and `technical_max_plaintext_size`. Available
+bytes concern ciphertext, including reservations and unallocated sparse partials;
+the maximum plaintext size subtracts GCM tags and is zero when no file slots remain.
+The seven-field PING capability shape is unchanged, but its `max_plaintext_size`
+is now the current capacity-derived maximum (example values are not defaults).
+Neither snapshot reserves space. Create atomically rechecks admission and returns
+`507 storage_quota_exceeded` with `details.scope = uploads`, `details.reason`
+(`bytes`, `files`, `free_space`, or `storage`) and a fresh `details.storage` snapshot.
+
+`GET /_xferry/encrypted-files/{id}/data` remains the concatenated ciphertext
+download. The chunk GET endpoint allows resumable browser downloads without
+changing EUF v1: an index must be less than `chunk_count`, and empty or partial
+files have no downloadable chunks. The response has exact `Content-Length`
+`min(chunk_size, plaintext_size - index * chunk_size) + 16`, at most
+`8 MiB + 16 bytes`, and `Cache-Control: no-store`. Only GET with an empty body
+is allowed; authentication and same-origin checks remain unchanged. The server
+streams from an opened, size-checked regular-file descriptor and stops at the
+chunk boundary.
+
+The browser authenticates fetched chunks before retaining ciphertext in its
+private Origin Private File System (OPFS) cache. A restored download requires
+the password and an output location again, verifies cached chunks, and fetches
+only missing chunks. Plaintext is written through the File System Access API
+and is never stored in the recovery cache. Network or filesystem failure aborts
+the output stream while keeping verified ciphertext for retry. Success is
+reported after the output stream closes; then its recovery cache is deleted.
+Inactive cache entries older than seven days are deleted when the app next
+opens, or manually through the cache-clear action. Cleanup is not guaranteed
+while the site is closed. The encrypted cache needs roughly one additional
+file's worth of browser storage.
+
+One-shot server decryption requires an explicit UI confirmation and this exact
+JSON body:
+
+```json
+{"content_key": "<32-byte K_content as unpadded base64url>"}
+```
+
+The endpoint accepts only effective HTTPS or a direct loopback peer. It
+authenticates encrypted metadata before sending response headers, streams and
+authenticates each chunk, never creates a plaintext file, and neither persists
+nor logs `content_key`. Supplying the key intentionally moves plaintext and key
+trust to the server for that response. A password, `K_resume`, or any extra
+field is invalid.
+
+### Encrypted-transfer errors
+
+Errors use the standard envelope described in [Error Response
+Bodies](#error-response-bodies). `field` is present when shown below.
+
+| HTTP | `error.code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_json` | JSON is malformed, non-UTF-8, or contains a non-finite number (`body`) |
+| 400 | `missing_field` | A required JSON field or `X-XFerry-Chunk-MAC` is missing |
+| 400 | `invalid_field` | A field, duplicate member, body, path value, or header is non-canonical |
+| 403 | `server_decryption_forbidden` | Server decrypt is neither effective HTTPS nor direct loopback |
+| 404 | `resource_not_found` | Route, ID, or resource state is not visible; all routes use this when disabled |
+| 405 | `method_not_allowed` | Method is not valid for the route; `Allow` is included |
+| 409 | `encrypted_file_conflict` | Existing ID has different manifest data |
+| 409 | `encrypted_chunk_conflict` | A stored chunk retry has different ciphertext or MAC |
+| 409 | `encrypted_file_incomplete` | Completion was requested before every chunk was stored |
+| 413 | `payload_too_large` | JSON or chunk body exceeds the route-specific admission cap |
+| 415 | `unsupported_media_type` | JSON/octet-stream content type is wrong |
+| 422 | `decryption_failed` | `K_content` cannot authenticate encrypted metadata |
+| 507 | `storage_quota_exceeded` | Shared upload bytes, file count, free-space reserve, or disk allocation rejects creation |
+
+Normal authentication, authority, origin, framing, and rate-limit errors can
+occur before route dispatch. Create JSON is capped at 16 KiB, decrypt JSON at
+512 bytes, and each chunk request at 8 MiB plus the 16-byte GCM tag. These caps
+replace the ordinary `--max-size` cap for enabled encrypted-transfer routes and
+are applied before the general request receiver allocates a large body.
+
+Enabling encrypted uploads requires at least two workers. The body admission
+budget must hold two maximum ciphertext chunks (`16 MiB + 32 bytes`); an
+omitted budget is raised to that floor automatically. Because the CLI accepts
+whole MiB, an explicit `--body-memory-budget` must be at least `17`.
+
+See [ADR-012](docs/ADR/ADR-012-encrypted-streaming-transfers.md) for the key
+custody and persistence decision.
 
 ## SMUGGLE
 

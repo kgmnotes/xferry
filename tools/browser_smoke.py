@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a minimal browser smoke against a live temporary xferry instance."""
+"""Run isolated browser journeys or a scoped smoke against an external xferry."""
 
 from __future__ import annotations
 
@@ -16,13 +16,16 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.9"
+MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS = 65536
 SMOKE_MODES = (
     "first-run",
     "basic-upload-profiles",
+    "encrypted-transfer",
     "ui-contracts",
     "http-errors",
     "recovery",
@@ -99,6 +102,7 @@ class _LiveServer:
                 host="127.0.0.1",
                 port=_find_free_port(),
                 root_dir=root_dir,
+                encrypted_uploads=True,
                 logging=LoggingConfig(quiet=True),
             )
         )
@@ -126,17 +130,12 @@ class _LiveServer:
 
 
 def _playwright_command() -> list[str]:
-    """Return the preferred Playwright CLI invocation."""
+    """Use the CI-pinned CLI unless an operator explicitly supplies a wrapper."""
     env_pwcli = os.environ.get("PWCLI")
     if env_pwcli:
         pwcli_path = Path(env_pwcli).expanduser()
         if pwcli_path.exists():
             return ["bash", str(pwcli_path)]
-
-    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
-    bundled_pwcli = codex_home / "skills" / "playwright" / "scripts" / "playwright_cli.sh"
-    if bundled_pwcli.exists():
-        return ["bash", str(bundled_pwcli)]
 
     if shutil.which("npx"):
         return ["npx", "--yes", "--package", PLAYWRIGHT_CLI_PACKAGE, "playwright-cli"]
@@ -178,15 +177,21 @@ def _write_cli_config(config_path: Path) -> None:
 
 
 def _parse_playwright_json(output: str) -> dict[str, object]:
-    """Extract the trailing JSON object from Playwright CLI output."""
-    for line in reversed([item.strip() for item in output.splitlines() if item.strip()]):
+    """Extract a known journey receipt, never JSON embedded in a CLI error."""
+    lines = [item.strip() for item in output.splitlines() if item.strip()]
+    diagnostic = output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS]
+    if "### Error" in lines:
+        raise RuntimeError(f"Playwright CLI reported an error. Raw output: {diagnostic!r}")
+    for line in reversed(lines):
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and payload.get("journey") in SMOKE_MODES:
             return payload
-    raise RuntimeError(f"Playwright CLI did not return a JSON object. Raw output: {output!r}")
+    raise RuntimeError(
+        f"Playwright CLI did not return a browser-smoke journey receipt. Raw output: {diagnostic!r}"
+    )
 
 
 def normalize_target_url(value: str) -> str:
@@ -247,19 +252,14 @@ def _render_smoke_source(
     return rendered
 
 
-def run_browser_smoke(
+def _run_single_journey(
     *,
     installed_package: bool = False,
     mode: str = "full",
     target_url: str | None = None,
     artifacts_dir: str | Path | None = None,
 ) -> dict[str, object]:
-    """Drive one semantic browser journey against a local or external server."""
-    if mode not in SMOKE_MODES:
-        raise ValueError(f"--mode must be one of: {', '.join(SMOKE_MODES)}")
-    if installed_package and target_url is not None:
-        raise ValueError("--installed-package cannot be combined with --target-url")
-
+    """Drive one isolated journey; ``full`` here is the original cross-tool composite."""
     smoke_mode = mode
     normalized_target = normalize_target_url(target_url) if target_url is not None else None
     server_cls: type[Any] | None = None
@@ -269,7 +269,7 @@ def run_browser_smoke(
 
     smoke_script = REPO_ROOT / "tools" / "browser_smoke.playwright.js"
     playwright = _playwright_command()
-    session = f"xferry-smoke-{os.getpid()}-{int(time.time())}"
+    session = f"xferry-smoke-{os.getpid()}-{uuid4().hex}"
     resolved_artifacts_dir = (
         (
             Path(artifacts_dir)
@@ -367,6 +367,7 @@ def run_browser_smoke(
                 str(config_path),
                 cwd=REPO_ROOT,
             )
+            raw_output = ""
             try:
                 raw_output = _run_playwright(
                     playwright,
@@ -378,14 +379,30 @@ def run_browser_smoke(
                     cwd=REPO_ROOT,
                 )
                 result = _parse_playwright_json(raw_output)
+                if result.get("journey") != smoke_mode:
+                    raise RuntimeError(
+                        f"Browser smoke returned journey {result.get('journey')!r}, "
+                        f"expected {smoke_mode!r}"
+                    )
             except Exception as exc:
                 failure_path = resolved_artifacts_dir / f"{smoke_mode}-failure.log"
-                failure_path.write_text(f"[{smoke_mode}] {exc}\n", encoding="utf-8")
+                failure_path.write_text(
+                    f"[{smoke_mode}] {str(exc)[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS]}\n",
+                    encoding="utf-8",
+                )
+                if raw_output:
+                    (resolved_artifacts_dir / f"{smoke_mode}-cli-output.log").write_text(
+                        raw_output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS], encoding="utf-8"
+                    )
                 raise RuntimeError(f"[{smoke_mode}] {exc}") from exc
             result["serverModulePath"] = (
                 str(server_module_path) if server_module_path is not None else None
             )
             result["smokeMode"] = smoke_mode
+            result["status"] = "passed"
+            target_scope = "external" if external_target else "local"
+            journey_scope = "cross-tool-composite" if smoke_mode == "full" else "single-journey"
+            result["executionScope"] = f"{target_scope}-{journey_scope}"
             result["targetUrl"] = url
             result["externalTarget"] = normalized_target is not None
             result["artifactsDir"] = str(resolved_artifacts_dir)
@@ -405,6 +422,100 @@ def run_browser_smoke(
                 live.stop()
 
 
+def run_browser_smoke(
+    *,
+    installed_package: bool = False,
+    mode: str = "full",
+    target_url: str | None = None,
+    artifacts_dir: str | Path | None = None,
+) -> dict[str, object]:
+    """Run a named journey or the full isolated local aggregate.
+
+    Local ``full`` runs the original cross-tool composite and every named mode in
+    separate temporary server roots and browser sessions, preserving all receipts
+    and collecting failures before failing closed. With ``target_url``, ``full``
+    runs only the original composite: it does not broaden mutations on an existing
+    server, and its available-journey names are not aggregate completion evidence.
+    """
+    if mode not in SMOKE_MODES:
+        raise ValueError(f"--mode must be one of: {', '.join(SMOKE_MODES)}")
+    if installed_package and target_url is not None:
+        raise ValueError("--installed-package cannot be combined with --target-url")
+    normalized_target = normalize_target_url(target_url) if target_url is not None else None
+    if mode != "full" or normalized_target is not None:
+        return _run_single_journey(
+            installed_package=installed_package,
+            mode=mode,
+            target_url=normalized_target,
+            artifacts_dir=artifacts_dir,
+        )
+
+    resolved_artifacts_dir = (
+        (
+            Path(artifacts_dir)
+            if artifacts_dir is not None
+            else REPO_ROOT / "output" / "playwright" / "browser-smoke" / "full"
+        )
+        .expanduser()
+        .resolve()
+    )
+    resolved_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    journeys = ("full", *(name for name in SMOKE_MODES if name != "full"))
+    results: dict[str, dict[str, object]] = {}
+    failures: dict[str, str] = {}
+    started = time.monotonic()
+    for journey in journeys:
+        journey_artifacts = resolved_artifacts_dir / ("composite" if journey == "full" else journey)
+        journey_artifacts.mkdir(parents=True, exist_ok=True)
+        try:
+            result = _run_single_journey(
+                installed_package=installed_package,
+                mode=journey,
+                target_url=None,
+                artifacts_dir=journey_artifacts,
+            )
+            if result.get("journey") != journey or result.get("status") != "passed":
+                raise RuntimeError(
+                    f"Expected passing journey {journey!r}; got "
+                    f"journey={result.get('journey')!r}, status={result.get('status')!r}"
+                )
+            results[journey] = result
+        except Exception as exc:
+            failures[journey] = str(exc)
+            (journey_artifacts / f"{journey}-failure.log").write_text(
+                f"[{journey}] {exc}\n", encoding="utf-8"
+            )
+
+    # Keep the original composite's fields for callers, but only mark journeys
+    # complete when that invocation actually returned a passing receipt.
+    aggregate: dict[str, object] = dict(results.get("full", {}))
+    aggregate.update(
+        journey="full",
+        smokeMode="full",
+        status="failed" if failures else "passed",
+        executionScope="isolated-local-aggregate",
+        externalTarget=False,
+        installedPackage=installed_package,
+        artifactsDir=str(resolved_artifacts_dir),
+        expectedJourneys=list(journeys),
+        completedJourneys=list(results),
+        aggregateJourneys=[name for name in results if name != "full"],
+        journeyResults=results,
+        failures=failures,
+        durationMs=round((time.monotonic() - started) * 1000),
+    )
+    (resolved_artifacts_dir / "full-result.json").write_text(
+        json.dumps(aggregate, indent=2) + "\n", encoding="utf-8"
+    )
+    if failures:
+        detail = "; ".join(f"[{name}] {error}" for name, error in failures.items())
+        (resolved_artifacts_dir / "full-failure.log").write_text(
+            f"[full aggregate] {detail}\n", encoding="utf-8"
+        )
+        raise RuntimeError(f"[full aggregate] {len(failures)} journey(s) failed: {detail}")
+    return aggregate
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description="Run the xferry browser smoke flow")
@@ -417,11 +528,18 @@ def main(argv: list[str] | None = None) -> int:
         "--mode",
         choices=SMOKE_MODES,
         default="full",
-        help="Semantic browser journey to execute (default: full aggregate).",
+        help=(
+            "Semantic browser journey (default: full). Local full runs the cross-tool "
+            "composite plus every named journey in isolation; external full runs only "
+            "the original cross-tool composite."
+        ),
     )
     parser.add_argument(
         "--target-url",
-        help="Run against an existing HTTP(S) server without starting a local server.",
+        help=(
+            "Run against an existing HTTP(S) server without starting a local server. "
+            "Full is scoped to the original composite, not all independent journeys."
+        ),
     )
     parser.add_argument(
         "--artifacts-dir",

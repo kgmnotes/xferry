@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from xferry.security.tls import normalize_domain
 
+from .versions import is_canonical_release_version
+
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
 
@@ -39,6 +41,7 @@ class HealthResult:
 
     ok: bool
     detail: str
+    version: str | None = None
 
 
 def authenticated_ping(
@@ -143,4 +146,12 @@ def _parse_health_response(response: bytes) -> HealthResult:
         return HealthResult(ok=False, detail="invalid health response")
     if not isinstance(payload, Mapping) or payload.get("health") != "ready":
         return HealthResult(ok=False, detail="invalid health response")
-    return HealthResult(ok=True, detail="healthy")
+    raw_server = payload.get("server")
+    version: str | None = None
+    if raw_server is not None:
+        if not isinstance(raw_server, str) or not raw_server.startswith("XFerry/"):
+            return HealthResult(ok=False, detail="invalid health response")
+        version = raw_server.removeprefix("XFerry/")
+        if not is_canonical_release_version(version):
+            return HealthResult(ok=False, detail="invalid health response")
+    return HealthResult(ok=True, detail="healthy", version=version)

@@ -70,6 +70,99 @@ def test_api_identity_substitution_is_rejected(identity, document, field, value)
         publisher.verify_api_identity(identity, *documents)
 
 
+def test_api_identity_accepts_explicit_production_producer_contract(identity) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=3,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        run_attempt=3,
+        status="in_progress",
+        conclusion=None,
+    )
+
+    publisher.verify_api_identity(identity, artifact, run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("producer_event", "workflow_dispatch"),
+        ("producer_workflow_path", ".github/workflows/release.yml"),
+        ("producer_run_attempt", 0),
+        ("producer_status", "completed"),
+        ("producer_conclusion", "success"),
+    ],
+)
+def test_api_identity_rejects_mixed_or_arbitrary_producer_contract(
+    identity: dict, field: str, value: object
+) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    identity[field] = value
+    artifact, run = metadata(identity)
+
+    with pytest.raises(ValueError, match="producer contract"):
+        publisher.verify_api_identity(identity, artifact, run)
+
+
+def test_api_identity_rejects_incomplete_production_contract(identity: dict) -> None:
+    identity["producer_event"] = "push"
+    artifact, run = metadata(identity)
+
+    with pytest.raises(ValueError, match="incomplete"):
+        publisher.verify_api_identity(identity, artifact, run)
+
+
+def test_global_identity_file_selects_dynamic_candidate(tmp_path: Path, identity: dict) -> None:
+    identity.update(
+        producer_event="push",
+        producer_workflow_path=".github/workflows/release-production.yml",
+        producer_run_attempt=1,
+        producer_status="in_progress",
+        producer_conclusion=None,
+    )
+    artifact, run = metadata(identity)
+    run.update(
+        event="push",
+        path=".github/workflows/release-production.yml",
+        status="in_progress",
+        conclusion=None,
+    )
+    identity_path = tmp_path / "production-testpypi.json"
+    artifact_path = tmp_path / "artifact.json"
+    run_path = tmp_path / "run.json"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    assert (
+        publisher.main(
+            [
+                "--identity-file",
+                str(identity_path),
+                "identity",
+                "--artifact-metadata",
+                str(artifact_path),
+                "--run-metadata",
+                str(run_path),
+            ]
+        )
+        == 0
+    )
+
+
 def index_document(identity: dict) -> dict:
     return {
         "info": {"name": "xferry", "version": "0.1.0"},
@@ -194,11 +287,11 @@ def test_prepare_does_not_write_before_archive_identity_verifies(tmp_path, ident
         ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
         ("python tools/testpypi_publish.py prepare", "python -m build"),
         ("attestations: true", "password: ${{ secrets.PYPI_TOKEN }}"),
-        ("refs/heads/codex/stage-010-testpypi-rehearsal", "refs/heads/main"),
+        ("refs/heads/codex/stage-010-testpypi-rehearsal-v2", "refs/heads/main"),
         ("needs: publish", "needs: identity"),
         (
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' }}",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal' || true }}",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}",
+            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' || true }}",
         ),
         ("    if: ${{ inputs.confirm_testpypi", "    # if: ${{ inputs.confirm_testpypi"),
         (
@@ -231,6 +324,37 @@ def test_staging_policy_requires_explicit_top_level_permissions():
     assert any("permissions" in finding.message.lower() for finding in findings)
 
 
+def test_staging_policy_preserves_authenticated_handoff_for_fourteen_days():
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+
+    assert "retention-days: 14" in workflow.split("  publish:", 1)[0]
+    findings = staging_policy_findings(
+        workflow.replace("retention-days: 14", "retention-days: 1", 1)
+    )
+
+    assert any("retention" in finding.message.lower() for finding in findings)
+
+
+def test_staging_policy_scopes_handoff_retention_to_authenticated_upload():
+    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
+    anchor = "      - name: Preserve authenticated distributions for the OIDC job\n"
+    compromised = workflow.replace("retention-days: 14", "retention-days: 1", 1).replace(
+        anchor,
+        (
+            "      - name: Unrelated identity retention\n"
+            "        run: true\n"
+            "        env:\n"
+            "          EXPECTED_RETENTION: retention-days: 14\n"
+            f"{anchor}"
+        ),
+        1,
+    )
+
+    findings = staging_policy_findings(compromised)
+
+    assert any("retention" in finding.message.lower() for finding in findings)
+
+
 @pytest.mark.parametrize(
     "unsafe_step",
     [
@@ -261,7 +385,7 @@ def test_staging_policy_rejects_repository_execution_in_oidc_job(unsafe_step):
     ("before", "after"),
     [
         ("Require protected rehearsal branch", "Trust mutable rehearsal branch"),
-        ('branches/codex%2Fstage-010-testpypi-rehearsal")', 'branches/main")'),
+        ('branches/codex%2Fstage-010-testpypi-rehearsal-v2")', 'branches/main")'),
         ('.commit.sha\' <<<"${branch_json}"', '.name\' <<<"${branch_json}"'),
         (
             '.protected\' <<<"${branch_json}"',
@@ -285,7 +409,7 @@ def test_staging_policy_rejects_administration_only_branch_endpoint():
     assert anchor in workflow
     injection = (
         'protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
-        'codex%2Fstage-010-testpypi-rehearsal/protection")"\n          '
+        'codex%2Fstage-010-testpypi-rehearsal-v2/protection")"\n          '
     )
 
     findings = staging_policy_findings(workflow.replace(anchor, injection + anchor, 1))

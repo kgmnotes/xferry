@@ -19,6 +19,8 @@ const exchangeBinaryTextPreviewLimit = 512;
 const exchangeSecretKeys = new Set([
     'authorization',
     'cookie',
+    'content_key',
+    'contentkey',
     'clientpublickey',
     'client_public_key',
     'data',

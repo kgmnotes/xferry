@@ -26,6 +26,9 @@ Please fill out the sections below; delete any that do not apply.
 - [ ] `mypy xferry` passes with no new errors
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
 - [ ] Relevant documentation updated (README / API.md / docs/ADR)
+- [ ] CLI/support changes regenerated with `python tools/render_contracts.py --write`
+- [ ] Install examples preserve separate portable, managed Linux, container, and contributor lifecycles
+- [ ] Public commands use immutable versions/digests and never pipe an installer into a shell
 
 ## Security impact
 

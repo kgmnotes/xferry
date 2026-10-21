@@ -66,7 +66,21 @@ def test_mkdocs_navigation_is_english_and_task_oriented() -> None:
     assert "site_url: https://xferry.kgmnotes.ru/" in config
 
 
-def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
+def test_mkdocs_strict_validation_covers_nav_links_and_anchors() -> None:
+    config = _read("mkdocs.yml")
+
+    for marker in (
+        "validation:",
+        "omitted_files: warn",
+        "absolute_links: warn",
+        "absolute_links: relative_to_docs",
+        "unrecognized_links: warn",
+        "anchors: warn",
+    ):
+        assert marker in config
+
+
+def test_pages_workflow_builds_strict_docs_and_gates_manual_publication() -> None:
     workflow = _read(".github/workflows/docs-pages.yml")
 
     for marker in (
@@ -88,6 +102,27 @@ def test_pages_workflow_builds_and_deploys_strict_docs() -> None:
     contracts = workflow.index("python tools/render_contracts.py --check")
     mirrors = workflow.index("python tools/sync_docs.py --check")
     assert settings < contracts < mirrors
+    assert "workflow_dispatch:" in workflow
+    assert "production_run:" in workflow
+    assert "permissions: {}" in workflow
+    assert "needs: [publication-gate, build]" in workflow
+    assert "needs.publication-gate.result == 'success'" in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "github.repository == 'kgmnotes/xferry'" in workflow
+    assert "python tools/docs_publication.py --production-run" in workflow
+    assert "ref: ${{ github.sha }}" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "branches: [main]" in workflow
+    gate = workflow[workflow.index("  publication-gate:") : workflow.index("  build:")]
+    build = workflow[workflow.index("  build:") : workflow.index("  deploy:")]
+    deploy = workflow[workflow.index("  deploy:") :]
+    assert "pages: write" not in gate + build
+    assert "id-token: write" not in gate + build
+    assert "environment:" not in gate + build
+    assert "github.event_name == 'workflow_dispatch'" in gate + deploy
+    assert "github.event_name == 'push'" in build
+    assert "actions: read" in gate
+    assert "github.event_name == 'workflow_dispatch'" in build[build.index("Upload accepted") :]
 
 
 def test_pre_commit_checks_settings_before_documentation_mirrors() -> None:

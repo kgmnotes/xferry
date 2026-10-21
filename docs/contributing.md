@@ -59,6 +59,29 @@ Browser changes also require the affected browser smoke mode. Available modes
 include `first-run`, `ui-contracts`, `request-matrix`, `advanced`, `files`,
 `notepad`, `mobile`, and `full`.
 
+```bash
+python tools/browser_smoke.py --mode full
+```
+
+The helper defaults to the same pinned `@playwright/cli@0.1.9` as CI. An
+explicit `PWCLI` wrapper overrides that default; implicitly discovered,
+unversioned wrappers do not. Keep browser Web APIs inside `page.evaluate`
+callbacks: the CLI driver sandbox need not expose them. On failure, bounded
+CLI output is retained beside the journey's diagnostics, and JSON embedded
+in an error is never accepted as a successful journey receipt.
+
+Without `--target-url`, `full` runs the cross-tool scenario and every named
+journey in separate browser sessions and temporary server roots, including
+encrypted transfers. Each journey keeps its own diagnostics; any failure
+fails the complete aggregate. The aggregate receipt records completed
+journeys, not merely the available mode names.
+
+With `--target-url`, `full` retains only the cross-tool scenario against that
+external server and reports that narrower coverage explicitly. It is not an
+isolated full-aggregate receipt. Prefer an explicit named mode for external
+checks, and use only a disposable server you own: browser journeys modify
+files and notes.
+
 ## Documentation
 
 The root files `API.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`
@@ -66,6 +89,10 @@ are canonical. Their `docs/` copies are generated. The marked settings regions
 in the Docker and systemd INI examples come from the operator settings schema;
 the marked method and capability tables in `API.md` come from the runtime
 contract registries. Regenerate all derived files in this order:
+
+`docs/cli-reference.md` is the generated CLI reference captured from the real
+English dispatcher. `docs/managed-hosts.md` is the generated managed support
+matrix sourced from the runtime host contract.
 
 ```bash
 python tools/render_settings.py --write
@@ -129,12 +156,13 @@ each require explicit operator opt-in.
 
 ## Distribution verification
 
-The supported distribution is a reviewed source checkout. CI and the manual
-Release Verification workflow build wheel, source-distribution, container, and
-SCIE products only inside their verification jobs. They do not upload or
-publish packages, release binaries, or registry images. Keep documentation and
-examples source-only; adding a distribution channel requires a new reviewed
-architecture decision and an explicit policy change.
+The source checkout is the contributor workflow; it is not the first user
+installation path. Public user documentation separates portable pipx, managed
+Linux, and immutable container lifecycles. Release automation must promote one
+verified candidate without rebuilding, and production publication remains
+behind protected approvals. Do not deploy release-branch documentation before
+the corresponding artifacts are activated. Local Compose examples may build
+the checkout only when they are clearly labelled as contributor examples.
 
 ## Security reports
 

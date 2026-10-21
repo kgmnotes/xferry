@@ -1,0 +1,586 @@
+name: Native Managed Update Rehearsal
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
+  SOURCE_VERSION: "0.1.1"
+  TARGET_VERSION: "0.1.2"
+  REHEARSAL_PORT: "44443"
+  MANAGED_XFERRY: /usr/local/bin/xferry
+
+jobs:
+  lifecycle:
+    name: Managed lifecycle (${{ matrix.platform }}, native)
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Require exact artifact-only rehearsal boundary
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"
+          test "$GITHUB_REF" = "refs/heads/codex/stage-013-managed-update-rehearsal"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/ci.txt
+
+      - name: Confirm native disposable systemd host
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 24.04
+          test -d /run/systemd/system
+          systemctl --version
+          sudo test ! -e /opt/xferry
+          sudo test ! -e /etc/xferry
+          sudo test ! -e /etc/systemd/system/xferry.service
+          sudo test ! -e /usr/local/bin/xferry
+          mkdir -p "$RUNNER_TEMP/managed-update-evidence"
+          python - <<'PY'
+          import json
+          import os
+          import platform
+          from pathlib import Path
+
+          Path(os.environ["RUNNER_TEMP"], "managed-update-evidence", "host.json").write_text(
+              json.dumps(
+                  {
+                      "machine": platform.machine(),
+                      "platform": "${{ matrix.platform }}",
+                      "runner": "${{ matrix.runner }}",
+                      "source_commit": os.environ["GITHUB_SHA"],
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Install pinned rehearsal build toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]" build pex==2.99.0
+
+      - name: Build two signed ephemeral release fixtures
+        env:
+          RELEASE_BASE_URL: https://127.0.0.1:${{ env.REHEARSAL_PORT }}/releases
+        run: |
+          set -euo pipefail
+          python tools/managed_update_rehearsal.py prepare \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --work-root "$RUNNER_TEMP/managed-update-work" \
+            --serve-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
+            --platform '${{ matrix.platform }}' \
+            --release-base-url "$RELEASE_BASE_URL" \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --base-commit "$GITHUB_SHA"
+
+      - name: Start loopback HTTPS fixture
+        env:
+          FIXTURE_URL: https://127.0.0.1:${{ env.REHEARSAL_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/managed-update-tls"
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/managed-update-tls/server.key" \
+            -out "$RUNNER_TEMP/managed-update-tls/server.crt" \
+            -days 1 -subj '/CN=127.0.0.1' -addext 'subjectAltName=IP:127.0.0.1' \
+            > /dev/null 2>&1
+          chmod 0600 "$RUNNER_TEMP/managed-update-tls/server.key"
+          nohup python tools/managed_update_rehearsal.py serve \
+            --fixture-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --certificate "$RUNNER_TEMP/managed-update-tls/server.crt" \
+            --private-key "$RUNNER_TEMP/managed-update-tls/server.key" \
+            --port '${{ env.REHEARSAL_PORT }}' \
+            --ready-file "$RUNNER_TEMP/managed-update-server.ready" \
+            > "$RUNNER_TEMP/managed-update-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/managed-update-server.pid"
+          for attempt in $(seq 1 30); do
+            if test -f "$RUNNER_TEMP/managed-update-server.ready" && \
+              curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+                --cacert "$RUNNER_TEMP/managed-update-tls/server.crt" \
+                "$FIXTURE_URL/releases/download/v${SOURCE_VERSION}/xferry-release-${{ matrix.platform }}.json" \
+                > /dev/null
+            then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Normalize disposable runner managed parents
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          test "$(sudo stat -c '%u' /opt)" = "0"
+          sudo chmod 0755 /opt
+          test "$(sudo stat -c '%u:%a' /opt)" = "0:755"
+          test "$(sudo stat -c '%u' /usr/local/bin)" = "0"
+          sudo chmod 0755 /usr/local/bin
+          test "$(sudo stat -c '%u:%a' /usr/local/bin)" = "0:755"
+
+      - name: Install signed 0.1.1
+        env:
+          RELEASE_URL: https://127.0.0.1:${{ env.REHEARSAL_PORT }}/releases/download/v0.1.1
+        run: |
+          set -euo pipefail
+          installer="$RUNNER_TEMP/install-${{ matrix.platform }}.sh"
+          signature="$installer.sig"
+          curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+            --cacert "$RUNNER_TEMP/managed-update-tls/server.crt" \
+            --output "$installer" "$RELEASE_URL/install-${{ matrix.platform }}.sh"
+          curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+            --cacert "$RUNNER_TEMP/managed-update-tls/server.crt" \
+            --output "$signature" "$RELEASE_URL/install-${{ matrix.platform }}.sh.sig"
+          python "$RUNNER_TEMP/managed-update-work/sources/0.1.1/tools/verify_release_signature.py" \
+            --installer "$installer" --signature "$signature"
+          sudo env \
+            XFERRY_RELEASE_BASE_URL="$RELEASE_URL" \
+            CURL_CA_BUNDLE="$RUNNER_TEMP/managed-update-tls/server.crt" \
+            sh "$installer"
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
+          test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.1"
+
+      - name: Setup private managed service
+        run: |
+          set -euo pipefail
+          setup_result="$RUNNER_TEMP/managed-update-evidence/setup.json"
+          setup_credentials="$RUNNER_TEMP/managed-update-setup.credentials"
+          umask 077
+          setup_exit=0
+          sudo "$MANAGED_XFERRY" setup --private --json \
+            > "$setup_result" 2> "$setup_credentials" || setup_exit="$?"
+          if [ "$setup_exit" -ne 0 ]; then
+            python - "$setup_result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(result, dict):
+              raise RuntimeError("managed setup failure result must be an object")
+          allowed = {"code", "detail", "exit_code", "message", "next_actions", "status"}
+          unexpected = set(result) - allowed
+          if unexpected or result.get("status") != "error":
+              raise RuntimeError("managed setup failure result is not safe to log")
+          print(json.dumps(result, sort_keys=True), file=sys.stderr)
+          PY
+            python_bin="$(command -v python)"
+            sudo "$python_bin" - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from xferry.management.managed_state import (
+              _ReleaseState,
+              _descriptor_capabilities,
+              _inspect_owned_entry,
+              _owned_entry_witness_is_valid,
+              _owned_state_is_safe,
+              _release_state,
+          )
+          from xferry.management.model import ManagedLayout
+          from xferry.management.release_contract import ReleaseManifest, current_platform_id
+
+          layout = ManagedLayout()
+          owned_entry_checks = {
+              label: {
+                  "descriptor_close_ok": False,
+                  "inspection_ok": False,
+                  "witness_valid": False,
+              }
+              for label in (
+                  "auth_file",
+                  "cli_link",
+                  "config_file",
+                  "data_root",
+                  "unit_file",
+              )
+          }
+          capabilities = _descriptor_capabilities()
+          if capabilities is None:
+              diagnostic = {
+                  "capabilities_available": False,
+                  "owned_entry_checks": owned_entry_checks,
+                  "owned_state_safe": False,
+                  "release_state": "unavailable",
+              }
+          else:
+              release_state = _release_state(
+                  layout,
+                  capabilities,
+                  platform_id=current_platform_id(),
+              )
+              owned_state_safe = _owned_state_is_safe(
+                  layout,
+                  capabilities,
+                  allow_expected_entries=release_state is _ReleaseState.VALID_SUPPORTED,
+              )
+              owned_entry_specs = (
+                  ("config_file", layout.config_file, "file", None),
+                  ("auth_file", layout.auth_file, "file", None),
+                  ("data_root", layout.data_root, "directory", None),
+                  ("unit_file", layout.unit_file, "file", None),
+                  (
+                      "cli_link",
+                      layout.cli_link,
+                      "symlink",
+                      Path("/opt/xferry/current/xferry"),
+                  ),
+              )
+              for label, path, expected_kind, expected_target in owned_entry_specs:
+                  witness = None
+                  try:
+                      witness = _inspect_owned_entry(
+                          path,
+                          expected_kind,
+                          expected_target,
+                          allow_expected_entry=(
+                              release_state is _ReleaseState.VALID_SUPPORTED
+                          ),
+                          capabilities=capabilities,
+                      )
+                      owned_entry_checks[label]["inspection_ok"] = True
+                      owned_entry_checks[label]["witness_valid"] = (
+                          _owned_entry_witness_is_valid(witness, capabilities)
+                      )
+                  except Exception:
+                      pass
+                  finally:
+                      if witness is not None:
+                          try:
+                              os.close(witness.descriptor)
+                          except OSError:
+                              pass
+                          else:
+                              owned_entry_checks[label]["descriptor_close_ok"] = True
+              manifest_valid = False
+              manifest_platform_valid = False
+              manifest_version_valid = False
+              executable_size_valid = False
+              executable_sha256_valid = False
+              current_target_valid = False
+              release_count_valid = False
+              release_permissions_valid = False
+              permission_checks = {
+                  label: {"mode_valid": False, "owner_valid": False}
+                  for label in (
+                      "root",
+                      "opt",
+                      "release_root",
+                      "releases_root",
+                      "release",
+                      "manifest",
+                      "executable",
+                  )
+              }
+              try:
+                  releases_root = layout.release_root / "releases"
+                  release_entries = list(releases_root.iterdir())
+                  release_count_valid = (
+                      len(release_entries) == 1
+                      and release_entries[0].is_dir()
+                      and not release_entries[0].is_symlink()
+                  )
+                  release = release_entries[0]
+                  manifest_path = release / "xferry-release.json"
+                  executable_path = release / "xferry"
+                  manifest = ReleaseManifest.parse(manifest_path.read_bytes())
+                  manifest_valid = True
+                  manifest_platform_valid = manifest.platform == current_platform_id()
+                  manifest_version_valid = manifest.version == release.name
+                  executable_metadata = executable_path.stat()
+                  executable_size_valid = executable_metadata.st_size == manifest.executable_size
+                  executable_sha256_valid = (
+                      hashlib.sha256(executable_path.read_bytes()).hexdigest()
+                      == manifest.executable_sha256
+                  )
+                  current_target_valid = (
+                      layout.release_root.joinpath("current").readlink()
+                      == releases_root.relative_to(layout.release_root) / release.name
+                  )
+                  protected_paths = {
+                      "root": type(layout.release_root)(layout.release_root.anchor),
+                      "opt": layout.release_root.parent,
+                      "release_root": layout.release_root,
+                      "releases_root": releases_root,
+                      "release": release,
+                      "manifest": manifest_path,
+                      "executable": executable_path,
+                  }
+                  permission_checks = {}
+                  for label, path in protected_paths.items():
+                      metadata = path.stat()
+                      permission_checks[label] = {
+                          "mode_valid": metadata.st_mode & 0o022 == 0,
+                          "owner_valid": metadata.st_uid == 0,
+                      }
+                  release_permissions_valid = all(
+                      all(checks.values()) for checks in permission_checks.values()
+                  )
+              except (OSError, ValueError):
+                  pass
+              diagnostic = {
+                  "capabilities_available": True,
+                  "owned_entry_checks": owned_entry_checks,
+                  "owned_state_safe": owned_state_safe,
+                  "release_checks": {
+                      "current_target_valid": current_target_valid,
+                      "executable_sha256_valid": executable_sha256_valid,
+                      "executable_size_valid": executable_size_valid,
+                      "manifest_platform_valid": manifest_platform_valid,
+                      "manifest_valid": manifest_valid,
+                      "manifest_version_valid": manifest_version_valid,
+                      "permission_checks": permission_checks,
+                      "release_count_valid": release_count_valid,
+                      "release_permissions_valid": release_permissions_valid,
+                  },
+                  "release_state": release_state.value,
+              }
+          print(json.dumps(diagnostic, sort_keys=True))
+          PY
+            exit "$setup_exit"
+          fi
+          python - "$setup_result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["status"] == "ok"
+          assert result["exit_code"] == 0
+          assert result["url"].startswith("http://127.0.0.1:")
+          PY
+          sudo install -m 0600 /dev/null /var/lib/xferry/rehearsal-sentinel
+          printf 'managed-update-rehearsal:%s:%s\n' "$GITHUB_RUN_ID" '${{ matrix.platform }}' \
+            | sudo tee /var/lib/xferry/rehearsal-sentinel > /dev/null
+          python_bin="$(command -v python)"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-health \
+            --expected-version "$SOURCE_VERSION" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/health-0.1.1.json"
+          sudo "$python_bin" tools/managed_update_rehearsal.py capture-state \
+            --output "$RUNNER_TEMP/managed-update-state.json"
+          sudo "$MANAGED_XFERRY" doctor --deep --json \
+            > "$RUNNER_TEMP/managed-update-evidence/doctor-0.1.1.json"
+
+      - name: Dry-run signed update to 0.1.2
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/managed-update-evidence/update-dry-run.json"
+          sudo env SSL_CERT_FILE="$RUNNER_TEMP/managed-update-tls/server.crt" \
+            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --dry-run --json > "$result"
+          python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["status"] == "ok"
+          assert result["dry_run"] is True
+          assert result["before"] == "0.1.1"
+          assert result["target"] == "0.1.2"
+          assert result["active"] == "0.1.1"
+          PY
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
+          python_bin="$(command -v python)"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-state \
+            --baseline "$RUNNER_TEMP/managed-update-state.json" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/state-after-dry-run.json"
+
+      - name: Apply signed update to 0.1.2
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/managed-update-evidence/update-apply.json"
+          apply_exit=0
+          sudo env SSL_CERT_FILE="$RUNNER_TEMP/managed-update-tls/server.crt" \
+            "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --json \
+            > "$result" || apply_exit="$?"
+          if [ "$apply_exit" -ne 0 ]; then
+            python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "active",
+              "before",
+              "code",
+              "detail",
+              "dry_run",
+              "exit_code",
+              "message",
+              "next_actions",
+              "rollback",
+              "status",
+              "target",
+              "version",
+          }
+          if not isinstance(result, dict) or set(result) != expected:
+              raise RuntimeError("managed update failure result must use the fixed schema")
+          scalar_keys = (
+              "active",
+              "before",
+              "code",
+              "dry_run",
+              "exit_code",
+              "rollback",
+              "status",
+              "target",
+              "version",
+          )
+          diagnostic = {key: result[key] for key in scalar_keys}
+          optional_versions = (diagnostic["active"], diagnostic["before"])
+          required_strings = (
+              diagnostic["code"],
+              diagnostic["rollback"],
+              diagnostic["status"],
+              diagnostic["target"],
+              diagnostic["version"],
+          )
+          if (
+              diagnostic["status"] != "error"
+              or any(value is not None and not isinstance(value, str) for value in optional_versions)
+              or any(not isinstance(value, str) for value in required_strings)
+              or not isinstance(diagnostic["dry_run"], bool)
+              or not isinstance(diagnostic["exit_code"], int)
+              or isinstance(diagnostic["exit_code"], bool)
+          ):
+              raise RuntimeError("managed update failure result contains unsafe diagnostics")
+          print(json.dumps(diagnostic, sort_keys=True))
+          PY
+            exit "$apply_exit"
+          fi
+          python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["status"] == "ok"
+          assert result["dry_run"] is False
+          assert result["before"] == "0.1.1"
+          assert result["target"] == "0.1.2"
+          assert result["active"] == "0.1.2"
+          PY
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.2"
+          test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.2"
+          sudo test -d /opt/xferry/releases/0.1.1
+          sudo test -d /opt/xferry/releases/0.1.2
+
+      - name: Verify exact 0.1.2 health
+        run: |
+          set -euo pipefail
+          python_bin="$(command -v python)"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-health \
+            --expected-version "$TARGET_VERSION" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/health-0.1.2.json"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-state \
+            --baseline "$RUNNER_TEMP/managed-update-state.json" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/state-after-update.json"
+
+      - name: Rollback to retained 0.1.1
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/managed-update-evidence/rollback.json"
+          sudo "$MANAGED_XFERRY" rollback --to "$SOURCE_VERSION" --json > "$result"
+          python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["status"] == "ok"
+          assert result["version"] == "0.1.1"
+          PY
+          test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"
+          test "$(sudo readlink /opt/xferry/current)" = "releases/0.1.1"
+          python_bin="$(command -v python)"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-health \
+            --expected-version "$SOURCE_VERSION" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/health-rollback-0.1.1.json"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-state \
+            --baseline "$RUNNER_TEMP/managed-update-state.json" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/state-after-rollback.json"
+
+      - name: Conservative uninstall
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/managed-update-evidence/uninstall.json"
+          sudo "$MANAGED_XFERRY" uninstall --json > "$result"
+          python - "$result" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["status"] == "ok"
+          assert result["code"] == "uninstall_complete"
+          PY
+          sudo test ! -e /opt/xferry
+          sudo test ! -e /etc/systemd/system/xferry.service
+          sudo test ! -e "$MANAGED_XFERRY"
+          sudo test -f /etc/xferry/xferry.ini
+          sudo test -f /etc/xferry/auth
+          sudo test -f /var/lib/xferry/rehearsal-sentinel
+          python_bin="$(command -v python)"
+          sudo "$python_bin" tools/managed_update_rehearsal.py verify-state \
+            --baseline "$RUNNER_TEMP/managed-update-state.json" \
+            --evidence "$RUNNER_TEMP/managed-update-evidence/state-after-uninstall.json"
+
+      - name: Reject sensitive evidence
+        run: |
+          set -euo pipefail
+          if grep -R -E \
+            'Credentials:|BEGIN [A-Z ]*PRIVATE KEY|Authorization:|password|XFERRY_RELEASE_ED25519' \
+            "$RUNNER_TEMP/managed-update-evidence"
+          then
+            exit 1
+          fi
+
+      - name: Upload sanitized lifecycle evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: managed-update-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-update-evidence
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Remove ephemeral local material
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if test -f "$RUNNER_TEMP/managed-update-server.pid"; then
+            kill "$(cat "$RUNNER_TEMP/managed-update-server.pid")" 2>/dev/null || true
+          fi
+          sudo rm -f "$RUNNER_TEMP/managed-update-state.json"
+          rm -f "$RUNNER_TEMP/managed-update-setup.credentials"
+          rm -rf "$RUNNER_TEMP/managed-update-tls"

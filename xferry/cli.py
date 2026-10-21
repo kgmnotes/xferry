@@ -62,6 +62,25 @@ class _HelpAllAction(argparse.Action):
         parser.exit()
 
 
+class _StableHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keep option invocations stable across supported argparse versions."""
+
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=78)
+
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        if not action.option_strings:
+            default = self._get_default_metavar_for_positional(action)
+            (metavar,) = self._metavar_formatter(action, default)(1)
+            return metavar
+        if action.nargs == 0:
+            return ", ".join(action.option_strings)
+
+        default = self._get_default_metavar_for_optional(action)
+        arguments = self._format_args(action, default)
+        return ", ".join(f"{option} {arguments}" for option in action.option_strings)
+
+
 def _bounded_int(name: str, *, minimum: int, maximum: int | None = None) -> Callable[[str], int]:
     """Return an argparse type function for an integer with inclusive bounds."""
 
@@ -123,10 +142,11 @@ def _add_setting_arguments(
         cli = spec.cli
         assert cli is not None
         runtime_default = getattr(defaults, spec.name)
+        help_text = cli.help.format(default=_format_cli_default(runtime_default))
         kwargs: dict[str, Any] = {
             "dest": cli.dest,
             "default": runtime_default if cli.default_from_runtime else None,
-            "help": cli.help.format(default=_format_cli_default(runtime_default)),
+            "help": help_text,
         }
         if cli.action == "append":
             kwargs["action"] = "append"
@@ -152,7 +172,10 @@ def _add_setting_arguments(
                 minimum=float(cli.minimum),
                 maximum=None if cli.maximum is None else float(cli.maximum),
             )
-        group.add_argument(*cli.option_strings, **kwargs)
+        action = group.add_argument(*cli.option_strings, **kwargs)
+        if cli.action == "boolean_optional":
+            # Python 3.10 mutates this help string while constructing the action.
+            action.help = help_text
 
 
 def create_parser(*, show_all_help: bool = False) -> argparse.ArgumentParser:
@@ -194,7 +217,7 @@ value remains authoritative. Use --help-all for the exhaustive option list.
     parser = argparse.ArgumentParser(
         prog="xferry run",
         description=description,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_StableHelpFormatter,
         epilog=epilog,
     )
 

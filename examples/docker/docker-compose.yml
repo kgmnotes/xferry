@@ -1,5 +1,5 @@
 # Contributor example: builds xferry:local from the current source checkout.
-# Registry images are not a supported distribution channel; see README.md.
+# Public container journeys use an immutable GHCR version or digest; see README.md.
 # Cleanup with `docker compose -f examples/docker/docker-compose.yml down`
 # removes containers/network but preserves uploads, notes, and ACME state in
 # named volumes. Adding `--volumes` is destructive and deletes that data.

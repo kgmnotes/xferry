@@ -115,6 +115,7 @@ const translations = {
         methodSmuggle: "HTML Smuggling",
         tabRequests: "Запросы",
         topTabUpload: "Отправить",
+        topTabLargeFiles: "Большие файлы",
         topTabFiles: "Получить",
         tabOpsec: "Расширенные",
         labelFilePath: "Путь к файлу",
@@ -718,7 +719,103 @@ const translations = {
         downloadFailed: "Не удалось скачать файл",
         downloadProgress: "Скачивание",
         downloadSpeed: "Скорость",
-        downloadEta: "Осталось"
+        downloadEta: "Осталось",
+        encryptedTransferEyebrow: "БОЛЬШИЕ ФАЙЛЫ",
+        encryptedTransferTitle: "Безопасная передача больших файлов",
+        encryptedTransferDescription: "Отправляйте большие файлы и скачивайте их с расшифровкой на вашем устройстве. Пароль и ключи не сохраняются.",
+        encryptedPrivacyBadge: "Шифрование на устройстве",
+        encryptedFileLabel: "Файлы",
+        encryptedFilePickerTitle: "Выберите файлы или перетащите сюда",
+        encryptedFileHint: "Размер ограничен доступным местом. Файлы отправляются последовательно.",
+        encryptedFileLimitHint: "Сейчас до {0} на файл. Файлы отправляются последовательно.",
+        encryptedCapacitySummary: "Доступно для новых загрузок: {0}. Свободных мест для файлов: {1}.",
+        encryptedQuotaFileTooLarge: "Файл превышает доступный размер: {0}. Обновите сведения о месте или освободите хранилище.",
+        encryptedQuotaBytesExceeded: "Для всей очереди недостаточно места с учётом шифрования. Уменьшите очередь или освободите хранилище.",
+        encryptedQuotaFilesExceeded: "Недостаточно свободных мест для файлов. Уменьшите очередь или удалите ненужные файлы.",
+        encryptedQuotaFreeSpaceExceeded: "Загрузка нарушит резерв свободного места сервера. Освободите место и повторите попытку.",
+        encryptedPasswordLabel: "Пароль шифрования",
+        encryptedPasswordHint: "Минимум 14 символов. Восстановить забытый пароль невозможно.",
+        encryptedPasswordConfirmLabel: "Повторите пароль",
+        encryptedUploadStart: "Зашифровать и отправить",
+        encryptedUploadPause: "Пауза",
+        encryptedUploadResume: "Продолжить",
+        encryptedUploadCancel: "Отменить и удалить",
+        encryptedProgressLabel: "Прогресс передачи",
+        encryptedTransferBytes: "Передано",
+        encryptedTransferSpeed: "Скорость",
+        encryptedTransferEta: "Осталось",
+        encryptedTransferDirectionUpload: "На сервер",
+        encryptedTransferDirectionDownload: "На устройство",
+        encryptedQueueTitle: "Очередь передачи",
+        encryptedQueueEmpty: "Выберите файлы, чтобы добавить их в очередь.",
+        encryptedQueueWaiting: "В очереди",
+        encryptedQueueUploading: "Отправка",
+        encryptedRetentionPolicy: "Незавершённые загрузки хранятся {0} дней после последней активности.",
+        encryptedCacheTitle: "Докачка на этом устройстве",
+        encryptedCacheSizeLabel: "Объём локального кэша",
+        encryptedCacheClear: "Очистить кэш",
+        encryptedCacheResume: "Продолжить скачивание",
+        encryptedCacheRemove: "Удалить из кэша",
+        encryptedCacheEmpty: "Сохранённых блоков для докачки нет.",
+        encryptedCacheDescription: "Для докачки браузер хранит только зашифрованные блоки - без имён, паролей и ключей. Нужно дополнительное место примерно размером файла.",
+        encryptedCacheCleanupHint: "Кэш удаляется после успешного сохранения или вручную. Неактивный кэш старше 7 дней очищается при следующем открытии сайта; при закрытом сайте очистка не выполняется.",
+        encryptedCacheQuota: "Недостаточно места в хранилище браузера. Освободите место и продолжите скачивание.",
+        encryptedCacheCleanupFailed: "Файл сохранён, но очистить локальный кэш не удалось. Повторите очистку вручную.",
+        encryptedCacheUnavailable: "Хранилище браузера недоступно. Используйте настольный Chrome или Edge в обычном режиме.",
+        encryptedBrowserUnsupported: "Для передачи больших файлов используйте настольный Chrome или Edge с доступом к файловому хранилищу. Этот браузер не поддерживает необходимые функции.",
+        encryptedTechnicalDetails: "Как защищены файлы",
+        encryptedTechnicalDescription: "AES-256-GCM, формат EUF v1. Блоки по 8 МиБ, два параллельных запроса. Содержимое и имя файла шифруются на устройстве до отправки; пароль расшифровки потребуется снова после закрытия страницы.",
+        encryptedAdvancedActions: "Дополнительные действия",
+        encryptedFileLocked: "Зашифрованный файл",
+        encryptedFileDetails: "Детали файла",
+        encryptedCopyId: "Копировать ID",
+        encryptedIdCopied: "ID скопирован",
+        encryptedCreatedAt: "Добавлен",
+        encryptedRetry: "Повторить",
+        encryptedNewSession: "Отправить заново",
+        encryptedStatusDownloading: "Получение зашифрованных блоков…",
+        encryptedStatusVerifying: "Проверка файла и блоков…",
+        encryptedStatusWaitingNetwork: "Ожидаем восстановления сети. Передача продолжится автоматически.",
+        encryptedStatusSaving: "Сохранение файла на устройство…",
+        encryptedStatusFinalizing: "Завершение и проверка передачи…",
+        encryptedStatusPausedDownload: "Скачивание приостановлено. Зашифрованные блоки сохранены на устройстве для докачки.",
+        encryptedStatusCanceledDownload: "Скачивание отменено. Локальный кэш удалён.",
+        encryptedStatusDownloadComplete: "Файл расшифрован и сохранён",
+        encryptedStatusDeleting: "Удаление незавершённой загрузки…",
+        encryptedStatusPendingDelete: "Ожидает удаления. Подключитесь к сети и повторите.",
+        encryptedResumeJournalMissing: "Локальный журнал загрузки недоступен. Для безопасного продолжения создайте новую загрузку.",
+        encryptedResumeFileChanged: "Исходный файл изменился. Отправьте его заново с новой загрузкой.",
+        encryptedSessionBusy: "Эта передача уже выполняется в другой вкладке.",
+        encryptedStatusIdle: "Готово к выбору файла",
+        encryptedStatusPreparing: "Подготовка ключей и метаданных…",
+        encryptedStatusUploading: "Загружено чанков: {0} из {1}",
+        encryptedStatusPaused: "Загрузка приостановлена. Данные на сервере сохранены.",
+        encryptedStatusComplete: "Зашифрованная загрузка завершена",
+        encryptedStatusCanceled: "Незавершённая загрузка удалена",
+        encryptedStatusError: "Ошибка зашифрованной передачи",
+        encryptedResumeTitle: "Продолжить незавершённую загрузку",
+        encryptedResumeFileLabel: "Выберите исходный файл повторно",
+        encryptedSelectedId: "ID:",
+        encryptedUnlockTitle: "Открыть имя и действия",
+        encryptedPartialTitle: "Незавершённые",
+        encryptedFilesTitle: "Зашифрованные файлы",
+        encryptedRefresh: "Обновить",
+        encryptedUnlock: "Разблокировать",
+        encryptedClientDownload: "Скачать и расшифровать",
+        encryptedServerDownload: "Расшифровать на сервере",
+        encryptedNoPartialUploads: "Незавершённых загрузок нет.",
+        encryptedNoFiles: "Зашифрованных файлов нет.",
+        encryptedUploadComplete: "Зашифрованная загрузка завершена",
+        encryptedUploadFailed: "Не удалось загрузить зашифрованный файл",
+        encryptedServerDecryptConfirmTitle: "Передать ключ серверу?",
+        encryptedServerDecryptConfirmMessage: "Сервер получит ключ и расшифрует файл для скачивания. Сервер и средства HTTPS-инспекции смогут увидеть имя и содержимое. Докачка для этого способа не поддерживается.",
+        encryptedServerDecryptConfirmAction: "Передать ключ и скачать",
+        encryptedPasswordMismatch: "Пароли не совпадают",
+        encryptedActionFailed: "Не удалось выполнить действие",
+        encryptedResumeAction: "Продолжить",
+        encryptedCancelRemote: "Удалить",
+        encryptedCancelConfirmTitle: "Удалить незавершённую загрузку?",
+        encryptedCancelConfirmMessage: "Загруженные зашифрованные чанки и состояние возобновления будут удалены безвозвратно."
     },
     en: {
         brandTagline: "SWG/NGFW testing tool",
@@ -768,6 +865,7 @@ const translations = {
         methodSmuggle: "HTML smuggling",
         tabRequests: "Requests",
         topTabUpload: "Upload",
+        topTabLargeFiles: "Large files",
         topTabFiles: "Download",
         tabOpsec: "Advanced",
         labelFilePath: "File path",
@@ -1371,7 +1469,103 @@ const translations = {
         downloadFailed: "Download failed",
         downloadProgress: "Downloading",
         downloadSpeed: "Speed",
-        downloadEta: "ETA"
+        downloadEta: "ETA",
+        encryptedTransferEyebrow: "LARGE FILES",
+        encryptedTransferTitle: "Secure large file transfers",
+        encryptedTransferDescription: "Upload large files and download them with decryption on your device. Passwords and keys are not saved.",
+        encryptedPrivacyBadge: "Encrypted on your device",
+        encryptedFileLabel: "Files",
+        encryptedFilePickerTitle: "Choose files or drop them here",
+        encryptedFileHint: "Size is limited by available storage. Files are uploaded one at a time.",
+        encryptedFileLimitHint: "Currently up to {0} per file. Files are uploaded one at a time.",
+        encryptedCapacitySummary: "Available for new uploads: {0}. Remaining file slots: {1}.",
+        encryptedQuotaFileTooLarge: "File exceeds the available size: {0}. Refresh capacity or free storage.",
+        encryptedQuotaBytesExceeded: "Not enough space for the entire queue, including encryption overhead. Reduce the queue or free storage.",
+        encryptedQuotaFilesExceeded: "Not enough remaining file slots. Reduce the queue or delete unneeded files.",
+        encryptedQuotaFreeSpaceExceeded: "Upload would consume the server's free-space reserve. Free storage and try again.",
+        encryptedPasswordLabel: "Encryption password",
+        encryptedPasswordHint: "At least 14 characters. A forgotten password cannot be recovered.",
+        encryptedPasswordConfirmLabel: "Confirm password",
+        encryptedUploadStart: "Encrypt and upload",
+        encryptedUploadPause: "Pause",
+        encryptedUploadResume: "Resume",
+        encryptedUploadCancel: "Cancel and delete",
+        encryptedProgressLabel: "Transfer progress",
+        encryptedTransferBytes: "Transferred",
+        encryptedTransferSpeed: "Speed",
+        encryptedTransferEta: "Remaining",
+        encryptedTransferDirectionUpload: "To server",
+        encryptedTransferDirectionDownload: "To device",
+        encryptedQueueTitle: "Transfer queue",
+        encryptedQueueEmpty: "Choose files to add them to the queue.",
+        encryptedQueueWaiting: "Queued",
+        encryptedQueueUploading: "Uploading",
+        encryptedRetentionPolicy: "Partial uploads are kept for {0} days after their last activity.",
+        encryptedCacheTitle: "Resume on this device",
+        encryptedCacheSizeLabel: "Local cache size",
+        encryptedCacheClear: "Clear cache",
+        encryptedCacheResume: "Resume download",
+        encryptedCacheRemove: "Remove from cache",
+        encryptedCacheEmpty: "No cached blocks to resume.",
+        encryptedCacheDescription: "The browser caches only encrypted blocks for resuming, without names, passwords or keys. Additional space approximately equal to the file size is required.",
+        encryptedCacheCleanupHint: "The cache is deleted after saving successfully or manually. Inactive cache older than 7 days is cleaned up when you next open the site; cleanup does not run while the site is closed.",
+        encryptedCacheQuota: "The browser storage is full. Free some space and resume the download.",
+        encryptedCacheCleanupFailed: "The file was saved, but the local cache could not be cleared. Retry clearing it manually.",
+        encryptedCacheUnavailable: "Browser storage is unavailable. Use desktop Chrome or Edge in normal browsing mode.",
+        encryptedBrowserUnsupported: "Use desktop Chrome or Edge with file storage access for large file transfers. This browser does not support the required features.",
+        encryptedTechnicalDetails: "How files are protected",
+        encryptedTechnicalDescription: "AES-256-GCM, EUF v1 format. 8 MiB blocks, two parallel requests. File contents and names are encrypted on your device before upload; the decryption password is required again after closing the page.",
+        encryptedAdvancedActions: "More actions",
+        encryptedFileLocked: "Encrypted file",
+        encryptedFileDetails: "File details",
+        encryptedCopyId: "Copy ID",
+        encryptedIdCopied: "ID copied",
+        encryptedCreatedAt: "Added",
+        encryptedRetry: "Retry",
+        encryptedNewSession: "Upload again",
+        encryptedStatusDownloading: "Receiving encrypted blocks…",
+        encryptedStatusVerifying: "Verifying the file and blocks…",
+        encryptedStatusWaitingNetwork: "Waiting for the network. The transfer will resume automatically.",
+        encryptedStatusSaving: "Saving the file to your device…",
+        encryptedStatusFinalizing: "Finishing and verifying the transfer…",
+        encryptedStatusPausedDownload: "Download paused. Encrypted blocks are saved on this device for resuming.",
+        encryptedStatusCanceledDownload: "Download canceled. The local cache was deleted.",
+        encryptedStatusDownloadComplete: "File decrypted and saved",
+        encryptedStatusDeleting: "Deleting the partial upload…",
+        encryptedStatusPendingDelete: "Waiting to delete. Reconnect and retry.",
+        encryptedResumeJournalMissing: "The local upload journal is unavailable. Start a new upload to continue safely.",
+        encryptedResumeFileChanged: "The original file has changed. Start a new upload for this file.",
+        encryptedSessionBusy: "This transfer is already running in another tab.",
+        encryptedStatusIdle: "Ready for a file",
+        encryptedStatusPreparing: "Preparing keys and metadata…",
+        encryptedStatusUploading: "Uploaded chunks: {0} of {1}",
+        encryptedStatusPaused: "Upload paused. Server-side progress was preserved.",
+        encryptedStatusComplete: "Encrypted upload complete",
+        encryptedStatusCanceled: "Partial upload deleted",
+        encryptedStatusError: "Encrypted transfer failed",
+        encryptedResumeTitle: "Resume partial upload",
+        encryptedResumeFileLabel: "Select the original file again",
+        encryptedSelectedId: "ID:",
+        encryptedUnlockTitle: "Unlock name and actions",
+        encryptedPartialTitle: "Partial uploads",
+        encryptedFilesTitle: "Encrypted files",
+        encryptedRefresh: "Refresh",
+        encryptedUnlock: "Unlock",
+        encryptedClientDownload: "Download and decrypt",
+        encryptedServerDownload: "Decrypt on server",
+        encryptedNoPartialUploads: "No partial uploads.",
+        encryptedNoFiles: "No encrypted files.",
+        encryptedUploadComplete: "Encrypted upload complete",
+        encryptedUploadFailed: "Encrypted upload failed",
+        encryptedServerDecryptConfirmTitle: "Send the key to the server?",
+        encryptedServerDecryptConfirmMessage: "The server receives the key and decrypts the file for download. The server and HTTPS inspection tools can see the name and contents. This method does not support resuming.",
+        encryptedServerDecryptConfirmAction: "Send key and download",
+        encryptedPasswordMismatch: "Passwords do not match",
+        encryptedActionFailed: "The action failed",
+        encryptedResumeAction: "Resume",
+        encryptedCancelRemote: "Delete",
+        encryptedCancelConfirmTitle: "Delete the partial upload?",
+        encryptedCancelConfirmMessage: "Uploaded encrypted chunks and resume progress will be permanently deleted."
     }
 };
 
@@ -1578,6 +1772,7 @@ const liveRegionTimers = new Map();
 let serverSupportedMethods = null;
 let serverMethodGroups = null;
 let serverSmuggleCapabilities = null;
+let serverEncryptedUploadCapabilities = null;
 let serverDiscoveryStatus = 'pending';
 let serverDiscoveryGeneration = 0;
 
@@ -1610,12 +1805,45 @@ function getFirstAvailableToolTabName() {
     return firstButton?.dataset.tabTarget || '';
 }
 
+let pendingLargeFilesHashRoute = false;
+
+function isLargeFilesWorkspaceAvailable() {
+    const capability = serverEncryptedUploadCapabilities;
+    const expectedKeys = [
+        'browser_decryption', 'chunk_size', 'enabled', 'max_plaintext_size',
+        'parallel_chunks', 'server_decryption', 'version',
+    ];
+    return serverDiscoveryStatus === 'ready'
+        && capability !== null
+        && typeof capability === 'object'
+        && !Array.isArray(capability)
+        && Object.keys(capability).sort().join(',') === expectedKeys.join(',')
+        && capability.enabled === true
+        && capability.version === 1
+        && Number.isSafeInteger(capability.max_plaintext_size)
+        && capability.max_plaintext_size >= 0
+        && capability.chunk_size === 8 * 1024 * 1024
+        && capability.parallel_chunks === 2
+        && typeof capability.browser_decryption === 'boolean'
+        && typeof capability.server_decryption === 'boolean';
+}
+
 function refreshToolEntrypoints() {
     document.querySelectorAll('.tab[role="tab"][data-tab-target]').forEach(button => {
-        button.hidden = false;
-        button.setAttribute('aria-hidden', 'false');
-        button.disabled = false;
+        const hidden = button.dataset.tabTarget === 'large-files' && !isLargeFilesWorkspaceAvailable();
+        button.hidden = hidden;
+        button.setAttribute('aria-hidden', String(hidden));
+        button.disabled = hidden;
     });
+
+    if (pendingLargeFilesHashRoute && serverDiscoveryStatus !== 'pending') {
+        pendingLargeFilesHashRoute = false;
+        if (isLargeFilesWorkspaceAvailable()) {
+            switchTab('large-files', document.getElementById('tab-large-files'));
+            return;
+        }
+        switchTab('upload', document.getElementById('tab-upload'));
+    }
 
     const activeTabButton = document.querySelector('.tab[role="tab"].active[data-tab-target]');
     if (activeTabButton && !activeTabButton.hidden) {
@@ -1643,6 +1871,7 @@ function refreshServerMethodBoundControls() {
                 Object.entries(serverMethodGroups).map(([group, methods]) => [group, [...methods]])
             )
             : null,
+        encryptedUploadCapabilities: serverEncryptedUploadCapabilities,
     });
 }
 
@@ -1670,6 +1899,12 @@ function setServerMethodsFromPing(info) {
         : null;
     serverSmuggleCapabilities = Object.prototype.hasOwnProperty.call(info || {}, 'smuggle_capabilities')
         ? info.smuggle_capabilities
+        : null;
+    serverEncryptedUploadCapabilities = Object.prototype.hasOwnProperty.call(
+        info || {},
+        'encrypted_uploads'
+    )
+        ? info.encrypted_uploads
         : null;
     refreshServerMethodBoundControls();
 }
@@ -1758,6 +1993,7 @@ async function checkServerMode() {
         serverSupportedMethods = null;
         serverMethodGroups = null;
         serverSmuggleCapabilities = null;
+        serverEncryptedUploadCapabilities = null;
         serverDiscoveryStatus = 'unavailable';
         refreshServerMethodBoundControls();
         console.log('Could not check server mode:', e);
@@ -1815,6 +2051,7 @@ function switchTab(tabName, tabButton, options = {}) {
     if (!resolvedTabButton) {
         return;
     }
+    pendingLargeFilesHashRoute = false;
 
     document.querySelectorAll('.tab[role="tab"]').forEach(t => {
         t.classList.remove('active');
@@ -1886,6 +2123,10 @@ function activateTabFromHash() {
     };
     const rawHash = location.hash.replace('#', '');
     const hash = hashAliases[rawHash] || rawHash;
+    if (hash === 'large-files' && serverDiscoveryStatus === 'pending') {
+        pendingLargeFilesHashRoute = true;
+        return;
+    }
     if (hash && document.getElementById(hash + '-tab')) {
         const tabBtn = document.getElementById('tab-' + hash);
         if (tabBtn) {
@@ -1962,6 +2203,7 @@ app.registerService('core', {
             )
             : null,
         smuggleCapabilities: serverSmuggleCapabilities,
+        encryptedUploadCapabilities: serverEncryptedUploadCapabilities,
         serverDiscoveryStatus,
     }),
 });

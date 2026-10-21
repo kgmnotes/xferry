@@ -213,7 +213,7 @@ def test_repository_discovery_has_only_xferry_and_the_pre_1_0_version_authority(
 
     from xferry import __version__
 
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.2.0"
 
 
 def test_runtime_dependencies_include_the_pinned_xml_hardening_library() -> None:
@@ -419,18 +419,18 @@ def test_built_wheel_and_sdist_contain_complete_xferry_package_data(
     assert validated.expected_package_data == expected_data
     assert expected_data <= validated.wheel_members
     assert expected_data <= validated.sdist_members
-    assert built_artifacts.wheel.name == "xferry-0.1.0-py3-none-any.whl"
-    assert built_artifacts.sdist.name == "xferry-0.1.0.tar.gz"
+    assert built_artifacts.wheel.name == "xferry-0.2.0-py3-none-any.whl"
+    assert built_artifacts.sdist.name == "xferry-0.2.0.tar.gz"
 
     with zipfile.ZipFile(built_artifacts.wheel) as wheel:
         assert len(wheel.namelist()) == len(validated.wheel_members)
-        metadata = wheel.read("xferry-0.1.0.dist-info/METADATA").decode("utf-8")
-        assert "Version: 0.1.0" in metadata.splitlines()
+        metadata = wheel.read("xferry-0.2.0.dist-info/METADATA").decode("utf-8")
+        assert "Version: 0.2.0" in metadata.splitlines()
     with tarfile.open(built_artifacts.sdist, "r:gz") as sdist:
         assert sdist.getmembers()
-        pkg_info = sdist.extractfile("xferry-0.1.0/PKG-INFO")
+        pkg_info = sdist.extractfile("xferry-0.2.0/PKG-INFO")
         assert pkg_info is not None
-        assert "Version: 0.1.0" in pkg_info.read().decode("utf-8").splitlines()
+        assert "Version: 0.2.0" in pkg_info.read().decode("utf-8").splitlines()
 
 
 def test_real_artifact_build_is_index_free_and_mirrors_checkout_candidates(
@@ -583,7 +583,7 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
             str(python),
             "-c",
             "import importlib.util; import xferry; "
-            "assert xferry.__version__ == '0.1.0'; "
+            "assert xferry.__version__ == '0.2.0'; "
             "assert importlib.util.find_spec('src') is None",
         ],
         cwd=probe_dir,

@@ -30,6 +30,9 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert settings.root_dir == "."
     assert not hasattr(settings, "profile")
     assert settings.max_size_mb == 100
+    assert settings.encrypted_uploads is False
+    assert settings.encrypted_upload_max_size_mb == 0
+    assert settings.encrypted_upload_incomplete_ttl_seconds == 86400
     assert settings.upload_quota_externally_managed is False
     assert settings.workers == 10
 
@@ -38,7 +41,45 @@ def test_default_settings_match_cli_runtime_defaults() -> None:
     assert config.port == 8080
     assert config.root_dir == Path().resolve()
     assert config.limits.max_upload_size == 100 * 1024 * 1024
+    assert config.encrypted_uploads is False
+    assert config.limits.encrypted_upload_max_size == 32 * 1024 * 1024 * 1024
+    assert config.limits.encrypted_upload_incomplete_ttl == 86400
     assert config.limits.max_workers == 10
+
+
+def test_encrypted_upload_settings_follow_ini_env_and_cli_precedence() -> None:
+    file_settings = load_settings_text(
+        """
+        [server]
+        encrypted_uploads = true
+
+        [limits]
+        encrypted_upload_max_size_mb = 1024
+        encrypted_upload_incomplete_ttl_seconds = 7200
+        """,
+        validate=False,
+    )
+
+    settings = resolve_settings(
+        file_settings=file_settings,
+        env={
+            "XFERRY_ENCRYPTED_UPLOADS": "false",
+            "XFERRY_ENCRYPTED_UPLOAD_MAX_SIZE_MB": "1536",
+        },
+        cli_values={
+            "encrypted_uploads": True,
+            "encrypted_upload_incomplete_ttl_seconds": 3600,
+        },
+    )
+
+    assert settings.encrypted_uploads is True
+    assert settings.encrypted_upload_max_size_mb == 1536
+    assert settings.encrypted_upload_incomplete_ttl_seconds == 3600
+
+    config = settings.to_server_config()
+    assert config.encrypted_uploads is True
+    assert config.limits.encrypted_upload_max_size == 1536 * 1024 * 1024
+    assert config.limits.encrypted_upload_incomplete_ttl == 3600
 
 
 def test_ini_file_env_and_cli_precedence(tmp_path: Path) -> None:
@@ -774,6 +815,22 @@ def test_runtime_posture_derives_effective_limits_paths_and_security(
     assert BODY_ADMISSION_BUDGET_NOTE in rendered["notes"]
     assert WEBSOCKET_WORKER_NOTE in rendered["notes"]
     assert "auth" not in rendered
+
+
+def test_runtime_posture_accounts_for_encrypted_parallel_chunk_budget() -> None:
+    settings = resolve_settings(
+        cli_values={
+            "encrypted_uploads": True,
+            "max_size_mb": 1,
+            "workers": 2,
+        }
+    )
+
+    config = settings.to_server_config()
+
+    assert config.limits.body_memory_budget == 16_777_248
+    assert config.runtime_posture is not None
+    assert config.runtime_posture.body_admission_budget_mb == 17
 
 
 def test_runtime_posture_warns_on_non_loopback_without_breaking_validation() -> None:
