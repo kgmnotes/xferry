@@ -482,6 +482,8 @@ def test_each_invalid_config_category_rejects_before_runtime_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catches any independent validation category running after runtime setup."""
+    import xferry.extensions as extensions_module
+    import xferry.server as server_module
     from xferry.server import XFerryServer
     from xferry.server_config import (
         AuthConfig,
@@ -507,9 +509,9 @@ def test_each_invalid_config_category_rejects_before_runtime_side_effects(
         import_calls.append(name)
         raise AssertionError("plugin import must not run for invalid config")
 
-    monkeypatch.setattr("xferry.extensions.importlib.import_module", fail_import)
     monkeypatch.setattr(
-        "xferry.server.generate_random_credentials",
+        server_module,
+        "generate_random_credentials",
         lambda: pytest.fail("auth generation must not run for invalid config"),
     )
     monkeypatch.setattr(
@@ -518,13 +520,17 @@ def test_each_invalid_config_category_rejects_before_runtime_side_effects(
         staticmethod(lambda _path: pytest.fail("auth file must not be read for invalid config")),
     )
     monkeypatch.setattr(
-        "xferry.server.TLSManager",
+        server_module,
+        "TLSManager",
         lambda **_kwargs: pytest.fail("TLS manager must not be built for invalid config"),
     )
     monkeypatch.setattr(
-        "xferry.server.threading.BoundedSemaphore",
+        server_module.threading,
+        "BoundedSemaphore",
         lambda _value: pytest.fail("semaphores must not be built for invalid config"),
     )
+    # Install the global import blocker after resolving every patch target.
+    monkeypatch.setattr(extensions_module.importlib, "import_module", fail_import)
 
     base = ServerConfig(
         host="127.0.0.1",

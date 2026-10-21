@@ -101,7 +101,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install candidate verification dependency
-        run: python -m pip install cryptography==50.0.0
+        run: python -m pip install cryptography==50.0.2
       - name: Bind reusable candidate outputs to this production run
         env:
           CANDIDATE_TAG: ${{ needs.candidate.outputs.candidate-tag }}
@@ -230,7 +230,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install signing verifier dependency
-        run: python -m pip install cryptography==50.0.0
+        run: python -m pip install cryptography==50.0.2
       - name: Download unsigned assets by authenticated artifact ID
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
         with:
@@ -764,7 +764,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install public signature verifier dependency
-        run: python -m pip install cryptography==50.0.0
+        run: python -m pip install cryptography==50.0.2
       - name: Download authenticated signed identity only
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
         with:

@@ -19,12 +19,12 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.1
+    rev: v2.4.0
     hooks:
       - id: mypy
         additional_dependencies:
-          - acme==5.5.0
-          - cryptography==50.0.0
+          - acme==5.8.0
+          - cryptography==50.0.2
           - josepy==2.2.0
           - PyOpenSSL==26.4.0
         files: ^xferry/
