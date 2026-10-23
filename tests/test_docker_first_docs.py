@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,43 @@ def test_portable_process_documents_persistent_data_root() -> None:
     ):
         assert marker in text
     assert "preserves uploads and encrypted note state" in normalized
+
+
+def test_portable_data_directory_has_a_powershell_journey() -> None:
+    text = _read(OPERATIONS)
+
+    assert "On Linux and macOS:" in text
+    assert "On Windows (PowerShell)" in text
+    assert "New-Item -ItemType Directory -Force -Path .\\xferry-data" in text
+    assert "xferry run --preset local --dir .\\xferry-data" in text
+
+
+@pytest.mark.parametrize("path", [Path("SECURITY.md"), Path("docs/security.md")])
+def test_privileged_release_downloads_follow_only_https_redirects(path: Path) -> None:
+    text = _read(path).split("### Privileged installer verification order", 1)[1]
+    block = text.split("```console\n", 1)[1].split("```", 1)[0]
+    commands = [
+        shlex.split(line)
+        for line in block.replace("\\\n", " ").splitlines()
+        if line.startswith("curl ")
+    ]
+
+    assert len(commands) == 4
+    for command in commands:
+        assert "--location" in command
+        assert command[command.index("--proto") + 1] == "=https"
+        assert command[command.index("--proto-redir") + 1] == "=https"
+        assert "--fail" in command
+
+
+def test_release_runbook_separates_staging_and_production_publishers() -> None:
+    text = _read(Path("docs/release-runbook.md"))
+
+    assert "TestPyPI rehearsal mapping uses workflow `testpypi.yml`" in text
+    assert "Environment `testpypi`" in text
+    assert "production PyPI mapping uses workflow `release-production.yml`" in text
+    assert "Environment `release-production`" in text
+    assert "separate registries" in " ".join(text.split())
 
 
 def test_landing_pages_route_instead_of_duplicating_procedures() -> None:
