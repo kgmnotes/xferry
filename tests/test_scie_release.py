@@ -1019,6 +1019,7 @@ def test_installer_guidance_resolves_immutable_urls_without_inherited_release_ur
     ]
     curl_prefix = [
         "curl",
+        "--location",
         "--proto",
         "=https",
         "--proto-redir",
