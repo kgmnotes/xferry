@@ -14,11 +14,18 @@ pipx uninstall xferry
 ```
 
 Run with an explicit operator-owned directory when data must survive process
-restarts:
+restarts. On Linux and macOS:
 
 ```console
 install -d -m 0700 "$PWD/xferry-data"
 xferry run --preset local --dir "$PWD/xferry-data"
+```
+
+On Windows (PowerShell), use a private directory owned by your account:
+
+```powershell
+New-Item -ItemType Directory -Force -Path .\xferry-data
+xferry run --preset local --dir .\xferry-data
 ```
 
 Press `Ctrl+C` to stop. Restarting with the same `--dir` preserves uploads and

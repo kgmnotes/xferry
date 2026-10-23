@@ -196,13 +196,13 @@ For x86_64, use:
 
 ```console
 release_url='https://github.com/kgmnotes/xferry/releases/download/v0.2.0'
-curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+curl --location --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/xferry-release-linux-x86_64.json"
-curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+curl --location --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/xferry-release-linux-x86_64.json.sig"
-curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+curl --location --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/install-linux-x86_64.sh"
-curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+curl --location --proto '=https' --proto-redir '=https' --fail --silent --show-error \
   --remote-name "$release_url/install-linux-x86_64.sh.sig"
 python tools/verify_release_signature.py \
   --manifest xferry-release-linux-x86_64.json \

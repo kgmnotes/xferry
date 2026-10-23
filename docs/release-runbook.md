@@ -35,9 +35,12 @@ All items in this list are blocking. Stop on the first missing item.
 - The version is one exact tag, `vX.Y.Z`, and matches source version,
   changelog entry, package metadata, release manifests, filenames, and release
   notes.
-- The TestPyPI/PyPI trusted publisher mapping exists for the release workflow,
-  repository owner `kgmnotes`, repository `xferry`, and the production
-  environment `release-production`.
+- The TestPyPI rehearsal mapping uses workflow `testpypi.yml` and GitHub
+  Environment `testpypi`; its passing receipt is staging evidence only.
+- The production PyPI mapping uses workflow `release-production.yml` and GitHub
+  Environment `release-production`. Both mappings use repository owner
+  `kgmnotes` and repository `xferry`, but TestPyPI and PyPI have separate
+  registries and require separate account-owner confirmation.
 - The GHCR package is visible to the expected audience and accepts only the
   release publisher job for writes.
 - The `production-release` GitHub Environment requires reviewers `kgmnotes`
