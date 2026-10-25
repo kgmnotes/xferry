@@ -1,0 +1,265 @@
+name: Public Managed Lifecycle Matrix
+
+on:
+  workflow_call:
+    inputs:
+      target_tag:
+        description: Exact already-public production release tag
+        required: true
+        type: string
+      source_commit:
+        description: Exact production source commit
+        required: true
+        type: string
+    outputs:
+      artifact-id:
+        description: Immutable attested public ten-pair evidence artifact
+        value: ${{ jobs.verify-matrix.outputs.artifact-id }}
+      evidence-sha256:
+        description: SHA256 of the attested public evidence JSON
+        value: ${{ jobs.verify-matrix.outputs.evidence-sha256 }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+
+jobs:
+  plan:
+    name: Prepare immutable public managed plan
+    if: ${{ github.repository == 'kgmnotes/xferry' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Require the protected production caller
+        env:
+          TARGET_TAG: ${{ inputs.target_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = kgmnotes/xferry
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          [[ "$TARGET_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$GITHUB_REF" = "refs/tags/${TARGET_TAG}"
+          test "$GITHUB_SHA" = "$SOURCE_COMMIT"
+          test "$GITHUB_WORKFLOW_REF" = "kgmnotes/xferry/.github/workflows/release-production.yml@${GITHUB_REF}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_commit }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned public signature verifier
+        run: python -m pip install cryptography==50.0.2
+      - name: Require two distinct actual signed public versions
+        env:
+          TARGET_TAG: ${{ inputs.target_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          python tools/managed_public_matrix.py prepare \
+            --target-tag "$TARGET_TAG" --source-commit "$SOURCE_COMMIT" \
+            --workflow-run "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/managed-public-plan.json"
+      - name: Preserve exact public plan without credentials
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: managed-public-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-public-plan.json
+          if-no-files-found: error
+          retention-days: 14
+
+  lifecycle:
+    name: Public managed lifecycle (${{ matrix.platform }}, native)
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_commit }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Require exact native hosted source and local Docker
+        env:
+          MATRIX_MACHINE: ${{ matrix.machine }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$GITHUB_SHA" = "$SOURCE_COMMIT"
+          test "$(uname -m)" = "$MATRIX_MACHINE"
+          test -z "${DOCKER_HOST:-}"
+          test "$(docker context show)" = default
+          docker info >/dev/null
+      - name: Install pinned public signature verifier
+        run: python -m pip install cryptography==50.0.2
+      - name: Download only this run's immutable plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/public-plan
+      - name: Exercise public install update rollback and conservative uninstall
+        id: probe
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python tools/managed_public_matrix.py run \
+            --plan "$RUNNER_TEMP/public-plan/managed-public-plan.json" \
+            --platform "$MATRIX_PLATFORM" --evidence-root "$RUNNER_TEMP/managed-public-evidence"
+      - name: Preserve only sanitized native public receipts
+        if: ${{ always() && steps.probe.outcome != 'skipped' && steps.probe.outcome != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/managed-public-evidence/architecture.json
+            ${{ runner.temp }}/managed-public-evidence/ubuntu-22.04.json
+            ${{ runner.temp }}/managed-public-evidence/ubuntu-24.04.json
+            ${{ runner.temp }}/managed-public-evidence/ubuntu-26.04.json
+            ${{ runner.temp }}/managed-public-evidence/debian-12.json
+            ${{ runner.temp }}/managed-public-evidence/debian-13.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-matrix:
+    name: Verify and attest public managed matrix
+    if: ${{ always() }}
+    needs: [plan, lifecycle]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      evidence-sha256: ${{ steps.subject.outputs.sha256 }}
+    steps:
+      - name: Require both native public architecture jobs to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success
+          test "$LIFECYCLE_RESULT" = success
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_commit }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned public signature verifier
+        run: python -m pip install cryptography==50.0.2
+      - name: Download only this run's immutable plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/managed-public-handoff
+      - name: Download this attempt's two isolated public receipt sets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        with:
+          pattern: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-linux-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/managed-public-downloaded
+      - name: Require every public lifecycle receipt and exact source identity
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          python tools/managed_public_matrix.py verify-matrix \
+            --plan "$RUNNER_TEMP/managed-public-handoff/managed-public-plan.json" \
+            --source-commit "$SOURCE_COMMIT" --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" --evidence-root "$RUNNER_TEMP/managed-public-downloaded" \
+            --output "$RUNNER_TEMP/managed-public-handoff/managed-public-verified.json"
+      - name: Record exact public attestation subject digest
+        id: subject
+        run: |
+          set -euo pipefail
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/managed-public-handoff/managed-public-verified.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Attest complete public managed evidence with OIDC
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: managed-public-verified.json
+          subject-digest: sha256:${{ steps.subject.outputs.sha256 }}
+      - name: Preserve the exact public Sigstore bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/managed-public-handoff/attestation.json"
+      - name: Preserve immutable signed public managed acceptance
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        with:
+          name: managed-public-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/managed-public-handoff/managed-public-plan.json
+            ${{ runner.temp }}/managed-public-handoff/managed-public-verified.json
+            ${{ runner.temp }}/managed-public-handoff/attestation.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Install pinned cryptographic attestation verifier
+        run: |
+          set -euo pipefail
+          python tools/install_attestation_cli.py --output-bin "$RUNNER_TEMP/xferry-attestation-bin"
+          echo "$RUNNER_TEMP/xferry-attestation-bin" >> "$GITHUB_PATH"
+      - name: Verify public evidence signature and immutable artifact before final gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          EVIDENCE_SHA256: ${{ steps.subject.outputs.sha256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          TARGET_TAG: ${{ inputs.target_tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" > artifact.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > production-run.json
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tools.production_readiness import download_evidence_archive
+          download_evidence_archive(int(os.environ["ARTIFACT_ID"]), Path("public-evidence.zip"))
+          PY
+          python tools/production_readiness.py verify-public \
+            --artifact-metadata artifact.json --run-metadata production-run.json \
+            --archive public-evidence.zip --artifact-id "$ARTIFACT_ID" \
+            --evidence-sha256 "$EVIDENCE_SHA256" --source-commit "$SOURCE_COMMIT" \
+            --tag "$TARGET_TAG" --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" --output accepted-public-managed.json

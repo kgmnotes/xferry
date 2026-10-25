@@ -19,7 +19,8 @@ Please fill out the sections below; delete any that do not apply.
 ## Checklist
 
 - [ ] Tests added/updated and `pytest` passes locally
-- [ ] Tooling installed with `PIP_CONSTRAINT=constraints/ci.txt pip install -e ".[dev,lint,test]"`
+- [ ] Development and hook environment uses Python 3.11+ (Python 3.12 recommended); application support remains Python 3.10–3.14
+- [ ] Tooling installed with `PIP_CONSTRAINT=constraints/ci.txt python -m pip install -e ".[dev,lint,test]"`
 - [ ] `pre-commit run --all-files` passes
 - [ ] `ruff check xferry tests tools` passes
 - [ ] `ruff format --check xferry tests tools` passes

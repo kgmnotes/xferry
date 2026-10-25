@@ -328,7 +328,8 @@ jobs:
 
   smoke:
     name: Release smoke
-    runs-on: ubuntu-latest
+    # Keep the browser host compatible with the pinned Playwright CLI.
+    runs-on: ubuntu-24.04
     needs: test
 
     steps:

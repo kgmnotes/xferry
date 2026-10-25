@@ -809,7 +809,7 @@ def _permission_entries(
         inline_value = match.group("value").strip().strip("\"'")
         if inline_value:
             if inline_value.startswith("{") and inline_value.endswith("}"):
-                entries: list[tuple[str, str, int]] = []
+                inline_entries: list[tuple[str, str, int]] = []
                 body = inline_value[1:-1].strip()
                 if not body:
                     return True, ()
@@ -817,14 +817,14 @@ def _permission_entries(
                     scope, separator, access = item.partition(":")
                     if not separator:
                         return True, (("*", inline_value, index + 1),)
-                    entries.append(
+                    inline_entries.append(
                         (
                             scope.strip().strip("\"'"),
                             access.strip().strip("\"'"),
                             index + 1,
                         )
                     )
-                return True, tuple(entries)
+                return True, tuple(inline_entries)
             return True, (("*", inline_value, index + 1),)
 
         entries: list[tuple[str, str, int]] = []
@@ -1233,6 +1233,8 @@ def production_release_workflow_policy_findings(
         "publish-pypi",
         "publish-ghcr",
         "publish-github-release",
+        "native-readiness",
+        "post-managed",
         "production-readiness",
         "final-gate",
     }
@@ -1240,6 +1242,8 @@ def production_release_workflow_policy_findings(
         reject(f"production release workflow is missing job {name!r}")
 
     required_dependencies = {
+        "native-readiness": {"preflight", "candidate"},
+        "production-readiness": {"preflight", "candidate", "prepare-candidate", "native-readiness"},
         "sign-assets": {"production-readiness"},
         "create-draft-release": {"preflight", "sign-assets"},
         "verify-pypi-identity": {"publish-pypi"},
@@ -1248,7 +1252,14 @@ def production_release_workflow_policy_findings(
         "post-ghcr": {"publish-ghcr"},
         "publish-github-release": {"create-draft-release", "post-pypi", "post-ghcr"},
         "post-release": {"publish-github-release"},
-        "final-gate": {"post-pypi", "post-ghcr", "post-release", "production-readiness"},
+        "post-managed": {"preflight", "post-release"},
+        "final-gate": {
+            "post-pypi",
+            "post-ghcr",
+            "post-release",
+            "production-readiness",
+            "post-managed",
+        },
     }
     for name, required in required_dependencies.items():
         job = jobs.get(name)
@@ -1380,17 +1391,52 @@ def production_release_workflow_policy_findings(
                 )
             )
 
-    readiness = jobs.get("production-readiness")
-    if readiness is not None and (
-        "Full managed ten-pair systemd evidence has not yet been verified for this release"
-        not in readiness.text
-        or "exit 1" not in readiness.text
+    for name, workflow in (
+        ("native-readiness", "managed-systemd-matrix.yml"),
+        ("post-managed", "managed-public-matrix.yml"),
     ):
-        reject("production readiness must fail closed until ten-pair managed evidence exists")
+        job = jobs.get(name)
+        if job is not None:
+            permissions = {
+                scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]
+            }
+            if permissions != {
+                "contents": "read",
+                "actions": "read",
+                "id-token": "write",
+                "attestations": "write",
+            }:
+                reject(f"{name} must grant only source/artifact reads and OIDC attestations")
+            if f"uses: ./.github/workflows/{workflow}" not in job.text:
+                reject(f"{name} must use the dedicated native evidence workflow")
+    readiness = jobs.get("production-readiness")
+    if readiness is not None and any(
+        marker not in readiness.text
+        for marker in (
+            "python tools/install_attestation_cli.py",
+            "python tools/production_readiness.py verify-native",
+            "needs.native-readiness.outputs.artifact-id",
+            "needs.native-readiness.outputs.evidence-sha256",
+            '--workflow-attempt "$GITHUB_RUN_ATTEMPT"',
+            '--source-commit "$SOURCE_COMMIT"',
+            "ref: ${{ needs.preflight.outputs.source-commit }}",
+        )
+    ):
+        reject("production readiness must cryptographically verify exact-source native evidence")
+    if readiness is not None and (
+        "continue-on-error:" in readiness.text or "\n    if:" in readiness.text
+    ):
+        reject("production readiness must not bypass failed evidence")
     final_gate = jobs.get("final-gate")
     if final_gate is not None and (
-        "Pages deployment remains forbidden until all post-publish evidence passes"
-        not in final_gate.text
+        any(
+            marker not in final_gate.text
+            for marker in (
+                "Pages deployment remains forbidden until all post-publish evidence passes",
+                "MANAGED_RESULT: ${{ needs.post-managed.result }}",
+                'test "$MANAGED_RESULT" = success',
+            )
+        )
     ):
         reject("final gate must keep Pages blocked until post-publish evidence passes")
     return findings
@@ -1445,6 +1491,8 @@ def docs_pages_workflow_policy_findings(text: str) -> list[Finding]:
         reject("Pages deploy must use the protected github-pages environment")
     if "python tools/docs_publication.py" not in jobs["publication-gate"].text:
         reject("Pages publication gate must verify production and public channel evidence")
+    if "python tools/install_attestation_cli.py" not in jobs["publication-gate"].text:
+        reject("Pages publication gate must install the pinned cryptographic evidence verifier")
     for job in jobs.values():
         if "actions/deploy-pages@" in job.text and job.name != "deploy":
             reject("Pages publication must be isolated to the gated deploy job")
@@ -1453,6 +1501,403 @@ def docs_pages_workflow_policy_findings(text: str) -> list[Finding]:
             if dependencies is None or "publication-gate" not in dependencies:
                 reject("Pages artifact upload must wait for publication evidence")
     return findings
+
+
+def managed_evidence_workflow_policy_findings(text: str, *, public: bool) -> list[Finding]:
+    """Bound the two native evidence producers without treating attestations as publication.
+
+    This is a static contract, complemented by executable shell-boundary and
+    receipt-verifier tests; it is not a proof of arbitrary shell semantics.
+    """
+    filename = "managed-public-matrix.yml" if public else "managed-systemd-matrix.yml"
+    path = Path(".github/workflows") / filename
+    findings: list[Finding] = []
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def reject(message: str) -> None:
+        findings.append(contract_finding(path, message))
+
+    def require_markers(block: str, markers: Sequence[str], message: str) -> None:
+        if any(marker not in block for marker in markers):
+            reject(message)
+
+    def named_step(block: str, name: str) -> str:
+        marker = f"      - name: {name}\n"
+        return next(
+            (
+                step
+                for step in re.split(r"(?=^      - )", block, flags=re.MULTILINE)
+                if step.startswith(marker)
+            ),
+            "",
+        )
+
+    def upload_paths(block: str) -> tuple[str, ...]:
+        match = re.search(r"^          path:\s*\|\s*$", block, re.MULTILINE)
+        if match is None:
+            return ()
+        lines = []
+        for line in block[match.end() :].splitlines():
+            if not line.strip():
+                continue
+            if not line.startswith("            "):
+                break
+            lines.append(line.strip())
+        return tuple(lines)
+
+    expected_events = {"workflow_call"} if public else {"workflow_call", "workflow_dispatch"}
+    if _workflow_events(text)[0] != frozenset(expected_events):
+        reject("managed evidence requires only its dedicated reusable/manual triggers")
+    declared, permissions = _permission_entries(text, 0)
+    if len(re.findall(r"^permissions:", text, re.MULTILINE)) != 1:
+        reject("managed evidence workflow permissions must be unambiguous")
+    if (
+        not declared
+        or len(permissions) != 1
+        or {scope: access for scope, access, _ in permissions} != {"contents": "read"}
+    ):
+        reject("managed evidence workflow must explicitly default to contents read only")
+    records = _workflow_jobs(text)
+    jobs = {job.name: job for job in records}
+    expected_jobs = (
+        {"plan", "lifecycle", "verify-matrix"} if public else {"lifecycle", "verify-matrix"}
+    )
+    if set(jobs) != expected_jobs or len(records) != len(expected_jobs):
+        reject("managed evidence must contain exactly its plan/native/collector jobs")
+        return findings
+    if any(
+        re.search(pattern, text)
+        for pattern in (
+            r"secrets\.",
+            r"(?m)^\s*secrets\s*:",
+            r"(?m)^\s*environment\s*:",
+            r"continue-on-error\s*:",
+            r"setup-qemu",
+            r"XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM",
+            r"gh\s+release\s",
+            r"docker\s+(?:push|login)\b",
+            r"--push\b",
+            r"mkdocs\s+gh-deploy\b",
+        )
+    ) or any(_publisher_channels(job) for job in jobs.values()):
+        reject("managed evidence must not consume secrets/environments, emulate, bypass or publish")
+    for match in WORKFLOW_ACTION_PATTERN.finditer(text):
+        action = match.group("reference").strip("\"'")
+        if (
+            "@" not in action
+            or action.startswith("./")
+            or action.partition("@")[0]
+            not in {
+                "actions/checkout",
+                "actions/setup-python",
+                "actions/download-artifact",
+                "actions/upload-artifact",
+                "actions/attest-build-provenance",
+            }
+            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(action.split("@", 1)[1]) is None
+        ):
+            reject("managed evidence actions must be full commit-SHA pinned")
+    for name, job in jobs.items():
+        expected = {"contents": "read"}
+        if name == "verify-matrix":
+            expected.update({"actions": "read", "id-token": "write", "attestations": "write"})
+        elif public and name == "lifecycle":
+            expected["actions"] = "read"
+        declared, granted = _permission_entries(job.text, 4)
+        if len(re.findall(r"^    permissions:", job.text, re.MULTILINE)) != 1:
+            reject(f"managed evidence {name} permission blocks must not be duplicated")
+        if (
+            not declared
+            or len(granted) != len(expected)
+            or {scope: access for scope, access, _ in granted} != expected
+        ):
+            reject(f"managed evidence {name} must grant only its dedicated read/OIDC scopes")
+        ref = "${{ inputs.source_commit }}" if public else "${{ github.sha }}"
+        require_markers(
+            job.text,
+            ("persist-credentials: false", f"ref: {ref}"),
+            f"managed evidence {name} must checkout its exact source without credentials",
+        )
+        if (
+            name != "lifecycle"
+            and "    runs-on: ubuntu-24.04" not in job.text.split("    steps:")[0]
+        ):
+            reject(f"managed evidence {name} must use its fixed GitHub-hosted collector runner")
+    lifecycle, collector = jobs["lifecycle"], jobs["verify-matrix"]
+    observed = re.findall(
+        r"platform:\s*(linux-\S+)\s*\n\s*machine:\s*(\S+)\s*\n\s*runner:\s*(\S+)",
+        lifecycle.text,
+    )
+    if observed != [
+        ("linux-x86_64", "x86_64", "ubuntu-24.04"),
+        ("linux-aarch64", "aarch64", "ubuntu-24.04-arm"),
+    ]:
+        reject("managed evidence requires exactly the two correct native platform/runner pairs")
+    require_markers(
+        lifecycle.text,
+        (
+            "runs-on: ${{ matrix.runner }}",
+            "fail-fast: false",
+            'test "$(uname -m)" = "$MATRIX_MACHINE"',
+            'test -z "${DOCKER_HOST:-}"',
+            'test "$(docker context show)"',
+        ),
+        "managed evidence lifecycle must enforce its native source/local-Docker boundary",
+    )
+    require_markers(
+        text,
+        (
+            "value: ${{ jobs.verify-matrix.outputs.artifact-id }}",
+            "value: ${{ jobs.verify-matrix.outputs.evidence-sha256 }}",
+        ),
+        "managed evidence must expose immutable artifact and JSON-subject identities",
+    )
+
+    if public:
+        boundary = named_step(jobs["plan"].text, "Require the protected production caller")
+        require_markers(
+            boundary,
+            (
+                'test "$GITHUB_REPOSITORY" = kgmnotes/xferry',
+                'test "$GITHUB_EVENT_NAME" = push',
+                'test "$GITHUB_REF_PROTECTED" = true',
+                'test "$RUNNER_ENVIRONMENT" = github-hosted',
+                '[[ "$TARGET_TAG" =~ ^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]',
+                'test "$GITHUB_REF" = "refs/tags/${TARGET_TAG}"',
+                'test "$GITHUB_SHA" = "$SOURCE_COMMIT"',
+                'test "$GITHUB_WORKFLOW_REF" = '
+                '"kgmnotes/xferry/.github/workflows/release-production.yml@${GITHUB_REF}"',
+            ),
+            "public managed evidence must require the exact protected production tag/source/caller",
+        )
+        require_markers(
+            jobs["plan"].text,
+            (
+                "python tools/managed_public_matrix.py prepare",
+                '--target-tag "$TARGET_TAG" --source-commit "$SOURCE_COMMIT"',
+                '--workflow-run "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT"',
+                "github.repository == 'kgmnotes/xferry'",
+                "github.event_name == 'push'",
+                "startsWith(github.ref, 'refs/tags/v')",
+            ),
+            "public managed plan must resolve two actual public versions for the current caller",
+        )
+        plan_upload = _workflow_step_with_id(jobs["plan"].text, "upload") or ""
+        require_markers(
+            plan_upload,
+            (
+                "name: managed-public-plan-${{ github.run_id }}-${{ github.run_attempt }}",
+                "path: ${{ runner.temp }}/managed-public-plan.json",
+                "if-no-files-found: error",
+                "retention-days: 14",
+            ),
+            "public managed plan upload must preserve only its exact immutable "
+            "current-attempt JSON",
+        )
+        if _job_dependencies(lifecycle) != frozenset({"plan"}):
+            reject("public managed lifecycle must depend on the verified immutable plan")
+        if re.search(r"^    if:", lifecycle.text, re.MULTILINE):
+            reject("public managed lifecycle must not bypass its plan result")
+        require_markers(
+            lifecycle.text,
+            (
+                'test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"',
+                'test "$GITHUB_SHA" = "$SOURCE_COMMIT"',
+                'test "$GITHUB_REF_PROTECTED" = true',
+                'test "$RUNNER_ENVIRONMENT" = github-hosted',
+                "artifact-ids: ${{ needs.plan.outputs.artifact-id }}",
+                "python tools/managed_public_matrix.py run",
+            ),
+            "public managed lifecycle must consume only its current-source immutable plan",
+        )
+        expected_dependencies = frozenset({"plan", "lifecycle"})
+        require_markers(
+            collector.text,
+            (
+                "if: ${{ always() }}",
+                'test "$PLAN_RESULT" = success',
+                'test "$LIFECYCLE_RESULT" = success',
+                'test "$GITHUB_REF_PROTECTED" = true',
+                "PLAN_RESULT: ${{ needs.plan.result }}",
+                "LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}",
+                'test "$RUNNER_ENVIRONMENT" = github-hosted',
+                "artifact-ids: ${{ needs.plan.outputs.artifact-id }}",
+                'test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"',
+                "python tools/install_attestation_cli.py",
+                "python tools/production_readiness.py verify-public",
+                '--evidence-sha256 "$EVIDENCE_SHA256"',
+                '--tag "$TARGET_TAG"',
+            ),
+            "public managed collector must reject failed/skipped inputs and verify signed evidence",
+        )
+        prefix, handoff = "managed-public", "managed-public-handoff"
+        subject, command = (
+            "managed-public-verified.json",
+            "python tools/managed_public_matrix.py verify-matrix",
+        )
+        upload_name = "Preserve only sanitized native public receipts"
+        source = '"$SOURCE_COMMIT"'
+    else:
+        boundary = named_step(lifecycle.text, "Require protected manual fixture boundary")
+        require_markers(
+            boundary,
+            (
+                'test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"',
+                'test "$GITHUB_REF_PROTECTED" = "true"',
+                'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
+                'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then',
+                'test "$GITHUB_REF" = "refs/heads/main"',
+                'test "$GITHUB_EVENT_NAME" = push',
+                '[[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\\.'
+                "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]",
+                'test "$GITHUB_WORKFLOW_REF" = '
+                '"kgmnotes/xferry/.github/workflows/release-production.yml@${GITHUB_REF}"',
+            ),
+            "native fixture evidence must require protected main or the exact production caller",
+        )
+        for job in (lifecycle, collector):
+            require_markers(
+                job.text,
+                (
+                    "github.repository == 'kgmnotes/xferry'",
+                    "github.event_name == 'workflow_dispatch'",
+                    "github.ref == 'refs/heads/main'",
+                    "github.event_name == 'push'",
+                    "startsWith(github.ref, 'refs/tags/v')",
+                    'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+                ),
+                "native fixture evidence must remain exact-source and dedicated-caller gated",
+            )
+        require_markers(
+            lifecycle.text,
+            (
+                "python tools/managed_update_rehearsal.py prepare",
+                '--base-commit "$GITHUB_SHA"',
+                "python tools/managed_systemd_matrix.py run",
+                "python -m pip install build pex==2.99.0 cryptography",
+            ),
+            "native fixture lifecycle must preserve current-source nonproduction fixtures",
+        )
+        require_markers(
+            collector.text,
+            (
+                "if: ${{ always() && github.repository",
+                'test "$LIFECYCLE_RESULT" = "success"',
+                'test "$GITHUB_REF_PROTECTED" = "true"',
+                "LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}",
+            ),
+            "native fixture collector must reject a failed or skipped architecture",
+        )
+        expected_dependencies = frozenset({"lifecycle"})
+        prefix, handoff = "systemd-matrix", "managed-native-handoff"
+        subject, command = (
+            "systemd-matrix-verified.json",
+            "python tools/managed_systemd_matrix.py verify-matrix",
+        )
+        upload_name = "Preserve only sanitized lifecycle receipts"
+        source = '"$GITHUB_SHA"'
+    if _job_dependencies(collector) != expected_dependencies:
+        reject("managed evidence collector must depend on all mandatory native/plan jobs")
+    require_markers(
+        collector.text,
+        (
+            command,
+            f"--source-commit {source}",
+            '--workflow-run "$GITHUB_RUN_ID"',
+            '--workflow-attempt "$GITHUB_RUN_ATTEMPT"',
+            f"pattern: {prefix}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-linux-*",
+            "merge-multiple: false",
+        ),
+        "managed evidence collector must verify the complete exact-source/current-attempt matrix",
+    )
+    receipts = named_step(lifecycle.text, upload_name)
+    actual_paths = upload_paths(receipts)
+    receipt_prefix = f"${{{{ runner.temp }}}}/{prefix}-evidence/"
+    expected_paths = {receipt_prefix + "architecture.json"} | {
+        receipt_prefix + f"{distro}-{version}.json"
+        for distro, version in (
+            ("ubuntu", "22.04"),
+            ("ubuntu", "24.04"),
+            ("ubuntu", "26.04"),
+            ("debian", "12"),
+            ("debian", "13"),
+        )
+    }
+    if set(actual_paths) != expected_paths or len(actual_paths) != len(expected_paths):
+        reject("managed evidence must upload only its six explicit sanitized receipt paths")
+    attest = _workflow_step_with_id(collector.text, "attest") or ""
+    subject_step = _workflow_step_with_id(collector.text, "subject") or ""
+    upload = _workflow_step_with_id(collector.text, "upload") or ""
+    attester = "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a"
+    require_markers(
+        attest,
+        (
+            f"uses: {attester}",
+            f"subject-name: {subject}",
+            "subject-digest: sha256:${{ steps.subject.outputs.sha256 }}",
+        ),
+        "managed evidence must attest its exact basename and explicit computed SHA256",
+    )
+    if text.count("uses: actions/attest-build-provenance@") != 1 or "subject-path:" in attest:
+        reject("managed evidence requires one pinned explicit-digest OIDC attestation")
+    require_markers(
+        subject_step,
+        (
+            f'sha256sum "$RUNNER_TEMP/{handoff}/{subject}"',
+            '>> "$GITHUB_OUTPUT"',
+        ),
+        "managed evidence subject digest must be computed from the verified JSON bytes",
+    )
+    require_markers(
+        collector.text,
+        (
+            "BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}",
+            f'cp "$BUNDLE_PATH" "$RUNNER_TEMP/{handoff}/attestation.json"',
+            "artifact-id: ${{ steps.upload.outputs.artifact-id }}",
+            "evidence-sha256: ${{ steps.subject.outputs.sha256 }}",
+        ),
+        "managed evidence must retain the original Sigstore bundle and immutable output identities",
+    )
+    wanted = {
+        f"${{{{ runner.temp }}}}/{handoff}/{subject}",
+        f"${{{{ runner.temp }}}}/{handoff}/attestation.json",
+    }
+    if public:
+        wanted.add(f"${{{{ runner.temp }}}}/{handoff}/managed-public-plan.json")
+    if set(upload_paths(upload)) != wanted or len(upload_paths(upload)) != len(wanted):
+        reject(
+            "managed evidence final artifact must contain only the exact "
+            "receipt/plan/Sigstore files"
+        )
+    require_markers(
+        upload,
+        (
+            f"name: {prefix}-verified-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+            "if-no-files-found: error",
+            "retention-days: 14",
+        ),
+        "managed evidence final artifact identity/retention must be exact and fail closed",
+    )
+    require_markers(
+        receipts,
+        ("if-no-files-found: error", "retention-days: 14"),
+        "managed evidence receipt uploads must retain complete nonempty outputs",
+    )
+    positions = [
+        collector.text.find(marker)
+        for marker in (command, "        id: subject", f"uses: {attester}", "        id: upload")
+    ]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        reject("managed evidence must validate receipts before attesting and uploading")
+    return findings
+
+
+def managed_systemd_workflow_policy_findings(text: str) -> list[Finding]:
+    return managed_evidence_workflow_policy_findings(text, public=False)
+
+
+def managed_public_workflow_policy_findings(text: str) -> list[Finding]:
+    return managed_evidence_workflow_policy_findings(text, public=True)
 
 
 def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
@@ -2144,6 +2589,17 @@ def find_release_policy_issues(
                 release_text,
             )
         )
+    for name, checker in (
+        ("managed-systemd-matrix.yml", managed_systemd_workflow_policy_findings),
+        ("managed-public-matrix.yml", managed_public_workflow_policy_findings),
+    ):
+        evidence = Path(".github/workflows") / name
+        if targets_cover_path(evidence, repo_root, targets):
+            content = read_contract_text(repo_root / evidence)
+            if content is None:
+                findings.append(contract_finding(evidence, "managed evidence workflow is missing"))
+            else:
+                findings.extend(checker(content))
     staging = Path(".github/workflows/testpypi.yml")
     if targets_cover_path(staging, repo_root, targets) and (repo_root / staging).is_file():
         findings.extend(

@@ -261,8 +261,11 @@ def test_production_release_policy_rejects_boundary_regressions(
     ("job_name", "dependency"),
     (
         ("sign-assets", "production-readiness"),
+        ("production-readiness", "native-readiness"),
         ("publish-ghcr", "post-pypi"),
         ("publish-github-release", "post-ghcr"),
+        ("post-managed", "post-release"),
+        ("final-gate", "post-managed"),
     ),
 )
 def test_production_policy_rejects_bypassed_readiness_and_consumer_dependencies(
@@ -282,6 +285,102 @@ def test_production_policy_rejects_bypassed_readiness_and_consumer_dependencies(
 
     assert any(
         job_name in finding.message and dependency in finding.message for finding in findings
+    )
+
+
+@pytest.mark.parametrize("name", ["managed-systemd-matrix.yml", "managed-public-matrix.yml"])
+def test_managed_evidence_workflows_are_registered_and_missing_files_fail_closed(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    relative = Path(".github/workflows") / name
+    source = (check_stale_docs.REPO_ROOT / relative).read_text()
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(source)
+    selected = (relative.as_posix(),)
+    assert check_stale_docs.find_release_policy_issues(tmp_path, selected) == []
+    target.unlink()
+    findings = check_stale_docs.find_release_policy_issues(tmp_path, selected)
+    assert any(finding.path == relative and "missing" in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize("name", ["managed-systemd-matrix.yml", "managed-public-matrix.yml"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "digest",
+        "subject",
+        "attester-pin",
+        "unapproved-action",
+        "global-write",
+        "commented-boundary",
+        "attester-early",
+    ],
+)
+def test_registered_managed_evidence_guards_reject_tampered_or_unsafe_producers(
+    tmp_path: Path,
+    name: str,
+    mutation: str,
+) -> None:
+    relative = Path(".github/workflows") / name
+    source = (check_stale_docs.REPO_ROOT / relative).read_text()
+    if mutation == "digest":
+        changed = source.replace(
+            "subject-digest: sha256:${{ steps.subject.outputs.sha256 }}",
+            "subject-digest: sha256:abcd",
+        )
+    elif mutation == "subject":
+        changed = source.replace("subject-name:", "subject-path:")
+    elif mutation == "attester-pin":
+        changed = source.replace(
+            "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+            "actions/attest-build-provenance@" + "a" * 40,
+        )
+    elif mutation == "unapproved-action":
+        changed = source.replace("uses: actions/checkout@", "uses: unapproved/action@")
+    elif mutation == "global-write":
+        changed = source.replace(
+            "permissions:\n  contents: read", "permissions:\n  id-token: write"
+        )
+    elif mutation == "commented-boundary":
+        changed = source.replace('test "$GITHUB_REF_PROTECTED"', '# test "$GITHUB_REF_PROTECTED"')
+    else:
+        collector = next(
+            job for job in check_stale_docs._workflow_jobs(source) if job.name == "verify-matrix"
+        )
+        attester = check_stale_docs._workflow_step_with_id(collector.text, "attest")
+        assert attester is not None
+        without = collector.text.replace(attester, "", 1)
+        start = without.index("    steps:\n") + len("    steps:\n")
+        changed_collector = without[:start] + attester + without[start:]
+        changed = source.replace(collector.text, changed_collector, 1)
+    assert changed != source
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(changed)
+    findings = check_stale_docs.find_release_policy_issues(tmp_path, (relative.as_posix(),))
+    assert any(finding.path == relative for finding in findings)
+
+
+@pytest.mark.parametrize("name", ["managed-systemd-matrix.yml", "managed-public-matrix.yml"])
+def test_managed_evidence_collectors_cannot_duplicate_or_weaken_permission_blocks(
+    name: str,
+) -> None:
+    text = (check_stale_docs.REPO_ROOT / ".github/workflows" / name).read_text()
+    collector = next(
+        job for job in check_stale_docs._workflow_jobs(text) if job.name == "verify-matrix"
+    )
+    changed = collector.text.replace("attestations: write", "contents: write")
+    result = check_stale_docs.managed_evidence_workflow_policy_findings(
+        text.replace(collector.text, changed, 1), public=name == "managed-public-matrix.yml"
+    )
+    assert result
+    duplicated = collector.text.replace(
+        "    permissions:", "    permissions:\n      contents: write\n    permissions:", 1
+    )
+    assert check_stale_docs.managed_evidence_workflow_policy_findings(
+        text.replace(collector.text, duplicated, 1), public=name == "managed-public-matrix.yml"
     )
 
 

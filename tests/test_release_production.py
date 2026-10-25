@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tools import check_stale_docs
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_WORKFLOW = REPO_ROOT / ".github/workflows/release-production.yml"
 CANDIDATE_WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
@@ -55,7 +57,9 @@ def production_policy_findings(workflow: str) -> list[str]:
         "https://pypi.org/pypi/xferry/${RELEASE_VERSION}/json",
         "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}",
         "https://github.com/kgmnotes/xferry/releases/download/${RELEASE_TAG}/",
-        "Full managed ten-pair systemd evidence has not yet been verified for this release",
+        "uses: ./.github/workflows/managed-systemd-matrix.yml",
+        "python tools/production_readiness.py verify-native",
+        "uses: ./.github/workflows/managed-public-matrix.yml",
         "Pages deployment remains forbidden until all post-publish evidence passes",
     )
     for item in required:
@@ -84,6 +88,8 @@ def production_policy_findings(workflow: str) -> list[str]:
         "post-pypi",
         "post-ghcr",
         "post-release",
+        "native-readiness",
+        "post-managed",
         "production-readiness",
         "final-gate",
     ):
@@ -125,12 +131,19 @@ def production_policy_findings(workflow: str) -> list[str]:
     if not all(item in public for item in ("actions: read", "contents: write")):
         findings.append("GitHub Release activation lacks exact permissions")
     for job, required_needs in (
+        ("native-readiness", {"preflight", "candidate"}),
+        ("production-readiness", {"native-readiness", "prepare-candidate"}),
         ("verify-pypi-identity", {"publish-pypi"}),
         ("post-pypi", {"publish-pypi", "verify-pypi-identity"}),
         ("publish-ghcr", {"publish-pypi", "post-pypi"}),
         ("post-ghcr", {"publish-ghcr"}),
         ("publish-github-release", {"create-draft-release", "post-pypi", "post-ghcr"}),
         ("post-release", {"create-draft-release", "publish-github-release"}),
+        ("post-managed", {"preflight", "post-release"}),
+        (
+            "final-gate",
+            {"post-pypi", "post-ghcr", "post-release", "production-readiness", "post-managed"},
+        ),
     ):
         if not required_needs <= _needs(workflow, job):
             findings.append(f"{job} bypasses a required consumer gate")
@@ -151,6 +164,10 @@ def production_policy_findings(workflow: str) -> list[str]:
         findings.append(
             "bound Release operations must not resolve drafts through the public tag API"
         )
+    findings.extend(
+        f"shared policy: {finding.message}"
+        for finding in check_stale_docs.production_release_workflow_policy_findings(workflow)
+    )
     return findings
 
 
@@ -196,8 +213,19 @@ def test_production_workflow_has_fail_closed_boundaries() -> None:
     ):
         assert marker in public
     readiness = _job(workflow, "production-readiness")
-    assert "needs: [preflight, candidate, prepare-candidate]" in readiness
-    assert "exit 1" in readiness
+    assert _needs(workflow, "production-readiness") == {
+        "preflight",
+        "candidate",
+        "prepare-candidate",
+        "native-readiness",
+    }
+    assert "python tools/install_attestation_cli.py" in readiness
+    assert "python tools/production_readiness.py verify-native" in readiness
+    assert "needs.native-readiness.outputs.artifact-id" in readiness
+    assert "needs.native-readiness.outputs.evidence-sha256" in readiness
+    assert '--source-commit "$SOURCE_COMMIT"' in readiness
+    assert '--workflow-attempt "$GITHUB_RUN_ATTEMPT"' in readiness
+    assert "continue-on-error:" not in readiness
     assert "production-readiness" in _job(workflow, "sign-assets").splitlines()[1]
     assert workflow.count("retention-days: 14") >= 4
     assert not re.search(r"(?m)^\s*retention-days:\s*[0-9]\s*$", workflow)
@@ -248,8 +276,12 @@ def test_candidate_workflow_is_reusable_and_exposes_immutable_identity() -> None
             "gh release edit --latest",
         ),
         (
-            "Full managed ten-pair systemd evidence has not yet been verified for this release",
-            "Hosted runners prove all managed targets",
+            "python tools/production_readiness.py verify-native",
+            "echo 'Hosted runners prove all managed targets'",
+        ),
+        (
+            "uses: ./.github/workflows/managed-public-matrix.yml",
+            "uses: ./.github/workflows/managed-systemd-matrix.yml",
         ),
     ],
 )
@@ -288,6 +320,84 @@ def _run_step(job: str, step: str) -> str:
     block = _job(PRODUCTION_WORKFLOW.read_text(encoding="utf-8"), job)
     content = block.split(f"      - name: {step}\n", 1)[1].split("      - name:", 1)[0]
     return textwrap.dedent(content.split("        run: |\n", 1)[1])
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["PYPI_RESULT", "GHCR_RESULT", "RELEASE_RESULT", "READINESS_RESULT", "MANAGED_RESULT"],
+)
+@pytest.mark.parametrize("outcome", ["success", "failure", "skipped", "cancelled", ""])
+def test_actual_final_gate_requires_all_public_and_managed_consumers(
+    variable: str,
+    outcome: str,
+) -> None:
+    environment = {
+        "PATH": os.environ["PATH"],
+        "PYPI_RESULT": "success",
+        "GHCR_RESULT": "success",
+        "RELEASE_RESULT": "success",
+        "READINESS_RESULT": "success",
+        "MANAGED_RESULT": "success",
+        variable: outcome,
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            _run_step("final-gate", "Keep Pages gated on complete production evidence"),
+        ],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (outcome == "success")
+
+
+@pytest.mark.parametrize(
+    ("job", "dependency"),
+    [
+        ("native-readiness", "candidate"),
+        ("production-readiness", "native-readiness"),
+        ("sign-assets", "production-readiness"),
+        ("post-managed", "post-release"),
+        ("final-gate", "post-managed"),
+    ],
+)
+def test_production_evidence_dependencies_cannot_be_removed(job: str, dependency: str) -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text()
+    block = _job(workflow, job)
+    dependencies = _needs(workflow, job)
+    assert dependency in dependencies
+    changed = re.sub(
+        r"(?m)^    needs: \[[^]]+]$",
+        "    needs: [" + ", ".join(sorted(dependencies - {dependency})) + "]",
+        block,
+    )
+    assert changed != block
+    assert production_policy_findings(workflow.replace(block, changed, 1))
+
+
+@pytest.mark.parametrize(
+    ("job", "scope", "wrong_scope"),
+    [
+        ("create-draft-release", "contents", "packages"),
+        ("publish-pypi", "id-token", "contents"),
+        ("publish-ghcr", "packages", "contents"),
+        ("publish-github-release", "contents", "id-token"),
+    ],
+)
+def test_every_protected_publisher_keeps_its_exact_write_capability(
+    job: str,
+    scope: str,
+    wrong_scope: str,
+) -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text()
+    block = _job(workflow, job)
+    assert f"{scope}: write" in block
+    changed = block.replace(f"{scope}: write", f"{wrong_scope}: write", 1)
+    assert production_policy_findings(workflow.replace(block, changed, 1))
 
 
 @pytest.mark.parametrize("runner_os", ["Linux", "macOS", "Windows"])

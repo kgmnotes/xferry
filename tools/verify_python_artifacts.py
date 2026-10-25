@@ -250,6 +250,7 @@ def wheelhouse_download_command(
     """Build the sole connected command from the wheel's dependency metadata."""
     return (
         str(python),
+        "-I",
         "-m",
         "pip",
         "download",
@@ -277,6 +278,7 @@ def pip_install_command(
     """Build an isolated, index-free artifact/dependency install command."""
     command = [
         str(python),
+        "-I",
         "-m",
         "pip",
         "--isolated",

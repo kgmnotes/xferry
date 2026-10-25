@@ -179,12 +179,20 @@ def _command(
     return result.stdout
 
 
-def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str, object]:
-    """Fail closed before any install/setup/server/sentinel mutation."""
+def guard_host(
+    *,
+    distro: str,
+    distro_version: str,
+    machine: str,
+    platform: str,
+    host_cgroup_namespace: str,
+    paths: SystemPaths = SYSTEM_PATHS,
+) -> dict[str, object]:
+    """Check the disposable native host before either lifecycle driver mutates it."""
     versions = {"ubuntu": {"22.04", "24.04", "26.04"}, "debian": {"12", "13"}}
-    _require(options.distro_version in versions.get(options.distro, set()), "host_mismatch")
-    _require(options.machine in {"x86_64", "aarch64"}, "host_mismatch")
-    _require(options.platform == f"linux-{options.machine}", "host_mismatch")
+    _require(distro_version in versions.get(distro, set()), "host_mismatch")
+    _require(machine in {"x86_64", "aarch64"}, "host_mismatch")
+    _require(platform == f"linux-{machine}", "host_mismatch")
     _require(os.geteuid() == 0, "root_required")
     _require(os.environ.get("XFERRY_SYSTEMD_REHEARSAL") == "1", "rehearsal_opt_in_required")
     _require(paths.pid1_comm.read_text().strip() == "systemd", "systemd_pid1_required")
@@ -193,8 +201,8 @@ def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str,
     namespace_pattern = r"cgroup:\[\d+\]"
     _require(
         re.fullmatch(namespace_pattern, own_namespace) is not None
-        and re.fullmatch(namespace_pattern, options.host_cgroup_namespace) is not None
-        and own_namespace != options.host_cgroup_namespace,
+        and re.fullmatch(namespace_pattern, host_cgroup_namespace) is not None
+        and own_namespace != host_cgroup_namespace,
         "private_cgroup_namespace_required",
     )
     facts: dict[str, str] = {}
@@ -204,8 +212,7 @@ def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str,
             _require(key not in facts, "host_mismatch")
             facts[key] = value.strip().strip('"').strip("'")
     _require(
-        facts == {"ID": options.distro, "VERSION_ID": options.distro_version}
-        and os.uname().machine == options.machine,
+        facts == {"ID": distro, "VERSION_ID": distro_version} and os.uname().machine == machine,
         "host_mismatch",
     )
     for path in (paths.release_root, paths.config_root, paths.data_root, paths.unit, paths.cli):
@@ -215,6 +222,30 @@ def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str,
         allowed_codes=(0, 4),
     )
     _require(state.strip() == b"not-found", "existing_managed_service")
+    return {
+        "distro": distro,
+        "distro_version": distro_version,
+        "machine": machine,
+        "platform": platform,
+        "pid1": "systemd",
+        "container": "docker",
+        "effective_uid": 0,
+        "private_cgroup_namespace": True,
+        "cgroup_namespace": own_namespace,
+        "host_cgroup_namespace": host_cgroup_namespace,
+    }
+
+
+def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str, object]:
+    """Keep the fixture-only input and host boundaries unchanged."""
+    host = guard_host(
+        distro=options.distro,
+        distro_version=options.distro_version,
+        machine=options.machine,
+        platform=options.platform,
+        host_cgroup_namespace=options.host_cgroup_namespace,
+        paths=paths,
+    )
     _require(
         options.fixtures_root.is_dir() and not options.fixtures_root.is_symlink(),
         "fixture_layout_invalid",
@@ -223,18 +254,7 @@ def guard(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[str,
     _require(not options.tls_dir.resolve().is_relative_to(fixture_root), "fixture_layout_invalid")
     for name in ("server.crt", "server.key"):
         _regular_bytes(options.tls_dir / name, 64 * 1024)
-    return {
-        "distro": options.distro,
-        "distro_version": options.distro_version,
-        "machine": options.machine,
-        "platform": options.platform,
-        "pid1": "systemd",
-        "container": "docker",
-        "effective_uid": 0,
-        "private_cgroup_namespace": True,
-        "cgroup_namespace": own_namespace,
-        "host_cgroup_namespace": options.host_cgroup_namespace,
-    }
+    return host
 
 
 def _regular_bytes(path: Path, limit: int) -> bytes:

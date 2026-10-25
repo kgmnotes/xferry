@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from xferry.management.model import SUPPORTED_MANAGED_DISTRIBUTIONS
+from tools import check_stale_docs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github/workflows/managed-systemd-matrix.yml"
@@ -28,82 +27,19 @@ def _run_block(workflow: str, name: str) -> str:
 
 
 def _policy_findings(workflow: str) -> list[str]:
-    required = (
-        "on:\n  workflow_dispatch:",
-        "github.repository == 'kgmnotes/xferry'",
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/main'",
-        'test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"',
-        'test "$GITHUB_EVENT_NAME" = "workflow_dispatch"',
-        'test "$GITHUB_REF" = "refs/heads/main"',
-        'test "$GITHUB_REF_PROTECTED" = "true"',
-        'test "$RUNNER_ENVIRONMENT" = "github-hosted"',
-        'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
-        'test "$(uname -m)" = "$MATRIX_MACHINE"',
-        "runner: ubuntu-24.04-arm",
-        "runner: ubuntu-24.04\n",
-        "platform: linux-x86_64",
-        "platform: linux-aarch64",
-        "fail-fast: false",
-        "persist-credentials: false",
-        "ref: ${{ github.sha }}",
-        "python -m pip install build pex==2.99.0 cryptography",
-        "python tools/managed_update_rehearsal.py prepare",
-        "python tools/managed_systemd_matrix.py run",
-        "python tools/managed_systemd_matrix.py verify-matrix",
-        '--source-commit "$GITHUB_SHA"',
-        '--workflow-run "$GITHUB_RUN_ID"',
-        '--workflow-attempt "$GITHUB_RUN_ATTEMPT"',
-        "needs: lifecycle",
-        'test "$LIFECYCLE_RESULT" = "success"',
-        "if: ${{ always() && github.repository",
-        "pattern: systemd-matrix-${{ github.run_id }}-${{ github.run_attempt }}-linux-*",
-        "merge-multiple: false",
-        "if-no-files-found: error",
-    )
-    findings = [f"missing {item}" for item in required if item not in workflow]
-    for item in (
-        "secrets.",
-        "environment:",
-        ": write",
-        "workflow_call:",
-        "pull_request:",
-        "push:",
-        "continue-on-error:",
-        "setup-qemu",
-    ):
-        if item in workflow:
-            findings.append(f"forbidden {item}")
-    for action in re.findall(r"uses:\s+([^\s#]+)", workflow):
-        if not re.fullmatch(r"[^@]+@[0-9a-f]{40}", action):
-            findings.append("unpinned external action")
-    prefix = "${{ runner.temp }}/systemd-matrix-evidence/"
-    expected = {
-        prefix + "architecture.json",
-        *(
-            prefix + f"{distro}-{version}.json"
-            for distro, versions in SUPPORTED_MANAGED_DISTRIBUTIONS
-            for version in versions
-        ),
-    }
-    start = workflow.index("      - name: Preserve only sanitized lifecycle receipts\n")
-    start = workflow.index("          path: |\n", start) + len("          path: |\n")
-    observed = []
-    for line in workflow[start:].splitlines():
-        if not line.startswith("            "):
-            break
-        observed.append(line.strip())
-    if set(observed) != expected or len(observed) != len(expected):
-        findings.append("unsafe or incomplete uploaded receipt paths")
-    return findings
+    return [
+        finding.message
+        for finding in check_stale_docs.managed_systemd_workflow_policy_findings(workflow)
+    ]
 
 
 def test_native_systemd_workflow_policy_and_publication_boundary() -> None:
     workflow = WORKFLOW.read_text()
     assert _policy_findings(workflow) == []
     production = (REPO_ROOT / ".github/workflows/release-production.yml").read_text()
-    assert "Full managed ten-pair systemd evidence has not yet been verified" in production
-    assert "managed-systemd-matrix.yml" not in production
+    assert "uses: ./.github/workflows/managed-systemd-matrix.yml" in production
+    assert "python tools/production_readiness.py verify-native" in production
+    assert "uses: ./.github/workflows/managed-public-matrix.yml" in production
     docs = (REPO_ROOT / "docs/release-runbook.md").read_text()
     assert "publicReleaseEvidence: false" in docs
     assert "two distinct public managed versions" in docs
@@ -127,6 +63,24 @@ def test_native_systemd_workflow_policy_and_publication_boundary() -> None:
             "permissions:\n  contents: read\n\nenvironment: production-release",
         ),
         ("on:\n  workflow_dispatch:", "on:\n  push:"),
+        ("subject-name: systemd-matrix-verified.json", "subject-name: variable.json"),
+        (
+            "subject-digest: sha256:${{ steps.subject.outputs.sha256 }}",
+            "subject-digest: sha256:abcd",
+        ),
+        ("needs: lifecycle", "needs: [lifecycle, other]"),
+        ('test "$GITHUB_WORKFLOW_REF" =', 'echo "$GITHUB_WORKFLOW_REF" ='),
+        ('--base-commit "$GITHUB_SHA"', '--base-commit "stale"'),
+        ("ref: ${{ github.sha }}", "ref: main"),
+        ("LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}", "LIFECYCLE_RESULT: success"),
+        (
+            "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+            "actions/attest-build-provenance@v3",
+        ),
+        (
+            "BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}",
+            "BUNDLE_PATH: verification-result.json",
+        ),
     ],
 )
 def test_native_systemd_workflow_rejects_boundary_regressions(before: str, after: str) -> None:
@@ -194,3 +148,85 @@ def test_actual_aggregate_gate_cannot_accept_a_failed_or_skipped_architecture(ou
         check=False,
     )
     assert (result.returncode == 0) is (outcome == "success")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {},
+        {"GITHUB_WORKFLOW_REF": "kgmnotes/xferry/.github/workflows/other.yml@refs/tags/v0.2.0"},
+        {"GITHUB_REF": "refs/tags/v00.2.0"},
+        {"GITHUB_REF": "refs/heads/main"},
+        {"GITHUB_REPOSITORY": "fork/xferry"},
+        {"GITHUB_EVENT_NAME": "pull_request"},
+        {"GITHUB_REF_PROTECTED": "false"},
+        {"RUNNER_ENVIRONMENT": "self-hosted"},
+    ],
+)
+def test_native_fixture_reusable_boundary_accepts_only_the_real_protected_tag_caller(
+    override: dict[str, str],
+) -> None:
+    environment = {
+        "PATH": os.environ["PATH"],
+        "GITHUB_REPOSITORY": "kgmnotes/xferry",
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/tags/v0.2.0",
+        "GITHUB_WORKFLOW_REF": (
+            "kgmnotes/xferry/.github/workflows/release-production.yml@refs/tags/v0.2.0"
+        ),
+        "GITHUB_REF_PROTECTED": "true",
+        "RUNNER_ENVIRONMENT": "github-hosted",
+    } | override
+    result = subprocess.run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            _run_block(WORKFLOW.read_text(), "Require protected manual fixture boundary"),
+        ],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (not override)
+
+
+@pytest.mark.parametrize("invalid", ["none", "source", "machine", "docker-host", "docker-context"])
+def test_actual_native_source_boundary_rejects_wrong_source_architecture_or_daemon(
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    programs = {
+        "git": 'printf "%s\\n" "$ACTUAL_SOURCE"',
+        "uname": 'printf "%s\\n" "$ACTUAL_MACHINE"',
+        "docker": 'if [ "$1" = context ]; then printf "%s\\n" "$ACTUAL_CONTEXT"; fi',
+    }
+    for name, body in programs.items():
+        executable = tools / name
+        executable.write_text("#!/bin/sh\n" + body + "\n")
+        executable.chmod(0o755)
+    environment = {
+        "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+        "GITHUB_SHA": "a" * 40,
+        "MATRIX_MACHINE": "x86_64",
+        "ACTUAL_SOURCE": "b" * 40 if invalid == "source" else "a" * 40,
+        "ACTUAL_MACHINE": "aarch64" if invalid == "machine" else "x86_64",
+        "ACTUAL_CONTEXT": "remote" if invalid == "docker-context" else "default",
+        "DOCKER_HOST": "tcp://remote.example" if invalid == "docker-host" else "",
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            _run_block(WORKFLOW.read_text(), "Confirm exact native source and local Docker daemon"),
+        ],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (invalid == "none")

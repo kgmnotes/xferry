@@ -494,6 +494,8 @@ def test_offline_install_argv_blocks_indexes_caches_and_sdist_build_isolation() 
     }
     assert required_offline_argv <= set(wheel_command)
     assert required_offline_argv <= set(sdist_command)
+    assert wheel_command[:4] == (str(common["python"]), "-I", "-m", "pip")
+    assert sdist_command[:4] == (str(common["python"]), "-I", "-m", "pip")
     assert "--no-build-isolation" not in wheel_command
     assert "--no-build-isolation" in sdist_command
 
@@ -514,6 +516,7 @@ def test_connected_wheelhouse_argv_resolves_metadata_and_sdist_build_tools() -> 
 
     assert command == (
         "/python",
+        "-I",
         "-m",
         "pip",
         "download",
@@ -548,29 +551,51 @@ def test_artifact_glob_must_resolve_to_exactly_one_literal_path(tmp_path: Path) 
         resolve_exactly_one("dist/xferry-*.whl", workspace=tmp_path, label="wheel")
 
 
+@pytest.mark.parametrize("ambient_metadata", [None, "dist-info", "egg-info"])
 def test_fresh_wheel_install_without_dependencies_has_no_src_module(
-    tmp_path: Path, built_artifacts: BuiltArtifacts
+    tmp_path: Path, built_artifacts: BuiltArtifacts, ambient_metadata: str | None
 ) -> None:
     """Catches source-checkout false passes without allowing a package-index request."""
+    from tools.verify_python_artifacts import pip_install_command
+
     venv_dir = tmp_path / "wheel-venv"
     create_venv = _run([sys.executable, "-m", "venv", str(venv_dir)], cwd=tmp_path)
     assert create_venv.returncode == 0, create_venv.stderr or create_venv.stdout
     python = _venv_python(venv_dir)
+    install_environment = os.environ.copy()
+    install_environment.pop("PYTHONPATH", None)
+    if ambient_metadata:
+        # Same-version metadata without a package must not make pip skip installation.
+        injected = tmp_path / "ambient-metadata"
+        metadata = injected / f"xferry-0.2.0.{ambient_metadata}"
+        metadata.mkdir(parents=True)
+        (metadata / ("METADATA" if ambient_metadata == "dist-info" else "PKG-INFO")).write_text(
+            "Metadata-Version: 2.1\nName: xferry\nVersion: 0.2.0\n\n",
+            encoding="utf-8",
+        )
+        install_environment["PYTHONPATH"] = str(injected)
+        control = _run(
+            [
+                str(python),
+                "-c",
+                "from importlib.metadata import version; assert version('xferry') == '0.2.0'",
+            ],
+            cwd=tmp_path,
+            env=install_environment,
+        )
+        assert control.returncode == 0, control.stderr or control.stdout
     install = _run(
         [
-            str(python),
-            "-m",
-            "pip",
-            "--isolated",
-            "install",
-            "--no-index",
-            "--no-cache-dir",
+            *pip_install_command(
+                python=python,
+                wheelhouse=built_artifacts.wheel.parent,
+                constraints=REPO_ROOT / "constraints/ci.txt",
+                requirements=(built_artifacts.wheel,),
+            ),
             "--no-deps",
-            "--constraint",
-            str(REPO_ROOT / "constraints/ci.txt"),
-            str(built_artifacts.wheel),
         ],
         cwd=tmp_path,
+        env=install_environment,
     )
     assert install.returncode == 0, install.stderr or install.stdout
 
@@ -581,10 +606,17 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
     probe = subprocess.run(
         [
             str(python),
+            "-I",
             "-c",
-            "import importlib.util; import xferry; "
+            "import importlib.util, importlib.metadata, sys; from pathlib import Path; "
+            "import xferry; root = Path(sys.argv[1]).resolve(); "
             "assert xferry.__version__ == '0.2.0'; "
+            "assert Path(xferry.__file__).resolve().is_relative_to(root); "
+            "distribution = importlib.metadata.distribution('xferry'); "
+            "assert distribution.version == '0.2.0'; "
+            "assert Path(distribution.locate_file('')).resolve().is_relative_to(root); "
             "assert importlib.util.find_spec('src') is None",
+            str(venv_dir),
         ],
         cwd=probe_dir,
         env=environment,
@@ -595,7 +627,7 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
     assert probe.returncode == 0, probe.stderr or probe.stdout
 
     legacy_module = subprocess.run(
-        [str(python), "-m", "src"],
+        [str(python), "-I", "-m", "src"],
         cwd=probe_dir,
         env=environment,
         capture_output=True,

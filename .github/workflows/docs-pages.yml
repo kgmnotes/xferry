@@ -35,6 +35,11 @@ jobs:
           python-version: "3.12"
       - name: Install offline signature verifier dependency
         run: python -m pip install -c constraints/ci.txt 'cryptography>=50.0'
+      - name: Install pinned cryptographic attestation verifier
+        run: |
+          set -euo pipefail
+          python tools/install_attestation_cli.py --output-bin "$RUNNER_TEMP/xferry-attestation-bin"
+          echo "$RUNNER_TEMP/xferry-attestation-bin" >> "$GITHUB_PATH"
       - name: Verify production run, signed public bytes, and source identity
         env:
           GH_TOKEN: ${{ github.token }}
