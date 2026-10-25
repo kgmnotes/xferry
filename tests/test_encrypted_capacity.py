@@ -51,7 +51,20 @@ def test_operator_limits_accept_automatic_and_large_sizes(size_mb: int) -> None:
     )
 
 
-def test_default_auto_advertises_available_quota_not_an_arbitrary_per_file_limit(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("disk_free", "expected_maximum"),
+    [
+        (4 * GIB, 4 * GIB - 512 * 16),
+        (8 * GIB, 8 * GIB - 1024 * 16),
+        (32 * GIB, 8 * GIB - 1024 * 16),
+    ],
+)
+def test_default_auto_advertises_available_quota_not_an_arbitrary_per_file_limit(
+    tmp_path, monkeypatch, disk_free: int, expected_maximum: int
+) -> None:
+    monkeypatch.setattr(
+        "xferry.storage.shutil.disk_usage", lambda _: SimpleNamespace(free=disk_free)
+    )
     settings = ServerSettings(encrypted_uploads=True, upload_storage_limit_mb=8192)
     config = settings.to_server_config()
     from dataclasses import replace
@@ -60,7 +73,7 @@ def test_default_auto_advertises_available_quota_not_an_arbitrary_per_file_limit
 
     server = XFerryServer(replace(config, root_dir=tmp_path))
     maximum = server.get_encrypted_upload_capabilities()["max_plaintext_size"]
-    assert maximum == 8 * GIB - 1024 * 16
+    assert maximum == expected_maximum
     assert settings.encrypted_upload_max_size_mb == 0
 
 
