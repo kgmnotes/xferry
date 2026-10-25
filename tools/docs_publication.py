@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import github_release_assets  # noqa: E402
+from tools import github_release_assets, production_readiness  # noqa: E402
 from tools.candidate_inventory import unpack_candidate, verify_inventory  # noqa: E402
 from tools.check_release_preflight import (  # noqa: E402
     _source_version,
@@ -93,6 +93,10 @@ REQUIRED_JOBS = frozenset(
         "verify-pypi-identity",
         "post-release",
         "final-gate",
+        "post-managed / Prepare immutable public managed plan",
+        "post-managed / Public managed lifecycle (linux-x86_64, native)",
+        "post-managed / Public managed lifecycle (linux-aarch64, native)",
+        "post-managed / Verify and attest public managed matrix",
     }
     | {
         f"Public pipx ({os_name}, Python {version})"
@@ -345,6 +349,137 @@ def verify_production_run(
     if required != REQUIRED_JOBS:
         raise ValueError("required production consumer or final gate jobs are missing")
     return {**run, "head_branch": tag}
+
+
+def verify_public_managed_evidence(
+    api: ReleaseAPI,
+    run: Mapping[str, Any],
+    destination: Path,
+    *,
+    tag: str,
+) -> dict[str, object]:
+    """Require this completed attempt's immutable, OIDC-authenticated public matrix.
+
+    Artifact transport is separate from the anonymous public-channel client;
+    GitHub API authentication must never be added to that client's host policy.
+    """
+    version_from_tag(tag)
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        raise ValueError("Pages requires a completed successful public managed production run")
+    run_id = _positive_id(run.get("id"), "managed production run")
+    attempt = _positive_id(run.get("run_attempt"), "managed production attempt")
+    expected_name = f"managed-public-verified-{run_id}-{attempt}"
+    endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts"
+    selected: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    total: int | None = None
+    for page in range(1, MAX_PAGES + 1):
+        response = api.request("GET", f"{endpoint}?per_page={PAGE_SIZE}&page={page}")
+        document = response.document
+        if not isinstance(document, dict) or not isinstance(document.get("artifacts"), list):
+            raise ValueError("managed evidence artifacts pagination metadata is invalid")
+        page_total = document.get("total_count")
+        if (
+            type(page_total) is not int
+            or not 0 <= page_total <= MAX_PAGES * PAGE_SIZE
+            or (total is not None and total != page_total)
+        ):
+            raise ValueError("managed evidence artifacts pagination total is invalid or changed")
+        total = page_total
+        batch = document["artifacts"]
+        if len(batch) > PAGE_SIZE or any(not isinstance(item, dict) for item in batch):
+            raise ValueError("managed evidence artifacts pagination page is invalid")
+        has_next = _next_page(response.link, endpoint, page)
+        if has_next and len(batch) != PAGE_SIZE:
+            raise ValueError("managed evidence artifacts pagination has a truncated page")
+        for artifact in batch:
+            artifact_id = _positive_id(artifact.get("id"), "managed evidence artifact ID")
+            if artifact_id in seen:
+                raise ValueError("managed evidence artifacts pagination duplicated an artifact")
+            seen.add(artifact_id)
+            if artifact.get("name") == expected_name:
+                selected.append(artifact)
+        if not has_next and len(batch) < PAGE_SIZE:
+            break
+    else:
+        raise ValueError("managed evidence artifacts pagination exceeds its bound")
+    if total != len(seen):
+        raise ValueError("managed evidence artifacts pagination omitted artifacts")
+    if len(selected) != 1:
+        raise ValueError("this production attempt must have exactly one public managed artifact")
+
+    artifact_id = _positive_id(selected[0].get("id"), "managed evidence artifact ID")
+    artifact = api.request("GET", f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}").document
+    identity_fields = ("id", "name", "digest", "size_in_bytes", "expired")
+    if not isinstance(artifact, dict) or any(
+        artifact.get(field) != selected[0].get(field) for field in identity_fields
+    ):
+        raise ValueError("managed evidence artifact identity changed before download")
+    digest, size = artifact.get("digest"), artifact.get("size_in_bytes")
+    producer = artifact.get("workflow_run")
+    repository = run.get("repository")
+    if (
+        artifact.get("expired") is not False
+        or not isinstance(digest, str)
+        or not digest.startswith("sha256:")
+        or _SHA_RE.fullmatch(digest.removeprefix("sha256:")) is None
+        or type(size) is not int
+        or not 0 < size <= production_readiness.MAX_ARCHIVE_BYTES
+        or not isinstance(producer, dict)
+        or not isinstance(repository, dict)
+        or producer.get("id") != run_id
+        or producer.get("head_sha") != run.get("head_sha")
+        or producer.get("head_branch") not in (None, tag)
+        or producer.get("repository_id") != repository.get("id")
+        or producer.get("head_repository_id") != repository.get("id")
+    ):
+        raise ValueError("public managed artifact is expired, foreign or malformed")
+
+    destination.mkdir(parents=True, exist_ok=False)
+    archive = destination / "managed-public.zip"
+    production_readiness.download_evidence_archive(
+        artifact_id, archive, token=os.environ.get("GH_TOKEN")
+    )
+    evidence = production_readiness.verify_evidence_archive(
+        kind="public",
+        artifact=artifact,
+        run=run,
+        archive=archive,
+        artifact_id=artifact_id,
+        evidence_sha256=None,
+        source_commit=run["head_sha"],
+        tag=tag,
+        workflow_run=run_id,
+        workflow_attempt=attempt,
+    )
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("scope") != "native-systemd-public-matrix"
+        or evidence.get("status") != "passed"
+        or evidence.get("publicReleaseEvidence") is not True
+        or evidence.get("sourceCommit") != run["head_sha"]
+        or evidence.get("workflowRun") != str(run_id)
+        or type(evidence.get("workflowAttempt")) is not int
+        or evidence["workflowAttempt"] != attempt
+        or evidence.get("targetTag") != tag
+        or type(evidence.get("pairCount")) is not int
+        or evidence["pairCount"] != 10
+    ):
+        raise ValueError("Pages requires authenticated full public managed lifecycle evidence")
+    previous_tag = evidence.get("previousTag")
+    if not isinstance(previous_tag, str):
+        raise ValueError("public managed lifecycle requires a distinct public predecessor")
+    previous = tuple(map(int, version_from_tag(previous_tag).split(".")))
+    current = tuple(map(int, version_from_tag(tag).split(".")))
+    if previous >= current:
+        raise ValueError("public managed lifecycle requires a distinct earlier public predecessor")
+    return {
+        "artifact_id": artifact_id,
+        "artifact_zip_sha256": digest.removeprefix("sha256:"),
+        "target_tag": tag,
+        "previous_tag": previous_tag,
+        "pair_count": 10,
+    }
 
 
 def _docs_path(path: object) -> bool:
@@ -764,6 +899,7 @@ def verify_publication(
     verify_source(api, run, documentation_commit)
     with TemporaryDirectory(prefix="xferry-pages-publication-") as temporary:
         root = Path(temporary)
+        managed = verify_public_managed_evidence(api, run, root / "managed", tag=expected_tag)
         identity, release = verify_public_release(public, run, root / "assets", key_ring=key_ring)
         verify_public_pypi(public, identity, root / "assets", root / "pypi")
         ghcr_digest = verify_public_ghcr(public, identity, root / "assets", root / "candidate")
@@ -783,6 +919,8 @@ def verify_publication(
         "release_id": release["id"],
         "ghcr_digest": ghcr_digest,
         "public_channels_verified": ["github-release", "pypi", "ghcr"],
+        "public_managed_verified": True,
+        "managed_evidence": managed,
     }
 
 

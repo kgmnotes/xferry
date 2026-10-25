@@ -2,6 +2,14 @@ name: Native Systemd Fixture Matrix
 
 on:
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Immutable attested native readiness evidence artifact
+        value: ${{ jobs.verify-matrix.outputs.artifact-id }}
+      evidence-sha256:
+        description: SHA256 of the attested native evidence JSON
+        value: ${{ jobs.verify-matrix.outputs.evidence-sha256 }}
 
 permissions:
   contents: read
@@ -16,7 +24,7 @@ env:
 
 jobs:
   lifecycle:
-    if: ${{ github.repository == 'kgmnotes/xferry' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.repository == 'kgmnotes/xferry' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
     name: Systemd fixture lifecycle (${{ matrix.platform }}, native)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -37,10 +45,15 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "kgmnotes/xferry"
-          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
-          test "$GITHUB_REF" = "refs/heads/main"
           test "$GITHUB_REF_PROTECTED" = "true"
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            test "$GITHUB_REF" = "refs/heads/main"
+          else
+            test "$GITHUB_EVENT_NAME" = push
+            [[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            test "$GITHUB_WORKFLOW_REF" = "kgmnotes/xferry/.github/workflows/release-production.yml@${GITHUB_REF}"
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
@@ -129,13 +142,18 @@ jobs:
           retention-days: 14
 
   verify-matrix:
-    if: ${{ always() && github.repository == 'kgmnotes/xferry' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    if: ${{ always() && github.repository == 'kgmnotes/xferry' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
     needs: lifecycle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
       actions: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      evidence-sha256: ${{ steps.subject.outputs.sha256 }}
     steps:
       - name: Require both architecture jobs to pass
         env:
@@ -172,10 +190,35 @@ jobs:
             --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$RUNNER_TEMP/systemd-matrix-verified.json"
 
-      - name: Preserve verified nonproduction ten-pair receipt
+      - name: Prepare exact nonpublic attestation subject
+        id: subject
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/managed-native-handoff"
+          cp "$RUNNER_TEMP/systemd-matrix-verified.json" "$RUNNER_TEMP/managed-native-handoff/systemd-matrix-verified.json"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/managed-native-handoff/systemd-matrix-verified.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Attest source-bound native prepublication evidence with OIDC
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: systemd-matrix-verified.json
+          subject-digest: sha256:${{ steps.subject.outputs.sha256 }}
+
+      - name: Preserve the exact Sigstore bundle without a private signing key
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/managed-native-handoff/attestation.json"
+
+      - name: Preserve attested nonpublic ten-pair receipt
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
         with:
           name: systemd-matrix-verified-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/systemd-matrix-verified.json
+          path: |
+            ${{ runner.temp }}/managed-native-handoff/systemd-matrix-verified.json
+            ${{ runner.temp }}/managed-native-handoff/attestation.json
           if-no-files-found: error
           retention-days: 14

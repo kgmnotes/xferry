@@ -8,24 +8,35 @@ before implementation.
 
 ## Development setup
 
+Use Python 3.11 or newer for development and pre-commit hook environments;
+Python 3.12 is recommended. The application continues to support Python 3.10
+through 3.14. Its runtime, test, and lint checks still cover Python 3.10, but
+the `dev` extra installs pre-commit only on Python 3.11 and newer so its pinned
+dependencies can use supported security fixes.
+
 ```bash
 git clone https://github.com/kgmnotes/xferry.git
 cd xferry
-python3 -m venv .venv
+python3.12 -m venv .venv
 . .venv/bin/activate
 PIP_CONSTRAINT=constraints/ci.txt python -m pip install -e '.[dev,lint,test,docs]'
 pre-commit install
 ```
 
-The project supports Python 3.10 through 3.14. `constraints/ci.txt` pins the
-toolchain used by CI, documentation, security checks, and container builds.
+`constraints/ci.txt` pins the toolchain used by CI, documentation, security
+checks, and container builds. Create a separate Python 3.10 environment when
+checking the minimum application runtime; run hooks from the development
+environment above.
 
 On Windows PowerShell:
 
 ```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 $env:PIP_CONSTRAINT = "constraints/ci.txt"
 python -m pip install -e ".[dev,lint,test,docs]"
 Remove-Item Env:PIP_CONSTRAINT
+pre-commit install
 ```
 
 ## Branches and commits

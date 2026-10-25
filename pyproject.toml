@@ -62,7 +62,7 @@ dev = [
     "pytest>=9.0",
     "pytest-cov>=6.0",
     "hypothesis>=6.0",
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.0; python_version >= '3.11'",
     "setuptools>=75.0",
     "wheel>=0.45",
 ]

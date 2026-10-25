@@ -32,6 +32,16 @@ ATTEMPT = 2
 RUN_ENDPOINT = f"{ROOT}/actions/runs/{RUN_ID}"
 JOBS_ENDPOINT = f"{RUN_ENDPOINT}/attempts/{ATTEMPT}/jobs?per_page=100&page=1"
 RELEASE_ID = 321
+MANAGED_ARTIFACT_ID = 456
+MANAGED_ARTIFACTS_ENDPOINT = f"{RUN_ENDPOINT}/artifacts?per_page=100&page=1"
+MANAGED_ARTIFACT_ENDPOINT = f"{ROOT}/actions/artifacts/{MANAGED_ARTIFACT_ID}"
+MANAGED_ARCHIVE = b"unit-only archive; the production verifier owns ZIP and OIDC validation"
+MANAGED_JOBS = (
+    "post-managed / Prepare immutable public managed plan",
+    "post-managed / Public managed lifecycle (linux-x86_64, native)",
+    "post-managed / Public managed lifecycle (linux-aarch64, native)",
+    "post-managed / Verify and attest public managed matrix",
+)
 
 
 def _json(document: object) -> bytes:
@@ -70,11 +80,47 @@ def _jobs() -> list[dict[str, Any]]:
     ]
 
 
+def _managed_artifact() -> dict[str, Any]:
+    return {
+        "id": MANAGED_ARTIFACT_ID,
+        "name": f"managed-public-verified-{RUN_ID}-{ATTEMPT}",
+        "digest": "sha256:" + hashlib.sha256(MANAGED_ARCHIVE).hexdigest(),
+        "size_in_bytes": len(MANAGED_ARCHIVE),
+        "expired": False,
+        "workflow_run": {
+            "id": RUN_ID,
+            "head_sha": COMMIT,
+            "head_branch": TAG,
+            "repository_id": 1341230685,
+            "head_repository_id": 1341230685,
+        },
+    }
+
+
+def _managed_result() -> dict[str, Any]:
+    return {
+        "scope": "native-systemd-public-matrix",
+        "status": "passed",
+        "sourceCommit": COMMIT,
+        "workflowRun": str(RUN_ID),
+        "workflowAttempt": ATTEMPT,
+        "targetTag": TAG,
+        "previousTag": "v0.0.9",
+        "publicReleaseEvidence": True,
+        "pairCount": 10,
+    }
+
+
 class FakeAPI:
     def __init__(self, documents: dict[str, object] | None = None) -> None:
         self.documents = {
             RUN_ENDPOINT: _run(),
             JOBS_ENDPOINT: {"total_count": len(_jobs()), "jobs": _jobs()},
+            MANAGED_ARTIFACTS_ENDPOINT: {
+                "total_count": 1,
+                "artifacts": [_managed_artifact()],
+            },
+            MANAGED_ARTIFACT_ENDPOINT: _managed_artifact(),
             f"{ROOT}/git/ref/heads/main": {
                 "ref": "refs/heads/main",
                 "object": {"type": "commit", "sha": COMMIT},
@@ -99,6 +145,34 @@ class FakeAPI:
         if isinstance(response, Exception):
             raise response
         return response if isinstance(response, APIResponse) else APIResponse(response)
+
+
+@pytest.fixture(autouse=True)
+def managed_verifier(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """Isolate the separately tested ZIP/OIDC boundary, never fake its production fallback."""
+    calls: dict[str, list[dict[str, Any]]] = {"downloads": [], "verifications": []}
+    monkeypatch.setenv("GH_TOKEN", "unit-evidence-api-token")
+
+    def download(artifact_id: int, path: Path, *, token: str | None = None) -> None:
+        calls["downloads"].append({"artifact_id": artifact_id, "token": token})
+        path.write_bytes(MANAGED_ARCHIVE)
+
+    def verify(**arguments: Any) -> dict[str, Any]:
+        calls["verifications"].append(arguments)
+        assert arguments["kind"] == "public"
+        assert arguments["artifact_id"] == MANAGED_ARTIFACT_ID
+        assert arguments["artifact"]["id"] == MANAGED_ARTIFACT_ID
+        assert arguments["archive"].read_bytes() == MANAGED_ARCHIVE
+        assert arguments["evidence_sha256"] is None
+        assert arguments["source_commit"] == COMMIT
+        assert arguments["tag"] == TAG
+        assert arguments["workflow_run"] == RUN_ID
+        assert arguments["workflow_attempt"] == ATTEMPT
+        return _managed_result()
+
+    monkeypatch.setattr(gate.production_readiness, "download_evidence_archive", download)
+    monkeypatch.setattr(gate.production_readiness, "verify_evidence_archive", verify)
+    return calls
 
 
 class FakePublic(gate.PublicHTTP):
@@ -206,7 +280,9 @@ def public_release(tmp_path: Path) -> tuple[FakePublic, dict, Path, ReleaseKeyRi
     return FakePublic(documents, files), identity, workspace, key_ring
 
 
-def test_latest_successful_run_and_all_public_channels_permit_pages(public_release) -> None:
+def test_latest_successful_run_and_all_public_channels_permit_pages(
+    public_release, managed_verifier
+) -> None:
     public, _identity_document, workspace, key_ring = public_release
     receipt = gate.verify_publication(
         FakeAPI(),
@@ -219,6 +295,15 @@ def test_latest_successful_run_and_all_public_channels_permit_pages(public_relea
     assert receipt["production_attempt"] == ATTEMPT
     assert receipt["release_id"] == RELEASE_ID
     assert receipt["public_channels_verified"] == ["github-release", "pypi", "ghcr"]
+    assert receipt["public_managed_verified"] is True
+    assert receipt["managed_evidence"] == {
+        "artifact_id": MANAGED_ARTIFACT_ID,
+        "artifact_zip_sha256": hashlib.sha256(MANAGED_ARCHIVE).hexdigest(),
+        "target_tag": TAG,
+        "previous_tag": "v0.0.9",
+        "pair_count": 10,
+    }
+    assert len(managed_verifier["verifications"]) == 1
     assert any(url.startswith("https://files.pythonhosted.org/") for url, _ in public.calls)
     assert all(
         headers["Authorization"] == "Bearer anonymous-token"
@@ -301,6 +386,209 @@ def test_missing_or_duplicate_final_gate_is_rejected() -> None:
                 FakeAPI({JOBS_ENDPOINT: {"total_count": len(selected), "jobs": selected}}),
                 RUN_ID,
             )
+
+
+@pytest.mark.parametrize("job_name", MANAGED_JOBS)
+@pytest.mark.parametrize("change", ["missing", "failure", "skipped", "stale", "duplicate"])
+def test_pages_requires_every_live_public_managed_job(job_name: str, change: str) -> None:
+    jobs = _jobs()
+    selected = next(job for job in jobs if job["name"] == job_name)
+    if change == "missing":
+        jobs.remove(selected)
+    elif change in {"failure", "skipped"}:
+        selected["conclusion"] = change
+    elif change == "stale":
+        selected["run_attempt"] = ATTEMPT - 1
+    else:
+        jobs.append({**selected, "id": 999})
+    with pytest.raises(ValueError):
+        gate.verify_production_run(
+            FakeAPI({JOBS_ENDPOINT: {"total_count": len(jobs), "jobs": jobs}}), RUN_ID
+        )
+
+
+@pytest.mark.parametrize("selection", ["missing", "duplicate", "previous-attempt"])
+def test_pages_requires_exact_attempt_public_artifact(selection: str, tmp_path: Path) -> None:
+    artifacts = [_managed_artifact()]
+    if selection == "missing":
+        artifacts = []
+    elif selection == "duplicate":
+        artifacts.append({**_managed_artifact(), "id": MANAGED_ARTIFACT_ID + 1})
+    else:
+        artifacts[0]["name"] = f"managed-public-verified-{RUN_ID}-{ATTEMPT - 1}"
+    api = FakeAPI(
+        {MANAGED_ARTIFACTS_ENDPOINT: {"total_count": len(artifacts), "artifacts": artifacts}}
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        gate.verify_public_managed_evidence(api, _run(), tmp_path / "evidence", tag=TAG)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expired": True},
+        {"digest": "sha256:not-a-digest"},
+        {"size_in_bytes": True},
+        {"size_in_bytes": 0},
+        {"size_in_bytes": gate.production_readiness.MAX_ARCHIVE_BYTES + 1},
+        {"workflow_run": {**_managed_artifact()["workflow_run"], "head_sha": "b" * 40}},
+        {"workflow_run": {**_managed_artifact()["workflow_run"], "id": RUN_ID + 1}},
+        {"workflow_run": {**_managed_artifact()["workflow_run"], "head_branch": "main"}},
+        {"workflow_run": {**_managed_artifact()["workflow_run"], "repository_id": 99}},
+        {"workflow_run": {**_managed_artifact()["workflow_run"], "head_repository_id": 99}},
+    ],
+)
+def test_pages_rejects_foreign_expired_or_malformed_managed_artifact_before_download(
+    changes: dict[str, Any], tmp_path: Path, managed_verifier
+) -> None:
+    artifact = {**_managed_artifact(), **changes}
+    api = FakeAPI(
+        {
+            MANAGED_ARTIFACTS_ENDPOINT: {"total_count": 1, "artifacts": [artifact]},
+            MANAGED_ARTIFACT_ENDPOINT: artifact,
+        }
+    )
+    with pytest.raises(ValueError, match="expired, foreign or malformed"):
+        gate.verify_public_managed_evidence(api, _run(), tmp_path / "evidence", tag=TAG)
+    assert managed_verifier["downloads"] == []
+
+
+def test_managed_artifact_identity_must_not_change_between_list_and_exact_get(
+    tmp_path: Path, managed_verifier
+) -> None:
+    api = FakeAPI(
+        {MANAGED_ARTIFACT_ENDPOINT: {**_managed_artifact(), "digest": "sha256:" + "b" * 64}}
+    )
+    with pytest.raises(ValueError, match="identity changed"):
+        gate.verify_public_managed_evidence(api, _run(), tmp_path / "evidence", tag=TAG)
+    assert managed_verifier["downloads"] == []
+
+
+def test_managed_evidence_uses_the_verified_tag_when_run_tag_is_null(tmp_path: Path) -> None:
+    receipt = gate.verify_public_managed_evidence(
+        FakeAPI(), _run(head_branch=None), tmp_path / "evidence", tag=TAG
+    )
+    assert receipt["target_tag"] == TAG
+
+
+@pytest.mark.parametrize("changes", [{"status": "in_progress"}, {"conclusion": "failure"}])
+def test_pages_never_accepts_managed_evidence_from_an_unfinished_run(
+    changes: dict[str, Any], tmp_path: Path, managed_verifier
+) -> None:
+    with pytest.raises(ValueError, match="completed successful"):
+        gate.verify_public_managed_evidence(
+            FakeAPI(), _run(**changes), tmp_path / "evidence", tag=TAG
+        )
+    assert managed_verifier["downloads"] == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"scope": "native-systemd-ten-pair-fixture-matrix"},
+        {"status": "bootstrap"},
+        {"publicReleaseEvidence": False},
+        {"sourceCommit": "b" * 40},
+        {"workflowRun": str(RUN_ID + 1)},
+        {"workflowAttempt": True},
+        {"workflowAttempt": ATTEMPT - 1},
+        {"targetTag": "v0.2.0"},
+        {"pairCount": 9},
+        {"pairCount": True},
+        {"previousTag": None},
+        {"previousTag": TAG},
+        {"previousTag": "v9.0.0"},
+    ],
+)
+def test_fixture_bootstrap_incomplete_or_misbound_receipt_cannot_authorize_pages(
+    public_release, changes: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    public, _identity_document, workspace, key_ring = public_release
+    monkeypatch.setattr(
+        gate.production_readiness,
+        "verify_evidence_archive",
+        lambda **_arguments: {**_managed_result(), **changes},
+    )
+    with pytest.raises(ValueError):
+        gate.verify_publication(
+            FakeAPI(),
+            public,
+            production_run=RUN_ID,
+            documentation_commit=COMMIT,
+            workspace=workspace,
+            key_ring=key_ring,
+        )
+    assert public.calls == []
+
+
+def test_a_green_workflow_or_exported_verification_json_cannot_replace_crypto_verification(
+    public_release, monkeypatch: pytest.MonkeyPatch, managed_verifier
+) -> None:
+    public, _identity_document, workspace, key_ring = public_release
+
+    def reject(**_arguments: Any) -> dict[str, Any]:
+        raise ValueError("cryptographic managed evidence verification rejected")
+
+    monkeypatch.setattr(gate.production_readiness, "verify_evidence_archive", reject)
+    with pytest.raises(ValueError, match="cryptographic"):
+        gate.verify_publication(
+            FakeAPI(),
+            public,
+            production_run=RUN_ID,
+            documentation_commit=COMMIT,
+            workspace=workspace,
+            key_ring=key_ring,
+        )
+    assert len(managed_verifier["downloads"]) == 1
+    assert public.calls == []
+
+
+def test_managed_artifact_pagination_requires_all_pages(tmp_path: Path) -> None:
+    extra = [{"id": 1000 + index, "name": f"Other {index}"} for index in range(100)]
+    second = MANAGED_ARTIFACTS_ENDPOINT.replace("&page=1", "&page=2")
+    documents = {
+        MANAGED_ARTIFACTS_ENDPOINT: APIResponse(
+            {"total_count": 101, "artifacts": extra},
+            f'<https://api.github.com/{second}>; rel="next"',
+        ),
+        second: {"total_count": 101, "artifacts": [_managed_artifact()]},
+    }
+    receipt = gate.verify_public_managed_evidence(
+        FakeAPI(documents), _run(), tmp_path / "evidence", tag=TAG
+    )
+    assert receipt["artifact_id"] == MANAGED_ARTIFACT_ID
+    documents[second] = {"total_count": 101, "artifacts": []}
+    with pytest.raises(ValueError, match="omitted"):
+        gate.verify_public_managed_evidence(
+            FakeAPI(documents), _run(), tmp_path / "incomplete", tag=TAG
+        )
+
+
+@pytest.mark.parametrize("bad", ["foreign-link", "duplicate-id", "changed-total", "truncated"])
+def test_managed_artifact_pagination_rejects_ambiguous_or_foreign_evidence(
+    bad: str, tmp_path: Path
+) -> None:
+    extra = [{"id": 1000 + index, "name": f"Other {index}"} for index in range(100)]
+    second = MANAGED_ARTIFACTS_ENDPOINT.replace("&page=1", "&page=2")
+    first_page = {"total_count": 101, "artifacts": extra}
+    second_page = {"total_count": 101, "artifacts": [_managed_artifact()]}
+    link = f'<https://api.github.com/{second}>; rel="next"'
+    if bad == "foreign-link":
+        link = '<https://evil.example/artifacts?page=2>; rel="next"'
+    elif bad == "duplicate-id":
+        second_page["artifacts"] = [extra[0]]
+    elif bad == "changed-total":
+        second_page["total_count"] = 102
+    else:
+        first_page["artifacts"] = extra[:-1]
+    api = FakeAPI(
+        {
+            MANAGED_ARTIFACTS_ENDPOINT: APIResponse(first_page, link),
+            second: second_page,
+        }
+    )
+    with pytest.raises(ValueError, match="pagination"):
+        gate.verify_public_managed_evidence(api, _run(), tmp_path / "evidence", tag=TAG)
 
 
 def test_jobs_pagination_requires_all_pages_and_exact_total() -> None:
@@ -523,3 +811,39 @@ def test_public_metadata_rejects_duplicate_or_nonfinite_json() -> None:
     for raw in (b'{"tag": "v0.1.0", "tag": "v0.2.0"}', b'{"size": NaN}'):
         with pytest.raises(ValueError):
             gate._json(raw)
+
+
+def test_runbook_separates_signed_prepublication_and_full_public_evidence() -> None:
+    text = (gate.REPO_ROOT / "docs/release-runbook.md").read_text()
+    normalized = " ".join(text.split())
+
+    for required in (
+        "publicReleaseEvidence: false",
+        "**Prepublication readiness:**",
+        "**Public managed acceptance:**",
+        "publicReleaseEvidence: true",
+        "two distinct public managed versions",
+        "GitHub OIDC artifact provenance",
+        "the fixture jobs must never receive the production signing secret",
+        "`final-gate` depends on `post-managed`",
+        "cryptographically verifies its OIDC provenance",
+        "never forwards GitHub API authentication to artifact-storage redirects",
+    ):
+        assert required in normalized
+
+
+def test_runbook_bootstrap_cannot_unlock_pages_or_complete_the_stage() -> None:
+    text = (gate.REPO_ROOT / "docs/release-runbook.md").read_text()
+    normalized = " ".join(text.split())
+
+    for required in (
+        "## First Public Release Bootstrap",
+        "separate owner approval for the exact version/source",
+        "public_baseline_required",
+        "`post-managed` and `final-gate` cannot pass this bootstrap",
+        "public Pages remains blocked",
+        "STAGE-015 remains incomplete",
+        "Do not rerun publishers, overwrite that version",
+        "bootstrap is not a general bypass or automatic permission for a second release",
+    ):
+        assert required in normalized

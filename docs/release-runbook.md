@@ -59,6 +59,10 @@ All items in this list are blocking. Stop on the first missing item.
   `docs/security.md`.
 - The candidate artifact retention window covers the full release operation
   and post-publish checks.
+- A current-source native systemd matrix has passed both architectures and all
+  ten host pairs. Its exact receipt is bound to this production run/attempt and
+  authenticated by GitHub OIDC artifact provenance before the signer can run.
+  This is prepublication evidence, not public release acceptance.
 - No production PyPI package, GHCR tag, GitHub Release, or Pages deployment
   already exists for the target version.
 
@@ -83,6 +87,12 @@ Record the answer and evidence link for every item before creating the tag.
 | Communications | Release notes, operator notice, and withdrawal notice template are ready |
 
 Any `No`, `Unknown`, or expired evidence is a no-go.
+
+A first-public-release bootstrap must be recorded explicitly as such under the
+rollback-target item, with separate owner approval for the exact version/source
+and for the absence of a public predecessor. This does not waive any signing,
+identity, review or publication control, and does not make the full public
+lifecycle or Pages gates pass. See [First public release bootstrap](#first-public-release-bootstrap).
 
 ## Native Systemd Fixture Rehearsal
 
@@ -110,11 +120,53 @@ credentials, private loopback TLS material and authentication/configuration
 hashes must not be uploaded. Ephemeral signing keys remain in memory; the
 production signing Environment is not used.
 
-The receipt explicitly records `publicReleaseEvidence: false`. This rehearsal
-does not replace staging publication receipts or post-publish acceptance,
-and does not unlock the production-readiness gate. Actual public update and
-rollback acceptance requires two distinct public managed versions; a
-first-release install or same-version update cannot prove that lifecycle.
+The receipt explicitly records `publicReleaseEvidence: false`. The workflow may
+also be called inside the protected production tag run, with the exact caller
+source and both native architecture jobs still mandatory. Its collector attests
+the verified JSON receipt with a SHA-pinned GitHub artifact-provenance action.
+OIDC signing is separate from the production Ed25519 key: the fixture jobs must
+never receive the production signing secret or use a publisher Environment.
+
+The release has two separate acceptance phases:
+
+1. **Prepublication readiness:** `native-readiness` produces the current-source
+   fixture evidence; `production-readiness` checks the exact run/attempt,
+   repository, source, artifact ID, ZIP digest/size, ten-pair contents and OIDC
+   provenance before `sign-assets` may run. Wrong signer workflow, wrong source,
+   missing or unverified signatures, expired/substituted artifacts, a failed
+   native architecture or an unsupported verifier are rejection conditions.
+   The accepted receipt remains nonpublic fixture evidence.
+2. **Public managed acceptance:** after `post-release` has verified the real
+   public Release, `post-managed` resolves and authenticates two different
+   public versions and runs the complete native ten-pair lifecycle. Only this
+   phase may produce `publicReleaseEvidence: true` and satisfy the final public
+   gate. Fixtures or same-version updates cannot substitute for it.
+
+This phase split does not turn a fixture run into public evidence. Actual public
+update and rollback acceptance requires two distinct public managed versions;
+a first-release install or same-version update cannot prove that lifecycle.
+
+## First Public Release Bootstrap
+
+Before any publication, the owner must approve one exact version/tag/source and
+record whether a valid public predecessor exists. Neither an earlier staging
+approval nor successful local code/tests authorizes a production release.
+
+If the separately approved first public version has no valid earlier public
+managed version, the public plan fails closed with `public_baseline_required`.
+It must not invent a predecessor, use an artifact-only fixture, report a
+same-version update as an upgrade, skip a required pair or change a result to
+success. The already-published artifacts remain immutable; preserve their
+identities and report the bootstrap's incomplete acceptance. Do not rerun
+publishers, overwrite that version, or withdraw artifacts automatically just to
+make the gate green.
+
+`post-managed` and `final-gate` cannot pass this bootstrap, public Pages remains
+blocked, and STAGE-015 remains incomplete. A later, separately approved,
+distinct public version must exercise actual upgrade/health/rollback/uninstall
+against the earlier trusted public version on all ten pairs. Other security or
+publication failures still follow the incident runbook; bootstrap is not a
+general bypass or automatic permission for a second release.
 
 ## Release Order
 
@@ -163,7 +215,12 @@ Use this order so a partial release has a clear recovery point.
 7. Run post-publish managed checks.
    On every supported managed host pair, verify install, setup, status, doctor,
    exact-version update, health, rollback, and conservative uninstall. Keep
-   host, architecture, version, digest, and log receipt links with the release.
+   host, architecture, both public version identities, digest, and sanitized
+   receipt links with the release. The `post-managed` reusable workflow first
+   prepares an immutable public plan, then requires native x86_64 and aarch64
+   jobs and its verified/attested collector. Missing public baseline or failed,
+   incomplete, duplicate, fixture-only or foreign-source evidence fails the job.
+   `final-gate` depends on `post-managed` as well as all other public consumers.
 
 8. Prepare separate Pages publication.
    The current production workflow does not deploy Pages. Publish public
@@ -171,11 +228,21 @@ Use this order so a partial release has a clear recovery point.
    checks pass. Dispatch `Documentation Pages` on `main` with `production_run`
    set to that completed Production Release run ID. Its read-only gate checks
    the successful run and all consumer jobs, signed public assets, exact PyPI
-   bytes, and anonymous GHCR access before the protected `github-pages`
+   bytes, anonymous GHCR access, and authenticated full public managed evidence
+   before the protected `github-pages`
    deployment job receives its Pages permissions. The release source must
    match `main`, or differ only by documentation changes. Remove the staged
    availability notices only after these public checks pass. No signing secret
    is used by the documentation workflow.
+
+   A green job name or an exported verification-result JSON file is not enough.
+   The Pages verifier retrieves exactly
+   `managed-public-verified-<run>-<attempt>` by immutable artifact ID, checks its
+   API identity and ZIP bytes, and cryptographically verifies its OIDC provenance
+   and two-public-version ten-pair receipt. Public-channel requests stay anonymous;
+   the separate bounded Actions-artifact transport never forwards GitHub API
+   authentication to artifact-storage redirects. The pinned supported verifier
+   is mandatory; an old CLI or an unverifiable signature fails closed.
 
 ## Post-Publish Evidence
 
@@ -188,7 +255,10 @@ Attach or link these receipts to the release notes or release report:
 - GHCR version tag, digest, platform manifest, SBOM, and provenance evidence.
 - GitHub Release URL, asset names, sizes, SHA-256 hashes, signatures, and
   `--latest=false` or equivalent evidence.
-- Managed host matrix results for install, update, rollback, and uninstall.
+- Managed host matrix results for install, update, rollback, and uninstall,
+  including two distinct public versions, all ten pairs, exact source/run/attempt,
+  immutable artifact ID/digest and verified OIDC provenance. Retain nonproduction
+  native-readiness evidence separately; it is not public managed acceptance.
 - Pages deployment URL and commit SHA, when a separate docs publication has
   run.
 

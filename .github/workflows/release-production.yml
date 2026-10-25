@@ -201,16 +201,63 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  native-readiness:
+    needs: [preflight, candidate]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/managed-systemd-matrix.yml
+
   production-readiness:
-    needs: [preflight, candidate, prepare-candidate]
+    needs: [preflight, candidate, prepare-candidate, native-readiness]
     runs-on: ubuntu-latest
-    permissions: {}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Fail closed until the managed ten-pair matrix has immutable evidence
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.source-commit }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned cryptographic attestation verifier
         run: |
-          echo "Full managed ten-pair systemd evidence has not yet been verified for this release." >&2
-          echo "A dedicated immutable, signed evidence source must replace this fail-closed gate before publication." >&2
-          exit 1
+          set -euo pipefail
+          python tools/install_attestation_cli.py --output-bin "$RUNNER_TEMP/xferry-attestation-bin"
+          echo "$RUNNER_TEMP/xferry-attestation-bin" >> "$GITHUB_PATH"
+      - name: Read exact current-run native evidence identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_ARTIFACT: ${{ needs.native-readiness.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${EVIDENCE_ARTIFACT}" > native-artifact.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > production-run.json
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tools.production_readiness import download_evidence_archive
+          download_evidence_archive(int(os.environ["EVIDENCE_ARTIFACT"]), Path("native-evidence.zip"))
+          PY
+      - name: Require immutable signed ten-pair prepublication evidence
+        env:
+          EVIDENCE_ARTIFACT: ${{ needs.native-readiness.outputs.artifact-id }}
+          EVIDENCE_SHA256: ${{ needs.native-readiness.outputs.evidence-sha256 }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          python tools/production_readiness.py verify-native \
+            --artifact-metadata native-artifact.json --run-metadata production-run.json \
+            --archive native-evidence.zip --artifact-id "$EVIDENCE_ARTIFACT" \
+            --evidence-sha256 "$EVIDENCE_SHA256" --source-commit "$SOURCE_COMMIT" \
+            --tag "$RELEASE_TAG" --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" --output prepublication-readiness.json
 
   sign-assets:
     needs: [preflight, prepare-candidate, production-readiness]
@@ -602,6 +649,13 @@ jobs:
           lines.extend(
               [
                   "",
+                  "## Managed lifecycle acceptance",
+                  "",
+                  "Public managed install, update and rollback acceptance runs after publication.",
+                  f"Require a successful final-gate in https://github.com/kgmnotes/xferry/actions/runs/{release_identity['workflow_run']}.",
+                  "A first public managed version is a bootstrap; it cannot prove an update between two public versions.",
+                  "A failed or incomplete managed gate does not authorize Pages deployment or full lifecycle acceptance.",
+                  "",
                   "## Recovery",
                   "",
                   "Never overwrite or reuse this version. Follow:",
@@ -801,9 +855,21 @@ jobs:
             --identity-file signed-handoff/identities/github-release-candidate.json \
             verify-tamper --assets-dir anonymous-assets
 
+  post-managed:
+    needs: [preflight, post-release]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/managed-public-matrix.yml
+    with:
+      target_tag: ${{ needs.preflight.outputs.release-tag }}
+      source_commit: ${{ needs.preflight.outputs.source-commit }}
+
   final-gate:
     if: ${{ always() }}
-    needs: [post-pypi, post-ghcr, post-release, production-readiness]
+    needs: [post-pypi, post-ghcr, post-release, production-readiness, post-managed]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -813,6 +879,7 @@ jobs:
           GHCR_RESULT: ${{ needs.post-ghcr.result }}
           RELEASE_RESULT: ${{ needs.post-release.result }}
           READINESS_RESULT: ${{ needs.production-readiness.result }}
+          MANAGED_RESULT: ${{ needs.post-managed.result }}
         run: |
           set -euo pipefail
           echo "Pages deployment remains forbidden until all post-publish evidence passes"
@@ -820,3 +887,4 @@ jobs:
           test "$GHCR_RESULT" = success
           test "$RELEASE_RESULT" = success
           test "$READINESS_RESULT" = success
+          test "$MANAGED_RESULT" = success
