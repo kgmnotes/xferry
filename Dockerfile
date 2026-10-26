@@ -4,7 +4,7 @@
 # docker buildx imagetools inspect python:3.12-slim --format '{{json .Manifest.Digest}}'
 
 # -------- build stage --------
-FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286 AS build
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -26,7 +26,7 @@ RUN PIP_CONSTRAINT=/build/constraints/ci.txt \
     python -m build --wheel --no-isolation --outdir /build/dist
 
 # -------- runtime stage --------
-FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286 AS runtime
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime
 
 ARG APP_USER=xferry
 ARG APP_UID=10001
