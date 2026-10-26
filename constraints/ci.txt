@@ -53,7 +53,7 @@ pip-api==0.0.34
 pip-audit==2.10.0
 pip-requirements-parser==32.0.1
 pex==2.99.0
-platformdirs==4.9.6
+platformdirs==4.12.4
 pluggy==1.6.0
 pre-commit==4.6.0
 py-cpuinfo==9.0.0
