@@ -22,6 +22,7 @@ from xferry.advanced_sessions import (
     AdvancedSessionDispatch,
     AdvancedSessionPrincipal,
 )
+from xferry.config import __version__
 from xferry.handlers import HandlerMixin
 from xferry.http import HTTPRequest
 from xferry.security.crypto import aes_encrypt, compute_hmac, xor_bytes, xor_encrypt
@@ -875,7 +876,7 @@ class TestHandlePing:
         assert data["health"] == "ready"
         assert "status" not in data
         assert "X-Ping-Response" not in resp.headers
-        assert data["server"] == "XFerry/0.2.0"
+        assert data["server"] == f"XFerry/{__version__}"
         assert "version" not in data
         assert "timestamp" in data
         assert data["metrics"] == _json_transport(server.get_metrics())
