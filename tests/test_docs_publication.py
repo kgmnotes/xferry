@@ -838,11 +838,13 @@ def test_runbook_bootstrap_cannot_unlock_pages_or_complete_the_stage() -> None:
 
     for required in (
         "## First Public Release Bootstrap",
-        "separate owner approval for the exact version/source",
+        "the exact version/source and explicit acknowledgement of the absent public predecessor "
+        "recorded in the single release authorization",
         "public_baseline_required",
         "`post-managed` and `final-gate` cannot pass this bootstrap",
         "public Pages remains blocked",
         "STAGE-015 remains incomplete",
+        "A later, separately approved, distinct public version",
         "Do not rerun publishers, overwrite that version",
         "bootstrap is not a general bypass or automatic permission for a second release",
     ):
