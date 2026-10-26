@@ -1227,31 +1227,33 @@ def production_release_workflow_policy_findings(
         reject("production publishers must not skip existing files or rebuild artifacts")
 
     jobs = {job.name: job for job in _workflow_jobs(text)}
-    required_jobs = {
-        "sign-assets",
-        "create-draft-release",
-        "publish-pypi",
-        "publish-ghcr",
-        "publish-github-release",
-        "native-readiness",
-        "post-managed",
-        "production-readiness",
-        "final-gate",
-    }
-    for name in sorted(required_jobs - set(jobs)):
-        reject(f"production release workflow is missing job {name!r}")
-
     required_dependencies = {
+        "candidate": {"preflight"},
+        "prepare-candidate": {"preflight", "candidate"},
         "native-readiness": {"preflight", "candidate"},
         "production-readiness": {"preflight", "candidate", "prepare-candidate", "native-readiness"},
-        "sign-assets": {"production-readiness"},
+        "sign-assets": {"preflight", "prepare-candidate", "production-readiness"},
         "create-draft-release": {"preflight", "sign-assets"},
-        "verify-pypi-identity": {"publish-pypi"},
-        "post-pypi": {"verify-pypi-identity"},
-        "publish-ghcr": {"publish-pypi", "post-pypi"},
-        "post-ghcr": {"publish-ghcr"},
-        "publish-github-release": {"create-draft-release", "post-pypi", "post-ghcr"},
-        "post-release": {"publish-github-release"},
+        "publish-pypi": {"preflight", "prepare-candidate", "create-draft-release"},
+        "verify-pypi-identity": {"preflight", "prepare-candidate", "publish-pypi"},
+        "post-pypi": {"preflight", "publish-pypi", "verify-pypi-identity"},
+        "publish-ghcr": {"preflight", "prepare-candidate", "publish-pypi", "post-pypi"},
+        "post-ghcr": {"preflight", "publish-ghcr"},
+        "publish-github-release": {
+            "preflight",
+            "prepare-candidate",
+            "sign-assets",
+            "create-draft-release",
+            "publish-ghcr",
+            "post-pypi",
+            "post-ghcr",
+        },
+        "post-release": {
+            "preflight",
+            "sign-assets",
+            "create-draft-release",
+            "publish-github-release",
+        },
         "post-managed": {"preflight", "post-release"},
         "final-gate": {
             "post-pypi",
@@ -1261,14 +1263,55 @@ def production_release_workflow_policy_findings(
             "post-managed",
         },
     }
+    required_jobs = {"preflight", *required_dependencies}
+    for name in sorted(required_jobs - set(jobs)):
+        reject(f"production release workflow is missing job {name!r}")
+
     for name, required in required_dependencies.items():
         job = jobs.get(name)
         dependencies = _job_dependencies(job) if job is not None else None
         if dependencies is None or not required.issubset(dependencies):
             reject(f"production job {name!r} must depend on {', '.join(sorted(required))}")
-        if name in {"publish-ghcr", "publish-github-release"} and job is not None:
-            if re.search(r"^    if:", job.text, re.MULTILINE):
-                reject(f"production writer {name!r} must not bypass successful dependencies")
+
+    for name in sorted(required_jobs & jobs.keys()):
+        job = jobs[name]
+        # Preflight admits owner tag pushes; final-gate deliberately runs after
+        # failures and checks each result. Every intermediate job must inherit
+        # Actions' default success() dependency condition.
+        if name not in {"preflight", "final-gate"} and re.search(
+            r"^    (?P<quote>[\"']?)if(?P=quote):", job.text, re.MULTILINE
+        ):
+            reject(f"production job {name!r} must not bypass successful dependencies")
+        # A skipped verification step can still leave its job green. Do not
+        # allow conditional or tolerated steps anywhere along the release chain.
+        if re.search(
+            r"^(?:    |        |      - )(?P<quote>[\"']?)"
+            r"continue-on-error(?P=quote):",
+            job.text,
+            re.MULTILINE,
+        ):
+            reject(f"production job {name!r} must not suppress job or step failures")
+        if re.search(
+            r"^(?:        |      - )(?P<quote>[\"']?)if(?P=quote):",
+            job.text,
+            re.MULTILINE,
+        ):
+            reject(f"production job {name!r} must not skip required steps")
+        # These explicit shell suppressors defeat a successful dependency DAG.
+        # Keep fail-closed if/! absence probes and the signer's shred || rm
+        # cleanup fallback valid; neither turns a failed gate into success.
+        execution_text = "\n".join(
+            line for line in job.text.splitlines() if not line.lstrip().startswith("#")
+        )
+        if re.search(
+            r"\|\|(?:\s|\\\r?\n)*(?:true\b|:(?=\s|;|$)|echo\b|printf\b|"
+            r"(?:exit|return)\s+0\b|continue\b|break\b)"
+            r"|^\s*set\s+[^\n]*(?:\+[a-zA-Z]*e[a-zA-Z]*(?=\s|;|$)|"
+            r"\+o\s+(?:errexit|pipefail)\b)",
+            execution_text,
+            re.MULTILINE,
+        ):
+            reject(f"production job {name!r} must not mask shell failures")
 
     pypi_consumer = jobs.get("post-pypi")
     if pypi_consumer is not None:

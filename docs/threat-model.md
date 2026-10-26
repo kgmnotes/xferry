@@ -45,7 +45,7 @@ external.
 | Malicious or compromised xferry host | Browser-side decryption by default; no password or key upload; ciphertext alone does not reveal plaintext |
 | One-shot server decryption exposure | Separate confirmation, exact `content_key` body, TLS or a direct loopback peer, no key logging/persistence, no plaintext artifact |
 | Abandoned one-shot artifacts | Age, count, and byte retention plus startup cleanup |
-| Branch or pull-request publication | Production publishers accept protected version-tag refs only and require protected-environment approval |
+| Branch or pull-request publication | Production publishers accept protected version-tag refs only and require the successful protected signer approval/dependency chain |
 | Workflow or third-party action compromise | Reviewed workflow changes, full commit-SHA action pins, non-persisted checkout credentials, and least-privilege job permissions |
 | Candidate substitution or publish-job rebuild | Build-once candidate handoff, recorded digests, publisher dependency on verified jobs, and pre-publication digest verification |
 | Static publisher credential theft | PyPI OIDC trusted publishing and short-lived, environment-scoped identities for other channels where supported |
@@ -77,12 +77,22 @@ A protected version tag is the release identity boundary. Repository and tag
 rules admit a candidate into trusted build jobs; they do not by themselves
 authorize an external write. Exact candidate artifacts and recorded digests
 cross from build jobs into the protected `production-release` signing boundary.
-Signed artifacts, recorded digests, and approval dependency then cross into the
-protected `release-production` secret-free publication boundary. The current
-production writer and publisher jobs for draft GitHub Release creation, PyPI,
+After full candidate and native/OIDC readiness, one required reviewer authorizes
+the exact prepared version, source and candidate digests. This is release
+authorization, not a claim of independent code review. Signed artifacts, recorded
+digests, and the successful signing dependency then cross into the
+protected `release-production` secret-free publication boundary, which has no
+required reviewers. The current production writer and publisher jobs for draft
+GitHub Release creation, PyPI,
 GHCR, and public GitHub Release activation use that boundary directly and
 receive only those signed artifacts, recorded digests, and the write scope for
-their one channel. Pages publication crosses the separate `github-pages`
+their one channel. They run automatically in the enforced dependency order;
+failed signing or a required public consumer stops dependent publishers.
+The PyPI trusted publisher checks workflow/Environment identity, not the job
+dependency graph, so protected workflow review, release-tag rules and executable
+dependency/no-bypass guards remain essential. Both release environments retain
+authorized tag restrictions and disabled admin bypass. Pages publication crosses
+the separate `github-pages`
 approval boundary after checking successful production and signed public
 channel evidence. The Pages workflow receives no signing key. Pull-request
 code and branch-triggered jobs remain outside the production publication

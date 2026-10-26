@@ -90,14 +90,14 @@ The following controls govern every future publisher:
    versions. Build jobs create one candidate; publisher jobs promote those exact
    verified bytes or OCI digests and never rebuild them.
 3. External actions use full commit-SHA pins. Workflow permissions default to
-   read-only. The production publication approval boundary is the protected
-   `release-production` environment with required review. Writer and publisher
-   jobs use that environment directly so environment-scoped publisher
-   identities bind to the actual writer job. The private
-   signing-key custody boundary is the separate protected `production-release`
-   environment; downstream publisher jobs receive only signed artifacts,
-   recorded digests, approval dependency, and their channel-specific write
-   scope.
+   read-only. The protected `production-release` signing-key environment is the
+   single release authorization point, after candidate and native readiness
+   checks. The secret-free `release-production` publication environment has no
+   required reviewers; writer jobs use it directly so environment-scoped
+   publisher identities bind to the actual writer job. Successful signing and
+   consumer dependencies gate automatic publication. Downstream publisher jobs
+   receive only signed artifacts, recorded digests, the signing dependency, and
+   their channel-specific write scope; they never receive the private key.
 4. PyPI uses OIDC trusted publishing and never a static API token. Registry,
    release, attestation, and signing credentials are short-lived and scoped to
    the one job and environment that need them wherever the service supports it.
@@ -153,20 +153,27 @@ The initial production key is enrolled with the following reviewed record:
   `e5e2e0f8bc8e051c540edea2ff5e0570c22876485c3f1cb6c3fd668a02b54859`;
 - private-key custody: GitHub Environment `production-release`, secret
   `XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM`;
-- environment protection: required reviewer `kgmnotes`, admin bypass disabled;
+- environment protection: required reviewers `kgmnotes` and `gkumurzhi`,
+  self-review prevented, admin bypass disabled;
 - rotation and revocation owner: `kgmnotes`.
 
 The matching environment variable `XFERRY_RELEASE_SIGNING_KEY_ID` carries the
 non-secret key ID. Test suites generate separate disposable keys in memory;
 test keys must never enter the production ring.
 
-`production-release` is the private signing-key boundary. `release-production`
-is the secret-free production publication approval boundary. The current
+`production-release` is the private signing-key boundary and the single required
+release approval. Present the exact prepared version, source, candidate digests
+and check results before approval; it authorizes publication and does not claim
+an independent code review. `release-production` is the secret-free production
+publication boundary, with no required reviewers. The current
 production workflow has four writer/publisher jobs under that boundary: draft
 GitHub Release creation, PyPI publication, GHCR publication, and public GitHub
 Release activation. They may receive only signed artifacts, recorded digests,
 and an approval dependency from the signer; they must never receive or export
-private key material. Before any workflow is allowed to consume the signing
+private key material. After successful signing, publisher jobs continue
+automatically in the enforced dependency order; any failed required check stops
+dependent publication. Both environments restrict authorized release refs and
+disable admin bypass. Before any workflow is allowed to consume the signing
 secret, its environment ref policy must be restricted to the reviewed release
 workflow and authorized release refs.
 

@@ -260,10 +260,21 @@ def test_production_release_policy_rejects_boundary_regressions(
 @pytest.mark.parametrize(
     ("job_name", "dependency"),
     (
+        ("candidate", "preflight"),
+        ("prepare-candidate", "candidate"),
         ("sign-assets", "production-readiness"),
+        ("sign-assets", "prepare-candidate"),
         ("production-readiness", "native-readiness"),
+        ("create-draft-release", "sign-assets"),
+        ("publish-pypi", "create-draft-release"),
+        ("verify-pypi-identity", "publish-pypi"),
+        ("post-pypi", "verify-pypi-identity"),
         ("publish-ghcr", "post-pypi"),
+        ("post-ghcr", "publish-ghcr"),
+        ("publish-github-release", "sign-assets"),
+        ("publish-github-release", "create-draft-release"),
         ("publish-github-release", "post-ghcr"),
+        ("post-release", "publish-github-release"),
         ("post-managed", "post-release"),
         ("final-gate", "post-managed"),
     ),
@@ -286,6 +297,154 @@ def test_production_policy_rejects_bypassed_readiness_and_consumer_dependencies(
     assert any(
         job_name in finding.message and dependency in finding.message for finding in findings
     )
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    (
+        "candidate",
+        "prepare-candidate",
+        "native-readiness",
+        "production-readiness",
+        "sign-assets",
+        "create-draft-release",
+        "publish-pypi",
+        "verify-pypi-identity",
+        "post-pypi",
+        "publish-ghcr",
+        "post-ghcr",
+        "publish-github-release",
+        "post-release",
+        "post-managed",
+    ),
+)
+@pytest.mark.parametrize(
+    ("override", "message"),
+    (
+        ("    if: ${{ always() }}\n", "must not bypass successful dependencies"),
+        ("    'if': ${{ !cancelled() }}\n", "must not bypass successful dependencies"),
+        ("    continue-on-error: true\n", "must not suppress job or step failures"),
+        (
+            '    "continue-on-error": ${{ true }}\n',
+            "must not suppress job or step failures",
+        ),
+    ),
+)
+def test_production_policy_rejects_jobs_that_mask_failed_dependencies(
+    job_name: str, override: str, message: str
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text()
+    marker = f"  {job_name}:\n"
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(
+        workflow.replace(marker, marker + override, 1)
+    )
+
+    assert any(job_name in finding.message and message in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    (
+        "preflight",
+        "prepare-candidate",
+        "production-readiness",
+        "sign-assets",
+        "create-draft-release",
+        "publish-pypi",
+        "verify-pypi-identity",
+        "post-pypi",
+        "publish-ghcr",
+        "post-ghcr",
+        "publish-github-release",
+        "post-release",
+        "final-gate",
+    ),
+)
+@pytest.mark.parametrize(
+    ("override", "message"),
+    (
+        ("        if: ${{ false }}\n", "must not skip required steps"),
+        ("        'if': ${{ always() }}\n", "must not skip required steps"),
+        ("        continue-on-error: true\n", "must not suppress job or step failures"),
+        ('        "continue-on-error": true\n', "must not suppress job or step failures"),
+    ),
+)
+def test_production_policy_rejects_skipped_or_tolerated_release_steps(
+    job_name: str, override: str, message: str
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text()
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == job_name)
+    first_step = next(line for line in job.text.splitlines() if line.startswith("      - "))
+    changed = job.text.replace(first_step + "\n", first_step + "\n" + override, 1)
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(
+        workflow.replace(job.text, changed, 1)
+    )
+
+    assert any(job_name in finding.message and message in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    (
+        "production-readiness",
+        "sign-assets",
+        "create-draft-release",
+        "verify-pypi-identity",
+        "post-pypi",
+        "publish-ghcr",
+        "post-ghcr",
+        "publish-github-release",
+        "post-release",
+        "final-gate",
+    ),
+)
+@pytest.mark.parametrize(
+    "suppression",
+    (
+        "set +e",
+        "set +o errexit",
+        "set +o pipefail",
+        "python tools/verify.py || true",
+        "python tools/verify.py || \\\n            true",
+        "python tools/verify.py || :",
+        "python tools/verify.py || exit 0",
+        "python tools/verify.py || echo 'ignored'",
+    ),
+)
+def test_production_policy_rejects_explicit_shell_failure_suppression(
+    job_name: str, suppression: str
+) -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text()
+    job = next(item for item in check_stale_docs._workflow_jobs(workflow) if item.name == job_name)
+    changed = job.text.replace("          set -euo pipefail\n", f"          {suppression}\n", 1)
+    assert changed != job.text
+
+    findings = check_stale_docs.production_release_workflow_policy_findings(
+        workflow.replace(job.text, changed, 1)
+    )
+
+    assert any(
+        job_name in finding.message and "must not mask shell failures" in finding.message
+        for finding in findings
+    )
+
+
+def test_production_policy_preserves_fail_closed_absence_checks_and_key_cleanup() -> None:
+    workflow = (check_stale_docs.REPO_ROOT / ".github/workflows/release-production.yml").read_text()
+    assert 'shred -u "$key_file" 2>/dev/null || rm -f "$key_file"' in workflow
+    assert "elif ! manifest_is_absent latest.err; then" in workflow
+    assert "if ! manifest_is_absent existing.err; then" in workflow
+    changed = workflow.replace(
+        "          set -euo pipefail\n",
+        "          set -euo pipefail\n"
+        '          test -n "$GITHUB_REF" || exit 1\n'
+        "          # Failure masking such as || true remains forbidden.\n",
+        1,
+    )
+
+    assert check_stale_docs.production_release_workflow_policy_findings(changed) == []
 
 
 @pytest.mark.parametrize("name", ["managed-systemd-matrix.yml", "managed-public-matrix.yml"])

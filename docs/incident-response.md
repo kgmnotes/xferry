@@ -7,8 +7,9 @@ signing material out of `production-release`.
 
 ## First Response
 
-1. Stop remaining release jobs and disable any pending `production-release` or
-   `release-production` approvals.
+1. Cancel the release run and stop remaining jobs promptly. Reject any pending
+   `production-release` signer approval. After signing is approved, publication
+   continues automatically; there are no `release-production` approvals to hold.
 2. Preserve workflow logs, candidate artifacts, release inventories, PyPI file
    metadata, GHCR digests, GitHub Release assets, Pages deployment records, and
    operator reports.
@@ -23,11 +24,11 @@ signing material out of `production-release`.
 
 | State | Stop next | Recovery action | Operator message |
 | --- | --- | --- | --- |
-| Candidate verified, nothing public | Do not approve `production-release` or `release-production` | Fix the candidate or workflow, then start a new release from a new reviewed commit | No public action required |
-| Signed assets exist, no channel public | Do not approve `release-production` | Revoke the draft signing attempt if needed, keep artifacts as internal evidence, and rerun only after review | No public action required |
-| PyPI public, GHCR and Release still private | Do not publish GHCR or Release | Yank the PyPI files if the package is unsafe; otherwise leave them and finish only after go/no-go review | Portable users pin the previous exact version until notice clears |
-| GHCR public, PyPI or Release incomplete | Do not publish remaining channels | Mark the affected digest withdrawn in release notes and operator notices; do not delete digest evidence | Container operators pin the previous recorded digest |
-| Draft GitHub Release exists, not public | Keep it draft | Edit the draft notes to mark it withdrawn or delete only an unpublished draft when evidence is already preserved elsewhere | No public action required |
+| Candidate verified, nothing public | Reject the `production-release` signer approval, or cancel the run if already approved | Fix the candidate or workflow, then start a new release from a new reviewed commit | No public action required |
+| Signed assets exist, no channel public | Cancel the run before automatic publishers continue | Revoke the draft signing attempt if needed, keep artifacts as internal evidence, and rerun only after review | No public action required |
+| PyPI public, GHCR and Release still private | Cancel remaining GHCR and Release jobs | Yank the PyPI files if the package is unsafe; otherwise leave them and finish only after go/no-go review | Portable users pin the previous exact version until notice clears |
+| GHCR public, PyPI or Release incomplete | Cancel remaining publication jobs | Mark the affected digest withdrawn in release notes and operator notices; do not delete digest evidence | Container operators pin the previous recorded digest |
+| Draft GitHub Release exists, not public | Cancel its activation job and keep it draft | Edit the draft notes to mark it withdrawn or delete only an unpublished draft when evidence is already preserved elsewhere | No public action required |
 | Public GitHub Release exists | Stop Pages deployment | Edit the Release notes and title to state withdrawn, keep assets for evidence unless legal or platform policy requires removal | Managed operators roll back to the previous trusted version |
 | Pages deployed with bad instructions | Stop further Pages deployments | Publish a corrected page that points to withdrawn status and safe rollback | Operators follow the corrected rollback notice |
 | Signing key suspected compromised | Stop every publisher and signer | Disable secret use, mark the public key `REVOKED`, create a new reviewed key, and ship a new trust root before releasing again | Managed operators reject affected signed metadata and roll back |

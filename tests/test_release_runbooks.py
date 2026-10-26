@@ -31,14 +31,17 @@ def test_release_runbook_preserves_production_order_and_key_boundary() -> None:
 
     assert positions == sorted(positions)
     assert "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM" in text
-    assert "`production-release` is the signing-key custody boundary" in normalized
+    assert "`production-release` is the signing-key custody boundary and the single" in normalized
     assert (
-        "`release-production` is the secret-free production publication approval boundary"
-        in normalized
+        "`release-production` is the secret-free production publication boundary. "
+        "It has no required reviewers." in normalized
     )
     assert "`release-production` publisher jobs receive only signed artifacts" in normalized
     assert "The current production workflow does not deploy Pages." in text
     assert "they must not receive or export the private key" in normalized
+    assert "automatically, without further publisher approvals." in normalized
+    assert "A failed prerequisite stops dependent publishers" in normalized
+    assert "it does not assert an independent code review." in normalized
 
 
 def test_release_runbook_has_exact_go_no_go_and_no_mutable_recovery() -> None:
@@ -47,8 +50,8 @@ def test_release_runbook_has_exact_go_no_go_and_no_mutable_recovery() -> None:
     for required in (
         "| Target version | Exact `vX.Y.Z`; no pre-release or build metadata |",
         "| Prior stages | STAGE-010 through STAGE-014 are `CLOSED` |",
-        "| Publication approval | `release-production` approval is required before any public "
-        "publisher writes |",
+        "| Release authorization | Approve `production-release` once after preparation; "
+        "downstream `release-production` publishers run automatically |",
         "| Reviewer independence | The approver is not the actor who requested the deployment |",
         "Any `No`, `Unknown`, or expired evidence is a no-go.",
         "Rollback uses a previously verified exact version or digest.",
@@ -85,7 +88,10 @@ def test_incident_response_covers_partial_release_and_tabletop() -> None:
     assert "Do not delete a digest as the first response." in text
     assert "Do not upload replacement files under the same version." in text
     assert "no step requires reading, printing, exporting, or copying" in text
-    assert "`production-release` or\n   `release-production` approvals" in text
+    normalized = " ".join(text.split())
+    assert "Cancel the release run and stop remaining jobs promptly." in normalized
+    assert "Reject any pending `production-release` signer approval." in normalized
+    assert "there are no `release-production` approvals to hold." in normalized
     assert (
         "BEGIN "
         # PEM marker only; keep source fragments separate for secret scanners.
