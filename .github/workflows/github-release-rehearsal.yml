@@ -75,7 +75,7 @@ jobs:
             --archive downloaded/release-candidate.tar --candidate-dir promoted --unsigned-dir unsigned-assets
       - name: Preserve unsigned assets for protected signing
         id: unsigned-assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: unsigned-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
           path: unsigned-assets/
@@ -128,7 +128,7 @@ jobs:
           trap - EXIT
       - name: Preserve signed assets for secret-free publishing
         id: signed-assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: signed-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed-assets/
@@ -174,7 +174,7 @@ jobs:
           gh release download "${RELEASE_TAG}" --repo kgmnotes/xferry --dir downloaded --pattern '*'
       - name: Preserve downloaded draft assets for read-only verification
         id: downloaded-assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: downloaded-github-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
           path: downloaded/

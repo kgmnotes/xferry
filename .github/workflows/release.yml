@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload Python candidate
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: python-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: python-candidate.tar
@@ -263,7 +263,7 @@ jobs:
           echo "sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
       - name: Upload OCI candidate
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: oci-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: oci-candidate.tar
@@ -459,7 +459,7 @@ jobs:
           echo "workflow-run=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Upload digest-indexed release candidate
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-candidate.tar

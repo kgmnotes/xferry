@@ -71,7 +71,7 @@ jobs:
             --output "$RUNNER_TEMP/managed-public-plan.json"
       - name: Preserve exact public plan without credentials
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/managed-public-plan.json
@@ -137,7 +137,7 @@ jobs:
             --platform "$MATRIX_PLATFORM" --evidence-root "$RUNNER_TEMP/managed-public-evidence"
       - name: Preserve only sanitized native public receipts
         if: ${{ always() && steps.probe.outcome != 'skipped' && steps.probe.outcome != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
           path: |
@@ -226,7 +226,7 @@ jobs:
           cp "$BUNDLE_PATH" "$RUNNER_TEMP/managed-public-handoff/attestation.json"
       - name: Preserve immutable signed public managed acceptance
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

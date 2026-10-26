@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload coverage to artifact
         if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
@@ -172,7 +172,7 @@ jobs:
           PYTHON
 
       - name: Upload portable wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: portable-wheel
           path: dist/xferry-*.whl
@@ -320,7 +320,7 @@ jobs:
 
       - name: Upload portable failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: portable-log-${{ matrix.os }}-${{ matrix.python-version }}
           path: ${{ runner.temp }}/xferry-portable-app/outside-checkout/server.log
@@ -584,7 +584,7 @@ jobs:
 
       - name: Upload browser journey diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: browser-journeys-${{ github.run_id }}
           path: ${{ runner.temp }}/browser-smoke-artifacts

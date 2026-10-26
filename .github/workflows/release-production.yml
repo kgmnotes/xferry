@@ -172,7 +172,7 @@ jobs:
             --unsigned-dir handoffs/release/unsigned-assets
       - name: Preserve exact Python publisher handoff
         id: python-handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: production-python-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -182,7 +182,7 @@ jobs:
           retention-days: 14
       - name: Preserve exact GHCR publisher handoff
         id: ghcr-handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: production-ghcr-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -192,7 +192,7 @@ jobs:
           retention-days: 14
       - name: Preserve unsigned assets for protected signing
         id: unsigned-handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: production-unsigned-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -317,7 +317,7 @@ jobs:
           cp unsigned-handoff/identities/github-release-candidate.json signed-handoff/identities/
       - name: Preserve signed assets for secret-free publishing
         id: signed-handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: production-signed-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed-handoff/
