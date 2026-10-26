@@ -52,7 +52,7 @@ jobs:
           gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
           python tools/ghcr_publish.py identity --artifact-metadata artifact.json --run-metadata run.json
       - name: Download immutable STAGE-009 candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           repository: kgmnotes/xferry
           run-id: 36712344792
@@ -95,7 +95,7 @@ jobs:
       digest: ${{ steps.registry.outputs.digest }}
     steps:
       - name: Download authenticated OCI graph
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.identity.outputs.artifact-id }}
           merge-multiple: true
@@ -192,7 +192,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Download authenticated OCI receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.identity.outputs.artifact-id }}
           merge-multiple: true

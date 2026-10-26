@@ -58,7 +58,7 @@ jobs:
           gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
           python tools/github_release_assets.py identity --artifact-metadata artifact.json --run-metadata run.json
       - name: Download immutable STAGE-009 candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           repository: kgmnotes/xferry
           run-id: 36712344792
@@ -101,7 +101,7 @@ jobs:
       - name: Install release signer dependency
         run: python -m pip install --upgrade pip cryptography==50.0.2
       - name: Download unsigned assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.identity.outputs.artifact-id }}
           merge-multiple: true
@@ -147,7 +147,7 @@ jobs:
       artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}
     steps:
       - name: Download signed assets only
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.sign-assets.outputs.artifact-id }}
           merge-multiple: true
@@ -197,7 +197,7 @@ jobs:
       - name: Install release verifier dependency
         run: python -m pip install --upgrade pip cryptography==50.0.2
       - name: Download assets captured from the draft Release
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}
           merge-multiple: true

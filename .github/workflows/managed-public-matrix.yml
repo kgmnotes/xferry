@@ -121,7 +121,7 @@ jobs:
       - name: Install pinned public signature verifier
         run: python -m pip install cryptography==50.0.2
       - name: Download only this run's immutable plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.plan.outputs.artifact-id }}
           merge-multiple: true
@@ -185,13 +185,13 @@ jobs:
       - name: Install pinned public signature verifier
         run: python -m pip install cryptography==50.0.2
       - name: Download only this run's immutable plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.plan.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/managed-public-handoff
       - name: Download this attempt's two isolated public receipt sets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           pattern: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-linux-*
           merge-multiple: false
