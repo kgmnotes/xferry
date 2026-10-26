@@ -59,7 +59,7 @@ pre-commit==4.6.0
 py-cpuinfo==9.0.0
 py-serializable==2.1.0
 pycparser==3.0
-Pygments==2.20.0
+Pygments==2.21.0
 PyOpenSSL==26.4.0
 pymdown-extensions==11.0.1
 pyparsing==3.3.2
