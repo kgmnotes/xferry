@@ -17,6 +17,7 @@ import pytest
 import xferry.cli as cli
 from tests.server_factory import make_server
 from xferry.cli import create_parser
+from xferry.config import __version__
 from xferry.features import registry_methods
 from xferry.server import XFerryServer
 from xferry.server_config import LoggingConfig, ServerConfig
@@ -308,7 +309,7 @@ class TestCLIParser:
             self.parser.parse_args(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert captured.out == "xferry run 0.2.0\n"
+        assert captured.out == f"xferry run {__version__}\n"
 
     def test_dir_flag(self):
         args = self.parser.parse_args(["-d", "/tmp/serve"])

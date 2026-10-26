@@ -8,6 +8,7 @@ import pytest
 
 import xferry.http as http
 import xferry.http.response as response_module
+from xferry.config import __version__
 from xferry.http.response import HTTPResponse
 
 
@@ -171,7 +172,7 @@ class TestHTTPResponse:
         response.set_body("OK", "text/plain")
         built = response.build()
 
-        assert b"Server: XFerry/0.2.0\r\n" in built
+        assert f"Server: XFerry/{__version__}\r\n".encode("ascii") in built
 
     def test_build_sets_nosniff_header(self):
         response = HTTPResponse(200)
