@@ -5,10 +5,11 @@ for a managed Linux service, or an immutable GHCR image for a container. Do not
 mix their upgrade or uninstall commands.
 
 !!! note "Release availability"
-    The `0.2.0` packages, signed installers, and container image are being
-    prepared for publication. Until the release is available, follow the
-    [source installation](contributing.md). The packaged journeys below
-    apply after publication.
+    Version `0.2.0` is published on PyPI and GHCR, with signed bootstrap installers
+    on its [GitHub Release](https://github.com/kgmnotes/xferry/releases/tag/v0.2.0).
+    Before managed installation or upgrades, check the release notes for lifecycle
+    acceptance. A first bootstrap release cannot prove public update and rollback;
+    see the [bootstrap limitation](release-runbook.md#first-public-release-bootstrap).
 
 ## Portable
 

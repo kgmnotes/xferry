@@ -2,7 +2,7 @@
 
 ![Python 3.10-3.14](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.1-orange.svg)
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
 [![Security](https://github.com/kgmnotes/xferry/actions/workflows/security.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/security.yml)
 
@@ -21,9 +21,11 @@ Documentation: <https://xferry.kgmnotes.ru/>
 ## Choose an installation
 
 > [!NOTE]
-> The `0.2.0` packages and signed installers are being prepared for publication.
-> Until the release is available, use the [source installation](CONTRIBUTING.md).
-> The packaged journeys below apply after publication.
+> Version `0.2.0` is published on PyPI and GHCR, with signed bootstrap installers
+> on its [GitHub Release](https://github.com/kgmnotes/xferry/releases/tag/v0.2.0).
+> Before managed installation or upgrades, check the release notes for lifecycle
+> acceptance. A first bootstrap release cannot prove public update and rollback;
+> see the [bootstrap limitation](docs/release-runbook.md#first-public-release-bootstrap).
 
 For a portable CLI on Windows, macOS, or Linux, install with pipx and start the
 loopback server:

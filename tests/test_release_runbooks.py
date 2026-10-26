@@ -104,3 +104,23 @@ def test_mkdocs_nav_exposes_release_operations_docs() -> None:
 
     assert "Production release: release-runbook.md" in nav
     assert "Release incident response: incident-response.md" in nav
+
+
+def test_incident_response_does_not_force_rollback_through_revoked_trust() -> None:
+    normalized = " ".join(_read(INCIDENT_RUNBOOK).split())
+
+    for required in (
+        "Managed rollback authenticates both the current installed manifest and the "
+        "target against the selected local key ring.",
+        "If the current signing key is revoked, rollback fails closed before switching releases.",
+        "An earlier release signed by the same revoked key is not an independently "
+        "trusted recovery target.",
+        "Halt deployment changes and obtain reviewed trust-root recovery",
+        "Do not re-enable a revoked key, replace signed metadata, or bypass signature "
+        "checks to force rollback.",
+        "when no trusted target exists, say so instead of naming an unverified target",
+        "Successful managed rollback requires trusted current state and an independently "
+        "still-trusted target.",
+        "the operator notice must state that rollback is blocked",
+    ):
+        assert required in normalized
