@@ -131,14 +131,35 @@ def production_policy_findings(workflow: str) -> list[str]:
     if not all(item in public for item in ("actions: read", "contents: write")):
         findings.append("GitHub Release activation lacks exact permissions")
     for job, required_needs in (
+        ("prepare-candidate", {"preflight", "candidate"}),
         ("native-readiness", {"preflight", "candidate"}),
-        ("production-readiness", {"native-readiness", "prepare-candidate"}),
-        ("verify-pypi-identity", {"publish-pypi"}),
-        ("post-pypi", {"publish-pypi", "verify-pypi-identity"}),
-        ("publish-ghcr", {"publish-pypi", "post-pypi"}),
-        ("post-ghcr", {"publish-ghcr"}),
-        ("publish-github-release", {"create-draft-release", "post-pypi", "post-ghcr"}),
-        ("post-release", {"create-draft-release", "publish-github-release"}),
+        (
+            "production-readiness",
+            {"preflight", "candidate", "native-readiness", "prepare-candidate"},
+        ),
+        ("sign-assets", {"preflight", "prepare-candidate", "production-readiness"}),
+        ("create-draft-release", {"preflight", "sign-assets"}),
+        ("publish-pypi", {"preflight", "prepare-candidate", "create-draft-release"}),
+        ("verify-pypi-identity", {"preflight", "prepare-candidate", "publish-pypi"}),
+        ("post-pypi", {"preflight", "publish-pypi", "verify-pypi-identity"}),
+        ("publish-ghcr", {"preflight", "prepare-candidate", "publish-pypi", "post-pypi"}),
+        ("post-ghcr", {"preflight", "publish-ghcr"}),
+        (
+            "publish-github-release",
+            {
+                "preflight",
+                "prepare-candidate",
+                "sign-assets",
+                "create-draft-release",
+                "publish-ghcr",
+                "post-pypi",
+                "post-ghcr",
+            },
+        ),
+        (
+            "post-release",
+            {"preflight", "sign-assets", "create-draft-release", "publish-github-release"},
+        ),
         ("post-managed", {"preflight", "post-release"}),
         (
             "final-gate",
@@ -358,9 +379,19 @@ def test_actual_final_gate_requires_all_public_and_managed_consumers(
 @pytest.mark.parametrize(
     ("job", "dependency"),
     [
+        ("prepare-candidate", "candidate"),
         ("native-readiness", "candidate"),
         ("production-readiness", "native-readiness"),
         ("sign-assets", "production-readiness"),
+        ("create-draft-release", "sign-assets"),
+        ("publish-pypi", "create-draft-release"),
+        ("verify-pypi-identity", "publish-pypi"),
+        ("post-pypi", "verify-pypi-identity"),
+        ("publish-ghcr", "post-pypi"),
+        ("post-ghcr", "publish-ghcr"),
+        ("publish-github-release", "sign-assets"),
+        ("publish-github-release", "post-ghcr"),
+        ("post-release", "publish-github-release"),
         ("post-managed", "post-release"),
         ("final-gate", "post-managed"),
     ],

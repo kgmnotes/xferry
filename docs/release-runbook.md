@@ -1,8 +1,9 @@
 # Production Release Runbook
 
 This runbook prepares a production release. It is not permission to publish.
-Create a production tag only after the owner records a separate exact
-go/no-go for one version in the form `vX.Y.Z`.
+Record the owner-selected exact version `vX.Y.Z` and source before creating
+the production tag. The tag starts automatic preparation; the single protected
+signer approval authorizes publication of the resulting verified candidate.
 
 ## Audience and Scope
 
@@ -12,15 +13,23 @@ post-publish and rollback sections to verify or recover deployments.
 
 The runbook assumes two production GitHub Environments:
 
-- `production-release` is the signing-key custody boundary. Only the signer job
-  may read the private key.
-- `release-production` is the secret-free production publication approval
-  boundary. The current production workflow uses it directly on the four
-  writer/publisher jobs: draft GitHub Release creation, PyPI publication, GHCR
-  publication, and public GitHub Release activation. Those jobs must not
+- `production-release` is the signing-key custody boundary and the single
+  release authorization point. Only the signer job may read the private key.
+- `release-production` is the secret-free production publication boundary.
+  It has no required reviewers. The current production workflow uses it directly
+  on the four writer/publisher jobs: draft GitHub Release creation, PyPI
+  publication, GHCR publication, and public GitHub Release activation. Those jobs must not
   receive signing secrets.
 
 Do not use a generic production environment or an unreviewed replacement name.
+
+Preparation, quality/security checks and native readiness run automatically.
+Present the exact version, source, candidate digests and check results before
+the required reviewer approves `sign-assets` in `production-release` once.
+That approval authorizes the prepared release; it does not assert an independent
+code review. Signing, ordered publication and public consumer checks then run
+automatically, without further publisher approvals. A failed prerequisite stops
+dependent publishers; successful publication does not waive final managed checks.
 
 ## Prerequisites
 
@@ -50,10 +59,11 @@ All items in this list are blocking. Stop on the first missing item.
 - `production-release` contains secret
   `XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM` and variable
   `XFERRY_RELEASE_SIGNING_KEY_ID=xferry-release-2026-09`.
-- The `release-production` GitHub Environment requires reviewers `kgmnotes`
-  and `gkumurzhi`, prevents self-review, disables admin bypass, restricts
-  deployment refs to authorized release refs, contains no signing secret, and
-  is referenced only by production publisher jobs.
+- The `release-production` GitHub Environment has no required reviewers or
+  repeated manual approvals. It disables admin bypass, restricts deployment
+  refs to authorized `v*.*.*` tags, contains no signing secret, and is referenced
+  only by production publisher jobs. Every publisher depends on successful
+  signing through the enforced release job chain.
 - The public trust root for `xferry-release-2026-09` is present in
   `xferry/management/release_trust.py`, `SECURITY.md`, and
   `docs/security.md`.
@@ -68,7 +78,8 @@ All items in this list are blocking. Stop on the first missing item.
 
 ## Go/No-Go Checklist
 
-Record the answer and evidence link for every item before creating the tag.
+Record the requested version/source before creating the tag. Complete the
+remaining evidence and present this checklist before the single signer approval.
 
 | Check | Required answer |
 | --- | --- |
@@ -81,7 +92,7 @@ Record the answer and evidence link for every item before creating the tag.
 | GHCR | Version tag and digest publication path is ready; no mutable alias is required |
 | GitHub Release | Draft release path creates once and never overwrites assets |
 | Signing key | `production-release` approval is required before any signing secret is available |
-| Publication approval | `release-production` approval is required before any public publisher writes |
+| Release authorization | Approve `production-release` once after preparation; downstream `release-production` publishers run automatically |
 | Reviewer independence | The approver is not the actor who requested the deployment |
 | Rollback target | Previous exact version or digest remains available and trusted |
 | Communications | Release notes, operator notice, and withdrawal notice template are ready |
@@ -89,8 +100,9 @@ Record the answer and evidence link for every item before creating the tag.
 Any `No`, `Unknown`, or expired evidence is a no-go.
 
 A first-public-release bootstrap must be recorded explicitly as such under the
-rollback-target item, with separate owner approval for the exact version/source
-and for the absence of a public predecessor. This does not waive any signing,
+rollback-target item, with the exact version/source and explicit acknowledgement
+of the absent public predecessor recorded in the single release authorization.
+This does not waive any signing,
 identity, review or publication control, and does not make the full public
 lifecycle or Pages gates pass. See [First public release bootstrap](#first-public-release-bootstrap).
 
@@ -148,11 +160,12 @@ a first-release install or same-version update cannot prove that lifecycle.
 
 ## First Public Release Bootstrap
 
-Before any publication, the owner must approve one exact version/tag/source and
-record whether a valid public predecessor exists. Neither an earlier staging
-approval nor successful local code/tests authorizes a production release.
+Before any publication, record whether a valid public predecessor exists and
+include it with the exact version/tag/source in the single release authorization.
+Neither an earlier staging approval nor successful local code/tests authorizes
+a production release.
 
-If the separately approved first public version has no valid earlier public
+If the authorized first public version has no valid earlier public
 managed version, the public plan fails closed with `public_baseline_required`.
 It must not invent a predecessor, use an artifact-only fixture, report a
 same-version update as an upgrade, skip a required pair or change a result to
@@ -179,6 +192,8 @@ Use this order so a partial release has a clear recovery point.
    and managed metadata signatures.
 
 2. Cross the `production-release` signing-key custody boundary.
+   After all candidate and native readiness gates pass, present the prepared
+   identity/check summary and obtain the single required-reviewer approval.
    Only the protected signing job may read
    `XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM`. It signs already-built managed
    manifests and installers, uploads signed artifacts for downstream jobs, and
@@ -186,6 +201,11 @@ Use this order so a partial release has a clear recovery point.
    `release-production` publisher jobs receive only signed artifacts, recorded
    digests, and the approval dependency; they must not receive or export the
    private key.
+
+   The remaining publication jobs run automatically through successful `needs`
+   dependencies. They do not request their own manual approvals. To stop a
+   release after this authorization, cancel the run promptly and follow the
+   incident runbook; do not wait for another publication prompt.
 
 3. Create the signed draft GitHub Release.
    Under the secret-free `release-production` publication boundary, create a

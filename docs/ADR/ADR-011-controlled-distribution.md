@@ -59,19 +59,24 @@ digests, not the release page or a mutable URL, are the update authority.
 
 - Production publishers run only for protected version-tag refs. Branch and
   pull-request events cannot reach a production publisher.
-- Production publication approval uses the protected `release-production`
-  environment. Repository administrators configure required reviewers and
-  restrict that environment to authorized release refs. Writer and publisher
-  jobs use this environment directly so environment-scoped identities,
+- The protected `production-release` signing environment is the single release
+  authorization point, after full candidate and native/OIDC readiness. Required
+  reviewers authorize the exact prepared version/source/artifacts; approval
+  does not claim an independent code review. Self-review and admin bypass remain
+  disabled. Only the signer job may read private signing material.
+- The protected `release-production` publication environment is secret-free and
+  has no required reviewers. It restricts deployment refs to authorized release tags and disables
+  admin bypass. Writer jobs use it directly so environment-scoped identities,
   including PyPI trusted publishing, bind to the actual writer job.
-- Signing-key custody uses the separate protected `production-release`
-  environment. Only the signer job may read private signing material.
 - Production writer and publisher jobs for draft GitHub Release creation,
-  PyPI, GHCR, and public GitHub Release activation depend on the approved
-  signing and publication boundaries and receive only signed artifacts,
-  recorded digests, and channel-scoped write permissions. They do not receive
-  private signing material. A future Pages publisher must use the same
-  secret-free publication boundary after final release evidence exists.
+  PyPI, GHCR, and public GitHub Release activation depend on successful approved
+  signing and receive only signed artifacts, recorded digests, and
+  channel-scoped write permissions. They do not receive
+  private signing material. Ordered publishers and public consumer checks run
+  automatically after the single signer approval; failures stop dependent
+  publication. Executable dependency guards and protected workflow/tag changes
+  prevent bypass. Pages uses the separate `github-pages` approval boundary
+  after final release evidence exists.
 - Workflow permissions default to read-only. Write scopes exist only on the job
   that needs them: `id-token: write` for PyPI trusted publishing,
   `packages: write` for GHCR, and `contents: write` for GitHub Release assets.
