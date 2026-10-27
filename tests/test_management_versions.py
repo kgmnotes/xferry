@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from xferry.config import __version__
@@ -7,7 +9,7 @@ from xferry.management import versions
 
 
 def test_current_version_starts_the_pre_1_0_line() -> None:
-    assert __version__ == "0.2.0"
+    assert re.fullmatch(r"0\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", __version__)
     assert versions.SUPPORTED_RELEASE_MAJOR == __version__.split(".", 1)[0] == "0"
 
 

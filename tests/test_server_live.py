@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from tests.server_factory import make_server
+from xferry.config import __version__
 from xferry.http import HTTPResponse
 from xferry.security.auth import BasicAuthenticator
 from xferry.websocket import WS_CLOSE, WS_TEXT, parse_ws_frame
@@ -946,10 +947,10 @@ class TestLiveAdvancedUploadRouting:
                 )
                 status, headers, body = _recv_http_response(sock)
                 assert status.startswith("HTTP/1.1 200")
-                assert headers["server"] == "XFerry/0.2.0"
+                assert headers["server"] == f"XFerry/{__version__}"
                 ping = json.loads(body)
                 assert ping["health"] == "ready"
-                assert ping["server"] == "XFerry/0.2.0"
+                assert ping["server"] == f"XFerry/{__version__}"
                 assert "version" not in ping
                 assert "profile" not in ping
                 assert "advanced_upload" not in ping
