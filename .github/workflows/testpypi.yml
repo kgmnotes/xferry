@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Require protected rehearsal branch
@@ -47,7 +47,7 @@ jobs:
           gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
           python tools/testpypi_publish.py identity --artifact-metadata artifact.json --run-metadata run.json
       - name: Download immutable STAGE-009 candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           repository: kgmnotes/xferry
           run-id: 36712344792
@@ -64,7 +64,7 @@ jobs:
             --archive downloaded/release-candidate.tar --candidate-dir promoted --packages-dir dist
       - name: Preserve authenticated distributions for the OIDC job
         id: staged-distributions
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/
@@ -80,13 +80,13 @@ jobs:
       id-token: write
     steps:
       - name: Download authenticated candidate distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.identity.outputs.artifact-id }}
           merge-multiple: true
           path: dist
       - name: Trusted Publishing to TestPyPI only
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Install pipx verifier
@@ -118,7 +118,7 @@ jobs:
           python tools/testpypi_publish.py smoke \
             --download-dir "$RUNNER_TEMP/testpypi-accepted" --fresh-root "$RUNNER_TEMP/testpypi-pipx"
       - name: Preserve TestPyPI acceptance receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: testpypi-receipt-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/testpypi-accepted/testpypi-receipt.json

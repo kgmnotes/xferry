@@ -284,7 +284,7 @@ def test_prepare_does_not_write_before_archive_identity_verifies(tmp_path, ident
         ("artifact-ids: 11095067140", "artifact-ids: 1"),
         ("skip-existing: false", "skip-existing: true"),
         ("persist-credentials: false", "persist-credentials: true"),
-        ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
+        ("7245906fb61fa33a13554f9d5fb856fe61758086", "release/v1"),
         ("python tools/testpypi_publish.py prepare", "python -m build"),
         ("attestations: true", "password: ${{ secrets.PYPI_TOKEN }}"),
         ("refs/heads/codex/stage-010-testpypi-rehearsal-v2", "refs/heads/main"),
@@ -421,7 +421,7 @@ def test_staging_policy_checks_every_publish_destination():
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
     injection = (
         "      - uses: pypa/gh-action-pypi-publish@"
-        "dc37677b2e1c63e2034f94d8a5b11f265b73ba33\n"
+        "7245906fb61fa33a13554f9d5fb856fe61758086\n"
         "        with:\n"
         "          repository-url: https://evil.invalid/legacy/\n"
     )

@@ -54,7 +54,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_commit }}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Install pinned public signature verifier
@@ -71,7 +71,7 @@ jobs:
             --output "$RUNNER_TEMP/managed-public-plan.json"
       - name: Preserve exact public plan without credentials
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/managed-public-plan.json
@@ -101,7 +101,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_commit }}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Require exact native hosted source and local Docker
@@ -121,7 +121,7 @@ jobs:
       - name: Install pinned public signature verifier
         run: python -m pip install cryptography==50.0.2
       - name: Download only this run's immutable plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.plan.outputs.artifact-id }}
           merge-multiple: true
@@ -137,7 +137,7 @@ jobs:
             --platform "$MATRIX_PLATFORM" --evidence-root "$RUNNER_TEMP/managed-public-evidence"
       - name: Preserve only sanitized native public receipts
         if: ${{ always() && steps.probe.outcome != 'skipped' && steps.probe.outcome != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
           path: |
@@ -179,19 +179,19 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_commit }}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Install pinned public signature verifier
         run: python -m pip install cryptography==50.0.2
       - name: Download only this run's immutable plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.plan.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/managed-public-handoff
       - name: Download this attempt's two isolated public receipt sets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
         with:
           pattern: managed-public-${{ github.run_id }}-${{ github.run_attempt }}-linux-*
           merge-multiple: false
@@ -226,7 +226,7 @@ jobs:
           cp "$BUNDLE_PATH" "$RUNNER_TEMP/managed-public-handoff/attestation.json"
       - name: Preserve immutable signed public managed acceptance
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: managed-public-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

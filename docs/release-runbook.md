@@ -35,8 +35,11 @@ dependent publishers; successful publication does not waive final managed checks
 
 All items in this list are blocking. Stop on the first missing item.
 
-- The reviewed release code is merged into protected `main` before creating
-  the production tag. A `main` push builds and validates documentation;
+- Release code passes automated agent review and all 23 mandatory CI checks
+  against up-to-date `main`, then merges into protected `main` before creating
+  the production tag. Active development does not require human PR approval;
+  production signing retains its separate required-reviewer approval.
+  A `main` push builds and validates documentation;
   public Pages deployment requires a separate dispatch with successful
   production and public-channel evidence.
 - STAGE-010, STAGE-011, STAGE-012, STAGE-013, and STAGE-014 are `CLOSED` in

@@ -48,7 +48,7 @@ def production_policy_findings(workflow: str) -> list[str]:
         '--inventory-sha256 "${{ needs.candidate.outputs.inventory-sha256 }}"',
         "environment: production-release",
         "environment: release-production",
-        "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+        "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086",
         "python tools/production_release_state.py draft",
         "python tools/production_release_state.py expose",
         "release-id: ${{ steps.release.outputs.release-id }}",

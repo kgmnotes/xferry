@@ -43,7 +43,15 @@ Create a short-lived branch from `main`. Use Conventional Commit summaries,
 for example `fix(upload): reject an invalid filename` or
 `docs(api): clarify Advanced Session ownership`.
 
-Do not merge into `main` without review and passing CI.
+Use automated agent review and resolve its findings before merging into `main`.
+During active development, human PR approval is not required. All 23 mandatory
+CI checks must pass for the current change against up-to-date `main`; strict
+status checks and branch protection remain enforced.
+
+Development review does not authorize a production release. The separate
+`production-release` signer approval still authorizes the exact prepared
+version, source, and artifacts; see the
+[release runbook](https://github.com/kgmnotes/xferry/blob/main/docs/release-runbook.md).
 
 ## Checks
 

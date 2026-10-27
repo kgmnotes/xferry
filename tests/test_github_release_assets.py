@@ -675,7 +675,7 @@ def test_draft_assets_cross_the_write_boundary_only_as_an_actions_artifact() -> 
 
     assert 'gh release download "${RELEASE_TAG}"' in publish
     assert "id: downloaded-assets" in publish
-    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in publish
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in publish
     assert "artifact-id: ${{ steps.downloaded-assets.outputs.artifact-id }}" in publish
     assert "gh release download" not in verify
     assert "artifact-ids: ${{ needs.publish-draft.outputs.artifact-id }}" in verify

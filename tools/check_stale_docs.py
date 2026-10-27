@@ -2036,7 +2036,7 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
             "artifact-ids: ${{ needs.identity.outputs.artifact-id }}",
             "merge-multiple: true",
             "path: dist",
-            "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+            "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086",
             "repository-url: https://test.pypi.org/legacy/",
             "packages-dir: dist/",
             "verify-metadata: true",
@@ -2063,8 +2063,8 @@ def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
         for match in WORKFLOW_ACTION_PATTERN.finditer(jobs["publish"].text)
     )
     if publish_actions != (
-        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-        "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+        "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086",
     ) or re.search(r"^\s+run\s*:", jobs["publish"].text, re.MULTILINE):
         reject("TestPyPI OIDC publish must execute only the two approved pinned actions")
     for block in text.split("uses: actions/checkout@")[1:]:
@@ -2225,8 +2225,8 @@ def github_release_rehearsal_policy_findings(text: str) -> list[Finding]:
         for match in WORKFLOW_ACTION_PATTERN.finditer(publish.text)
     )
     if publish_actions != (
-        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
     ):
         reject("GitHub Release publisher may only transfer signed and Release-downloaded assets")
     if "actions/checkout@" in publish.text or "python " in publish.text:
