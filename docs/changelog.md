@@ -24,9 +24,32 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Signed platform manifests also authenticate the Python distributions,
   candidate inventory, and archive containing the complete OCI graph.
 
-- Release security documentation now separates `production-release` signing-key
-  custody from the secret-free `release-production` publication approval
-  boundary.
+- Release security documentation separates `production-release` signing-key
+  custody and its single release authorization from the secret-free
+  `release-production` automatic publication boundary.
+
+## [0.2.1] - 2026-10-27
+
+Public two-version managed update and rollback acceptance is established by
+successful production lifecycle checks after publication.
+
+### Changed
+
+- Use one `production-release` approval after candidate, quality, security, and
+  native readiness checks. Signed draft creation, PyPI, GHCR, GitHub Release,
+  and public consumer checks then proceed in the enforced dependency order
+  without additional publisher approvals.
+- Align release, signing-key, threat-model, and incident-response documentation
+  with the single authorization while retaining separate publisher permissions,
+  immutable artifacts, and the final managed lifecycle and Pages gates.
+
+### Fixed
+
+- Reject missing release dependencies, bypass conditions, and error suppression
+  in the signer, publisher, and blocking consumer jobs through executable policy
+  checks and mutation regressions.
+- Clarify that managed rollback requires trusted current state and a still-trusted
+  target; signing-key compromise can require reviewed trust-root recovery instead.
 
 ## [0.2.0] - 2026-10-01
 

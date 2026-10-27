@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from tools.check_static_ui_assets import collect_index_static_assets
+from xferry.config import __version__
 from xferry.smuggle.policy import build_smuggle_capabilities
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2462,7 +2463,7 @@ def test_static_ui_version_matches_package_version() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (UI_ROOT / "core.js").read_text(encoding="utf-8")
 
-    assert 'id="appVersion" data-app-version="0.2.0">v0.2.0</p>' in html
+    assert f'id="appVersion" data-app-version="{__version__}">v{__version__}</p>' in html
     assert "function updateVisibleAppVersionFromPing" in core_js
     assert "match(/^XFerry\\/" in core_js
 

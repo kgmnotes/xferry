@@ -269,7 +269,7 @@ options:
   --dry-run     Verify signed metadata and report the apply plan without host mutation.
   --json
 
-Example: sudo xferry update --to 0.2.0
+Example: sudo xferry update --to 0.2.1
 ```
 
 ## `xferry rollback --help`

@@ -18,12 +18,15 @@ import pytest
 from packaging.requirements import Requirement
 from setuptools import find_packages
 
+from tools.check_release_preflight import _source_version
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     from setuptools._vendor import tomli as tomllib  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_VERSION = _source_version(REPO_ROOT)
 
 
 def _run_probe(source: str) -> subprocess.CompletedProcess[str]:
@@ -213,7 +216,8 @@ def test_repository_discovery_has_only_xferry_and_the_pre_1_0_version_authority(
 
     from xferry import __version__
 
-    assert __version__ == "0.2.0"
+    assert __version__ == EXPECTED_VERSION
+    assert __version__.split(".", 1)[0] == "0"
 
 
 def test_runtime_dependencies_include_the_pinned_xml_hardening_library() -> None:
@@ -419,18 +423,18 @@ def test_built_wheel_and_sdist_contain_complete_xferry_package_data(
     assert validated.expected_package_data == expected_data
     assert expected_data <= validated.wheel_members
     assert expected_data <= validated.sdist_members
-    assert built_artifacts.wheel.name == "xferry-0.2.0-py3-none-any.whl"
-    assert built_artifacts.sdist.name == "xferry-0.2.0.tar.gz"
+    assert built_artifacts.wheel.name == f"xferry-{EXPECTED_VERSION}-py3-none-any.whl"
+    assert built_artifacts.sdist.name == f"xferry-{EXPECTED_VERSION}.tar.gz"
 
     with zipfile.ZipFile(built_artifacts.wheel) as wheel:
         assert len(wheel.namelist()) == len(validated.wheel_members)
-        metadata = wheel.read("xferry-0.2.0.dist-info/METADATA").decode("utf-8")
-        assert "Version: 0.2.0" in metadata.splitlines()
+        metadata = wheel.read(f"xferry-{EXPECTED_VERSION}.dist-info/METADATA").decode("utf-8")
+        assert f"Version: {EXPECTED_VERSION}" in metadata.splitlines()
     with tarfile.open(built_artifacts.sdist, "r:gz") as sdist:
         assert sdist.getmembers()
-        pkg_info = sdist.extractfile("xferry-0.2.0/PKG-INFO")
+        pkg_info = sdist.extractfile(f"xferry-{EXPECTED_VERSION}/PKG-INFO")
         assert pkg_info is not None
-        assert "Version: 0.2.0" in pkg_info.read().decode("utf-8").splitlines()
+        assert f"Version: {EXPECTED_VERSION}" in pkg_info.read().decode("utf-8").splitlines()
 
 
 def test_real_artifact_build_is_index_free_and_mirrors_checkout_candidates(
@@ -567,10 +571,10 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
     if ambient_metadata:
         # Same-version metadata without a package must not make pip skip installation.
         injected = tmp_path / "ambient-metadata"
-        metadata = injected / f"xferry-0.2.0.{ambient_metadata}"
+        metadata = injected / f"xferry-{EXPECTED_VERSION}.{ambient_metadata}"
         metadata.mkdir(parents=True)
         (metadata / ("METADATA" if ambient_metadata == "dist-info" else "PKG-INFO")).write_text(
-            "Metadata-Version: 2.1\nName: xferry\nVersion: 0.2.0\n\n",
+            f"Metadata-Version: 2.1\nName: xferry\nVersion: {EXPECTED_VERSION}\n\n",
             encoding="utf-8",
         )
         install_environment["PYTHONPATH"] = str(injected)
@@ -578,7 +582,9 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
             [
                 str(python),
                 "-c",
-                "from importlib.metadata import version; assert version('xferry') == '0.2.0'",
+                "import sys; from importlib.metadata import version; "
+                "assert version('xferry') == sys.argv[1]",
+                EXPECTED_VERSION,
             ],
             cwd=tmp_path,
             env=install_environment,
@@ -609,14 +615,15 @@ def test_fresh_wheel_install_without_dependencies_has_no_src_module(
             "-I",
             "-c",
             "import importlib.util, importlib.metadata, sys; from pathlib import Path; "
-            "import xferry; root = Path(sys.argv[1]).resolve(); "
-            "assert xferry.__version__ == '0.2.0'; "
+            "import xferry; root = Path(sys.argv[1]).resolve(); expected_version = sys.argv[2]; "
+            "assert xferry.__version__ == expected_version; "
             "assert Path(xferry.__file__).resolve().is_relative_to(root); "
             "distribution = importlib.metadata.distribution('xferry'); "
-            "assert distribution.version == '0.2.0'; "
+            "assert distribution.version == expected_version; "
             "assert Path(distribution.locate_file('')).resolve().is_relative_to(root); "
             "assert importlib.util.find_spec('src') is None",
             str(venv_dir),
+            EXPECTED_VERSION,
         ],
         cwd=probe_dir,
         env=environment,

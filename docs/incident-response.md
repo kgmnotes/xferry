@@ -31,7 +31,7 @@ signing material out of `production-release`.
 | Draft GitHub Release exists, not public | Cancel its activation job and keep it draft | Edit the draft notes to mark it withdrawn or delete only an unpublished draft when evidence is already preserved elsewhere | No public action required |
 | Public GitHub Release exists | Stop Pages deployment | Edit the Release notes and title to state withdrawn, keep assets for evidence unless legal or platform policy requires removal | Managed operators roll back to the previous trusted version |
 | Pages deployed with bad instructions | Stop further Pages deployments | Publish a corrected page that points to withdrawn status and safe rollback | Operators follow the corrected rollback notice |
-| Signing key suspected compromised | Stop every publisher and signer | Disable secret use, mark the public key `REVOKED`, create a new reviewed key, and ship a new trust root before releasing again | Managed operators reject affected signed metadata and roll back |
+| Signing key suspected compromised | Stop every publisher and signer | Disable secret use, mark the public key `REVOKED`, create a new reviewed key, and ship a new trust root before releasing again | Managed operators reject affected signed metadata; roll back only while current state and the target remain trusted, otherwise halt for reviewed trust-root recovery |
 
 ## Non-Destructive Tabletop
 
@@ -92,16 +92,30 @@ explicitly approved.
 Planned rotation may temporarily ship two active public keys. Compromise
 recovery must not rely on two active keys for the compromised identity.
 
+Managed rollback authenticates both the current installed manifest and the
+target against the selected local key ring. If the current signing key is
+revoked, rollback fails closed before switching releases. An earlier release
+signed by the same revoked key is not an independently trusted recovery target.
+Halt deployment changes and obtain reviewed trust-root recovery when either
+current state or the target cannot be authenticated. Do not re-enable a revoked
+key, replace signed metadata, or bypass signature checks to force rollback.
+
 ### Operator Rollback Communication
 
 Every operator notice must include:
 
 - affected exact version or digest;
 - whether portable, container, managed Linux, or docs are affected;
-- previous safe exact version or digest;
+- previous safe exact version or digest; when no trusted target exists, say so
+  instead of naming an unverified target;
 - rollback command or deployment change;
 - evidence link and contact owner;
 - statement that no mutable alias is an approved recovery target.
+
+Successful managed rollback requires trusted current state and an independently
+still-trusted target. If that condition is not met, the operator notice must
+state that rollback is blocked and direct operators to reviewed trust-root
+recovery.
 
 ## Recovery Exit Criteria
 
