@@ -141,9 +141,12 @@ jobs:
         run: |
           set -euo pipefail
           executable="$(find "$PWD/dist/scie-${{ inputs.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
+          smoke_root="$(mktemp -d "${RUNNER_TEMP}/xferry-scie-smoke.XXXXXX")"
+          trap 'rm -rf "$smoke_root"' EXIT
+          printf '[server]\naccess = private\nfiles_dir = %s\n' "$smoke_root/files" > "$smoke_root/xferry.ini"
           PATH=/nonexistent "$executable" run --version
           PATH=/nonexistent "$executable" --help > /dev/null
-          PATH=/nonexistent "$executable" run --check-config
+          PATH=/nonexistent "$executable" config check --config "$smoke_root/xferry.ini"
 
       - name: Smoke SCIE on every supported Linux base
         run: |
@@ -159,9 +162,10 @@ jobs:
               /bin/sh -eu -c '
                 test "$(uname -m)" = "$1"
                 candidate="/release/$2"
+                printf "[server]\naccess = private\nfiles_dir = /tmp/xferry-smoke-files\n" > /tmp/xferry-smoke.ini
                 "$candidate" run --version
                 "$candidate" --help > /dev/null
-                "$candidate" run --check-config
+                "$candidate" config check --config /tmp/xferry-smoke.ini
               ' sh '${{ inputs.machine }}' "$executable"
           done
 

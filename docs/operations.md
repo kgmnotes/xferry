@@ -1,308 +1,142 @@
 # Operations
 
-Choose one lifecycle owner and one durable data location before the first
-upload. Portable, managed Linux, and container installations share runtime
-behavior but intentionally use different upgrade and removal commands.
-
 ## Portable lifecycle
 
-Pipx owns portable installation state on Windows, macOS, and Linux:
+`xferry run` reads the saved foreground profile. Explicit launch options override
+it. Stop with `Ctrl+C`. Use pipx to maintain the CLI itself:
 
 ```console
 pipx upgrade xferry
 pipx uninstall xferry
 ```
 
-Run with an explicit operator-owned directory when data must survive process
-restarts. On Linux and macOS:
-
-```console
-install -d -m 0700 "$PWD/xferry-data"
-xferry run --preset local --dir "$PWD/xferry-data"
-```
-
-On Windows (PowerShell), use a private directory owned by your account:
-
-```powershell
-New-Item -ItemType Directory -Force -Path .\xferry-data
-xferry run --preset local --dir .\xferry-data
-```
-
-Press `Ctrl+C` to stop. Restarting with the same `--dir` preserves uploads and
-encrypted note state. Do not use managed `update`, `rollback`, or `uninstall`
-commands for a pipx installation.
+The stable files and private-state directories survive removing the pipx package.
+A running foreground process needs a restart after changing its configuration.
+Use `xferry config --config FILE` to edit another foreground profile.
 
 ## Managed Linux lifecycle
 
-The managed service is limited to the [generated host matrix](managed-hosts.md).
-Use the fixed unit name and root-gated commands:
+The [supported hosts](managed-hosts.md) use the same commands as generated Docker
+deployments. When necessary, the CLI hands off to sudo before configuration:
 
 ```console
-sudo xferry status
-sudo xferry doctor --deep
-sudo xferry logs --lines 200
-sudo xferry restart
+xferry status
+xferry logs --lines 100
+xferry stop
+xferry start
+xferry restart
+xferry doctor --deep
 ```
 
-Updates require an exact immutable version. A dry-run verifies signed metadata
-and reports the plan without changing managed files or service state:
+`xferry config` opens the settings wizard. Scripted changes validate the entire
+result and apply automatically if the server is running:
 
 ```console
-sudo xferry update --to 0.2.0 --dry-run --json
-sudo xferry update --to 0.2.0 --json
+xferry config set max_size_mb=200 --dry-run
+xferry config set max_size_mb=200
+xferry config check
 ```
 
-Successful activation must report exact-version health and retain the prior
-verified release. Recovery never downloads a mutable channel:
+An unsuccessful health check restores the previous configuration. A stopped
+server stays stopped. Changing the files folder does not move existing files;
+encrypted payloads and their private sidecars must remain consistent.
+
+When crossing from the old CLI/settings to this workflow, use the
+[one-time native migration](migration.md#native-linux-service-from-the-old-release) first.
+Choose an exact published version for ordinary updates; replace `VERSION` below:
 
 ```console
-sudo xferry rollback
-sudo xferry rollback --to 0.1.0
+xferry update --to VERSION --dry-run
+xferry update --to VERSION
+xferry rollback
 ```
 
-Normal uninstall removes the runtime, unit, and CLI link while preserving
-configuration, credentials, uploads, notes, and ACME state. Purge is explicit
-and destructive:
+Managed updates verify signed release metadata and exact-version health. The
+previous verified release remains available for rollback. See the
+[release runbook](release-runbook.md) for release acceptance and recovery details.
 
-```console
-sudo xferry uninstall --dry-run
-sudo xferry uninstall
-sudo xferry uninstall --purge-data --yes
-```
+`xferry uninstall` removes the installation and retains its configuration,
+password, files, notes and certificates. Running setup again can reuse retained
+data. The separate `--purge-data` option is destructive; check the displayed plan
+and selected folder before confirming. An external files folder is not silently
+removed with the runtime. Saved-data purge remains available after uninstall.
 
 ## Container lifecycle
 
-The released image supports `linux/amd64` and `linux/arm64`. Pull and run an
-immutable version tag, or prefer the digest recorded in the release inventory:
+These lifecycle commands require `0.3.0` or newer. Existing `0.2.x`
+installations use the previous interface; see [migration](migration.md).
+
+For a deployment created by `xferry setup --docker`, use the same lifecycle and
+configuration commands. Add `--config /path/to/deployment/xferry.ini` to select it.
+Keep the deployment directory, protected auth file and persistent volumes.
+Configuration edits preserve the pinned image; only an explicit update changes
+it. Rollback uses the retained image/configuration.
+
+If you maintain containers manually, manage that deployment with Docker instead.
+Pin an immutable image version or digest such as
+`ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}`. Published v0.2.0 uses the
+[archived image instructions](archive/0.2.0-installation.md).
+
+The manual public sample pins the compatible `v0.3.0` image; you can replace its
+tag with the recorded digest. Images from 0.2.x require their archived
+configuration. The health hostname must match an admitted TLS hostname:
 
 ```console
-docker pull ghcr.io/kgmnotes/xferry:v0.2.0
-docker pull ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}
-docker run --rm --publish 127.0.0.1:8080:8080 \
-  --volume xferry-data:/data \
-  ghcr.io/kgmnotes/xferry:v0.2.0
+XFERRY_HEALTH_HOST=files.example.com docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
+XFERRY_HEALTH_HOST=files.example.com docker compose -f deploy/docker/docker-compose.public-direct.yml down
 ```
 
-For the public-direct Compose contract, set the health hostname to the
-configured TLS hostname and admitted request authority on every invocation:
-
-```console
-XFERRY_HEALTH_HOST=files.example.com \
-  docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
-XFERRY_HEALTH_HOST=files.example.com \
-  docker compose -f deploy/docker/docker-compose.public-direct.yml down
-```
-
-`down` removes containers and the project network but keeps named volumes.
-Adding `--volumes` also deletes uploads, notes, and ACME state and is
-destructive.
-
-```console
-XFERRY_HEALTH_HOST=files.example.com \
-  docker compose -f deploy/docker/docker-compose.public-direct.yml down --volumes
-```
-
-The contributor Compose file under `examples/docker/` deliberately builds the
-current checkout; it is not the public container journey.
+`down` keeps named volumes. Adding `--volumes` deletes them and is destructive.
+The Compose files under `examples/docker/` build a source checkout for development.
 
 ## Data layout
 
-Inside a portable or container data root:
+`files_dir` is the exact folder exposed through `/uploads/`. Existing files and
+new uploads share that folder. Hidden `.xferry-encrypted/` payloads are managed
+through the encrypted-transfer API, not ordinary file listing or clear-all.
 
-- `uploads/` contains user files and generated SMUGGLE artifacts.
-- `uploads/.xferry-encrypted/` contains hidden encrypted-transfer `.part` and
-  `.xfr` ciphertext files. Ordinary file APIs cannot list, download, delete,
-  or clear this directory.
-- `notes/` contains encrypted note blobs and plaintext note metadata. It does
-  not contain a durable client recovery key.
-- `.xferry/encrypted-uploads/` contains mode-0600 encrypted-transfer state
-  sidecars beneath a mode-0700 service directory.
+Private state holds `notes/`, `.xferry/encrypted-uploads/` sidecars and TLS state.
+It is selected automatically outside the public folder. Native installation
+keeps configuration in `/etc/xferry`, releases in `/opt/xferry`, and durable state
+in `/var/lib/xferry`; Docker keeps separate state/ACME volumes. See
+[Settings](settings.md#files-and-private-state) for platform defaults.
 
-Managed Linux stores configuration under `/etc/xferry`, releases under
-`/opt/xferry`, and durable data under `/var/lib/xferry`. ACME state is secret
-operator state.
+Back up configuration, protected auth files, files, private state and ACME
+material together. Restore these consistently before starting the server.
+Notepad ciphertext does not include the browser's recovery key.
 
-ACME state is stored under `~/.xferry/acme/` for the runtime user. Protect its
-account keys, domain private keys, and certificate chain files as secrets.
-Temporary self-signed certificate files are removed when the process exits.
-
-Backing up `notes/` does not make a note recoverable after the client-derived
-key is lost.
-
-## Encrypted transfer operations
-
-Large client-encrypted transfers are disabled by default. Enable them only for
-an operator-controlled data root:
-
-```ini
-[server]
-encrypted_uploads = true
-
-[limits]
-encrypted_upload_max_size_mb = 0
-upload_storage_limit_mb = 24576
-upload_reserve_free_mb = 4096
-upload_file_limit = 4096
-encrypted_upload_incomplete_ttl_seconds = 604800
-```
-
-This is the private-service resource profile in `examples/large-files.ini`:
-24 GiB shared upload quota, 4 GiB free-space reserve, 4096 ordinary plus encrypted
-files (including partials), and seven days of incomplete retention. Merge its
-settings into the existing deployment config without replacing TLS, auth,
-root directory or existing data. Library/local defaults do not silently enable
-these aggregate limits.
-
-The equivalent feature flag is `--encrypted-uploads`. A zero
-`encrypted_upload_max_size_mb` (the default) means automatic capacity admission;
-an explicit positive value sets a lower operator ceiling. The v1 recovery
-implementation supports at most 4096 chunks / 32 GiB plaintext per file so even
-the worst-case journal fits the 1 MiB sidecar limit. This is a recovery safety
-boundary, not a claim that a 32 GiB real-browser round trip has been verified.
-The advertised maximum is recalculated from remaining quota and disk headroom,
-subtracting tag overhead. The maximum is a plaintext limit; stored ciphertext
-adds one 16-byte AES-GCM tag per 8 MiB
-chunk. Partial reservations count their complete declared ciphertext length
-against the ordinary upload byte and file quotas, including the free-space
-reserve. Plan filesystem capacity for the largest concurrent partial files,
-completed ciphertext, backups, and temporary operational headroom.
-Sparse partials on filesystems without preallocation also reserve their not-yet-
-allocated bytes when checking free space. The browser checks the entire selected
-queue before deriving keys or uploading data; capacity snapshots are advisory,
-and server reservations recheck atomically. A competing upload can still cause
-a later file to be refused, without deleting already completed files.
-
-`GET /_xferry/encrypted-uploads` includes a non-secret `storage` snapshot with
-`available_bytes`, `remaining_files` and `max_plaintext_size`. Limits concern
-the shared storage root, not individual accounts sharing Basic Auth. Reducing
-the new-upload ceiling does not hide or invalidate existing encrypted files.
-
-Encrypted uploads require at least two workers and a body admission budget for
-two maximum ciphertext chunks (`16 MiB + 32 bytes`). When the budget is
-omitted, XFerry derives at least that floor. When it is configured through the
-whole-MiB CLI or settings option, use at least `17` MiB. The encrypted route
-caps are independent of the smaller ordinary `--max-size` limit.
-
-State advances `partial -> committing -> complete`. A chunk is acknowledged
-only after its ciphertext and atomic sidecar state are durable. Startup
-reconciles an interrupted commit without exposing the hidden files through
-ordinary uploads. Incomplete records older than
-`encrypted_upload_incomplete_ttl_seconds` are removed during startup and
-lazily on encrypted-store access, listing, or new-upload quota admission;
-completed files remain until their encrypted-file DELETE route is called.
-Back up the ciphertext and `.xferry/encrypted-uploads/` sidecars together.
-
-The project default for incomplete retention remains 86400 seconds (24 hours).
-For seven days without durable upload activity, configure
-`encrypted_upload_incomplete_ttl_seconds = 604800`. The partial-list API reports
-the actual policy as `incomplete_ttl_seconds` beside `encrypted_uploads`, so the
-client can display the configured retention. Server cleanup does not require
-the user's browser to be open, but is lazy: with no server access and no restart,
-an expired partial can remain until the next cleanup trigger. Completed files
-are removed only by explicit deletion.
-
-Upload recovery also requires the original browser's IndexedDB nonce journal.
-Before each content chunk's first encryption the browser durably records its
-plaintext HMAC, including chunks not yet acknowledged by the server. Reusing a
-content key and nonce for changed bytes is unsafe; losing that journal, or
-resuming an incomplete upload created by an older client without a journal,
-requires a new session with new ID and keys. Existing partial uploads are not
-automatically deleted when the client refuses unsafe recovery.
-
-Browser download recovery stores only authenticated encrypted chunks in OPFS,
-the Origin Private File System. It requires desktop Chrome/Edge with OPFS and
-the File System Access API, and roughly one extra file's size of browser storage.
-On a reload the user re-enters the password and selects the destination again;
-the browser verifies cached chunks, fetches only missing chunks, and reconstructs
-the plaintext output locally. Passwords, keys, plaintext names and plaintext
-file bytes are not persisted in this recovery cache. The per-chunk ciphertext
-API is `GET /_xferry/encrypted-files/{id}/chunks/{index}`; completed EUF v1 files
-and the existing concatenated ciphertext route remain compatible.
-
-After successful output closure the client deletes that download's cache.
-Manual cache clearing is available; otherwise inactive entries older than
-seven days are cleaned at the next application open. No background deletion
-is guaranteed while the site or browser is closed. Browser storage eviction
-can remove cached ciphertext earlier and then those chunks must be fetched
-again. These client cache rules do not delete files on the server.
-
-The server cannot recover a forgotten browser password and does not store
-plaintext, `K_content`, or `K_resume`. Browser-side download is the default
-trust boundary. The optional server-decrypt action sends `K_content` after a
-separate confirmation and is available only over TLS or direct loopback; it
-streams one response and does not create a plaintext artifact.
-
-Run the checked 64 MiB round-trip and inspect its JSON memory record with:
-
-```bash
-python tools/encrypted_transfer_resource_smoke.py --size-mib 64 --json
-```
-
-The output includes `peak_rss_bytes`, `peak_rss_delta_bytes`, byte counts, and
-source/round-trip SHA-256 values. The 2 GiB smoke is deliberately opt-in
-because it reserves and writes roughly 2 GiB of local storage:
-
-```bash
-XFERRY_RUN_2GIB_SMOKE=1 \
-  pytest -q -s tests/test_encrypted_resource_smoke.py::test_2_gib_encrypted_streaming_resource_smoke_records_peak_memory
-```
-
-Run it on the same filesystem and under the same memory limits intended for
-production. A passing smoke demonstrates bounded application buffers for this
-path; it is not a substitute for host disk quotas or process-level limits.
-
-## Docker from the checkout
-
-The example Compose file builds `xferry:local` from source. It is a local
-checkout workflow, not a registry-image installation:
-
-```bash
-docker compose -f examples/docker/docker-compose.yml up --build xferry
-docker compose -f examples/docker/docker-compose.yml down
-```
-
-The service publishes only `127.0.0.1:8080` and uses named volumes. `down`
-removes containers and the project network but keeps data. This command also
-deletes the named volumes and is destructive:
-
-```bash
-docker compose -f examples/docker/docker-compose.yml down --volumes
-```
+Encrypted uploads are disabled by default. Enable them with `xferry config set
+encrypted_uploads=true` or the wizard. See [Encrypted transfer operations](encrypted-transfers.md)
+for retention, browser recovery, consistent backups and the optional resource smoke.
 
 ## Capacity
 
-`--body-memory-budget` limits admitted in-flight request bodies. It is not an
-RSS ceiling: decoded payloads, parser objects, TLS buffers, worker stacks, and
-WebSocket state use additional memory.
+`max_size_mb` bounds one request. `body_memory_budget_mb` is an admission budget
+for concurrent request bodies, not an RSS ceiling. Its automatic value is workers
+multiplied by the request limit. Large encrypted transfers stream chunks; their
+plaintext limit is configured separately.
 
-Persistent capacity combines an operator-controlled filesystem or volume quota
-with application limits such as `--upload-storage-limit`, `--upload-file-limit`,
-`--upload-reserve-free`, note limits, and SMUGGLE retention limits. Tune those
-limits with workers, WebSocket admission, process memory, and free-space alerts.
+The upload byte quota, file-count quota and free-space reserve apply to the
+selected files folder. Temporary SMUGGLE artifacts and notes have separate
+limits. Public mode requires finite upload capacity or an explicit declaration
+that external quotas enforce it. Read [the setting descriptions](settings.md)
+for units, zero/automatic behavior and dependencies.
 
 ## Health and diagnostics
 
-Use `PING /` for health, version, method discovery, and a metrics snapshot:
-
-```console
-curl --fail-with-body --request PING http://127.0.0.1:8080/
-```
-
-`PING` and `GET /metrics` perform exact storage scans. Probe less often for a
-large data root. Keep credentials, Advanced Session tokens, payload keys, and
-note keys out of command arguments and logs.
+`xferry status` reports the selected installation. `xferry doctor --deep` adds
+configuration and authenticated health checks. An authenticated `PING /` must
+return HTTP 200 and `"health":"ready"`. Check a small upload/download/delete
+cycle after an update or restore. `xferry config show --all` reports resolved
+settings and their sources; it does not print passwords.
 
 ## Public services
 
-Use a dedicated runtime identity, explicit data root, file-backed credentials,
-finite limits, restart policy, and immutable release identity. Validate public
-configuration before starting it:
+Use `access=public`, file-backed Basic Auth and browser-trusted HTTPS. Setup
+prepares these together. See [Public deployment](public-direct.md) for ports,
+Host admission, proxy behavior and external controls.
 
-```console
-xferry run --write-sample-config ./xferry.ini
-xferry run --config ./xferry.ini --check-config
-xferry run --config ./xferry.ini --print-config
-```
-
-See [Public deployment](public-direct.md) for the required network, TLS,
-authentication, storage, and monitoring controls.
+Built-in ACME certificates renew in the running process without interrupting
+active transfers. Keep inbound HTTP-01 port 80 reachable. Failed renewals retain
+the active certificate and retry with backoff. For externally managed PEM
+certificates, restart after replacing their files.

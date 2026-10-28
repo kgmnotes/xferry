@@ -22,7 +22,7 @@ SettingValueKind = Literal[
     "optional_integer",
     "optional_string",
     "plugin_allowlist",
-    "preset",
+    "choice",
     "string",
 ]
 CliAction = Literal["append", "boolean_optional", "store", "store_true"]
@@ -44,12 +44,7 @@ CLI_GROUP_ORDER: tuple[CliGroup, ...] = (
     "Authentication",
 )
 NO_CLI_SETTING_NAMES = frozenset(
-    {
-        "public_direct",
-        "plugin_allowlist",
-        "plugins_allow_public_direct",
-        "plugins_override_core",
-    }
+    {"plugin_allowlist", "plugins_allow_public_direct", "plugins_override_core"}
 )
 
 
@@ -81,6 +76,11 @@ class SettingSpec:
     value_kind: SettingValueKind
     redaction: RedactionClass
     cli: CliSpec | None
+    description: str
+    example: str
+    constraints: str
+    dependencies: str
+    applicability: str
     sample_dispositions: tuple[
         SampleDisposition,
         SampleDisposition,
@@ -188,591 +188,772 @@ def _c(
 
 _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
     (
-        "preset",
-        _c(
-            "--preset",
-            dest="preset",
-            group="Configuration",
-            choices=("local", "local-secure", "public-direct"),
-            help="Select journey defaults below every explicit file/env/CLI value",
+        "access",
+        CliSpec(
+            option_strings=("--access",),
+            dest="access",
+            group="Basic",
+            help="Server access: private loopback, public HTTPS, or explicit lab testing",
+            action="store",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=("private", "public", "lab"),
             normal_help=True,
+            default_from_runtime=True,
+        ),
+    ),
+    (
+        "https_mode",
+        CliSpec(
+            option_strings=("--https",),
+            dest="https_mode",
+            group="TLS",
+            help="HTTPS mode; default: off for private/lab, automatic address for public",
+            action="store",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=("off", "auto", "domain", "files", "self-signed"),
+            normal_help=True,
+            default_from_runtime=True,
+        ),
+    ),
+    (
+        "log_level",
+        CliSpec(
+            option_strings=("--log-level",),
+            dest="log_level",
+            group="Modes",
+            help="Logging detail",
+            action="store",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=("warning", "info", "debug"),
+            normal_help=False,
+            default_from_runtime=True,
+        ),
+    ),
+    (
+        "log_format",
+        CliSpec(
+            option_strings=("--log-format",),
+            dest="log_format",
+            group="Modes",
+            help="Log output format",
+            action="store",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=("text", "json"),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "host",
-        _c(
-            "-H",
-            "--host",
+        CliSpec(
+            option_strings=("-H", "--host"),
             dest="host",
             group="Basic",
-            metavar="HOST",
             help="Bind host (default: {default})",
+            action="store",
+            metavar="HOST",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
             normal_help=True,
+            default_from_runtime=True,
         ),
     ),
     (
         "port",
-        _c(
-            "-p",
-            "--port",
+        CliSpec(
+            option_strings=("-p", "--port"),
             dest="port",
             group="Basic",
+            help="Listen port (default: {default})",
+            action="store",
             metavar="PORT",
             parser_kind="integer",
             parser_label="port",
             minimum=1,
             maximum=65535,
-            help="Listen port (default: {default})",
+            choices=(),
             normal_help=True,
+            default_from_runtime=True,
         ),
     ),
     (
-        "root_dir",
-        _c(
-            "-d",
-            "--dir",
-            dest="dir",
+        "files_dir",
+        CliSpec(
+            option_strings=("--files-dir",),
+            dest="files_dir",
             group="Basic",
+            help="Folder for uploads and downloads (default: per-user xferry/files)",
+            action="store",
             metavar="DIR",
-            help="Root directory (default: current)",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
             normal_help=True,
-        ),
-    ),
-    (
-        "quiet",
-        _c(
-            "-q",
-            "--quiet",
-            dest="quiet",
-            group="Modes",
-            action="store_true",
-            help="Quiet mode (minimal logging)",
-        ),
-    ),
-    (
-        "debug",
-        _c(
-            "--debug",
-            dest="debug",
-            group="Modes",
-            action="store_true",
-            help="Debug mode (verbose logging)",
-        ),
-    ),
-    (
-        "open_browser",
-        _c(
-            "--open",
-            dest="open",
-            group="Modes",
-            action="store_true",
-            help="Open browser after start",
-            normal_help=True,
-        ),
-    ),
-    (
-        "json_log",
-        _c(
-            "--json-log",
-            dest="json_log",
-            group="Modes",
-            action="store_true",
-            help="Structured JSON log format",
+            default_from_runtime=True,
         ),
     ),
     (
         "encrypted_uploads",
-        _c(
-            "--encrypted-uploads",
+        CliSpec(
+            option_strings=("--encrypted-uploads",),
             dest="encrypted_uploads",
             group="Modes",
-            action="boolean_optional",
             help="Enable resumable browser-encrypted large-file transfers",
+            action="boolean_optional",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "max_size_mb",
-        _c(
-            "-m",
-            "--max-size",
+        CliSpec(
+            option_strings=("-m", "--max-size"),
             dest="max_size",
             group="Limits",
+            help="Max per-request upload body size in MB (default: {default})",
+            action="store",
             metavar="MB",
             parser_kind="integer",
             parser_label="max size",
             minimum=1,
-            help="Max per-request upload body size in MB (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "encrypted_upload_max_size_mb",
-        _c(
-            "--encrypted-upload-max-size",
+        CliSpec(
+            option_strings=("--encrypted-upload-max-size",),
             dest="encrypted_upload_max_size",
             group="Limits",
+            help="Max encrypted-upload plaintext size in MB; 0 = automatic (default: {default})",
+            action="store",
             metavar="MB",
             parser_kind="integer",
             parser_label="encrypted upload max size",
             minimum=0,
             maximum=32768,
-            help="Max encrypted-upload plaintext size in MB; 0 = automatic (default: {default})",
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "encrypted_upload_incomplete_ttl_seconds",
-        _c(
-            "--encrypted-upload-incomplete-ttl",
+        CliSpec(
+            option_strings=("--encrypted-upload-incomplete-ttl",),
             dest="encrypted_upload_incomplete_ttl",
             group="Limits",
+            help="Expiry for inactive encrypted uploads in seconds (default: {default})",
+            action="store",
             metavar="SECONDS",
             parser_kind="integer",
             parser_label="encrypted upload incomplete TTL",
             minimum=1,
-            help="Expiry for inactive encrypted uploads in seconds (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "upload_storage_limit_mb",
-        _c(
-            "--upload-storage-limit",
+        CliSpec(
+            option_strings=("--upload-storage-limit",),
             dest="upload_storage_limit",
             group="Limits",
+            help="Aggregate uploads/ storage quota in MB; 0 disables (default: {default})",
+            action="store",
             metavar="MB",
             parser_kind="integer",
             parser_label="upload storage limit",
             minimum=0,
-            help="Aggregate uploads/ storage quota in MB; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "upload_file_limit",
-        _c(
-            "--upload-file-limit",
+        CliSpec(
+            option_strings=("--upload-file-limit",),
             dest="upload_file_limit",
             group="Limits",
+            help="Aggregate uploads/ file count quota; 0 disables (default: {default})",
+            action="store",
             metavar="N",
             parser_kind="integer",
             parser_label="upload file limit",
             minimum=0,
-            help="Aggregate uploads/ file count quota; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "upload_reserve_free_mb",
-        _c(
-            "--upload-reserve-free",
+        CliSpec(
+            option_strings=("--upload-reserve-free",),
             dest="upload_reserve_free",
             group="Limits",
-            metavar="MB",
-            parser_kind="integer",
-            parser_label="upload reserve free",
-            minimum=0,
             help=(
                 "Minimum free disk space to preserve while committing uploads in MB "
                 "(default: {default})"
             ),
+            action="store",
+            metavar="MB",
+            parser_kind="integer",
+            parser_label="upload reserve free",
+            minimum=0,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "upload_quota_externally_managed",
-        _c(
-            "--upload-quota-externally-managed",
+        CliSpec(
+            option_strings=("--upload-quota-externally-managed",),
             dest="upload_quota_externally_managed",
             group="Limits",
-            action="boolean_optional",
             help=(
                 "Acknowledge that upload disk capacity is enforced outside xferry; "
-                "required for public-direct only when all app upload disk controls are disabled"
+                "required for public access when all upload disk controls are disabled"
             ),
+            action="boolean_optional",
+            metavar=None,
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "note_storage_limit_mb",
-        _c(
-            "--note-storage-limit",
+        CliSpec(
+            option_strings=("--note-storage-limit",),
             dest="note_storage_limit",
             group="Limits",
+            help="Aggregate encrypted notes/ blob quota in MB; 0 disables (default: {default})",
+            action="store",
             metavar="MB",
             parser_kind="integer",
             parser_label="note storage limit",
             minimum=0,
-            help="Aggregate encrypted notes/ blob quota in MB; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "note_count_limit",
-        _c(
-            "--note-count-limit",
+        CliSpec(
+            option_strings=("--note-count-limit",),
             dest="note_count_limit",
             group="Limits",
+            help="Aggregate encrypted note count quota; 0 disables (default: {default})",
+            action="store",
             metavar="N",
             parser_kind="integer",
             parser_label="note count limit",
             minimum=0,
-            help="Aggregate encrypted note count quota; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "smuggle_temp_age",
-        _c(
-            "--smuggle-temp-age",
+        CliSpec(
+            option_strings=("--smuggle-temp-age",),
             dest="smuggle_temp_age",
             group="Limits",
-            metavar="SECONDS",
-            parser_kind="integer",
-            parser_label="SMUGGLE temp max age",
-            minimum=0,
             help=(
                 "Max age for retained SMUGGLE temp pages in seconds; 0 disables "
                 "(default: {default})"
             ),
+            action="store",
+            metavar="SECONDS",
+            parser_kind="integer",
+            parser_label="SMUGGLE temp max age",
+            minimum=0,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "smuggle_temp_file_limit",
-        _c(
-            "--smuggle-temp-file-limit",
+        CliSpec(
+            option_strings=("--smuggle-temp-file-limit",),
             dest="smuggle_temp_file_limit",
             group="Limits",
+            help="Max retained SMUGGLE temp page count; 0 disables (default: {default})",
+            action="store",
             metavar="N",
             parser_kind="integer",
             parser_label="SMUGGLE temp file limit",
             minimum=0,
-            help="Max retained SMUGGLE temp page count; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "smuggle_temp_storage_limit_mb",
-        _c(
-            "--smuggle-temp-storage-limit",
+        CliSpec(
+            option_strings=("--smuggle-temp-storage-limit",),
             dest="smuggle_temp_storage_limit",
             group="Limits",
+            help="Max retained SMUGGLE temp page bytes in MB; 0 disables (default: {default})",
+            action="store",
             metavar="MB",
             parser_kind="integer",
             parser_label="SMUGGLE temp storage limit",
             minimum=0,
-            help="Max retained SMUGGLE temp page bytes in MB; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "max_header_size_kb",
-        _c(
-            "--max-header-size",
+        CliSpec(
+            option_strings=("--max-header-size",),
             dest="max_header_size",
             group="Limits",
+            help="Max HTTP request header size in KiB (default: {default})",
+            action="store",
             metavar="KB",
             parser_kind="integer",
             parser_label="max header size",
             minimum=1,
-            help="Max HTTP request header size in KiB (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "body_memory_budget_mb",
-        _c(
-            "--body-memory-budget",
+        CliSpec(
+            option_strings=("--body-memory-budget",),
             dest="body_memory_budget",
             group="Limits",
-            metavar="MB",
-            parser_kind="integer",
-            parser_label="body memory budget",
-            minimum=1,
             help=(
                 "Admission budget for aggregate in-flight request bodies in MB, not an "
                 "RSS ceiling (default: workers * max size)"
             ),
+            action="store",
+            metavar="MB",
+            parser_kind="integer",
+            parser_label="body memory budget",
+            minimum=1,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "body_idle_timeout",
-        _c(
-            "--body-idle-timeout",
+        CliSpec(
+            option_strings=("--body-idle-timeout",),
             dest="body_idle_timeout",
             group="Limits",
+            help="Max idle seconds between request body chunks; 0 disables (default: {default})",
+            action="store",
             metavar="SECONDS",
             parser_kind="number",
             parser_label="body idle timeout",
             minimum=0,
-            help="Max idle seconds between request body chunks; 0 disables (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "body_timeout",
-        _c(
-            "--body-timeout",
+        CliSpec(
+            option_strings=("--body-timeout",),
             dest="body_timeout",
             group="Limits",
-            metavar="SECONDS",
-            parser_kind="number",
-            parser_label="body timeout",
-            minimum=0,
             help=(
                 "Max seconds to receive a request body after headers; 0 disables "
                 "(default: {default})"
             ),
+            action="store",
+            metavar="SECONDS",
+            parser_kind="number",
+            parser_label="body timeout",
+            minimum=0,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "body_min_rate",
-        _c(
-            "--body-min-rate",
+        CliSpec(
+            option_strings=("--body-min-rate",),
             dest="body_min_rate",
             group="Limits",
+            help=(
+                "Minimum average request body read rate in bytes/s; 0 disables (default: {default})"
+            ),
+            action="store",
             metavar="BYTES_PER_SECOND",
             parser_kind="number",
             parser_label="body minimum read rate",
             minimum=0,
-            help=(
-                "Minimum average request body read rate in bytes/s; 0 disables (default: {default})"
-            ),
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "stream_send_idle_timeout",
-        _c(
-            "--stream-send-idle-timeout",
+        CliSpec(
+            option_strings=("--stream-send-idle-timeout",),
             dest="stream_send_idle_timeout",
             group="Limits",
+            help="Max seconds a streamed response send may block per chunk (default: {default})",
+            action="store",
             metavar="SECONDS",
             parser_kind="number",
             parser_label="stream send idle timeout",
             minimum=0.001,
-            help="Max seconds a streamed response send may block per chunk (default: {default})",
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "stream_send_timeout",
-        _c(
-            "--stream-send-timeout",
+        CliSpec(
+            option_strings=("--stream-send-timeout",),
             dest="stream_send_timeout",
             group="Limits",
-            metavar="SECONDS",
-            parser_kind="number",
-            parser_label="stream send timeout",
-            minimum=0,
             help=(
                 "Max total seconds for a streamed response transfer; 0 disables "
                 "(default: {default})"
             ),
+            action="store",
+            metavar="SECONDS",
+            parser_kind="number",
+            parser_label="stream send timeout",
+            minimum=0,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "max_websocket_connections",
-        _c(
-            "--max-websocket-connections",
+        CliSpec(
+            option_strings=("--max-websocket-connections",),
             dest="max_websocket_connections",
             group="Limits",
-            metavar="N",
-            parser_kind="integer",
-            parser_label="max websocket connections",
-            minimum=0,
             help=(
                 "Max active WebSocket connections; each occupies a worker and 0 rejects "
                 "all (default: workers // 2)"
             ),
+            action="store",
+            metavar="N",
+            parser_kind="integer",
+            parser_label="max websocket connections",
+            minimum=0,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "websocket_frame_idle_timeout",
-        _c(
-            "--websocket-frame-idle-timeout",
+        CliSpec(
+            option_strings=("--websocket-frame-idle-timeout",),
             dest="websocket_frame_idle_timeout",
             group="Limits",
+            help=(
+                "Max idle seconds while waiting for the rest of an incomplete WebSocket "
+                "frame (default: {default})"
+            ),
+            action="store",
             metavar="SECONDS",
             parser_kind="number",
             parser_label="websocket frame idle timeout",
             minimum=0.001,
-            help=(
-                "Max idle seconds while waiting for the rest of an incomplete WebSocket frame "
-                "(default: {default})"
-            ),
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "workers",
-        _c(
-            "-w",
-            "--workers",
+        CliSpec(
+            option_strings=("-w", "--workers"),
             dest="workers",
             group="Limits",
+            help="Number of worker threads (default: {default})",
+            action="store",
             metavar="N",
             parser_kind="integer",
             parser_label="workers",
             minimum=1,
-            help="Number of worker threads (default: {default})",
-        ),
-    ),
-    (
-        "tls",
-        _c(
-            "--tls",
-            dest="tls",
-            group="TLS",
-            action="boolean_optional",
-            help="Enable HTTPS with a generated self-signed certificate",
-            normal_help=True,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "cert_file",
-        _c(
-            "--cert",
+        CliSpec(
+            option_strings=("--cert",),
             dest="cert",
             group="TLS",
-            metavar="FILE",
             help="Path to certificate file (PEM)",
+            action="store",
+            metavar="FILE",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "key_file",
-        _c(
-            "--key",
+        CliSpec(
+            option_strings=("--key",),
             dest="key",
             group="TLS",
-            metavar="FILE",
             help="Path to private key file (PEM)",
-        ),
-    ),
-    (
-        "letsencrypt",
-        _c(
-            "--letsencrypt",
-            dest="letsencrypt",
-            group="TLS",
-            action="store_true",
-            help="Obtain Let's Encrypt certificate with built-in ACME HTTP-01",
+            action="store",
+            metavar="FILE",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "domain",
-        _c(
-            "--domain",
+        CliSpec(
+            option_strings=("--domain",),
             dest="domain",
             group="TLS",
-            metavar="DOMAIN",
             help="Domain for Let's Encrypt certificate",
+            action="store",
+            metavar="DOMAIN",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "email",
-        _c(
-            "--email",
+        CliSpec(
+            option_strings=("--email",),
             dest="email",
             group="TLS",
-            metavar="EMAIL",
             help="Email for Let's Encrypt notifications (optional)",
-        ),
-    ),
-    (
-        "sslip",
-        _c(
-            "--sslip",
-            dest="sslip",
-            group="TLS",
-            action="store_true",
-            help="Obtain a Let's Encrypt certificate for the public IPv4 sslip.io hostname",
+            action="store",
+            metavar="EMAIL",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "public_ip",
-        _c(
-            "--public-ip",
+        CliSpec(
+            option_strings=("--public-ip",),
             dest="public_ip",
             group="TLS",
+            help="Public IPv4 for --https auto (default: auto-detect)",
+            action="store",
             metavar="IP",
-            help="Public IPv4 override for --sslip (default: auto-detect)",
-        ),
-    ),
-    (
-        "acme_staging",
-        _c(
-            "--acme-staging",
-            dest="acme_staging",
-            group="TLS",
-            action="store_true",
-            help="Use Let's Encrypt staging ACME directory",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "acme_server",
-        _c(
-            "--acme-server",
+        CliSpec(
+            option_strings=("--acme-server",),
             dest="acme_server",
             group="TLS",
-            metavar="URL",
             help="Custom ACME directory URL (overrides --acme-staging)",
+            action="store",
+            metavar="URL",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "acme_http_address",
-        _c(
-            "--acme-http-address",
+        CliSpec(
+            option_strings=("--acme-http-address",),
             dest="acme_http_address",
             group="TLS",
-            metavar="ADDR",
             help="Bind address for HTTP-01 challenge server (default: all interfaces)",
+            action="store",
+            metavar="ADDR",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "acme_http_port",
-        _c(
-            "--acme-http-port",
+        CliSpec(
+            option_strings=("--acme-http-port",),
             dest="acme_http_port",
             group="TLS",
+            help="Bind port for HTTP-01 challenge server (default: {default})",
+            action="store",
             metavar="PORT",
             parser_kind="integer",
             parser_label="ACME HTTP port",
             minimum=1,
             maximum=65535,
-            help="Bind port for HTTP-01 challenge server (default: {default})",
-        ),
-    ),
-    (
-        "auth",
-        _c(
-            "--auth",
-            dest="auth",
-            group="Authentication",
-            metavar="CREDS",
-            help="Basic Auth: 'user:pass', 'random', or 'user' (random password)",
-            normal_help=True,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
     (
         "auth_file",
-        _c(
-            "--auth-file",
+        CliSpec(
+            option_strings=("--auth-file",),
             dest="auth_file",
             group="Authentication",
-            metavar="FILE",
             help="Read Basic Auth credentials from one user:pass line in FILE",
+            action="store",
+            metavar="FILE",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
             normal_help=True,
+            default_from_runtime=True,
         ),
     ),
     (
         "allowed_hosts",
-        _c(
-            "--allowed-host",
+        CliSpec(
+            option_strings=("--allowed-host",),
             dest="allowed_host",
             group="Authentication",
+            help="Admit this Host/IP (repeatable; replaces file/env list)",
             action="append",
             metavar="HOST",
-            help="Admit this Host/IP (repeatable; replaces file/env list)",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
             normal_help=True,
             default_from_runtime=False,
         ),
     ),
     (
         "cors_origin",
-        _c(
-            "--cors-origin",
+        CliSpec(
+            option_strings=("--cors-origin",),
             dest="cors_origin",
             group="Modes",
-            metavar="ORIGIN",
             help="Enable CORS for an explicit origin (default: disabled)",
+            action="store",
+            metavar="ORIGIN",
+            parser_kind=None,
+            parser_label=None,
+            minimum=None,
+            maximum=None,
+            choices=(),
+            normal_help=False,
+            default_from_runtime=True,
         ),
     ),
 )
+
+
 _CLI_SPEC_BY_SETTING: Mapping[str, CliSpec] = MappingProxyType(dict(_CLI_ROWS))
 
 
@@ -781,13 +962,13 @@ def _s(
     section: str,
     value_kind: SettingValueKind,
     redaction: RedactionClass,
-    samples: tuple[
-        SampleDisposition,
-        SampleDisposition,
-        SampleDisposition,
-        SampleDisposition,
-    ],
-    comments: tuple[str, ...] = (),
+    samples: tuple[SampleDisposition, SampleDisposition, SampleDisposition, SampleDisposition],
+    comments: tuple[str, ...],
+    description: str,
+    example: str,
+    constraints: str,
+    dependencies: str,
+    applicability: str,
 ) -> SettingSpec:
     return SettingSpec(
         name=name,
@@ -797,32 +978,126 @@ def _s(
         cli=_CLI_SPEC_BY_SETTING.get(name),
         sample_dispositions=samples,
         sample_comments=comments,
+        description=description,
+        example=f"{name} = {example}",
+        constraints=constraints,
+        dependencies=dependencies,
+        applicability=applicability,
     )
 
 
-# Sample tuple positions are explicit and fixed as:
-# public-direct, Docker, systemd, managed setup.
 SETTING_SPECS: tuple[SettingSpec, ...] = (
-    _s("preset", "server", "preset", "none", ("active", "active", "active", "active")),
-    _s("host", "server", "string", "none", ("active", "active", "active", "active")),
-    _s("port", "server", "integer", "none", ("active", "active", "active", "active")),
-    _s("root_dir", "server", "string", "none", ("active", "active", "active", "active")),
-    _s("quiet", "server", "boolean", "none", ("omitted", "omitted", "omitted", "omitted")),
-    _s("debug", "server", "boolean", "none", ("omitted", "omitted", "omitted", "omitted")),
     _s(
-        "open_browser",
+        "access",
         "server",
-        "boolean",
-        "none",
-        ("omitted", "omitted", "omitted", "omitted"),
-    ),
-    _s("json_log", "server", "boolean", "none", ("active", "active", "active", "omitted")),
-    _s(
-        "public_direct",
-        "server",
-        "boolean",
+        "choice",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        (
+            "Who can reach the server. Public mode always enforces verified HTTPS, "
+            "file-backed access and finite limits."
+        ),
+        "public",
+        "private, public, lab",
+        "Public mode defaults to automatic HTTPS; private binds loopback.",
+        "all",
+    ),
+    _s(
+        "https_mode",
+        "tls",
+        "choice",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        (
+            "How the server obtains HTTPS certificates. Automatic uses a public IPv4 "
+            "hostname; domain uses your DNS name."
+        ),
+        "auto",
+        "off, auto, domain, files, self-signed",
+        (
+            "domain requires domain; files requires cert_file and key_file; self-signed is "
+            "private/lab only."
+        ),
+        "all; file certificates in Docker require explicit mounts",
+    ),
+    _s(
+        "log_level",
+        "server",
+        "choice",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        "How much diagnostic information the server records.",
+        "info",
+        "warning, info, debug",
+        "",
+        "all",
+    ),
+    _s(
+        "log_format",
+        "server",
+        "choice",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        "Whether logs are readable text or structured JSON.",
+        "text",
+        "text, json",
+        "",
+        "all",
+    ),
+    _s(
+        "host",
+        "server",
+        "string",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        (
+            "Address the server listens on. Private mode accepts only loopback; public "
+            "defaults to all interfaces."
+        ),
+        "127.0.0.1",
+        "An IP address or hostname; private requires localhost or a loopback IP",
+        "Default: 127.0.0.1 for private/lab, 0.0.0.0 for public.",
+        "all",
+    ),
+    _s(
+        "port",
+        "server",
+        "integer",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        "Listen port",
+        "8080",
+        "Minimum 1; maximum 65535",
+        (
+            "Default: 8080 for private/lab, 8443 for public. Open this port in the host "
+            "firewall when sharing."
+        ),
+        "all",
+    ),
+    _s(
+        "files_dir",
+        "server",
+        "optional_string",
+        "none",
+        ("active", "active", "active", "active"),
+        (),
+        (
+            "Exact folder for downloadable files and new uploads. Existing files in this "
+            "folder are available too."
+        ),
+        "/srv/share",
+        "A readable and writable directory",
+        (
+            "If omitted, uses the stable per-user xferry/files folder. Relative paths resolve"
+            " from the launch directory. Private state and configuration must be outside it."
+        ),
+        "all; installation-owned mappings use the files-folder action",
     ),
     _s(
         "encrypted_uploads",
@@ -830,6 +1105,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "boolean",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Enable resumable browser-encrypted large-file transfers",
+        "true",
+        "true or false",
+        (
+            "Encrypted transfers require at least two workers and a body budget for two "
+            "encrypted chunks."
+        ),
+        "advanced",
     ),
     _s(
         "max_size_mb",
@@ -837,6 +1121,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        (
+            "Maximum HTTP request body in MiB, including multipart overhead; this is not a "
+            "per-file size guarantee."
+        ),
+        "100",
+        "Integer at least 1 MiB",
+        "",
+        "all",
     ),
     _s(
         "encrypted_upload_max_size_mb",
@@ -844,6 +1137,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max encrypted-upload plaintext size in MiB; 0 = automatic",
+        "0",
+        "Integer from 0 to 32768 MiB; 0 selects the available quota/free-space limit",
+        (
+            "Used only when encrypted_uploads is true; max_size_mb still limits each "
+            "encrypted chunk request."
+        ),
+        "advanced",
     ),
     _s(
         "encrypted_upload_incomplete_ttl_seconds",
@@ -851,6 +1153,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Expiry for inactive encrypted uploads in seconds",
+        "604800",
+        "Minimum 1",
+        (
+            "Used only when encrypted_uploads is true; inactive partial uploads are cleaned "
+            "up after this time."
+        ),
+        "advanced",
     ),
     _s(
         "upload_storage_limit_mb",
@@ -858,6 +1169,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Aggregate files folder storage quota in MiB; 0 disables",
+        "4096",
+        "Minimum 0",
+        (
+            "Public defaults to 4096 MiB. At least one disk control must remain enabled "
+            "unless upload_quota_externally_managed is true."
+        ),
+        "advanced",
     ),
     _s(
         "upload_file_limit",
@@ -865,6 +1185,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Aggregate files folder file count quota; 0 disables",
+        "4096",
+        "Minimum 0",
+        "Public defaults to 4096 files. Existing files in files_dir count toward the limit.",
+        "advanced",
     ),
     _s(
         "upload_reserve_free_mb",
@@ -872,6 +1198,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Free disk space to preserve when committing uploads, in MiB; 0 disables this reserve.",
+        "1024",
+        "Minimum 0",
+        "Public defaults to 1024 MiB. Applies to the filesystem containing files_dir.",
+        "advanced",
     ),
     _s(
         "upload_quota_externally_managed",
@@ -879,6 +1211,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "boolean",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Confirm that storage is limited outside xferry, for example by a filesystem quota.",
+        "false",
+        "true or false",
+        "Public access permits all three upload disk controls to be zero only when this is true.",
+        "advanced",
     ),
     _s(
         "note_storage_limit_mb",
@@ -886,6 +1224,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Total encrypted-note storage quota in MiB; 0 disables the quota.",
+        "256",
+        "Minimum 0",
+        "Notes are stored in private state, outside files_dir.",
+        "advanced",
     ),
     _s(
         "note_count_limit",
@@ -893,6 +1237,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Aggregate encrypted note count quota; 0 disables",
+        "1000",
+        "Minimum 0",
+        "Limits encrypted notes in private state, independently of upload_file_limit.",
+        "advanced",
     ),
     _s(
         "smuggle_temp_age",
@@ -900,6 +1250,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max age for retained SMUGGLE temp pages in seconds; 0 disables",
+        "3600",
+        "Minimum 0",
+        "Applies only to retained SMUGGLE pages in the files folder; 0 disables age-based cleanup.",
+        "advanced",
     ),
     _s(
         "smuggle_temp_file_limit",
@@ -907,6 +1263,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max retained SMUGGLE temp page count; 0 disables",
+        "32",
+        "Minimum 0",
+        "Applies only to retained SMUGGLE pages; 0 disables the count limit.",
+        "advanced",
     ),
     _s(
         "smuggle_temp_storage_limit_mb",
@@ -914,6 +1276,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max retained SMUGGLE temp page bytes in MiB; 0 disables",
+        "128",
+        "Minimum 0",
+        "Applies only to retained SMUGGLE pages; 0 disables the storage limit.",
+        "advanced",
     ),
     _s(
         "max_header_size_kb",
@@ -921,6 +1289,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max HTTP request header size in KiB",
+        "64",
+        "Minimum 1",
+        "Rejects oversized HTTP headers before request bodies are read.",
+        "advanced",
     ),
     _s(
         "body_memory_budget_mb",
@@ -928,6 +1302,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_integer",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Admission budget for aggregate in-flight request bodies in MiB, not an RSS ceiling",
+        "256",
+        "Empty means automatic; otherwise an integer at least 1 MiB",
+        (
+            "Automatic is max_size_mb \u00d7 workers, raised for encrypted chunks when needed. "
+            "Public defaults to 512 MiB."
+        ),
+        "advanced",
     ),
     _s(
         "body_idle_timeout",
@@ -935,6 +1318,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Max idle seconds between request body chunks; 0 disables",
+        "5",
+        "Minimum 0",
+        "Public access requires a positive value.",
+        "advanced",
     ),
     _s(
         "body_timeout",
@@ -942,6 +1331,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Max seconds to receive a request body after headers; 0 disables",
+        "300",
+        "Minimum 0",
+        "Public access requires a positive value.",
+        "advanced",
     ),
     _s(
         "body_min_rate",
@@ -949,6 +1344,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Minimum average request body read rate in bytes/s; 0 disables",
+        "1024",
+        "Minimum 0",
+        "Measured across body reads; 0 disables the minimum rate without disabling timeouts.",
+        "advanced",
     ),
     _s(
         "stream_send_idle_timeout",
@@ -956,6 +1357,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Max seconds a streamed response send may block per chunk",
+        "5",
+        "Minimum 0.001",
+        "Must stay positive in every access mode.",
+        "advanced",
     ),
     _s(
         "stream_send_timeout",
@@ -963,6 +1370,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        "Max total seconds for a streamed response transfer; 0 disables",
+        "300",
+        "Minimum 0",
+        "Public access requires a positive value.",
+        "advanced",
     ),
     _s(
         "max_websocket_connections",
@@ -970,6 +1383,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_integer",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max active WebSocket connections; each occupies a worker and 0 rejects all",
+        "5",
+        "Empty means automatic; otherwise an integer at least 0",
+        (
+            "Automatic reserves half the workers for WebSockets (workers // 2). Each active "
+            "connection occupies one worker; 0 rejects all."
+        ),
+        "advanced",
     ),
     _s(
         "websocket_frame_idle_timeout",
@@ -977,17 +1399,60 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Max idle seconds while waiting for the rest of an incomplete WebSocket frame",
+        "5",
+        "Minimum 0.001",
+        (
+            "Applies while reading an incomplete WebSocket frame; it does not close an "
+            "otherwise idle connection."
+        ),
+        "advanced",
     ),
-    _s("workers", "server", "integer", "none", ("active", "active", "active", "active")),
-    _s("tls", "tls", "boolean", "none", ("omitted", "omitted", "omitted", "omitted")),
-    _s("cert_file", "tls", "string", "none", ("omitted", "omitted", "omitted", "omitted")),
-    _s("key_file", "tls", "string", "none", ("omitted", "omitted", "omitted", "omitted")),
     _s(
-        "letsencrypt",
-        "tls",
-        "boolean",
+        "workers",
+        "server",
+        "integer",
         "none",
-        ("omitted", "omitted", "omitted", "active"),
+        ("active", "active", "active", "active"),
+        (),
+        "Number of worker threads",
+        "4",
+        "Minimum 1",
+        (
+            "Encrypted uploads require at least 2. Automatic memory and WebSocket limits "
+            "depend on this value."
+        ),
+        "advanced",
+    ),
+    _s(
+        "cert_file",
+        "tls",
+        "string",
+        "none",
+        ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Path to certificate file (PEM)",
+        "/etc/xferry/server.pem",
+        "A readable PEM certificate or certificate-chain file",
+        (
+            "Requires https_mode = files and key_file. Public wildcard binds also require "
+            "allowed_hosts."
+        ),
+        "advanced",
+    ),
+    _s(
+        "key_file",
+        "tls",
+        "string",
+        "none",
+        ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Path to private key file (PEM)",
+        "/etc/xferry/server.key",
+        "A readable PEM private-key file matching cert_file",
+        "Requires https_mode = files and cert_file. Protect this file from other users.",
+        "advanced",
     ),
     _s(
         "domain",
@@ -995,6 +1460,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_string",
         "none",
         ("omitted", "omitted", "omitted", "active"),
+        (),
+        "DNS hostname used for an automatically issued domain certificate.",
+        "files.example.com",
+        "A DNS hostname without URL or port",
+        (
+            "Requires https_mode = domain, DNS pointing to this host, and public HTTP port 80"
+            " reaching the challenge listener."
+        ),
+        "all",
     ),
     _s(
         "email",
@@ -1002,20 +1476,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_string",
         "none",
         ("omitted", "omitted", "omitted", "active"),
-    ),
-    _s(
-        "sslip",
-        "tls",
-        "boolean",
-        "none",
-        ("active", "active", "active", "active"),
-        (
-            "Runtime TLS becomes active through sslip/letsencrypt/cert+key even if",
-            "the explicit self-signed `tls` flag remains false in normalized output.",
-            "Use sslip for first-run public IPv4 deployments, or replace with:",
-            "letsencrypt = true",
-            "domain = files.example.com",
-        ),
+        (),
+        "Email for Let's Encrypt notifications (optional)",
+        "admin@example.com",
+        "An email address, or empty to omit contact details",
+        "Used only with https_mode = auto or domain for certificate-account contact details.",
+        "advanced",
     ),
     _s(
         "public_ip",
@@ -1023,13 +1489,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_string",
         "none",
         ("commented", "commented", "commented", "active"),
-    ),
-    _s(
-        "acme_staging",
-        "tls",
-        "boolean",
-        "none",
-        ("commented", "commented", "commented", "omitted"),
+        (),
+        "Public IPv4 address used to form an automatic sslip.io certificate hostname.",
+        "203.0.113.10",
+        "A public IPv4 address; empty means automatic detection",
+        (
+            "Requires https_mode = auto. Use when automatic public-IP detection selects the "
+            "wrong address."
+        ),
+        "advanced",
     ),
     _s(
         "acme_server",
@@ -1037,6 +1505,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_string",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "ACME directory URL or staging for test certificates.",
+        "staging",
+        "HTTPS directory URL or staging",
+        (
+            "Requires https_mode = auto or domain. Empty selects the production service; "
+            "staging issues certificates browsers will not trust."
+        ),
+        "advanced",
     ),
     _s(
         "acme_http_address",
@@ -1044,6 +1521,16 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "string",
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Bind address for HTTP-01 challenge server",
+        # documentation example for the ACME listener.
+        "0.0.0.0",  # nosec B104
+        "An IP address; empty listens on all interfaces",
+        (
+            "Requires https_mode = auto or domain. Public HTTP port 80 must reach this "
+            "HTTP-01 listener."
+        ),
+        "advanced",
     ),
     _s(
         "acme_http_port",
@@ -1051,13 +1538,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "none",
         ("omitted", "active", "active", "active"),
-    ),
-    _s(
-        "auth",
-        "security",
-        "optional_string",
-        "secret",
-        ("omitted", "omitted", "omitted", "omitted"),
+        (),
+        "Bind port for HTTP-01 challenge server",
+        "80",
+        "Minimum 1; maximum 65535",
+        (
+            "Requires https_mode = auto or domain. Default 80; use another internal port only"
+            " when public port 80 is forwarded to it."
+        ),
+        "advanced",
     ),
     _s(
         "auth_file",
@@ -1065,6 +1554,18 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "optional_string",
         "none",
         ("active", "active", "active", "active"),
+        (),
+        (
+            "Protected file containing one username:password line. Generate or change it "
+            "through the credentials action."
+        ),
+        "/etc/xferry/auth",
+        "A readable protected file with one nonempty username:password line",
+        (
+            "Required for public access; optional for private/lab. Use xferry credentials to "
+            "generate or reset it."
+        ),
+        "all; installation-owned paths are managed automatically",
     ),
     _s(
         "allowed_hosts",
@@ -1073,6 +1574,18 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "none",
         ("active", "active", "active", "active"),
         ("ASCII-whitespace-separated host/IP values; empty uses listener auto-mode.",),
+        (
+            "HTTP Host names/IP addresses admitted by the server. Empty means automatic "
+            "listener/certificate names."
+        ),
+        "files.example.com localhost",
+        "Whitespace-separated names/IPs without URLs, ports, CIDRs or wildcards",
+        (
+            "Empty derives allowed hosts from the listener/certificate. Public wildcard binds"
+            " with file certificates require an explicit list containing the certificate "
+            "hostname."
+        ),
+        "advanced",
     ),
     _s(
         "cors_origin",
@@ -1080,6 +1593,18 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "string",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        (
+            "Browser origin allowed to read responses from a separate web application. Empty "
+            "disables cross-origin access."
+        ),
+        "https://portal.example.com",
+        "An exact origin; empty disables",
+        (
+            "Public access rejects *. Set an exact origin only when using a separate browser "
+            "application."
+        ),
+        "advanced",
     ),
     _s(
         "plugin_allowlist",
@@ -1087,6 +1612,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "plugin_allowlist",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Explicit extension modules allowed to load.",
+        "example.module:plugin",
+        "Comma-separated module entry points",
+        "Installed plugins only; public access also requires plugins_allow_public_direct = true.",
+        "advanced",
     ),
     _s(
         "plugins_allow_public_direct",
@@ -1094,6 +1625,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "boolean",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Permit allowlisted extensions in public mode.",
+        "false",
+        "true or false",
+        "Only matters with access = public and a nonempty plugin_allowlist.",
+        "advanced",
     ),
     _s(
         "plugins_override_core",
@@ -1101,171 +1638,69 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "boolean",
         "none",
         ("active", "active", "active", "omitted"),
+        (),
+        "Permit extensions to replace built-in HTTP method handlers.",
+        "false",
+        "true or false",
+        "Only matters with plugin_allowlist; allows a plugin to replace a built-in HTTP method.",
+        "advanced",
     ),
 )
 
-
-_STATIC_FIELD_ORDER = (
-    "preset",
-    "host",
-    "port",
-    "root_dir",
-    "public_direct",
-    "json_log",
-    "workers",
-    "auth_file",
-    "allowed_hosts",
-    "sslip",
-    "public_ip",
-    "acme_staging",
-    "acme_http_port",
-    "max_size_mb",
-    "body_memory_budget_mb",
-    "body_idle_timeout",
-    "body_timeout",
-    "body_min_rate",
-    "stream_send_idle_timeout",
-    "stream_send_timeout",
-    "upload_storage_limit_mb",
-    "upload_file_limit",
-    "upload_reserve_free_mb",
-    "upload_quota_externally_managed",
-    "cors_origin",
-    "plugin_allowlist",
-    "plugins_allow_public_direct",
-    "plugins_override_core",
-)
-_PUBLIC_DIRECT_FIELD_ORDER = tuple(
-    field_name for field_name in _STATIC_FIELD_ORDER if field_name != "acme_http_port"
-)
-_MANAGED_FIELD_ORDER = (
-    "host",
-    "port",
-    "root_dir",
-    "workers",
-    "preset",
-    "public_direct",
-    "auth_file",
-    "allowed_hosts",
-    "max_size_mb",
-    "body_memory_budget_mb",
-    "upload_storage_limit_mb",
-    "upload_reserve_free_mb",
-    "body_idle_timeout",
-    "body_timeout",
-    "stream_send_idle_timeout",
-    "stream_send_timeout",
-    "letsencrypt",
-    "sslip",
-    "public_ip",
-    "domain",
-    "email",
-    "acme_http_port",
-)
 _STATIC_SECTION_ORDER = ("server", "security", "tls", "limits", "cors", "plugins")
-SAMPLE_TARGETS: tuple[SampleTarget, ...] = (
-    SampleTarget("public-direct", _STATIC_SECTION_ORDER, _PUBLIC_DIRECT_FIELD_ORDER),
+SAMPLE_TARGETS: tuple[SampleTarget, ...] = tuple(
     SampleTarget(
-        "docker",
+        name,
         _STATIC_SECTION_ORDER,
-        _STATIC_FIELD_ORDER,
-        comment_overrides=(
-            (
-                "allowed_hosts",
-                ("Auto-mode admits loopback plus the final sslip certificate hostname.",),
-            ),
-            (
-                "sslip",
-                (
-                    "Runtime TLS becomes active through sslip/letsencrypt/cert+key even if",
-                    "the explicit self-signed `tls` flag remains false in normalized output.",
-                ),
-            ),
-        ),
-    ),
-    SampleTarget(
-        "systemd",
-        _STATIC_SECTION_ORDER,
-        _STATIC_FIELD_ORDER,
-        comment_overrides=(
-            (
-                "allowed_hosts",
-                ("Auto-mode admits loopback plus the final sslip certificate hostname.",),
-            ),
-            (
-                "sslip",
-                (
-                    "Runtime TLS becomes active through sslip/letsencrypt/cert+key even if",
-                    "the explicit self-signed `tls` flag remains false in normalized output.",
-                    "First-run public IPv4 option. For a real domain, replace sslip with:",
-                    "letsencrypt = true",
-                    "domain = files.example.com",
-                ),
-            ),
-        ),
-    ),
-    SampleTarget(
-        "managed",
-        ("server", "security", "limits", "tls", "cors", "plugins"),
-        _MANAGED_FIELD_ORDER,
+        tuple(spec.name for spec in SETTING_SPECS if spec.sample_disposition(name) != "omitted"),
         include_setting_comments=False,
-    ),
+    )
+    for name in SAMPLE_TARGET_NAMES
 )
-
 _COMMON_PROFILE_VALUES: tuple[tuple[str, SampleScalar], ...] = (
-    ("preset", "public-direct"),
-    ("host", "0.0.0.0"),  # nosec B104 - documented public-direct sample.
-    ("public_direct", True),
-    ("json_log", True),
+    ("access", "public"),
+    ("https_mode", "auto"),
+    # public deployment sample.
+    ("host", "0.0.0.0"),  # nosec B104
+    ("log_format", "json"),
     ("body_memory_budget_mb", 512),
     ("upload_storage_limit_mb", 4096),
     ("upload_file_limit", 4096),
     ("upload_reserve_free_mb", 1024),
-    ("sslip", True),
     ("public_ip", "203.0.113.10"),
-    ("acme_staging", True),
 )
-
-
-def _profile(
-    name: str,
-    *,
-    root_dir: str,
-    port: int,
-    auth_file: str,
-    acme_http_port: int | None,
-) -> SampleProfile:
-    specific: tuple[tuple[str, SampleScalar], ...] = (
-        ("root_dir", root_dir),
-        ("port", port),
-        ("auth_file", auth_file),
-    )
-    if acme_http_port is not None:
-        specific = (*specific, ("acme_http_port", acme_http_port))
-    return SampleProfile(name=name, target=name, values=(*_COMMON_PROFILE_VALUES, *specific))
-
-
 SAMPLE_PROFILES: tuple[SampleProfile, ...] = (
-    _profile(
+    SampleProfile(
         "public-direct",
-        root_dir="/var/lib/xferry",
-        port=8443,
-        auth_file="/etc/xferry/auth",
-        acme_http_port=None,
+        "public-direct",
+        (
+            *_COMMON_PROFILE_VALUES,
+            ("files_dir", "/var/lib/xferry/files"),
+            ("port", 8443),
+            ("auth_file", "/etc/xferry/auth"),
+        ),
     ),
-    _profile(
+    SampleProfile(
         "docker",
-        root_dir="/data",
-        port=8443,
-        auth_file="/run/secrets/xferry_auth",
-        acme_http_port=8080,
+        "docker",
+        (
+            *_COMMON_PROFILE_VALUES,
+            ("files_dir", "/data/files"),
+            ("port", 8443),
+            ("auth_file", "/run/secrets/xferry_auth"),
+            ("acme_http_port", 8080),
+        ),
     ),
-    _profile(
+    SampleProfile(
         "systemd",
-        root_dir="/var/lib/xferry",
-        port=443,
-        auth_file="/etc/xferry/auth",
-        acme_http_port=80,
+        "systemd",
+        (
+            *_COMMON_PROFILE_VALUES,
+            ("files_dir", "/var/lib/xferry/files"),
+            ("port", 443),
+            ("auth_file", "/etc/xferry/auth"),
+            ("acme_http_port", 80),
+        ),
     ),
 )
 

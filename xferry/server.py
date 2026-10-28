@@ -276,8 +276,10 @@ class XFerryServer(HandlerMixin):
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
         # Directory for uploaded files
-        self.upload_dir = self.root_dir / "uploads"
-        self.upload_dir.mkdir(exist_ok=True)
+        self.upload_dir = (
+            Path(config.files_dir) if config.files_dir is not None else self.root_dir / "uploads"
+        )
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.upload_storage = UploadStorageService(
             self.upload_dir,
             self.upload_storage_policy,
@@ -289,6 +291,7 @@ class XFerryServer(HandlerMixin):
                 self.upload_storage,
                 max_plaintext_size=self.encrypted_upload_max_size,
                 incomplete_ttl=self.encrypted_upload_incomplete_ttl,
+                allow_legacy_adoption=config.files_dir is None,
             )
             if self.encrypted_uploads
             else None
@@ -723,7 +726,7 @@ class XFerryServer(HandlerMixin):
                 print(f"  {line}")
         print()
         print(f"  Root directory: {self.root_dir}")
-        print(f"  File access: uploads/ only ({self.upload_dir})")
+        print(f"  Files folder: {self.upload_dir}")
         print(f"  Notepad storage: notes/ ({self.notes_dir})")
         print(f"  Max upload request: {self.max_upload_size // (1024 * 1024)} MB")
         print(f"  Body memory budget: {self.body_memory_budget // (1024 * 1024)} MB")
@@ -799,10 +802,11 @@ class XFerryServer(HandlerMixin):
         """Handle a client connection (with keep-alive support)."""
         try:
             # TLS handshake in worker thread (not blocking accept loop)
-            if self.tls_enabled and self.ssl_context:
+            context = self.ssl_context
+            if self.tls_enabled and context:
                 try:
                     client_socket.settimeout(5.0)
-                    client_socket = self.ssl_context.wrap_socket(client_socket, server_side=True)
+                    client_socket = context.wrap_socket(client_socket, server_side=True)
                 except ssl.SSLError as e:
                     logger.debug(f"SSL handshake failed: {e}")
                     client_socket.close()

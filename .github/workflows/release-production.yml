@@ -768,7 +768,7 @@ jobs:
           executable="${PIPX_BIN_DIR}/xferry"
           if [ "$RUNNER_OS" = Windows ]; then executable="${executable}.exe"; fi
           test "$("$executable" --version)" = "xferry ${RELEASE_VERSION}"
-          "$executable" run --print-config
+          "$executable" config show --all
 
   post-ghcr:
     name: Public GHCR (${{ matrix.arch }}, native)
@@ -801,7 +801,7 @@ jobs:
           docker pull --platform 'linux/${{ matrix.arch }}' "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}"
           docker image inspect "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" >/dev/null
           test "$(docker run --rm "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" --version)" = "xferry ${RELEASE_VERSION}"
-          docker run --rm "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" run --print-config
+          docker run --rm "ghcr.io/kgmnotes/xferry@${GHCR_DIGEST}" config show --all
 
   post-release:
     needs: [preflight, sign-assets, create-draft-release, publish-github-release]

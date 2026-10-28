@@ -178,6 +178,19 @@ class FilesystemTransaction:
         self._order: list[Path] = []
         self._chown = chown or os.chown
         self._committed = False
+        self._retained_directories: set[Path] = set()
+
+    def ensure_retained_directory(self, path: Path, *, mode: int, uid: int, gid: int) -> None:
+        """Create a public directory whose contents must survive failed activation."""
+        self._retained_directories.add(path)
+        if not path.exists():
+            path.mkdir(parents=True, mode=mode)
+            path.chmod(mode)
+            self._chown(path, uid, gid)
+
+    def retain_directory(self, path: Path) -> None:
+        """Protect public storage and its ancestor directories during rollback."""
+        self._retained_directories.add(path)
 
     def ensure_directory(self, path: Path, *, mode: int, uid: int, gid: int) -> None:
         """Create or restat one directory without replacing its contents."""
@@ -260,6 +273,17 @@ class FilesystemTransaction:
 
     def _restore(self, path: Path, state: _PathState) -> None:
         if state.kind == "absent":
+            if any(retained == path for retained in self._retained_directories):
+                return
+            if any(retained.is_relative_to(path) for retained in self._retained_directories):
+                if path.is_dir() and not path.is_symlink():
+                    for child in path.iterdir():
+                        if not any(
+                            retained == child or retained.is_relative_to(child)
+                            for retained in self._retained_directories
+                        ):
+                            self._remove_current(child)
+                return
             self._remove_current(path)
             return
         if state.kind == "file":

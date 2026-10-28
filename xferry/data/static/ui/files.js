@@ -1836,7 +1836,7 @@ async function clearUploads(triggerEl = null) {
     const confirmed = await showConfirmDialog({
         title: t('clearUploadsBtn'),
         message: t('clearUploadsConfirm'),
-        details: '/uploads',
+        details: t('filesCleanupHint'),
         confirmLabel: t('clearUploadsBtn'),
         triggerEl: dialogOrigin,
         initialFocus: 'cancel',

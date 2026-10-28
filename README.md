@@ -1,83 +1,91 @@
 # xferry
 
-![Python 3.10-3.14](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.2.1-orange.svg)
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
-[![Security](https://github.com/kgmnotes/xferry/actions/workflows/security.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/security.yml)
+[![Python](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)](https://www.python.org/)
+![Source version](https://img.shields.io/badge/version-0.3.0-orange.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-`xferry` is a controlled HTTP toolkit for testing Secure Web Gateways. It
-serves and uploads files, sends standard and custom HTTP methods, provides a
-Secure Notepad, and builds test artifacts for transport experiments.
+xferry is an HTTP toolkit for testing Secure Web Gateways on systems you are
+authorized to test. Its web UI provides **Upload**, **Download**, **Requests**,
+**Advanced**, and **Notepad** tabs.
 
-Documentation: <https://xferry.kgmnotes.ru/>
+These commands require **xferry 0.3.0 or newer**. Existing `0.2.x` installations
+use the [migration guide](docs/migration.md); [v0.2.0 instructions](docs/archive/0.2.0-installation.md)
+remain archived. Obtain matching native/container artifacts from the
+[versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.0).
+Contributors can use a [source checkout](CONTRIBUTING.md).
 
-> [!WARNING]
-> Use xferry only on systems and data you own or are authorized to test. Do not
-> expose it to arbitrary internet clients. External deployments need TLS,
-> authentication, finite quotas, network controls, and monitoring. See
-> [Security](SECURITY.md).
+## Start here
 
-## Choose an installation
+Install the CLI on the host where the server will run:
 
-> [!NOTE]
-> Version `0.2.0` is published on PyPI and GHCR, with signed bootstrap installers
-> on its [GitHub Release](https://github.com/kgmnotes/xferry/releases/tag/v0.2.0).
-> Before managed installation or upgrades, check the release notes for lifecycle
-> acceptance. A first bootstrap release cannot prove public update and rollback;
-> see the [bootstrap limitation](docs/release-runbook.md#first-public-release-bootstrap).
-
-For a portable CLI on Windows, macOS, or Linux, install with pipx and start the
-loopback server:
-
-```bash
+```console
 pipx install xferry
-xferry run --preset local --open
+xferry
 ```
 
-For a systemd-managed Linux service, use the signed exact-version installer and
-the [ten supported host combinations](docs/managed-hosts.md). For a container,
-use the immutable image `ghcr.io/kgmnotes/xferry:v0.2.0` or its recorded digest.
-The [quick start](docs/quick-start.md) gives separate copy-paste journeys for
-portable, managed, and container use. Source checkout installation belongs to
-the [contributor workflow](CONTRIBUTING.md).
+The menu offers a foreground run, server setup, and configuration. For a quick
+foreground run on <http://127.0.0.1:8080>:
 
-The local preset listens on `127.0.0.1:8080`. The web UI provides Send,
-Requests, Files, Advanced, and Secure Notepad workflows.
+```console
+xferry run --open
+```
 
-## Use curl
+For a persistent Linux service or Docker deployment:
 
-Upload a test file with the basic API:
+```console
+xferry setup
+```
+
+Setup checks prerequisites, asks for access and a files folder, starts the
+server, and prints its URL. Public access configures HTTPS and generates a
+12-character Basic Auth password. You can use a domain or an automatic address.
+See the [quick start](docs/quick-start.md) for requirements and examples.
+
+## Choose where files live
+
+```console
+xferry run --files-dir /srv/share
+xferry run --files-dir .
+```
+
+The selected directory is used directly: existing files can be downloaded, new
+uploads are saved there, and deletion actions affect its contents. With no
+folder specified, foreground runs use your user data directory; a new Linux
+service uses `/var/lib/xferry/files`. These defaults do not depend on the current
+directory. Notes, passwords and certificate state are kept separately.
+
+## Change settings and manage the server
+
+```console
+xferry config
+xferry config explain files_dir
+xferry status
+xferry logs
+xferry stop
+xferry start
+```
+
+Configuration changes automatically apply to a running installed server. A
+stopped server stays stopped. Use `--config FILE` to select another profile.
+[All settings](docs/settings.md) includes defaults, units and examples;
+`xferry --help` shows common commands and `xferry run --help-all` shows all launch
+options.
+
+## Try a transfer
 
 ```bash
 printf 'authorized test\n' > sample.txt
-curl --fail-with-body \
-  --request POST \
-  --header 'X-File-Name: sample.txt' \
-  --data-binary @sample.txt \
-  http://127.0.0.1:8080/uploads
+curl --fail-with-body -H 'X-File-Name: sample.txt' \
+  --data-binary @sample.txt http://127.0.0.1:8080/uploads
+curl --fail-with-body http://127.0.0.1:8080/uploads/sample.txt
 ```
 
-The API also exposes `GET`, `HEAD`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`,
-`FETCH`, `INFO`, `PING`, `NONE`, `NOTE`, and `SMUGGLE`. An authorized
-Advanced Session can route `POST`, `PUT`, `PATCH`, `NONE`, or a syntactically
-valid unregistered method such as `SYNCDATA` to an Advanced upload. Advanced
-payload protection is explicit: `none`, XOR obfuscation, or AES-256-GCM. There
-is no cipher fallback.
+For authenticated HTTPS, add `--user USER` and use the URL printed by setup.
 
-See the [API reference](API.md) for complete request shapes and a curl journey.
+- [Common scenarios](docs/scenarios.md): methods, files, notes and transport artifacts
+- [API reference](API.md): Advanced Sessions, custom HTTP methods such as `SYNCDATA`, and payload protection (`none`, XOR, AES-256-GCM)
+- [Operations](docs/operations.md), [public deployment](docs/public-direct.md), [managed hosts](docs/managed-hosts.md)
+- [CLI reference](docs/cli-reference.md), [migration](docs/migration.md), [security](SECURITY.md)
 
-## Documentation
-
-- [Quick start](docs/quick-start.md)
-- [Managed Linux support matrix](docs/managed-hosts.md)
-- [Generated CLI reference](docs/cli-reference.md)
-- [Scenarios](docs/scenarios.md)
-- [Operations](docs/operations.md)
-- [Disposable SSH tunnel](docs/disposable-ssh-tunnel.md)
-- [Public deployment](docs/public-direct.md)
-- [Security policy](SECURITY.md) and [threat model](docs/threat-model.md)
-- [Architecture](docs/architecture.md) and [ADRs](docs/ADR/README.md)
-- [Contributing](CONTRIBUTING.md)
-
-License: MIT.
+Documentation: <https://xferry.kgmnotes.ru/> · License: MIT

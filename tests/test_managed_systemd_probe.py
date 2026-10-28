@@ -359,7 +359,7 @@ def test_command_captures_without_echoing_and_discards_setup_secret_stderr(
 
     monkeypatch.setattr(probe.subprocess, "run", run)
     with pytest.raises(probe.ProbeFailure, match="^command_failed$"):
-        probe._command(("xferry", "setup", "--private", "--json"), discard_stderr=True)
+        probe._command(("xferry", "setup", "--access", "private", "--json"), discard_stderr=True)
     assert calls[0]["stdout"] == subprocess.PIPE
     assert calls[0]["stderr"] == subprocess.DEVNULL
     assert capsys.readouterr() == ("", "")
@@ -383,7 +383,7 @@ def test_malformed_command_outcomes_fail_without_leaking_payload(
 ) -> None:
     monkeypatch.setattr(probe, "_command", lambda *args, **kwargs: payload)
     with pytest.raises(probe.ProbeFailure) as failure:
-        probe._json_command(("xferry", "setup", "--private", "--json"))
+        probe._json_command(("xferry", "setup", "--access", "private", "--json"))
     assert str(failure.value) in {"command_json_invalid", "command_outcome_invalid"}
     assert "sensitive" not in str(failure.value)
     assert capsys.readouterr() == ("", "")
@@ -605,7 +605,7 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
         if argv[1] == "--version":
             return f"xferry {version}\n".encode()
         if argv[1] == "setup":
-            assert argv[2:] == ("--private", "--json")
+            assert argv[2:] == ("--access", "private", "--json")
             assert kwargs["discard_stderr"] is True
             assert "environment" not in kwargs
             _create_private_state(paths)
@@ -613,7 +613,12 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             paths.unit.write_bytes(b"unmodified mock service")
             active = True
             return json.dumps(
-                {"status": "ok", "exit_code": 0, "url": "http://127.0.0.1:8080"}
+                {
+                    "status": "ok",
+                    "exit_code": 0,
+                    "url": "http://127.0.0.1:8080",
+                    "files_dir": str(paths.data_root / "files"),
+                }
             ).encode()
         if argv[1] == "doctor":
             assert argv[2:] == ("--deep", "--json")
@@ -718,3 +723,27 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
         }
         assert paths.auth.read_text() == "admin:unit-test-sensitive%value\n"
         assert paths.sentinel.is_file()
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize(
+    "mutation", [None, "extra-secret", "wrong-folder", "wrong-url", "boolean-exit"]
+)
+def test_setup_outcome_accepts_only_the_exact_declared_cli_shape(canonical, mutation):
+    result = {"status": "ok", "exit_code": 0, "url": "http://127.0.0.1:8080"}
+    folder = Path("/var/lib/xferry/files") if canonical else None
+    if canonical:
+        result["files_dir"] = str(folder)
+    if mutation == "extra-secret":
+        result["password"] = "never-an-evidence-field"
+    elif mutation == "wrong-folder":
+        result["files_dir"] = "/unexpected"
+    elif mutation == "wrong-url":
+        result["url"] = "http://0.0.0.0:8080"
+    elif mutation == "boolean-exit":
+        result["exit_code"] = False
+    if mutation:
+        with pytest.raises(probe.ProbeFailure, match="setup_outcome_invalid"):
+            probe._setup_outcome(result, files_dir=folder)
+    else:
+        probe._setup_outcome(result, files_dir=folder)

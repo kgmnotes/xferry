@@ -20,57 +20,33 @@ _ENVIRONMENT_LANGUAGE_KEYS = ("XFERRY_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE"
 
 _MESSAGES: dict[str, dict[str, str]] = {
     "en": {
-        "root_description": "Manage an installed XFerry service or run the server with xferry run.",
-        "portable_heading": "Portable commands (Windows, macOS, Linux):",
-        "commands_heading": "Managed Linux/systemd commands:",
-        "maintenance_heading": "Optional maintenance:",
-        "portable_lifecycle": (
-            "Portable lifecycle: pipx upgrade xferry; pipx uninstall xferry.\n"
-            "Managed commands and optional maintenance require a supported Linux/systemd host."
-        ),
+        "root_description": "Run xferry for a short menu, setup to install, or run to start once.",
         "root_options": "Root options: --help, --version, --lang LANG.",
         "unknown_command": "Unknown command '{command}'. Run `xferry help` for available commands.",
         "examples_heading": "Examples:",
         "root_examples": (
-            "  xferry run --preset local\n"
-            "  sudo xferry setup\n"
-            "  sudo xferry status\n"
-            "  xferry examples"
-        ),
-        "all_examples": (
-            "  xferry run --preset local\n"
-            "  sudo xferry setup\n"
-            "  sudo xferry status\n"
-            "  xferry logs\n"
-            "  sudo xferry start\n"
-            "  sudo xferry stop\n"
-            "  sudo xferry restart\n"
-            "  sudo xferry doctor\n"
-            "  sudo xferry credentials reset\n"
-            "  xferry examples\n"
-            "  sudo xferry uninstall"
+            "  xferry run --files-dir ~/Shared\n"
+            "  xferry setup\n"
+            "  xferry status\n"
+            "  xferry config explain files_dir"
         ),
         "command_example": "Example: {example}",
         "not_implemented": "The '{command}' command is not implemented yet.",
         "help_command": "Show this help or help for one management command.",
         "help_option": "Show this help and exit.",
-        "examples_command": "Print copy-paste management command examples.",
         "command_run": "Run the XFerry server.",
-        "command_setup": "Install and configure the managed XFerry service.",
-        "command_status": "Show the managed service status.",
-        "command_logs": "Show managed service logs.",
-        "command_start": "Start the managed service.",
-        "command_stop": "Stop the managed service.",
-        "command_restart": "Restart the managed service.",
+        "command_config": "Open settings, or show/explain/check/set a setting.",
+        "command_setup": "Install and configure a Linux service or Docker server on this host.",
+        "command_status": "Show the installed server status.",
+        "command_logs": "Show installed server logs.",
+        "command_start": "Start the installed server.",
+        "command_stop": "Stop the installed server.",
+        "command_restart": "Restart the installed server.",
         "command_doctor": "Check the managed installation.",
         "command_credentials": "Manage service credentials.",
-        "command_update": (
-            "Update a managed Linux/systemd installation as root to an exact signed version. "
-            "Portable installations use `pipx upgrade xferry`."
-        ),
+        "command_update": "Update the installed server to an exact release version.",
         "command_rollback": "Restore a verified release on a long-lived installation.",
         "command_uninstall": "Remove the managed installation safely.",
-        "command_examples": "Print copy-paste management command examples.",
         "service_status_text": (
             "Installation: {installation}; configuration: {config}; enabled: {enabled}; "
             "service: {service}; health: {health}"
@@ -87,58 +63,34 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "ru": {
         "root_description": (
-            "Управляйте установленной службой XFerry или запускайте сервер через xferry run."
-        ),
-        "portable_heading": "Переносимые команды (Windows, macOS, Linux):",
-        "commands_heading": "Команды Linux/systemd:",
-        "maintenance_heading": "Необязательное обслуживание:",
-        "portable_lifecycle": (
-            "Переносимая установка: pipx upgrade xferry; pipx uninstall xferry.\n"
-            "Команды управления и обслуживания требуют поддерживаемой системы Linux/systemd."
+            "Запустите xferry для меню, setup для установки или run для разового запуска."
         ),
         "root_options": "Общие параметры: --help, --version, --lang LANG.",
         "unknown_command": "Неизвестная команда '{command}'. Список команд: `xferry help`.",
         "examples_heading": "Примеры:",
         "root_examples": (
-            "  xferry run --preset local\n"
-            "  sudo xferry setup\n"
-            "  sudo xferry status\n"
-            "  xferry examples"
-        ),
-        "all_examples": (
-            "  xferry run --preset local\n"
-            "  sudo xferry setup\n"
-            "  sudo xferry status\n"
-            "  xferry logs\n"
-            "  sudo xferry start\n"
-            "  sudo xferry stop\n"
-            "  sudo xferry restart\n"
-            "  sudo xferry doctor\n"
-            "  sudo xferry credentials reset\n"
-            "  xferry examples\n"
-            "  sudo xferry uninstall"
+            "  xferry run --files-dir ~/Shared\n"
+            "  xferry setup\n"
+            "  xferry status\n"
+            "  xferry config explain files_dir"
         ),
         "command_example": "Пример: {example}",
         "not_implemented": "Команда '{command}' пока не реализована.",
         "help_command": "Показать эту справку или справку по команде управления.",
         "help_option": "Показать эту справку и выйти.",
-        "examples_command": "Показать готовые к копированию примеры команд управления.",
         "command_run": "Запустить сервер XFerry.",
-        "command_setup": "Установить и настроить управляемую службу XFerry.",
-        "command_status": "Показать состояние управляемой службы.",
-        "command_logs": "Показать журналы управляемой службы.",
-        "command_start": "Запустить управляемую службу.",
-        "command_stop": "Остановить управляемую службу.",
-        "command_restart": "Перезапустить управляемую службу.",
+        "command_config": "Просмотреть, объяснить, проверить и изменить настройки сервера.",
+        "command_setup": "Установить и настроить службу Linux или сервер Docker на этой машине.",
+        "command_status": "Показать состояние установленного сервера.",
+        "command_logs": "Показать журналы установленного сервера.",
+        "command_start": "Запустить установленный сервер.",
+        "command_stop": "Остановить установленный сервер.",
+        "command_restart": "Перезапустить установленный сервер.",
         "command_doctor": "Проверить управляемую установку.",
         "command_credentials": "Управлять учётными данными службы.",
-        "command_update": (
-            "Обновить управляемую установку Linux/systemd от root до точной подписанной версии. "
-            "Для переносимой установки используйте `pipx upgrade xferry`."
-        ),
+        "command_update": ("Обновить установленный сервер до точной версии выпуска."),
         "command_rollback": "Восстановить проверенный выпуск долгоживущей установки.",
         "command_uninstall": "Безопасно удалить управляемую установку.",
-        "command_examples": "Показать готовые к копированию примеры команд управления.",
         "service_status_text": (
             "Установка: {installation}; конфигурация: {config}; включена: {enabled}; "
             "служба: {service}; здоровье: {health}"

@@ -10,7 +10,8 @@ User=xferry
 Group=xferry
 WorkingDirectory=/var/lib/xferry
 Environment=HOME=/var/lib/xferry
-ExecStartPre=/opt/xferry/current/xferry run --config /etc/xferry/xferry.ini --check-config
+Environment=XFERRY_STATE_HOME=/var/lib/xferry
+ExecStartPre=/opt/xferry/current/xferry config check --config /etc/xferry/xferry.ini
 ExecStart=/opt/xferry/current/xferry run --config /etc/xferry/xferry.ini
 Restart=on-failure
 RestartSec=5s

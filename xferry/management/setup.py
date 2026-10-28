@@ -6,8 +6,8 @@ import grp
 import os
 import pwd
 import re
-import secrets
 import socket
+import stat
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -28,7 +28,6 @@ from .system import (
     managed_mutation,
 )
 
-_PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 _SERVICE = "xferry.service"
 _MIN_READINESS_SECONDS = 120.0
 _INITIAL_READINESS_BACKOFF = 0.25
@@ -155,7 +154,9 @@ class _SetupFailure(RuntimeError):
 
 def generate_password() -> str:
     """Generate the approved unambiguous 12-character password."""
-    return "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(12))
+    from .credentials import generate_password as generate
+
+    return generate()
 
 
 class SetupExecutor:
@@ -200,6 +201,14 @@ class SetupExecutor:
         """Apply ``plan`` or restore every pre-existing managed state."""
         if self.effective_uid() != 0:
             return SetupResult(3, "managed setup requires root")
+        from .managed_state import has_retained_state
+
+        if has_retained_state(plan.layout):
+            return self.resume(plan.layout)
+        if plan.files_dir is not None and plan.layout.config_file.exists():
+            return SetupResult(
+                2, "already configured; use xferry config", code="already-configured"
+            )
         initial_preflight = self.preflight_check(plan)
         if not initial_preflight.ok:
             return _preflight_result(initial_preflight)
@@ -213,6 +222,10 @@ class SetupExecutor:
                 locked_preflight = self.preflight_check(plan)
                 if not locked_preflight.ok:
                     return _preflight_result(locked_preflight)
+                if plan.files_dir is not None and plan.layout.config_file.exists():
+                    return SetupResult(
+                        2, "already configured; use xferry config", code="already-configured"
+                    )
                 return self._apply_locked(plan)
         except InsufficientPrivilege:
             return SetupResult(3, "managed setup requires root")
@@ -222,6 +235,144 @@ class SetupExecutor:
             return SetupResult(1, "managed mutation lock is unsafe")
         except OSError:
             return SetupResult(1, "managed mutation lock failed")
+
+    def resume(self, layout: ManagedLayout) -> SetupResult:
+        """Activate a reinstalled signed runtime with its preserved configuration."""
+        from xferry.security.tls import sslip_domain_for_ip
+        from xferry.settings import SettingsError, load_settings_file
+
+        from .managed_files import managed_files_path, stage_managed_files_folder
+        from .managed_state import (
+            has_retained_state,
+            has_unsupported_managed_state,
+            retained_state_path,
+        )
+
+        if self.effective_uid() != 0:
+            return SetupResult(3, "managed setup requires root")
+        try:
+            with managed_mutation(
+                layout.lock_file, effective_uid=self.effective_uid, root_uid=self.root_uid
+            ):
+                if not has_retained_state(layout) or has_unsupported_managed_state(layout):
+                    return SetupResult(1, "retained managed state could not be verified")
+                if not layout.current_executable.is_file():
+                    return SetupResult(
+                        2, "reinstall the signed XFerry runtime before resuming setup"
+                    )
+                settings = load_settings_file(layout.config_file, state_dir=layout.data_root)
+                settings.to_server_config()
+                auth = Path(settings.auth_file or layout.auth_file)
+                metadata = auth.lstat()
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                    or metadata.st_size > 16384
+                ):
+                    raise ValueError("unsafe retained credentials")
+                username, separator, password = auth.read_text().strip().partition(":")
+                if not separator or not username or not password or "\n" in password:
+                    raise ValueError("invalid retained credentials")
+                initial = self._service_activation_state()
+                if initial is None:
+                    return SetupResult(1, "service state probe failed")
+                transaction = self.transaction_factory()
+                reload_attempted = False
+                activation_touched = False
+                try:
+                    self._ensure_identities(layout.runtime_home)
+                    uid, gid = self.resolve_identity()
+                    transaction.ensure_directory(self.unit_path.parent, mode=0o755, uid=0, gid=0)
+                    from dataclasses import replace
+
+                    stage_managed_files_folder(
+                        replace(layout, unit_file=self.unit_path),
+                        managed_files_path(layout),
+                        transaction,
+                        uid,
+                        gid,
+                        (auth,),
+                    )
+                    self._checked(
+                        (
+                            str(layout.current_executable),
+                            "config",
+                            "check",
+                            "--config",
+                            str(layout.config_file),
+                        ),
+                        exit_code=2,
+                        message="retained configuration validation failed",
+                    )
+                    reload_attempted = True
+                    self._checked(
+                        ("systemctl", "daemon-reload"),
+                        exit_code=1,
+                        message="systemd daemon reload failed",
+                    )
+                    activation_touched = True
+                    self._checked(
+                        ("systemctl", "enable", _SERVICE),
+                        exit_code=1,
+                        message="service enable failed",
+                    )
+                    self._checked(
+                        ("systemctl", "restart" if initial.active else "start", _SERVICE),
+                        exit_code=6,
+                        message="installed service failed to start",
+                    )
+                    host = settings.domain
+                    if host is None and settings.sslip and settings.public_ip:
+                        host = sslip_domain_for_ip(settings.public_ip)
+                    endpoint = HealthEndpoint(
+                        "127.0.0.1",
+                        settings.port,
+                        host or "127.0.0.1",
+                        tls=settings.effective_tls_enabled(),
+                    )
+                    ready = _wait_for_health(
+                        self.health_check,
+                        endpoint,
+                        username,
+                        password,
+                        readiness_timeout=self.readiness_timeout,
+                        timeout=self.health_timeout,
+                        monotonic=self.monotonic,
+                        sleep=self.sleep,
+                    )
+                    if not ready.health.ok:
+                        raise _SetupFailure(6, "restored service is unhealthy")
+                    retained_state_path(layout).unlink()
+                    transaction.commit()
+                    return SetupResult(
+                        0,
+                        "managed service restored; existing credentials retained",
+                        detail=endpoint.url,
+                    )
+                except (_SetupFailure, OSError, ValueError) as exc:
+                    restored = self._rollback(
+                        transaction,
+                        [],
+                        initial_state=initial,
+                        reload_attempted=reload_attempted,
+                        activation_touched=activation_touched,
+                    )
+                    if not restored.ok:
+                        return SetupResult(
+                            1, "restoring managed service failed and rollback is incomplete"
+                        )
+                    return SetupResult(
+                        getattr(exc, "exit_code", 1),
+                        "restoring managed service failed; saved configuration retained",
+                    )
+        except InsufficientPrivilege:
+            return SetupResult(3, "managed setup requires root")
+        except MutationLocked:
+            return SetupResult(1, "another managed operation is in progress")
+        except UnsafeLock:
+            return SetupResult(1, "managed mutation lock is unsafe")
+        except (OSError, ValueError, SettingsError):
+            return SetupResult(2, "retained configuration or credentials could not be loaded")
 
     def _apply_locked(self, plan: SetupPlan) -> SetupResult:
         initial_state = self._service_activation_state()
@@ -242,10 +393,10 @@ class SetupExecutor:
             self._checked(
                 (
                     str(plan.layout.current_executable),
-                    "run",
+                    "config",
+                    "check",
                     "--config",
                     str(plan.layout.config_file),
-                    "--check-config",
                 ),
                 exit_code=2,
                 message="managed configuration validation failed",
@@ -301,7 +452,12 @@ class SetupExecutor:
             self._remove_new_identities(user_created=user_created, group_created=group_created)
             if not restore.ok:
                 return SetupResult(1, "managed setup failed and rollback is incomplete")
-            return SetupResult(failure.exit_code, failure.message)
+            retained = (
+                f"Files directory retained: {plan.files_dir}"
+                if plan.files_dir and plan.files_dir.exists()
+                else ""
+            )
+            return SetupResult(failure.exit_code, failure.message, detail=retained)
         except (KeyError, OSError, ValueError):
             restore = self._rollback(
                 transaction,
@@ -313,7 +469,12 @@ class SetupExecutor:
             self._remove_new_identities(user_created=user_created, group_created=group_created)
             if not restore.ok:
                 return SetupResult(1, "managed setup failed and rollback is incomplete")
-            return SetupResult(1, "managed setup failed")
+            retained = (
+                f"Files directory retained: {plan.files_dir}"
+                if plan.files_dir and plan.files_dir.exists()
+                else ""
+            )
+            return SetupResult(1, "managed setup failed", detail=retained)
 
     def _stage_files(
         self,
@@ -363,6 +524,18 @@ class SetupExecutor:
             uid=0,
             gid=0,
         )
+        if plan.files_dir is not None:
+            from dataclasses import replace
+
+            from .managed_files import stage_managed_files_folder
+
+            stage_managed_files_folder(
+                replace(plan.layout, unit_file=self.unit_path),
+                plan.files_dir,
+                transaction,
+                runtime_uid,
+                runtime_gid,
+            )
         return password
 
     def _check_preflight(self, plan: SetupPlan) -> SetupPreflight:

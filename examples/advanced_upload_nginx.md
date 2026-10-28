@@ -2,7 +2,7 @@
 
 This example runs XFerry behind nginx while keeping Advanced routing and
 parsing scoped to an explicit session token. User file access remains limited
-to `<root>/uploads/`.
+to the selected files folder.
 
 ## 1. Start the server
 
@@ -10,12 +10,12 @@ to `<root>/uploads/`.
 xferry run \
   --host 127.0.0.1 \
   --port 18080 \
-  --dir /srv/xferry \
+  --files-dir /srv/xferry/files \
   --auth-file /run/secrets/xferry_auth \
-  --quiet
+  --log-level warning
 ```
 
-Uploaded files are written to `/srv/xferry/uploads/`.
+Uploaded files are written to `/srv/xferry/files/`.
 
 ## 2. nginx configuration
 

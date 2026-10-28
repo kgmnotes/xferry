@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Literal
 
 from xferry.security.tls import normalize_domain, sslip_domain_for_ip, validate_public_ipv4
@@ -77,6 +78,7 @@ def build_setup_plan(
             firewall_answer=options.firewall_answer,
             firewall_action=None,
             firewall_ports=(),
+            files_dir=_files_directory(options),
         )
     if options.mode is SetupMode.DOMAIN:
         domain = options.domain or ""
@@ -201,9 +203,13 @@ def check_setup_preflight(plan: SetupPlan, probes: SetupProbes) -> SetupPrefligh
 def render_managed_config(plan: SetupPlan) -> str:
     """Render a complete, secret-free INI accepted by the settings loader."""
     values: dict[str, object] = {
+        "access": "private" if plan.mode is SetupMode.PRIVATE else "public",
+        "https_mode": "off"
+        if plan.mode is SetupMode.PRIVATE
+        else ("domain" if plan.mode is SetupMode.DOMAIN else "auto"),
+        "log_format": "json",
         "host": plan.bind_host,
         "port": plan.port,
-        "root_dir": plan.layout.data_root,
         "workers": plan.resources.workers,
         "auth_file": plan.layout.auth_file,
         "allowed_hosts": (plan.domain or plan.bind_host,),
@@ -216,6 +222,8 @@ def render_managed_config(plan: SetupPlan) -> str:
         "stream_send_idle_timeout": 5,
         "stream_send_timeout": 300,
     }
+    if plan.files_dir is not None:
+        values["files_dir"] = plan.layout.data_root / "files"
     field_names = list(values)
     if plan.mode is SetupMode.PRIVATE:
         return render_settings_ini(
@@ -224,16 +232,7 @@ def render_managed_config(plan: SetupPlan) -> str:
             field_names=field_names,
         )
 
-    values.update(
-        {
-            "preset": "public-direct",
-            "public_direct": True,
-            "letsencrypt": plan.mode is SetupMode.DOMAIN,
-            "sslip": plan.mode is SetupMode.SSLIP,
-            "acme_http_port": 80,
-        }
-    )
-    field_names.extend(("preset", "public_direct", "letsencrypt", "sslip"))
+    values["acme_http_port"] = 80
     if plan.mode is SetupMode.SSLIP:
         values["public_ip"] = plan.public_ip
         field_names.append("public_ip")
@@ -275,7 +274,16 @@ def _public_plan(
         firewall_answer=options.firewall_answer,
         firewall_action=firewall_action,
         firewall_ports=(443, 80) if firewall_action is not None else (),
+        files_dir=_files_directory(options),
     )
+
+
+def _files_directory(options: SetupOptions) -> Path:
+    selected = options.files_dir or options.layout.data_root / "files"
+    selected = selected.expanduser().resolve()
+    if any(character in str(selected) for character in ("\n", "\r", "\x00")):
+        raise ValueError("files directory contains unsupported characters")
+    return selected
 
 
 def _positive_override(value: int | None, automatic: int, name: str) -> int:

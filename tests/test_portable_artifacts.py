@@ -63,6 +63,59 @@ def test_probe_environment_drops_source_injection_and_ambient_pytest_options(
     assert env["XFERRY_PROBE_VENV"] == str(tmp_path / "app")
 
 
+def test_probe_environment_drops_operator_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = ("XFERRY_ACCESS", "XFERRY_PORT", "XFERRY_STATE_HOME", "XFERRY_FUTURE_SETTING")
+    for key in keys:
+        monkeypatch.setenv(key, "poison")
+    monkeypatch.setenv("XFERRY_LANG", "ru")
+    env = verifier._probe_environment(workspace=tmp_path / "checkout", venv_dir=tmp_path / "app")
+    assert all(key not in env for key in keys)
+    assert env["XFERRY_LANG"] == "en"
+
+
+def test_installed_artifact_checks_an_explicit_valid_config_without_saved_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xferry.management.cli import main
+
+    monkeypatch.setenv("XFERRY_ACCESS", "public")
+    monkeypatch.setenv("XFERRY_PORT", "invalid")
+    checked = []
+
+    def run(command, *, cwd, env, quiet_stdout):
+        if "config" not in command:
+            return
+        arguments = command[command.index("config") :]
+        assert arguments[:3] == ("config", "check", "--config")
+        config = Path(arguments[3])
+        assert config.parent == tmp_path
+        assert config.read_text(encoding="utf-8") == (
+            f"[server]\naccess = private\nfiles_dir = {tmp_path / 'files'}\n"
+        )
+        with monkeypatch.context() as isolated:
+            for key in tuple(os.environ):
+                if key.startswith("XFERRY_"):
+                    isolated.delenv(key)
+            for key, value in env.items():
+                isolated.setenv(key, value)
+            isolated.chdir(cwd)
+            assert main(list(arguments)) == 0
+        checked.append(command[0])
+
+    monkeypatch.setattr(verifier, "_run_checked", run)
+    venv = tmp_path / "app"
+    verifier._probe_installed_artifact(
+        venv_dir=venv, probe_dir=tmp_path, workspace=tmp_path / "checkout"
+    )
+    python, console = verifier._venv_commands(venv)
+    assert checked == [str(console), str(python)]
+    assert not (tmp_path / "files").exists()
+
+
 def test_import_probe_rejects_foreign_package_even_outside_checkout(tmp_path: Path) -> None:
     venv = tmp_path / "app"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)

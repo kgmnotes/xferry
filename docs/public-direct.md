@@ -1,140 +1,80 @@
 # Public deployment
 
-`public-direct` is the strict configuration path for a service reachable from
-an untrusted network. It validates application settings, but the operator must
-still provide the network, storage, monitoring, and recovery boundaries in the
-[security policy](security.md#external-exposure-baseline).
+Run `xferry setup` on the server host, select **Public**, then choose a domain or
+an automatic address. Use `xferry setup --docker` for a generated Docker
+deployment. Setup generates a 12-character Basic Auth password, configures HTTPS,
+starts the server and prints the URL. Later changes use `xferry config`.
 
-!!! danger "Experienced operators only"
-    Do not treat this as a continuation of the loopback quick start. Test the
-    complete deployment on data and infrastructure approved for the
-    engagement.
+These commands require **xferry 0.3.0 or newer**. Existing `0.2.x` installations
+use [migration](migration.md); the [v0.2.0 guide](archive/0.2.0-installation.md)
+remains archived. Review the
+[external exposure baseline](security.md#external-exposure-baseline) before
+allowing untrusted clients.
 
-## Prepare the host
+## HTTPS requirements
 
-Use the immutable `ghcr.io/kgmnotes/xferry:v0.2.0` image or the exact
-`ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}` recorded by the release. The
-released image supports `linux/amd64` and `linux/arm64`. The Compose file at
-`deploy/docker/docker-compose.public-direct.yml` pins the
-versioned image and applies a read-only filesystem and finite resource limits.
+| Mode | What you provide |
+| --- | --- |
+| `auto` | A public IPv4 address; setup uses an sslip.io hostname. Auto-detection can be overridden with `public_ip`. |
+| `domain` | A DNS hostname pointing to this host. Set `domain`; `email` is optional. |
+| `files` | A PEM certificate and matching key, plus admitted hostnames in `allowed_hosts`. Renew them with your certificate manager. |
 
-Prepare permission-restricted configuration and secret paths. The examples
-below assume:
+For `auto` and `domain`, inbound TCP 80 must reach the ACME challenge listener for
+issuance and renewal. The chosen HTTPS port must also be reachable. An occupied
+port or NAT mapping needs to be resolved before setup can complete. The
+`acme_http_port` setting changes the internal listener; ACME still connects to
+public port 80. `acme_server=staging` is for tests and produces certificates that
+browsers do not trust. `self-signed` is suitable for lab/private use.
 
-- runtime data is stored in a named volume;
-- `/etc/xferry/auth` contains exactly one strong `user:password` line;
-- DNS points to the host and TCP 80/443 are controlled by the firewall;
-- a supervisor applies process limits and restarts.
-
-Do not place credentials in the command line, repository, or environment.
-
-## Generate and edit the configuration
-
-```bash
-xferry run --write-sample-config /etc/xferry/xferry.ini
-```
-
-The sample enables `public-direct`, file-backed authentication, bounded
-workers and body memory, finite upload quotas, body and stream timeouts, and
-JSON logs. Review every path and limit.
-
-For a real domain, replace the sample `sslip = true` setting with:
-
-```ini
-[tls]
-letsencrypt = true
-domain = files.example.com
-
-[security]
-auth_file = /etc/xferry/auth
-allowed_hosts = files.example.com
-```
-
-Alternatively, configure both `cert_file` and `key_file` for certificates
-managed outside xferry. A wildcard bind with file certificates must set an
-explicit `allowed_hosts` list because XFerry cannot infer the certificate
-names from files. INI and `XFERRY_ALLOWED_HOSTS` values use ASCII whitespace
-between host/IP entries; the CLI uses repeatable `--allowed-host`. A layer
-replaces the whole lower-precedence list, an empty value selects auto-mode,
-and entries cannot be URLs, ports, CIDRs, wildcards, or comma lists.
-
-Auto-mode on a wildcard bind admits loopback authorities and adds the final
-ACME/sslip certificate hostname after TLS setup, before the listener binds.
-An explicit ACME domain must also appear in the explicit allowlist. CORS
-origins are a separate browser policy and never add request authorities.
-
-Public-direct rejects self-signed-only TLS, missing file-backed authentication,
-disabled body or stream timeouts, wildcard CORS, an unbounded upload capacity
-declaration, and an unresolved request-authority policy.
-
-Validate without starting the listener:
-
-```bash
-xferry run --config /etc/xferry/xferry.ini --check-config
-xferry run --config /etc/xferry/xferry.ini --print-config
-```
-
-The printed posture is redacted. Inspect the effective URL, data root, TLS and
-authentication modes, workers, body budget, WebSocket admission, and storage
-limits. Confirm the printed request-authority mode/list matches the certificate
-and gateway health-check `Host` value.
-
-## Add external controls
-
-Before routing traffic, configure:
-
-- firewall rules limited to required ports and source networks where possible;
-- reverse-proxy connection, request-header, request-body, and timeout caps;
-- proxy-side per-client throttling;
-- a hard disk or volume quota and free-space alerts;
-- process memory, CPU, PID, and file-descriptor limits;
-- exact allowed browser origins when a separate frontend origin is required;
-- exact allowed request authorities for every certificate/gateway hostname;
-- off-host monitoring with normal certificate verification;
-- backups of data and ACME state, plus a tested restore procedure.
-
-The application uses the direct TCP peer for authentication throttling and
-no-auth Advanced Session loopback checks. `Forwarded`, `X-Forwarded-For`, and
-`X-Real-IP` are not trusted client identity.
-
-## Start and verify
-
-After placing the reviewed config at `deploy/docker/xferry.ini` and credentials
-at `deploy/docker/secrets/xferry_auth`, start the immutable Compose service:
+A scripted domain setup:
 
 ```console
-XFERRY_HEALTH_HOST=files.example.com \
-  docker compose -f deploy/docker/docker-compose.public-direct.yml up -d
+xferry setup --access public --domain files.example.com --files-dir /srv/share
 ```
 
-Replace `files.example.com` with the configured TLS hostname and admitted
-request authority. Compose requires this value before parsing its healthcheck.
+## Review configuration
 
-Then probe it from another network using a protected curl config:
-
-```bash
-curl --config /run/secrets/xferry-curl.conf \
-  --fail --silent --show-error \
-  --request PING \
-  https://files.example.com/
+```console
+xferry config check
+xferry config show --all
+xferry config explain allowed_hosts
 ```
 
-Require HTTP 200 and JSON with `"health":"ready"`. Also test a small upload,
-download, and deletion with approved data. Monitor TLS failures, non-200
-responses, authentication throttling, quota denials, storage-scan latency,
-worker saturation, and free space.
+Public mode requires trusted HTTPS, protected file-backed authentication,
+working request-authority admission, finite upload capacity and enabled body and
+stream timeouts. It rejects wildcard browser CORS. Use the generated defaults,
+then adjust only limits needed for the workload. All settings and examples are
+listed in [the reference](settings.md).
 
-## Recovery
+`allowed_hosts` admits HTTP Host names/IPs, independently of CORS origins.
+INI/environment values use whitespace; CLI `--allowed-host` can be repeated.
+Each source replaces the lower-precedence list. Empty means automatic admission
+from listener/certificate names. Explicit lists must include the ACME hostname.
+With supplied certificates on a wildcard listener, set the list explicitly.
+URLs, ports, CIDRs and wildcards are not host entries.
 
-Keep the exact image digest, configuration, and backup used for each
-deployment. To recover:
+## Network and verification
 
-1. Stop new traffic at the firewall or proxy.
-2. Preserve the current data and ACME state.
-3. Restore the last tested immutable image digest and configuration.
-4. Validate the configuration before starting.
-5. Restore traffic only after authenticated HTTPS `PING` and a file lifecycle
-   check pass.
+Limit access with a firewall or reverse proxy. Set connection/time limits and
+hard disk/process quotas appropriate to the host; monitor free space and health.
+The application uses the direct TCP peer for authentication throttling and
+loopback checks. `Forwarded`, `X-Forwarded-For`, and `X-Real-IP` do not grant a
+trusted client identity.
 
-Never substitute `latest` during recovery. A retained version tag is useful for
-people; the recorded digest is the rollback identity enforced by the registry.
+For manually managed containers, pin a release version or
+`ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}` and retain configuration and
+volumes. The generated deployment already pins its image.
+
+Probe from another network with normal certificate verification:
+
+```console
+curl --fail-with-body --user USER --request PING https://files.example.com/
+```
+
+Require HTTP 200 and `"health":"ready"`, then perform a small file lifecycle
+check. Store the password securely. Use the credentials action in `xferry config`
+to replace it; no inline password setting is needed.
+
+For recovery, preserve data and use `xferry rollback` or the previous tested
+manual image digest/configuration. Restore traffic after authenticated health
+and file operations pass. See [Operations](operations.md).

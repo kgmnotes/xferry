@@ -9,66 +9,45 @@ This page is generated from the real English command dispatcher. Run
 ```text
 usage: xferry [--lang LANG] COMMAND [OPTIONS]
 
-Manage an installed XFerry service or run the server with xferry run.
+Run xferry for a short menu, setup to install, or run to start once.
 
-Portable commands (Windows, macOS, Linux):
-  run
-  examples
-  help
+  run           Run the XFerry server.
+  setup         Install and configure a Linux service or Docker server on this host.
+  config        Open settings, or show/explain/check/set a setting.
+  status        Show the installed server status.
+  logs          Show installed server logs.
+  start         Start the installed server.
+  stop          Stop the installed server.
+  restart       Restart the installed server.
+  doctor        Check the managed installation.
+  credentials   Manage service credentials.
+  uninstall     Remove the managed installation safely.
+  update        Update the installed server to an exact release version.
+  rollback      Restore a verified release on a long-lived installation.
 
-Managed Linux/systemd commands:
-  setup
-  status
-  logs
-  start
-  stop
-  restart
-  doctor
-  credentials
-  uninstall
-
-Optional maintenance:
-  update
-  rollback
-
-Portable lifecycle: pipx upgrade xferry; pipx uninstall xferry.
-Managed commands and optional maintenance require a supported Linux/systemd host.
 Root options: --help, --version, --lang LANG.
 
 Examples:
-  xferry run --preset local
-  sudo xferry setup
-  sudo xferry status
-  xferry examples
+  xferry run --files-dir ~/Shared
+  xferry setup
+  xferry status
+  xferry config explain files_dir
 ```
 
 ## `xferry run --help`
 
 ```text
-usage: xferry run [-h] [-V] [--help-all]
-                  [--preset {local,local-secure,public-direct}]
-                  [--config FILE] [--check-config] [--print-config]
-                  [--write-sample-config FILE] [-H HOST] [-p PORT] [-d DIR]
-                  [--open] [--tls | --no-tls] [--auth CREDS]
+usage: xferry run [-h] [-V] [--help-all] [--config FILE] [--open]
+                  [--access {private,public,lab}] [-H HOST] [-p PORT]
+                  [--files-dir DIR]
+                  [--https {off,auto,domain,files,self-signed}]
                   [--auth-file FILE] [--allowed-host HOST]
 
-HTTP server with custom methods, TLS, Auth, and uploads-only file access.
+Run the file server on this host.
 
-Choose a launch journey:
-  local          Loopback HTTP for first-run and demos.
-                 xferry run --preset local --open
-  local-secure   Loopback self-signed TLS plus generated auth in an interactive TTY.
-                 Service form: xferry run --preset local-secure --auth-file FILE
-  public-direct  Advanced public path. Start from the generated INI; real TLS,
-                 file-backed auth, finite quotas, and strict validation are required.
-                 xferry run --write-sample-config ./xferry.ini
-                 xferry run --config ./xferry.ini --check-config
-
-Capacity model:
-  Body memory is an admission budget for in-flight request bodies, not an RSS ceiling; decoded, parsed, TLS, and Python overhead can coexist.
-  Each active WebSocket occupies one worker while connected.
-
-Use --help-all for every tuning and protocol option.
+By default it listens at http://127.0.0.1:8080 and uses your saved configuration.
+Use xferry setup for an installed service, or xferry config to change settings.
+Use --help-all for every limit, certificate and protocol option.
 
 options:
   -h, --help            show this help message and exit
@@ -77,231 +56,264 @@ options:
                         option
 
 Configuration:
-  --preset {local,local-secure,public-direct}
-                        Select journey defaults below every explicit
-                        file/env/CLI value
   --config FILE         Read settings from an INI configuration file
-  --check-config        Validate the resolved configuration and exit without
-                        starting
-  --print-config        Print the resolved configuration as redacted JSON and
-                        exit
-  --write-sample-config FILE
-                        Write a public-direct sample INI configuration and
-                        exit
+  --open                Open the server in your browser after it starts
 
 Basic:
+  --access {private,public,lab}
+                        Server access: private loopback, public HTTPS, or
+                        explicit lab testing
   -H HOST, --host HOST  Bind host (default: 127.0.0.1)
   -p PORT, --port PORT  Listen port (default: 8080)
-  -d DIR, --dir DIR     Root directory (default: current)
-
-Modes:
-  --open                Open browser after start
+  --files-dir DIR       Folder for uploads and downloads (default: per-user
+                        xferry/files)
 
 TLS:
-  --tls, --no-tls       Enable HTTPS with a generated self-signed certificate
+  --https {off,auto,domain,files,self-signed}
+                        HTTPS mode; default: off for private/lab, automatic
+                        address for public
 
 Authentication:
-  --auth CREDS          Basic Auth: 'user:pass', 'random', or 'user' (random
-                        password)
   --auth-file FILE      Read Basic Auth credentials from one user:pass line in
                         FILE
   --allowed-host HOST   Admit this Host/IP (repeatable; replaces file/env
                         list)
 
-The named journeys select defaults only; every explicit INI, XFERRY_* or CLI
-value remains authoritative. Use --help-all for the exhaustive option list.
+Examples:
+  xferry run --open
+  xferry run --files-dir ./shared
+  xferry run --access public --auth-file /path/to/auth
+  xferry run --config ./xferry.ini
+
+INI settings are overridden by XFERRY_* environment variables, then explicit
+command options. Use xferry config show --all to see effective values and sources.
 ```
 
 ## `xferry setup --help`
 
 ```text
-usage: xferry setup [-h] [--domain DOMAIN | --private] [--public-ip IP] [--email EMAIL]
-                    [--body-budget-mib MIB] [--max-upload-mib MIB] [--workers COUNT]
-                    [--reserve-mib MIB] [--upload-storage-mib MIB] [--firewall {allow,deny}]
-                    [--dry-run] [--json]
+usage: xferry setup [-h] [--help-all] [--config FILE] [--docker] [--access {private,public}]
+                    [--domain DOMAIN] [--files-dir DIR] [--public-ip IP] [--email EMAIL]
+                    [--firewall {allow,deny}] [--to VERSION] [--dry-run] [--json]
 
-Install and configure the managed XFerry service.
+Install and configure a Linux service or Docker server on this host.
 
 options:
   -h, --help            Show this help and exit.
-  --domain DOMAIN
-  --private
-  --public-ip IP
-  --email EMAIL
-  --body-budget-mib MIB
-  --max-upload-mib MIB
-  --workers COUNT
-  --reserve-mib MIB
-  --upload-storage-mib MIB
+  --help-all            Show all command options.
+  --config FILE         Select a server by its configuration file.
+  --docker              Use Docker Compose instead of a Linux service.
+  --access {private,public}
+                        Private access or public HTTPS (default: public).
+  --domain DOMAIN       Use your domain for public HTTPS.
+  --files-dir DIR       Host folder for uploads and downloads.
+  --public-ip IP        Public IPv4 for the automatic HTTPS address.
+  --email EMAIL         Optional certificate contact address.
   --firewall {allow,deny}
-  --dry-run
-  --json
+                        Allow or decline required UFW rules.
+  --to VERSION          Signed release version to install.
+  --dry-run             Validate and preview changes.
+  --json                Print machine-readable results.
 
-Example: sudo xferry setup
+Example: xferry setup
+```
+
+## `xferry config --help`
+
+```text
+usage: xferry config [-h] [--help-all] [--config FILE] [--all] [--group GROUP] [--search TEXT]
+                     [--dry-run] [--json]
+                     [{show,explain,check,set}] [KEY[=VALUE] ...]
+
+Open settings, or show/explain/check/set a setting.
+
+positional arguments:
+  {show,explain,check,set}
+                        Omit to open the settings wizard.
+  KEY[=VALUE]
+
+options:
+  -h, --help            Show this help and exit.
+  --help-all            Show all command options.
+  --config FILE         Select a server by its configuration file.
+  --all                 Show every setting.
+  --group GROUP         Show one settings group.
+  --search TEXT         Find settings by name or description.
+  --dry-run             Validate and preview changes.
+  --json                Print machine-readable results.
+
+Example: xferry config explain files_dir
 ```
 
 ## `xferry status --help`
 
 ```text
-usage: xferry status [-h] [--json]
+usage: xferry status [-h] [--help-all] [--config FILE] [--json]
 
-Show the managed service status.
+Show the installed server status.
 
 options:
-  -h, --help  Show this help and exit.
-  --json
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --json         Print machine-readable results.
 
-Example: sudo xferry status
+Example: xferry status
 ```
 
 ## `xferry logs --help`
 
 ```text
-usage: xferry logs [-h] [--lines COUNT] [--since WHEN] [--follow]
+usage: xferry logs [-h] [--help-all] [--config FILE] [--lines COUNT] [--since WHEN] [--follow]
 
-Show managed service logs.
+Show installed server logs.
 
 options:
   -h, --help     Show this help and exit.
-  --lines COUNT
-  --since WHEN
-  --follow
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --lines COUNT  Number of recent log lines (default: 100).
+  --since WHEN   Show logs since this time.
+  --follow       Stream new log lines.
 
-Example: xferry logs
+Example: xferry logs --follow
 ```
 
 ## `xferry start --help`
 
 ```text
-usage: xferry start [-h]
+usage: xferry start [-h] [--help-all] [--config FILE]
 
-Start the managed service.
+Start the installed server.
 
 options:
-  -h, --help  Show this help and exit.
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
 
-Example: sudo xferry start
+Example: xferry start
 ```
 
 ## `xferry stop --help`
 
 ```text
-usage: xferry stop [-h]
+usage: xferry stop [-h] [--help-all] [--config FILE]
 
-Stop the managed service.
+Stop the installed server.
 
 options:
-  -h, --help  Show this help and exit.
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
 
-Example: sudo xferry stop
+Example: xferry stop
 ```
 
 ## `xferry restart --help`
 
 ```text
-usage: xferry restart [-h]
+usage: xferry restart [-h] [--help-all] [--config FILE]
 
-Restart the managed service.
+Restart the installed server.
 
 options:
-  -h, --help  Show this help and exit.
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
 
-Example: sudo xferry restart
+Example: xferry restart
 ```
 
 ## `xferry doctor --help`
 
 ```text
-usage: xferry doctor [-h] [--deep] [--skip-network] [--json]
+usage: xferry doctor [-h] [--help-all] [--config FILE] [--deep] [--skip-network] [--json]
 
 Check the managed installation.
 
 options:
   -h, --help      Show this help and exit.
-  --deep
-  --skip-network
-  --json
+  --help-all      Show all command options.
+  --config FILE   Select a server by its configuration file.
+  --deep          Include external connectivity checks.
+  --skip-network  Check local state only.
+  --json          Print machine-readable results.
 
-Example: sudo xferry doctor
+Example: xferry doctor
 ```
 
 ## `xferry credentials --help`
 
 ```text
-usage: xferry credentials [-h] [--json] {reset}
+usage: xferry credentials [-h] [--help-all] [--config FILE] [--json] {reset}
 
 Manage service credentials.
 
 positional arguments:
-  {reset}
+  {reset}        Generate a new 12-character password.
 
 options:
-  -h, --help  Show this help and exit.
-  --json
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --json         Print machine-readable results.
 
-Example: sudo xferry credentials reset
-```
-
-## `xferry examples --help`
-
-```text
-usage: xferry examples [-h]
-
-Print copy-paste management command examples.
-
-options:
-  -h, --help  Show this help and exit.
-
-Example: xferry examples
+Example: xferry credentials reset
 ```
 
 ## `xferry update --help`
 
 ```text
-usage: xferry update [-h] --to VERSION [--dry-run] [--json]
+usage: xferry update [-h] [--help-all] [--config FILE] --to VERSION [--dry-run] [--json]
 
-Update a managed Linux/systemd installation as root to an exact signed version. Portable
-installations use `pipx upgrade xferry`.
+Update the installed server to an exact release version.
 
 options:
-  -h, --help    Show this help and exit.
-  --to VERSION  Exact immutable release version to verify and install.
-  --dry-run     Verify signed metadata and report the apply plan without host mutation.
-  --json
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --to VERSION   Exact release version.
+  --dry-run      Validate and preview changes.
+  --json         Print machine-readable results.
 
-Example: sudo xferry update --to 0.2.1
+Example: xferry update --to 0.3.0
 ```
 
 ## `xferry rollback --help`
 
 ```text
-usage: xferry rollback [-h] [--to VERSION] [--dry-run] [--json]
+usage: xferry rollback [-h] [--help-all] [--config FILE] [--to VERSION] [--dry-run] [--json]
 
 Restore a verified release on a long-lived installation.
 
 options:
-  -h, --help    Show this help and exit.
-  --to VERSION
-  --dry-run
-  --json
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --to VERSION   Exact release version.
+  --dry-run      Validate and preview changes.
+  --json         Print machine-readable results.
 
-Example: sudo xferry rollback
+Example: xferry rollback
 ```
 
 ## `xferry uninstall --help`
 
 ```text
-usage: xferry uninstall [-h] [--purge-data] [--yes] [--dry-run] [--json]
+usage: xferry uninstall [-h] [--help-all] [--config FILE] [--purge-data] [--yes] [--dry-run]
+                        [--json]
 
 Remove the managed installation safely.
 
 options:
-  -h, --help    Show this help and exit.
-  --purge-data
-  --yes
-  --dry-run
-  --json
+  -h, --help     Show this help and exit.
+  --help-all     Show all command options.
+  --config FILE  Select a server by its configuration file.
+  --purge-data   Also delete configuration, credentials and stored data.
+  --yes          Confirm deletion without a prompt.
+  --dry-run      Validate and preview changes.
+  --json         Print machine-readable results.
 
-Example: sudo xferry uninstall
+Example: xferry uninstall
 ```
 <!-- END GENERATED: xferry-contracts/cli-reference -->

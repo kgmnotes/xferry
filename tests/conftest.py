@@ -1,6 +1,9 @@
 """Pytest fixtures for XFerryServer tests."""
 
+import os
+import shlex
 import socket
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -16,6 +19,36 @@ from xferry.request_admission import (
 # Local Codex stage-runner tests are intentionally ignored by Git and are not part
 # of the project/CI test contract.
 collect_ignore = [Path(__file__).with_name("test_close_plan_stages.py")]
+
+
+@pytest.fixture(autouse=True)
+def isolated_operator_state_and_host_commands(tmp_path):
+    """Keep CLI tests away from real profiles, sudo and native service mutations."""
+    operator_home = tmp_path.with_name(f"{tmp_path.name}-operator")
+    original_run = subprocess.run
+    privileged = {"sudo", "systemctl", "ufw", "useradd", "usermod", "groupadd"}
+
+    def guarded_run(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args", [])
+        if isinstance(command, (str, bytes)):
+            tokens = shlex.split(os.fsdecode(command))
+        elif isinstance(command, os.PathLike):
+            tokens = [command]
+        else:
+            tokens = command
+        if tokens and Path(os.fsdecode(tokens[0])).name in privileged:
+            raise AssertionError(
+                "test attempted a privileged host command; inject a process runner"
+            )
+        return original_run(*args, **kwargs)
+
+    # A separate context preserves each test's fixture teardown ordering.
+    with pytest.MonkeyPatch.context() as isolated:
+        isolated.setenv("XDG_DATA_HOME", str(operator_home / "user-data"))
+        isolated.setenv("LOCALAPPDATA", str(operator_home / "local-app-data"))
+        isolated.delenv("XFERRY_STATE_HOME", raising=False)
+        isolated.setattr(subprocess, "run", guarded_run)
+        yield
 
 
 @pytest.fixture

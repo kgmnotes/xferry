@@ -105,7 +105,7 @@ def signed(
         }
         releases[role] = release
     plan = {
-        "schema": 1,
+        "schema": public.SCHEMA,
         "scope": public.PLAN_SCOPE,
         "repository": public.REPOSITORY,
         "sourceCommit": "b" * 40,
@@ -151,12 +151,15 @@ def _lifecycle(plan: dict[str, Any], platform: str, distro: str, version: str) -
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
             stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
+            if phase in {"dry_run", "rollback"}:
+                stage["preserved"]["unit"] = True
         if phase == "uninstall":
             stage["removed"] = True
         stages.append(stage)
     return {
-        "schema": 1,
+        "schema": public.SCHEMA,
         "scope": public.PROBE_SCOPE,
+        "cliContracts": {"previous": "canonical", "target": "canonical"},
         "status": "passed",
         "stages": stages,
         "host": {
@@ -178,7 +181,7 @@ def _result(plan: dict[str, Any]) -> dict[str, Any]:
     architectures = []
     for platform in public.SUPPORTED_PLATFORM_IDS:
         architecture = {
-            "schema": 1,
+            "schema": public.SCHEMA,
             "scope": public.ARCH_SCOPE,
             "platform": platform,
             "planSha256": public._sha(public._canonical(plan)),
@@ -210,7 +213,7 @@ def _result(plan: dict[str, Any]) -> dict[str, Any]:
             )
         architectures.append(architecture)
     return {
-        "schema": 1,
+        "schema": public.SCHEMA,
         "scope": public.RESULT_SCOPE,
         "sourceCommit": plan["sourceCommit"],
         "workflowRun": plan["workflowRun"],
@@ -541,3 +544,83 @@ def test_public_profile_cannot_use_host_or_implicit_network(tmp_path: Path, netw
             image_id="sha256:" + "a" * 64,
             network=network,
         )
+
+
+def _cross_schema_result(plan: dict[str, Any]) -> dict[str, Any]:
+    result = _result(plan)
+    for architecture in result["architectures"]:
+        for pair in architecture["receipts"]:
+            lifecycle = pair["lifecycle"]
+            lifecycle["cliContracts"] = {"previous": "legacy", "target": "canonical"}
+            stage = lifecycle["stages"][5]
+            stage["preserved"].pop("config")
+            stage["configuration"] = {
+                "transition": "legacy-to-canonical",
+                "values_preserved": True,
+                "files_path_preserved": True,
+                "state_path_preserved": True,
+                "unit_updated": True,
+            }
+    return result
+
+
+def test_schema2_accepts_explicit_cross_schema_proof_and_exact_rollback(signed: Any) -> None:
+    plan, _, _ = signed
+    result = _cross_schema_result(plan)
+    assert _validate(result, plan) == result
+    for architecture in result["architectures"]:
+        for pair in architecture["receipts"]:
+            lifecycle = pair["lifecycle"]
+            assert "config" not in lifecycle["stages"][5]["preserved"]
+            assert lifecycle["stages"][6]["preserved"]["config"] is True
+            assert lifecycle["stages"][6]["preserved"]["unit"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "schema1-result",
+        "schema1-probe",
+        "missing-transition",
+        "fake-unchanged",
+        "false-files",
+        "false-state",
+        "false-unit",
+        "rollback-unit",
+        "missing-contract",
+        "backwards-contract",
+        "invalid-contract",
+    ],
+)
+def test_cross_schema_receipt_cannot_weaken_identity_configuration_or_rollback(
+    signed: Any, mutation: str
+) -> None:
+    plan, _, _ = signed
+    result = _cross_schema_result(plan)
+    lifecycle = result["architectures"][0]["receipts"][0]["lifecycle"]
+    updated, rolled_back = lifecycle["stages"][5:7]
+    if mutation == "schema1-result":
+        result["schema"] = 1
+    elif mutation == "schema1-probe":
+        lifecycle["schema"] = 1
+    elif mutation == "missing-transition":
+        updated.pop("configuration")
+    elif mutation == "fake-unchanged":
+        updated["preserved"]["config"] = True
+    elif mutation.startswith("false-"):
+        field = {
+            "false-files": "files_path_preserved",
+            "false-state": "state_path_preserved",
+            "false-unit": "unit_updated",
+        }[mutation]
+        updated["configuration"][field] = False
+    elif mutation == "rollback-unit":
+        rolled_back["preserved"]["unit"] = False
+    elif mutation == "missing-contract":
+        lifecycle.pop("cliContracts")
+    elif mutation == "backwards-contract":
+        lifecycle["cliContracts"] = {"previous": "canonical", "target": "legacy"}
+    else:
+        lifecycle["cliContracts"]["previous"] = {"not": "a string"}
+    with pytest.raises(public.PublicFailure):
+        _validate(result, plan)

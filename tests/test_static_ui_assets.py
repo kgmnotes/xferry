@@ -824,7 +824,7 @@ def test_advanced_upload_constructor_is_profile_first() -> None:
         assert f"{key}:" in core_js
 
 
-def test_regular_upload_exposes_profile_summary_compare_without_advanced_coupling() -> None:
+def test_regular_upload_exposes_profiles_without_dead_comparison_controls() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     core_js = (REPO_ROOT / "xferry" / "data" / "static" / "ui" / "core.js").read_text(
         encoding="utf-8"
@@ -855,16 +855,14 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
     assert 'id="uploadRequestSummary"' in upload_tab
     for field in ("request-line", "body-kind", "mime", "filename-source"):
         assert f'data-upload-summary="{field}"' in upload_tab
-    assert 'id="uploadCompareBtn"' in upload_tab
-    assert 'id="uploadCompareMethodsBtn"' in upload_tab
-    comparison_controls = re.search(
-        r'<div\b(?=[^>]*\bid="uploadComparisonActions")(?=[^>]*\bhidden\b)[^>]*>',
-        upload_tab,
-    )
-    assert comparison_controls is not None
-    assert 'id="uploadCompareResults"' in upload_tab
-    assert "compare: compareBasicUploadProfiles" in upload_js
-    assert "'compare-methods': compareBasicUploadMethods" in upload_js
+    for removed_id in (
+        "uploadCompareBtn",
+        "uploadCompareMethodsBtn",
+        "uploadComparisonActions",
+        "uploadCompareResults",
+    ):
+        assert f'id="{removed_id}"' not in upload_tab
+    assert "compareBasicUpload" not in upload_js
     assert "'set-target-path': setUploadTargetPath" in upload_js
     assert 'id="basicAdvancedRoutingWarning"' not in upload_tab
     assert 'id="basicAdvancedRoutingDisableBtn"' not in upload_tab
@@ -892,23 +890,7 @@ def test_regular_upload_exposes_profile_summary_compare_without_advanced_couplin
         "uploadSummaryBodyKind",
         "uploadSummaryMime",
         "uploadSummaryFilenameSource",
-        "uploadCompareBtn",
-        "uploadCompareConfirmTitle",
-        "uploadCompareConfirmBody",
-        "uploadCompareConfirmAction",
-        "uploadCompareMethodsBtn",
-        "uploadCompareMethodsConfirmTitle",
-        "uploadCompareMethodsConfirmBody",
-        "uploadCompareMethodsConfirmAction",
-        "uploadCompareMethodsResultsTitle",
-        "uploadCompareMethodsRunning",
         "uploadRoutingConflict",
-        "uploadVerdictDelivered",
-        "uploadVerdictMetadataChanged",
-        "uploadVerdictContentChanged",
-        "uploadVerdictRejected",
-        "uploadVerdictNotConfirmed",
-        "uploadVerdictNotRun",
     }
     assert extract_locale_keys(core_js, "ru") >= locale_keys
     assert extract_locale_keys(core_js, "en") >= locale_keys
@@ -944,10 +926,7 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         "fileInput",
         "fileList",
         "uploadBtn",
-        "uploadCompareBtn",
-        "uploadCompareMethodsBtn",
         "uploadSelectionState",
-        "uploadComparisonActions",
         "uploadRequestSummary",
     ):
         assert upload_tab.count(f'id="{element_id}"') == 1
@@ -962,8 +941,6 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         'id="uploadSelectionState"',
         'id="fileList"',
         'id="uploadRequestSummary"',
-        'id="uploadComparisonActions"',
-        'id="uploadCompareResults"',
         'data-tool-trace-scope="upload"',
     )
     positions = [upload_tab.index(marker) for marker in source_order]
@@ -2151,7 +2128,8 @@ def test_files_compact_explorer_exposes_accessible_navigation_and_resilient_list
             "filesSearchClear": "Очистить поиск",
             "filesListActions": "Действия со списком",
             "filesCleanupHint": (
-                "Удаляет всё содержимое uploads/. Служебные скрытые файлы будут сохранены."
+                "Удаляет все файлы и подпапки в выбранной папке, включая добавленные вручную. "
+                "Скрытые служебные файлы сохраняются."
             ),
             "filesMoreActions": "Дополнительные действия",
             "filesColumnName": "Имя",
@@ -2166,7 +2144,8 @@ def test_files_compact_explorer_exposes_accessible_navigation_and_resilient_list
             "filesSearchClear": "Clear search",
             "filesListActions": "List actions",
             "filesCleanupHint": (
-                "Deletes all contents of uploads/. Hidden service files are preserved."
+                "Deletes all files and subfolders in the selected files folder, "
+                "including files added manually. Hidden service files are preserved."
             ),
             "filesMoreActions": "More actions",
             "filesColumnName": "Name",
@@ -4248,7 +4227,6 @@ function extractFunction(source, marker, nextMarker) {
     globalThis.buildDemoFilename = slug => `${slug}.txt`;
     globalThis.buildDemoUploadPath = filename => `/uploads/${filename}`;
     globalThis.buildDemoUploadBody = () => 'demo';
-    globalThis.deleteUploadIfPresent = async () => {};
     globalThis.parseJsonSafe = text => {
         try { return JSON.parse(text); } catch (_error) { return null; }
     };
@@ -4260,7 +4238,7 @@ function extractFunction(source, marker, nextMarker) {
     globalThis.getCanonicalUploadPath = extractFunction(
         source,
         'function getCanonicalUploadPath',
-        'async function requestPanelUploadExists'
+        'async function createRequestPanelDemoFile'
     );
 
     const createRequestPanelDemoFile = extractFunction(
@@ -4307,103 +4285,6 @@ function extractFunction(source, marker, nextMarker) {
     }
 
 
-def test_basic_upload_comparison_normalizes_canonical_payload_profiles_in_node() -> None:
-    """Execute all UI profile tokens against their canonical server-shaped responses."""
-    script = r"""
-const fs = require('node:fs');
-
-function extractFunction(source, marker, nextMarker) {
-    const start = source.indexOf(marker);
-    const end = source.indexOf(nextMarker, start);
-    if (start < 0 || end < 0) throw new Error(`Could not extract ${marker}`);
-    return (0, eval)(`(${source.slice(start, end).trim()})`);
-}
-
-const source = fs.readFileSync(process.argv[1], 'utf8');
-globalThis.hasCompleteBasicUpload = extractFunction(
-    source,
-    'function hasCompleteBasicUpload',
-    'function getCompareVerdict'
-);
-globalThis.getCompareVerdict = extractFunction(
-    source,
-    'function getCompareVerdict',
-    'function getCompareVerdictLabel'
-);
-
-const hash = 'a'.repeat(64);
-const responsePayload = (profile, carrier, filenameSource, normalizedName = 'compare.txt') => ({
-    file: {
-        name: normalizedName,
-        path: `/uploads/${normalizedName}`,
-        size_bytes: 3,
-        size_human: '3.0 B',
-        content_type: 'text/plain',
-        uploaded_at: '2026-08-14T00:00:00+00:00',
-        sha256: hash,
-    },
-    upload: {
-        kind: 'basic',
-        profile,
-        carrier,
-        filename_source: filenameSource,
-        normalized_name: normalizedName,
-        collision_renamed: normalizedName === 'collision-compare.txt',
-        request_body_size: carrier === 'multipart' ? 32 : 3,
-        payload_size: 3,
-    },
-});
-const cases = [
-    ['multipart', 'multipart', 'multipart', 'part', 'collision-compare.txt'],
-    ['raw-url', 'raw_url', 'body', 'url', 'compare.txt'],
-    ['raw-header', 'raw_header', 'body', 'header', 'compare.txt'],
-    ['raw-generated', 'raw_url', 'body', 'generated', 'generated-123.bin'],
-];
-const verdicts = Object.fromEntries(cases.map(([
-    uiProfile,
-    serverProfile,
-    carrier,
-    filenameSource,
-    normalizedName,
-]) => [
-    uiProfile,
-    globalThis.getCompareVerdict(
-        { profile: uiProfile, filenameSource, mime: 'text/plain' },
-        { name: 'compare.txt', size: 3 },
-        hash,
-        { ok: true },
-        responsePayload(serverProfile, carrier, filenameSource, normalizedName),
-    ),
-]));
-const wrongCanonicalProfile = globalThis.getCompareVerdict(
-    { profile: 'raw-url', filenameSource: 'url', mime: 'text/plain' },
-    { name: 'compare.txt', size: 3 },
-    hash,
-    { ok: true },
-    responsePayload('raw_header', 'body', 'url'),
-);
-process.stdout.write(JSON.stringify({ verdicts, wrongCanonicalProfile }));
-"""
-
-    completed = subprocess.run(
-        ["node", "-e", script, str(UI_ROOT / "upload.js")],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {
-        "verdicts": {
-            "multipart": "delivered",
-            "raw-url": "delivered",
-            "raw-header": "delivered",
-            "raw-generated": "delivered",
-        },
-        "wrongCanonicalProfile": "metadata-changed",
-    }
-
-
 def test_stage006_consumer_validators_reject_incomplete_or_wrong_kind_2xx_in_node() -> None:
     """Execute real consumer validators against malformed canonical-looking 2xx bodies."""
     script = r"""
@@ -4421,7 +4302,7 @@ const opsec = fs.readFileSync(process.argv[2], 'utf8');
 const files = fs.readFileSync(process.argv[3], 'utf8');
 const session = fs.readFileSync(process.argv[4], 'utf8');
 const basic = extractFunction(
-  upload, 'function hasCompleteBasicUpload', 'function getCompareVerdict'
+  upload, 'function hasCompleteBasicUpload', 'refreshUploadSelectionLocale();'
 );
 const advanced = extractFunction(
   opsec, 'function getCanonicalAdvancedUpload', 'async function sendAdvancedUploadPlan'

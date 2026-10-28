@@ -179,6 +179,7 @@ class SetupOptions:
     firewall_answer: bool | None = None
     resources: ResourceOverrides = field(default_factory=ResourceOverrides)
     layout: ManagedLayout = field(default_factory=ManagedLayout)
+    files_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,7 @@ class SetupPlan:
     firewall_answer: bool | None
     firewall_action: Literal["allow"] | None
     firewall_ports: tuple[int, ...]
+    files_dir: Path | None = None
 
 
 @dataclass(frozen=True)

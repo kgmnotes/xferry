@@ -1,8 +1,7 @@
-"""Tests for CLI argument parsing and main() wiring."""
+"""Foreground CLI wiring and its concise human-facing command contract."""
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import socket
@@ -18,106 +17,124 @@ import xferry.cli as cli
 from tests.server_factory import make_server
 from xferry.cli import create_parser
 from xferry.config import __version__
-from xferry.features import registry_methods
+from xferry.paths import default_config_path
 from xferry.server import XFerryServer
 from xferry.server_config import LoggingConfig, ServerConfig
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
-    from setuptools._vendor import tomli as tomllib  # type: ignore[no-redef]
-
+from xferry.settings_schema import SETTING_SPECS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _find_free_port() -> int:
-    """Reserve an ephemeral local port and return it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+@pytest.fixture(autouse=True)
+def isolated_user_config(monkeypatch, tmp_path):
+    profile_home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(profile_home))
+    monkeypatch.setenv("USERPROFILE", str(profile_home))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    for name in tuple(os.environ):
+        if name.startswith("XFERRY_"):
+            monkeypatch.delenv(name)
 
 
-def _wait_for_server(port: int, timeout: float = 5.0) -> None:
-    """Poll the live server until it answers a minimal PING request."""
-    deadline = time.time() + timeout
-    request = (f"PING / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").encode(
-        "ascii"
-    )
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2) as sock:
-                sock.settimeout(0.5)
-                sock.sendall(request)
-                if b"200 OK" in sock.recv(4096):
-                    return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError("CLI server did not start in time")
+@pytest.mark.parametrize("platform_name", ["linux", "darwin", "win32"])
+def test_default_user_config_stays_in_test_profile(monkeypatch, tmp_path, platform_name):
+    """Every native profile path must stay isolated from the user's real configuration."""
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(sys, "platform", platform_name)
+        config_path = default_config_path()
+
+    assert config_path.is_relative_to(tmp_path)
+    assert config_path.name == "xferry.ini"
 
 
 class TestCLIParser:
-    """Test CLI argument parsing without starting the server."""
-
     def setup_method(self):
         self.parser = create_parser()
 
-    def test_defaults(self):
-        args = self.parser.parse_args([])
-        assert args.preset is None
-        assert args.host == "127.0.0.1"
-        assert args.port == 8080
-        assert args.dir == "."
-        assert args.quiet is False
-        assert args.debug is False
-        assert args.tls is False
-        assert args.auth is None
-        assert args.auth_file is None
-        assert args.max_size == 100
-        assert args.upload_storage_limit == 0
-        assert args.upload_file_limit == 0
-        assert args.upload_reserve_free == 0
-        assert args.upload_quota_externally_managed is False
-        assert args.note_storage_limit == 256
-        assert args.note_count_limit == 1000
-        assert args.smuggle_temp_age == 3600
-        assert args.smuggle_temp_file_limit == 32
-        assert args.smuggle_temp_storage_limit == 128
-        assert args.max_header_size == 64
-        assert args.body_memory_budget is None
-        assert args.body_idle_timeout == 5.0
-        assert args.body_timeout == 300.0
-        assert args.body_min_rate == 0.0
-        assert args.stream_send_idle_timeout == 5.0
-        assert args.stream_send_timeout == 300.0
-        assert args.max_websocket_connections is None
-        assert args.websocket_frame_idle_timeout == 5.0
-        assert args.workers == 10
-        assert args.cors_origin == ""
-        assert not hasattr(args, "advanced_upload")
-        assert not hasattr(args, "profile")
-        assert args.sslip is False
-        assert args.public_ip is None
-        assert args.acme_staging is False
-        assert args.acme_server is None
-        assert args.acme_http_address == ""
-        assert args.acme_http_port == 80
+    def test_canonical_modes_and_launch_action(self):
+        args = self.parser.parse_args(
+            [
+                "--access",
+                "public",
+                "--https",
+                "domain",
+                "--domain",
+                "files.example.com",
+                "--log-level",
+                "debug",
+                "--log-format",
+                "json",
+                "--files-dir",
+                "./shared",
+                "--open",
+            ]
+        )
+        assert args.access == "public"
+        assert args.https_mode == "domain"
+        assert args.log_level == "debug"
+        assert args.log_format == "json"
+        assert args.files_dir == "./shared"
+        assert args.open_browser is True
 
     @pytest.mark.parametrize(
-        "preset",
-        ["local", "local-secure", "public-direct"],
+        "flag,value",
+        [
+            ("--access", "invalid"),
+            ("--https", "invalid"),
+            ("--log-level", "invalid"),
+            ("--log-format", "invalid"),
+        ],
     )
-    def test_launch_preset_names(self, preset):
-        args = self.parser.parse_args(["--preset", preset])
+    def test_invalid_modes_are_rejected(self, flag, value):
+        with pytest.raises(SystemExit) as error:
+            self.parser.parse_args([flag, value])
+        assert error.value.code == 2
 
-        assert args.preset == preset
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--auth", "admin:private-secret"],
+            ["--auth=admin:private-secret"],
+            ["--preset", "local"],
+            ["--tls"],
+            ["--letsencrypt"],
+            ["--sslip"],
+            ["--acme-staging"],
+            ["--dir", "./data"],
+            ["-d./data"],
+            ["--quiet"],
+            ["--debug"],
+            ["--json-log"],
+            ["--check-config"],
+            ["--print-config"],
+            ["--write-sample-config", "./sample.ini"],
+        ],
+    )
+    def test_retired_options_fail_with_replacement_without_secret(self, argv, capsys):
+        with pytest.raises(SystemExit) as error:
+            self.parser.parse_args(argv)
+        assert error.value.code == 2
+        output = capsys.readouterr().err
+        assert "removed option" in output
+        assert "use " in output
+        assert "private-secret" not in output
 
-    @pytest.mark.parametrize("preset", ["", "workspace", "public"])
-    def test_invalid_launch_preset_names_are_rejected(self, preset):
-        with pytest.raises(SystemExit) as exc_info:
-            self.parser.parse_args(["--preset", preset])
+    def test_normal_help_is_short_and_has_working_examples(self):
+        text = self.parser.format_help()
+        assert "xferry run --open" in text
+        assert "xferry run --files-dir ./shared" in text
+        assert "xferry config" in text
+        assert "--preset" not in text
+        assert "--body-memory-budget" not in text
+        assert "Capacity model" not in text
+        assert "--help-all" in text
 
-        assert exc_info.value.code == 2
+    def test_full_help_lists_every_public_setting(self):
+        text = create_parser(show_all_help=True).format_help()
+        for spec in SETTING_SPECS:
+            if spec.cli:
+                assert all(option in text for option in spec.cli.option_strings)
 
     def test_custom_host_port(self):
         args = self.parser.parse_args(["-H", "0.0.0.0", "-p", "443"])
@@ -170,26 +187,10 @@ class TestCLIParser:
             self.parser.parse_args([flag])
         assert exc_info.value.code == 2
 
-    def test_short_flags(self):
-        args = self.parser.parse_args(["-q"])
-        assert args.quiet is True
-
-    def test_tls_flags(self):
-        args = self.parser.parse_args(["--tls"])
-        assert args.tls is True
-
     def test_cert_key(self):
         args = self.parser.parse_args(["--cert", "/tmp/c.pem", "--key", "/tmp/k.pem"])
         assert args.cert == "/tmp/c.pem"
         assert args.key == "/tmp/k.pem"
-
-    def test_auth_random(self):
-        args = self.parser.parse_args(["--auth", "random"])
-        assert args.auth == "random"
-
-    def test_auth_user_pass(self):
-        args = self.parser.parse_args(["--auth", "admin:secret"])
-        assert args.auth == "admin:secret"
 
     def test_auth_file(self):
         args = self.parser.parse_args(["--auth-file", "/run/secrets/xferry_auth"])
@@ -252,14 +253,6 @@ class TestCLIParser:
         assert args.max_websocket_connections == 7
         assert args.websocket_frame_idle_timeout == 0.25
 
-    def test_debug_flag(self):
-        args = self.parser.parse_args(["--debug"])
-        assert args.debug is True
-
-    def test_open_flag(self):
-        args = self.parser.parse_args(["--open"])
-        assert args.open is True
-
     def test_cors_origin_flag(self):
         args = self.parser.parse_args(["--cors-origin", "https://app.example"])
         assert args.cors_origin == "https://app.example"
@@ -270,107 +263,12 @@ class TestCLIParser:
             self.parser.parse_args(argv)
         assert exc_info.value.code == 2
 
-    def test_letsencrypt_requires_domain(self):
-        """--letsencrypt without --domain should be caught by main()."""
-        # Parser itself accepts it; validation is in main()
-        args = self.parser.parse_args(["--letsencrypt"])
-        assert args.letsencrypt is True
-        assert args.domain is None
-
-    def test_letsencrypt_with_domain(self):
-        args = self.parser.parse_args(["--letsencrypt", "--domain", "example.com"])
-        assert args.letsencrypt is True
-        assert args.domain == "example.com"
-
-    def test_sslip_flags(self):
-        args = self.parser.parse_args(["--sslip", "--public-ip", "8.8.8.8"])
-        assert args.sslip is True
-        assert args.public_ip == "8.8.8.8"
-
-    def test_acme_flags(self):
-        args = self.parser.parse_args(
-            [
-                "--acme-staging",
-                "--acme-server",
-                "https://acme.example/directory",
-                "--acme-http-address",
-                "127.0.0.1",
-                "--acme-http-port",
-                "5002",
-            ]
-        )
-        assert args.acme_staging is True
-        assert args.acme_server == "https://acme.example/directory"
-        assert args.acme_http_address == "127.0.0.1"
-        assert args.acme_http_port == 5002
-
     def test_version_flag(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
             self.parser.parse_args(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert captured.out == f"xferry run {__version__}\n"
-
-    def test_dir_flag(self):
-        args = self.parser.parse_args(["-d", "/tmp/serve"])
-        assert args.dir == "/tmp/serve"
-
-    def test_json_log_flag(self):
-        args = self.parser.parse_args(["--json-log"])
-        assert args.json_log is True
-
-    def test_json_log_default_false(self):
-        args = self.parser.parse_args([])
-        assert args.json_log is False
-
-    def test_config_control_flags(self):
-        args = self.parser.parse_args(
-            [
-                "--config",
-                "/etc/xferry/xferry.ini",
-                "--check-config",
-                "--print-config",
-                "--write-sample-config",
-                "/tmp/xferry.ini",
-            ]
-        )
-
-        assert args.config == "/etc/xferry/xferry.ini"
-        assert args.check_config is True
-        assert args.print_config is True
-        assert args.write_sample_config == "/tmp/xferry.ini"
-
-    def test_help_examples_prefer_trusted_experimental_and_public_direct_paths(self):
-        help_text = self.parser.format_help()
-
-        assert "Public HTTPS" not in help_text
-        assert "local-secure" in help_text
-        assert "public-direct" in help_text
-        assert "--write-sample-config" in help_text
-        assert "--config ./xferry.ini --check-config" in help_text
-        assert "--help-all" in help_text
-
-    def test_normal_help_is_journey_first_and_hides_exhaustive_tuning_flags(self):
-        help_text = self.parser.format_help()
-
-        assert help_text.index("local") < help_text.index("options:")
-        assert "--preset" in help_text
-        assert "--body-memory-budget" not in help_text
-        assert "--smuggle-temp-age" not in help_text
-
-    def test_full_help_retains_every_registered_option_and_capacity_contract(self):
-        help_text = create_parser(show_all_help=True).format_help()
-
-        for option in (
-            "--body-memory-budget",
-            "--smuggle-temp-age",
-            "--max-websocket-connections",
-            "--upload-quota-externally-managed",
-        ):
-            assert option in help_text
-        assert "admission budget" in help_text
-        assert "not an RSS ceiling" in help_text
-        assert "Each active WebSocket occupies one worker" in help_text
 
     def test_help_all_prints_to_stdout_and_exits_before_runtime_work(
         self,
@@ -382,24 +280,17 @@ class TestCLIParser:
         captured = capsys.readouterr()
         assert exc_info.value.code == 0
         assert "--body-memory-budget" in captured.out
-        assert "Core methods:" in captured.out
+        assert "--https" in captured.out
         assert captured.err == ""
-
-    def test_help_footer_lists_full_core_methods(self):
-        help_text = create_parser(show_all_help=True).format_help()
-
-        assert "Experimental-only methods" not in help_text
-        assert "Core methods: " + ", ".join(registry_methods()) in help_text
-        assert "Core methods:" not in self.parser.format_help()
 
     def test_server_parser_help_is_scoped_under_run(self):
         """Omitting the run prefix from help would advertise the removed root server CLI."""
         help_text = create_parser(show_all_help=True).format_help()
 
         assert create_parser().format_usage().startswith("usage: xferry run ")
-        assert "xferry run --preset local --open" in help_text
-        assert "xferry run --preset local-secure" in help_text
-        assert "xferry --preset local-secure" not in help_text
+        assert "xferry run --open" in help_text
+        assert "xferry run --files-dir ./shared" in help_text
+        assert "--preset" not in help_text
 
     def test_server_help_is_stable_across_supported_python_versions(self):
         """Stdlib argparse changes must not rewrite the generated CLI contract."""
@@ -407,14 +298,10 @@ class TestCLIParser:
 
         assert "  -H HOST, --host HOST  Bind host (default: 127.0.0.1)" in help_text
         assert "  -p PORT, --port PORT  Listen port (default: 8080)" in help_text
-        assert "  -d DIR, --dir DIR     Root directory (default: current)" in help_text
+        assert "  --files-dir DIR" in help_text
         assert "-H, --host HOST" not in help_text
         assert "(default: False)" not in help_text
-        assert (
-            "TLS:\n"
-            "  --tls, --no-tls       Enable HTTPS with a generated self-signed certificate\n\n"
-            "Authentication:"
-        ) in help_text
+        assert "--https {off,auto,domain,files,self-signed}" in help_text
 
     @pytest.mark.parametrize("columns", [0, 40, 160])
     def test_server_help_is_stable_across_terminal_widths(self, monkeypatch, columns):
@@ -433,894 +320,160 @@ class TestCLIParser:
         help_text.encode("cp1252", errors="strict")
 
 
-def test_package_metadata_has_no_legacy_crypto_extra() -> None:
-    """Leaving the empty crypto extra would preserve a removed install compatibility path."""
-    with (REPO_ROOT / "pyproject.toml").open("rb") as pyproject_file:
-        pyproject = tomllib.load(pyproject_file)
-
-    optional_dependencies = pyproject["project"]["optional-dependencies"]
-
-    assert "crypto" not in optional_dependencies
-    assert all("crypto" not in dependency for dependency in optional_dependencies["all"])
-
-
 class TestCLIMain:
-    def test_public_console_main_prints_root_help_without_server_dispatch(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        """The console entry point must not treat empty argv as a server start."""
+    @pytest.fixture
+    def captured_configs(self, monkeypatch):
+        captured = []
 
-        def fail_if_called(_argv=None):
-            raise AssertionError("root console help must not call server run_main")
-
-        monkeypatch.setattr(cli, "run_main", fail_if_called)
-
-        assert cli.main([]) == 0
-        rendered = capsys.readouterr()
-        assert "usage: xferry [--lang LANG] COMMAND [OPTIONS]" in rendered.out
-        assert "xferry run --preset local" in rendered.out
-        assert rendered.err == ""
-
-    def test_main_check_config_validates_without_starting_server(
-        self,
-        monkeypatch,
-        temp_dir: Path,
-        capsys,
-    ):
-        config_file = temp_dir / "xferry.ini"
-        config_file.write_text(
-            """
-            [server]
-            host = 127.0.0.1
-            port = 8090
-            """,
-            encoding="utf-8",
-        )
-
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --check-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--config", str(config_file), "--check-config"]) == 0
-        rendered = capsys.readouterr().out
-        assert "Configuration valid." in rendered
-        assert "Runtime posture:" in rendered
-        assert "Exposure: loopback" in rendered
-
-    def test_main_print_config_redacts_auth_and_does_not_start(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --print-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--auth", "admin:supersecret", "--print-config"]) == 0
-        rendered = capsys.readouterr().out
-        assert '"auth": "***"' in rendered
-        assert '"runtime_posture"' in rendered
-        assert '"auth_mode": "inline"' in rendered
-        assert "supersecret" not in rendered
-
-    def test_main_print_config_reports_effective_tls_for_sslip(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --print-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--sslip", "--print-config"]) == 0
-        rendered = capsys.readouterr().out
-        assert '"tls": false' in rendered
-        assert '"effective_tls": true' in rendered
-        assert '"tls_mode": "acme-sslip"' in rendered
-
-    def test_main_print_config_reports_repeatable_allowed_hosts_as_one_cli_layer(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        """Catch repeatable CLI hosts extending rather than replacing lower layers."""
-
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --print-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-        monkeypatch.setenv("XFERRY_ALLOWED_HOSTS", "env.example old.example")
-
-        assert (
-            cli.run_main(
-                [
-                    "--allowed-host",
-                    "CLI.EXAMPLE.",
-                    "--allowed-host",
-                    "127.0.0.1",
-                    "--print-config",
-                ]
-            )
-            == 0
-        )
-        rendered = json.loads(capsys.readouterr().out)
-        assert rendered["allowed_hosts"] == ["CLI.EXAMPLE.", "127.0.0.1"]
-        assert rendered["runtime_posture"]["allowed_hosts_mode"] == "explicit"
-        assert rendered["runtime_posture"]["allowed_hosts"] == [
-            "cli.example",
-            "127.0.0.1",
-        ]
-
-    def test_main_check_and_print_use_same_runtime_posture(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for config inspection")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--preset", "local", "--check-config"]) == 0
-        checked = capsys.readouterr().out
-        assert "Preset: local" in checked
-        assert "Exposure: loopback" in checked
-
-        assert cli.run_main(["--preset", "local", "--print-config"]) == 0
-        printed = json.loads(capsys.readouterr().out)
-        posture = printed["runtime_posture"]
-        assert posture["preset"] == "local"
-        assert posture["exposure"] == "loopback"
-        assert posture["effective_url"] == "http://127.0.0.1:8080"
-
-    def test_main_non_loopback_warning_is_non_breaking_and_structured(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --check-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--host", "0.0.0.0", "--check-config"]) == 0
-        checked = capsys.readouterr().out
-        assert "WARNING [non-loopback-without-public-direct]" in checked
-
-        assert cli.run_main(["--host", "0.0.0.0", "--print-config"]) == 0
-        posture = json.loads(capsys.readouterr().out)["runtime_posture"]
-        assert posture["exposure"] == "all-interfaces"
-        assert "non-loopback-without-public-direct" in {
-            warning["code"] for warning in posture["warnings"]
-        }
-
-    def test_main_local_secure_interactive_uses_generated_auth_and_shared_posture(
-        self,
-        monkeypatch,
-    ):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
+        class FakeServer:
             def __init__(self, config):
-                captured["config"] = config
+                captured.append(config)
 
             def start(self):
-                captured["started"] = True
+                pass
 
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-        monkeypatch.setattr(cli, "_stdout_is_interactive", lambda: True)
+            def stop(self):
+                pass
 
-        assert cli.run_main(["--preset", "local-secure"]) == 0
-        config = captured.pop("config")
-        posture = config.runtime_posture
+        monkeypatch.setattr(cli, "XFerryServer", FakeServer)
+        return captured
 
-        assert config.tls.enabled is True
-        assert config.auth.auth == "random"
-        assert config.auth.auth_file is None
-        assert captured["started"] is True
-        assert posture.auth_mode == "generated"
-
-    def test_main_local_secure_rejects_generated_auth_before_noninteractive_start(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not be constructed")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-        monkeypatch.setattr(cli, "_stdout_is_interactive", lambda: False)
-
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(["--preset", "local-secure"])
-
-        assert exc_info.value.code == 2
-        rendered = capsys.readouterr()
-        assert "local-secure" in rendered.err
-        assert "--auth-file" in rendered.err
-        assert "random" not in rendered.out
-
-    def test_main_local_secure_check_and_print_never_generate_credentials(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("config inspection must not construct the server")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-        monkeypatch.setattr(cli, "_stdout_is_interactive", lambda: False)
-
-        assert (
-            cli.run_main(
-                [
-                    "--preset",
-                    "local-secure",
-                    "--no-tls",
-                    "--check-config",
-                ]
-            )
-            == 0
-        )
-        checked = capsys.readouterr().out
-        assert "generated-auth-requires-tty" in checked
-        assert "local-secure-weakened" in checked
-        assert "Generated credentials:" not in checked
-
-        assert (
-            cli.run_main(
-                [
-                    "--preset",
-                    "local-secure",
-                    "--no-tls",
-                    "--print-config",
-                ]
-            )
-            == 0
-        )
-        printed = json.loads(capsys.readouterr().out)
-        assert printed["tls"] is False
-        assert printed["auth"] == "***"
-        assert printed["runtime_posture"]["auth_mode"] == "generated"
-
-    def test_main_local_secure_noninteractive_accepts_file_credentials(
-        self,
-        monkeypatch,
-    ):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                captured["started"] = True
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-        monkeypatch.setattr(cli, "_stdout_is_interactive", lambda: False)
-
-        assert (
-            cli.run_main(
-                [
-                    "--preset",
-                    "local-secure",
-                    "--auth-file",
-                    "/run/secrets/xferry_auth",
-                ]
-            )
-            == 0
-        )
-        config = captured.pop("config")
-        posture = config.runtime_posture
-
-        assert config.auth.auth is None
-        assert config.auth.auth_file == Path("/run/secrets/xferry_auth").resolve()
-        assert captured["started"] is True
-        assert posture.auth_mode == "file"
-
-    def test_main_public_direct_preset_runs_hardened_validation(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --check-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(["--preset", "public-direct", "--check-config"])
-        assert exc_info.value.code == 2
-        assert "real TLS" in capsys.readouterr().err
-
-        assert (
-            cli.run_main(
-                [
-                    "--preset",
-                    "public-direct",
-                    "--sslip",
-                    "--auth-file",
-                    "/run/secrets/xferry_auth",
-                    "--check-config",
-                ]
-            )
-            == 0
-        )
-        checked = capsys.readouterr().out
-        assert "Public-direct validation: validated" in checked
-
-    def test_main_resolves_preset_from_ini_environment_and_cli(
-        self,
-        monkeypatch,
-        temp_dir: Path,
-        capsys,
-    ):
-        config_file = temp_dir / "xferry.ini"
-        config_file.write_text(
-            """
-            [server]
-            preset = public-direct
-            host = 127.0.0.1
-            public_direct = false
-            """,
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("XFERRY_PRESET", "local-secure")
-
-        assert (
-            cli.run_main(
-                [
-                    "--config",
-                    str(config_file),
-                    "--preset",
-                    "local",
-                    "--print-config",
-                ]
-            )
-            == 0
-        )
-        printed = json.loads(capsys.readouterr().out)
-
-        assert printed["preset"] == "local"
-        assert printed["host"] == "127.0.0.1"
-        assert printed["public_direct"] is False
-
-    def test_main_write_sample_config(self, monkeypatch, temp_dir: Path):
-        output = temp_dir / "sample.ini"
-
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --write-sample-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert cli.run_main(["--write-sample-config", str(output)]) == 0
-        rendered = output.read_text(encoding="utf-8")
-        assert "[server]" in rendered
-        assert "public_direct = true" in rendered
-        assert "upload_storage_limit_mb = 4096" in rendered
-        assert "upload_file_limit = 4096" in rendered
-        assert "upload_reserve_free_mb = 1024" in rendered
-        assert "upload_quota_externally_managed = false" in rendered
-
-    def test_main_cli_can_acknowledge_external_quota_for_all_zero_file(
-        self,
-        monkeypatch,
-        temp_dir: Path,
-    ):
-        config_file = temp_dir / "xferry.ini"
-        config_file.write_text(
-            """
-            [server]
-            public_direct = true
-
-            [security]
-            auth_file = /etc/xferry/auth
-
-            [tls]
-            sslip = true
-
-            [limits]
-            body_memory_budget_mb = 512
-            upload_storage_limit_mb = 0
-            upload_file_limit = 0
-            upload_reserve_free_mb = 0
-            upload_quota_externally_managed = false
-            """,
-            encoding="utf-8",
-        )
-        monkeypatch.delenv("XFERRY_UPLOAD_QUOTA_EXTERNALLY_MANAGED", raising=False)
-
-        result = cli.run_main(
-            [
-                "--config",
-                str(config_file),
-                "--upload-quota-externally-managed",
-                "--check-config",
-            ]
-        )
-
-        assert result == 0
-
-    def test_main_negative_cli_flag_overrides_external_quota_environment(
-        self,
-        monkeypatch,
-        temp_dir: Path,
-        capsys,
-    ):
-        config_file = temp_dir / "xferry.ini"
-        config_file.write_text(
-            """
-            [server]
-            public_direct = true
-
-            [security]
-            auth_file = /etc/xferry/auth
-
-            [tls]
-            sslip = true
-
-            [limits]
-            body_memory_budget_mb = 512
-            upload_storage_limit_mb = 0
-            upload_file_limit = 0
-            upload_reserve_free_mb = 0
-            upload_quota_externally_managed = false
-            """,
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("XFERRY_UPLOAD_QUOTA_EXTERNALLY_MANAGED", "true")
-
-        assert cli.run_main(["--config", str(config_file), "--check-config"]) == 0
-
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(
-                [
-                    "--config",
-                    str(config_file),
-                    "--no-upload-quota-externally-managed",
-                    "--check-config",
-                ]
-            )
-
-        assert exc_info.value.code == 2
-        assert "upload_quota_externally_managed" in capsys.readouterr().err
-
-    def test_main_config_file_is_overridden_by_explicit_cli(self, monkeypatch, temp_dir: Path):
-        config_file = temp_dir / "xferry.ini"
-        config_file.write_text(
-            """
-            [server]
-            host = 0.0.0.0
-            port = 9000
-            root_dir = /srv/xferry
-
-            [limits]
-            max_size_mb = 64
-            """,
-            encoding="utf-8",
-        )
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                captured["started"] = True
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
-        result = cli.run_main(["--config", str(config_file), "--port", "8080"])
-
-        assert result == 0
-        config = captured["config"]
-        assert config.host == "0.0.0.0"
+    def test_defaults_and_open_action(self, captured_configs):
+        assert cli.run_main(["--open"]) == 0
+        config = captured_configs[0]
+        assert config.host == "127.0.0.1"
         assert config.port == 8080
-        assert config.root_dir == Path("/srv/xferry").resolve()
-        assert config.limits.max_upload_size == 64 * 1024 * 1024
-        assert captured["started"] is True
-
-    def test_main_attached_short_option_overrides_preset_default(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not start for --print-config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        assert (
-            cli.run_main(
-                [
-                    "--preset",
-                    "local",
-                    "-p9443",
-                    "--print-config",
-                ]
-            )
-            == 0
-        )
-        printed = json.loads(capsys.readouterr().out)
-
-        assert printed["port"] == 9443
-
-    @pytest.mark.parametrize("argv", [["--advanced-upload"], ["--profile", "experimental"]])
-    def test_main_rejects_removed_profile_flags(self, argv):
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(argv)
-        assert exc_info.value.code == 2
-
-    def test_main_starts_server_with_expected_config(self, monkeypatch):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                captured["started"] = True
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
-        result = cli.run_main(
-            [
-                "-H",
-                "0.0.0.0",
-                "-p",
-                "9090",
-                "-d",
-                "/srv/data",
-                "--quiet",
-                "--debug",
-                "--open",
-                "--json-log",
-                "--cors-origin",
-                "https://app.example",
-                "-m",
-                "250",
-                "--upload-storage-limit",
-                "1000",
-                "--upload-file-limit",
-                "25",
-                "--upload-reserve-free",
-                "500",
-                "--note-storage-limit",
-                "128",
-                "--note-count-limit",
-                "50",
-                "--smuggle-temp-age",
-                "120",
-                "--smuggle-temp-file-limit",
-                "5",
-                "--smuggle-temp-storage-limit",
-                "32",
-                "--max-header-size",
-                "128",
-                "--body-memory-budget",
-                "512",
-                "--body-idle-timeout",
-                "1.5",
-                "--body-timeout",
-                "20",
-                "--body-min-rate",
-                "128",
-                "--stream-send-idle-timeout",
-                "2.5",
-                "--stream-send-timeout",
-                "30",
-                "--max-websocket-connections",
-                "7",
-                "--websocket-frame-idle-timeout",
-                "0.25",
-                "-w",
-                "20",
-                "--auth",
-                "admin:secret",
-            ]
-        )
-
-        assert result == 0
-        config = captured.pop("config")
-        posture = config.runtime_posture
-        assert posture.effective_url == "http://0.0.0.0:9090"
-        assert posture.auth_mode == "inline"
-        assert config.host == "0.0.0.0"
-        assert config.port == 9090
-        assert config.root_dir == Path("/srv/data").resolve()
-        assert config.limits == config.limits.__class__(
-            max_upload_size=250 * 1024 * 1024,
-            upload_storage_limit=1000 * 1024 * 1024,
-            upload_file_limit=25,
-            upload_reserved_free_space=500 * 1024 * 1024,
-            note_storage_limit=128 * 1024 * 1024,
-            note_count_limit=50,
-            smuggle_temp_max_age=120,
-            smuggle_temp_file_limit=5,
-            smuggle_temp_storage_limit=32 * 1024 * 1024,
-            max_header_size=128 * 1024,
-            body_memory_budget=512 * 1024 * 1024,
-            body_idle_timeout=1.5,
-            body_timeout=20.0,
-            body_min_rate=128.0,
-            stream_send_idle_timeout=2.5,
-            stream_send_timeout=30.0,
-            max_workers=20,
-        )
-        assert config.websocket.max_connections == 7
-        assert config.websocket.frame_idle_timeout == 0.25
-        assert config.logging.quiet is True
-        assert config.logging.debug is True
         assert config.logging.open_browser is True
-        assert config.logging.json_log is True
-        assert config.tls.enabled is False
-        assert config.auth.auth == "admin:secret"
-        assert config.auth.auth_file is None
-        assert config.cors_origin == "https://app.example"
-        assert captured == {"started": True}
+        assert config.files_dir.name == "files"
+        assert config.root_dir != Path.cwd()
 
-    def test_main_does_not_pass_profile_to_server(self, monkeypatch):
-        captured: dict[str, object] = {}
+    def test_saved_user_config_loads_automatically(self, captured_configs):
+        path = default_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text("[server]\nport = 9021\nworkers = 4\n")
+        assert cli.run_main([]) == 0
+        assert captured_configs[0].port == 9021
+        assert captured_configs[0].limits.max_workers == 4
 
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
+    def test_explicit_config_env_and_cli_precedence(self, tmp_path, monkeypatch, captured_configs):
+        path = tmp_path / "config.ini"
+        path.write_text("[server]\nport = 9000\nworkers = 4\n[limits]\nupload_file_limit = 9\n")
+        monkeypatch.setenv("XFERRY_PORT", "9001")
+        monkeypatch.setenv("XFERRY_UPLOAD_FILE_LIMIT", "10")
+        assert cli.run_main(["--config", str(path), "-p8080", "--upload-file-limit", "0"]) == 0
+        config = captured_configs[0]
+        assert config.port == 8080
+        assert config.limits.max_workers == 4
+        assert config.limits.upload_file_limit is None
 
-            def start(self):
-                captured["started"] = True
+    def test_explicit_missing_config_fails(self, tmp_path, captured_configs):
+        with pytest.raises(SystemExit) as error:
+            cli.run_main(["--config", str(tmp_path / "missing")])
+        assert error.value.code == 2
+        assert captured_configs == []
 
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
+    def test_cli_cannot_expose_saved_config_as_download(self, tmp_path, captured_configs):
+        path = default_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text("[server]\nport = 8080\n")
+        with pytest.raises(SystemExit):
+            cli.run_main(["--files-dir", str(path.parent)])
+        assert captured_configs == []
 
-        result = cli.run_main([])
+    def test_public_guards_run_before_start(self, captured_configs):
+        with pytest.raises(SystemExit):
+            cli.run_main(["--access", "public", "--https", "off"])
+        assert captured_configs == []
 
-        assert result == 0
-        assert captured["config"].runtime_posture is not None
-        assert captured["started"] is True
+    def test_retired_environment_secret_is_not_echoed(self, monkeypatch, capsys, captured_configs):
+        monkeypatch.setenv("XFERRY_AUTH", "admin:secret-never-print")
+        with pytest.raises(SystemExit):
+            cli.run_main([])
+        assert "secret-never-print" not in capsys.readouterr().err
+        assert captured_configs == []
 
-    def test_main_passes_auth_file_to_server(self, monkeypatch):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                captured["started"] = True
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
-        result = cli.run_main(["--auth-file", "/run/secrets/xferry_auth"])
-
-        assert result == 0
-        config = captured["config"]
-        assert config.auth.auth is None
-        assert config.auth.auth_file == Path("/run/secrets/xferry_auth").resolve()
-
-    @pytest.mark.parametrize(
-        ("argv", "expected_tls"),
-        [
-            (["--tls"], True),
-            (["--cert", "/tmp/cert.pem", "--key", "/tmp/key.pem"], True),
-            (["--letsencrypt", "--domain", "example.com"], True),
-            (["--sslip"], True),
-        ],
-    )
-    def test_main_enables_tls_when_any_tls_input_is_present(
-        self,
-        monkeypatch,
-        argv,
-        expected_tls,
+    def test_keyboard_interrupt_and_unexpected_errors_have_stable_exit_codes(
+        self, monkeypatch, capsys
     ):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                return None
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
-        result = cli.run_main(argv)
-
-        assert result == 0
-        assert captured["config"].tls.enabled is expected_tls
-
-    def test_main_requires_domain_for_letsencrypt(self):
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(["--letsencrypt"])
-        assert exc_info.value.code == 2
-
-    @pytest.mark.parametrize(
-        ("argv", "message"),
-        [
-            (["--cert", "cert.pem"], "--cert and --key must be provided together"),
-            (["--key", "key.pem"], "--cert and --key must be provided together"),
-            (["--cert", ""], "--cert and --key must be provided together"),
-            (["--key", ""], "--cert and --key must be provided together"),
-            (["--cert", "", "--key", ""], "--cert and --key values must not be empty"),
-            (
-                [
-                    "--cert",
-                    "cert.pem",
-                    "--key",
-                    "key.pem",
-                    "--letsencrypt",
-                    "--domain",
-                    "example.com",
-                ],
-                "--cert/--key cannot be combined with --letsencrypt or --sslip",
-            ),
-            (
-                ["--cert", "cert.pem", "--key", "key.pem", "--sslip"],
-                "--cert/--key cannot be combined with --letsencrypt or --sslip",
-            ),
-        ],
-    )
-    def test_main_rejects_invalid_tls_source_combinations(
-        self,
-        monkeypatch,
-        capsys,
-        argv,
-        message,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not be constructed for invalid CLI config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(argv)
-
-        assert exc_info.value.code == 2
-        assert message in capsys.readouterr().err
-
-    def test_main_allows_letsencrypt_with_sslip_without_domain(self, monkeypatch):
-        captured: dict[str, object] = {}
-
-        class ServerStub:
-            def __init__(self, config):
-                captured["config"] = config
-
-            def start(self):
-                return None
-
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
-        result = cli.run_main(["--letsencrypt", "--sslip"])
-
-        assert result == 0
-        config = captured["config"]
-        assert config.tls.enabled is True
-        assert config.tls.letsencrypt is True
-        assert config.tls.sslip is True
-
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["--sslip", "--domain", "example.com"],
-            ["--public-ip", "8.8.8.8"],
-            ["--acme-http-port", "0"],
-            ["--acme-http-port", "70000"],
-            ["--auth-file", ""],
-        ],
-    )
-    def test_main_rejects_invalid_acme_combinations(self, argv):
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(argv)
-        assert exc_info.value.code == 2
-
-    def test_main_rejects_conflicting_auth_sources_without_echoing_secret(
-        self,
-        monkeypatch,
-        capsys,
-    ):
-        def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("server should not be constructed for invalid CLI config")
-
-        monkeypatch.setattr(cli, "XFerryServer", fail_if_called)
-
-        with pytest.raises(SystemExit) as exc_info:
-            cli.run_main(["--auth", "admin:supersecret", "--auth-file", "/run/secrets/auth"])
-
-        assert exc_info.value.code == 2
-        captured = capsys.readouterr()
-        assert "--auth and --auth-file cannot be combined" in captured.err
-        assert "supersecret" not in captured.err
-
-    def test_main_auth_file_parse_failure_does_not_echo_secret(self, temp_dir: Path, capsys):
-        auth_file = temp_dir / "auth.txt"
-        auth_file.write_text("admin:supersecret\nother:credential\n", encoding="utf-8")
-
-        result = cli.run_main(["-d", str(temp_dir), "--auth-file", str(auth_file)])
-        captured = capsys.readouterr()
-
-        assert result == 1
-        assert "auth file must contain exactly one user:password line" in captured.err
-        assert "supersecret" not in captured.err
-
-    def test_main_returns_zero_on_keyboard_interrupt(self, monkeypatch):
-        class ServerStub:
+        class InterruptingServer:
             def __init__(self, _config):
                 pass
 
             def start(self):
                 raise KeyboardInterrupt
 
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
-
+        monkeypatch.setattr(cli, "XFerryServer", InterruptingServer)
         assert cli.run_main([]) == 0
 
-    def test_main_returns_one_and_prints_error_on_exception(self, monkeypatch, capsys):
-        class ServerStub:
-            def __init__(self, _config):
+        class FailingServer(InterruptingServer):
+            def start(self):
                 raise RuntimeError("boom")
 
-        monkeypatch.setattr(cli, "XFerryServer", ServerStub)
+        monkeypatch.setattr(cli, "XFerryServer", FailingServer)
+        assert cli.run_main([]) == 1
+        assert "Error: boom" in capsys.readouterr().err
 
-        result = cli.run_main([])
-        captured = capsys.readouterr()
 
-        assert result == 1
-        assert "Error: boom" in captured.err
+def test_package_metadata_has_no_legacy_crypto_extra():
+    text = (REPO_ROOT / "pyproject.toml").read_text()
+    assert "\ncrypto =" not in text
 
-    @pytest.mark.skipif(
-        not hasattr(signal, "SIGTERM") or sys.platform == "win32",
-        reason="subprocess SIGTERM graceful shutdown is not portable to Windows",
+
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGTERM") or sys.platform == "win32", reason="POSIX signal lifecycle"
+)
+def test_cli_process_handles_sigterm_gracefully(tmp_path):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "xferry",
+            "run",
+            "--port",
+            str(port),
+            "--files-dir",
+            str(tmp_path / "files"),
+            "--log-level",
+            "warning",
+        ],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
     )
-    def test_cli_process_handles_sigterm_gracefully(self, temp_dir: Path):
-        port = _find_free_port()
-        (temp_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
-        repo_root = Path(__file__).resolve().parents[1]
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "xferry",
-                "run",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--dir",
-                str(temp_dir),
-                "--quiet",
-            ],
-            cwd=repo_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        try:
-            _wait_for_server(port)
-            process.send_signal(signal.SIGTERM)
-            stdout, stderr = process.communicate(timeout=5.0)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.communicate(timeout=5.0)
-
-        assert process.returncode == 0
-        assert "Runtime posture:" in stdout
-        assert "Exposure: loopback" in stdout
-        assert "Data persistence: operator-managed" in stdout
-        assert "TLS: disabled; Auth: disabled" in stdout
-        assert "Public-direct validation: not requested" in stdout
-        assert "not an RSS ceiling" in stdout
-        assert "Each active WebSocket occupies one worker" in stdout
-        assert "Server stopped" in stdout
-        assert stderr == ""
-
-        with pytest.raises(OSError):
-            socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2) as connection:
+                    connection.sendall(
+                        (
+                            f"PING / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                            "Connection: close\r\n\r\n"
+                        ).encode()
+                    )
+                    if b"200 OK" in connection.recv(4096):
+                        break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("CLI server did not start")
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+    assert process.returncode == 0
+    assert "Access: private" in stdout
+    assert "Files folder:" in stdout
+    assert "HTTPS: off" in stdout
+    assert stderr == ""
 
 
 class TestServerConstructorValidation:

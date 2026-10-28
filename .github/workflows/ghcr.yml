@@ -257,6 +257,6 @@ jobs:
           docker run --rm --entrypoint python "xferry:ghcr-${{ matrix.arch }}" \
             -c "import acme, cryptography, josepy; from OpenSSL import SSL"
           docker run --rm "xferry:ghcr-${{ matrix.arch }}" --version
-          docker run --rm "xferry:ghcr-${{ matrix.arch }}" run --print-config
+          docker run --rm "xferry:ghcr-${{ matrix.arch }}" config show --all
           python tools/docker_image_smoke.py --image "xferry:ghcr-${{ matrix.arch }}" --browser-first-run \
             --browser-artifacts-dir "$RUNNER_TEMP/browser-smoke-artifacts/ghcr-first-run"

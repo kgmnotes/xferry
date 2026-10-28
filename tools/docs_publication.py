@@ -454,6 +454,8 @@ def verify_public_managed_evidence(
     )
     if (
         not isinstance(evidence, dict)
+        or type(evidence.get("schema")) is not int
+        or evidence.get("schema") != 2
         or evidence.get("scope") != "native-systemd-public-matrix"
         or evidence.get("status") != "passed"
         or evidence.get("publicReleaseEvidence") is not True

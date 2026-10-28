@@ -37,6 +37,7 @@ from xferry.management.release_trust import (  # noqa: E402
     verify_signed_manifest,
 )
 
+SCHEMA = 2
 REPOSITORY = "kgmnotes/xferry"
 API = f"https://api.github.com/repos/{REPOSITORY}"
 RELEASES = f"https://github.com/{REPOSITORY}/releases/download"
@@ -284,7 +285,7 @@ def validate_public_plan(
     )
     _require(
         type(result["schema"]) is int
-        and result["schema"] == 1
+        and result["schema"] == SCHEMA
         and result["scope"] == PLAN_SCOPE
         and result["repository"] == REPOSITORY
     )
@@ -443,7 +444,7 @@ def prepare_public_plan(
     _require(previous is not None, "public_baseline_required")
     return validate_public_plan(
         {
-            "schema": 1,
+            "schema": SCHEMA,
             "scope": PLAN_SCOPE,
             "repository": REPOSITORY,
             "sourceCommit": source_commit,
@@ -480,10 +481,10 @@ def _installed(plan: Mapping[str, Any], platform: str, versions: list[str]) -> d
 def validate_public_probe(
     document: object, *, plan: Mapping[str, Any], platform: str, distro: str, distro_version: str
 ) -> dict[str, Any]:
-    result = _object(document, {"schema", "scope", "status", "host", "stages"})
+    result = _object(document, {"schema", "scope", "status", "host", "stages", "cliContracts"})
     _require(
         type(result["schema"]) is int
-        and result["schema"] == 1
+        and result["schema"] == SCHEMA
         and result["scope"] == PROBE_SCOPE
         and result["status"] == "passed"
     )
@@ -521,6 +522,14 @@ def validate_public_probe(
     _require(isinstance(result["stages"], list) and len(result["stages"]) == len(fixture._PHASES))
     previous = plan["releases"]["previous"]["version"]
     target = plan["releases"]["target"]["version"]
+    contracts = _object(result["cliContracts"], {"previous", "target"})
+    _require(
+        isinstance(contracts["previous"], str)
+        and isinstance(contracts["target"], str)
+        and (contracts["previous"], contracts["target"])
+        in {("legacy", "legacy"), ("legacy", "canonical"), ("canonical", "canonical")}
+    )
+    conversion = contracts == {"previous": "legacy", "target": "canonical"}
     for raw, phase in zip(result["stages"], fixture._PHASES, strict=True):
         fields = {"phase", "status"}
         if phase != "guard":
@@ -533,6 +542,8 @@ def validate_public_probe(
             fields.add("preserved")
         if phase == "doctor":
             fields.add("checks")
+        if phase == "update" and conversion:
+            fields.add("configuration")
         if phase == "uninstall":
             fields.add("removed")
         stage = _object(raw, fields)
@@ -562,8 +573,26 @@ def validate_public_probe(
             )
         if "health" in fields:
             _require(stage["health"] is True)
+        preserved_fields = {"auth", "sentinel"}
+        if phase != "update" or not conversion:
+            preserved_fields.add("config")
+        if phase in {"dry_run", "rollback"}:
+            preserved_fields.add("unit")
+        if phase == "update" and conversion:
+            configuration = _object(
+                stage["configuration"],
+                {
+                    "transition",
+                    "values_preserved",
+                    "files_path_preserved",
+                    "state_path_preserved",
+                    "unit_updated",
+                },
+            )
+            _require(configuration.pop("transition") == "legacy-to-canonical")
+            _require(all(value is True for value in configuration.values()))
         for key, expected in (
-            ("preserved", {"config", "auth", "sentinel"}),
+            ("preserved", preserved_fields),
             (
                 "checks",
                 {"platform", "installation", "configuration", "service", "network", "health"},
@@ -599,7 +628,7 @@ def _validate_architecture(document: object, plan: Mapping[str, Any]) -> dict[st
     )
     _require(
         type(result["schema"]) is int
-        and result["schema"] == 1
+        and result["schema"] == SCHEMA
         and result["scope"] == ARCH_SCOPE
         and result["status"] == "passed"
         and result["publicReleaseEvidence"] is True
@@ -686,7 +715,7 @@ def validate_public_result(
     )
     _require(
         type(result["schema"]) is int
-        and result["schema"] == 1
+        and result["schema"] == SCHEMA
         and result["scope"] == RESULT_SCOPE
         and result["status"] == "passed"
         and result["publicReleaseEvidence"] is True
@@ -917,7 +946,7 @@ def run_public_matrix(
         finally:
             fixture._command(("docker", "network", "rm", network_id), timeout=60)
     result = {
-        "schema": 1,
+        "schema": SCHEMA,
         "scope": ARCH_SCOPE,
         "sourceCommit": checked["sourceCommit"],
         "workflowRun": checked["workflowRun"],
@@ -976,7 +1005,7 @@ def verify_public_matrix(
             _require(_canonical(standalone) == _canonical(receipt))
         architectures.append(architecture)
     result = {
-        "schema": 1,
+        "schema": SCHEMA,
         "scope": RESULT_SCOPE,
         "sourceCommit": source_commit,
         "workflowRun": workflow_run,

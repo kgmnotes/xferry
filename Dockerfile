@@ -33,7 +33,8 @@ ARG APP_UID=10001
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    XFERRY_STATE_HOME=/data
 
 # Add a dedicated non-root user.
 RUN groupadd --system --gid ${APP_UID} ${APP_USER} && \
@@ -64,4 +65,4 @@ r = u.Request('http://127.0.0.1:8080/', method='PING'); \
 sys.exit(0 if u.urlopen(r, timeout=2).status == 200 else 1)"
 
 ENTRYPOINT ["xferry"]
-CMD ["run", "--host", "0.0.0.0", "--port", "8080", "--dir", "/data"]
+CMD ["run", "--access", "lab", "--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/uploads"]

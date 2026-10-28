@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import configparser
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -19,10 +21,16 @@ from typing import IO, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from xferry.security.tls import sslip_domain_for_ip
-from xferry.settings import SettingsError, load_settings_file
+from xferry.settings import SettingsError, load_settings_text
 
 from .health import HealthEndpoint, HealthResult, authenticated_ping
-from .managed_state import has_unsupported_managed_state
+from .managed_state import (
+    RETAINED_STATE_CONTENT,
+    has_retained_state,
+    has_unsupported_managed_state,
+    retained_state_path,
+)
+from .migration import canonicalize_legacy_text, needs_migration, requires_schema_upgrade
 from .model import (
     MANAGED_HOST_NEXT_ACTIONS,
     SUPPORTED_MANAGED_HOST_SUMMARY,
@@ -30,6 +38,7 @@ from .model import (
     ManagedLayout,
 )
 from .platform import detect_host_facts
+from .release_configuration import Deployment, DeploymentFile, ReleaseConfigurationStore
 from .release_contract import (
     INSTALLED_EXECUTABLE_NAME,
     MANIFEST_NAME,
@@ -53,6 +62,7 @@ from .release_trust import (
 )
 from .system import (
     CommandRunner,
+    FilesystemTransaction,
     InsufficientPrivilege,
     MutationLocked,
     Runner,
@@ -468,7 +478,6 @@ class ReleaseManager:
             ):
                 self._require_supported_managed_installation()
                 target_version, target_path, _manifest = self._select_rollback_target(requested)
-                self._validate_candidate(target_path / _EXECUTABLE_NAME)
                 return self._rollback_locked(target_version)
         except _ReleaseFailure as failure:
             return ReleaseResult(failure.exit_code, failure.message, version=requested)
@@ -506,11 +515,46 @@ class ReleaseManager:
             ):
                 self._require_supported_managed_installation()
                 self._validate_uninstall_paths(purge_data)
-                if self.runner.run(("systemctl", "disable", "--now", _SERVICE)).returncode != 0:
+                runtime_present = self._managed_installation_present()
+                preserved_files: Path | None = None
+                if purge_data:
+                    from .managed_files import deployment_metadata_path, managed_files_path
+
+                    if deployment_metadata_path(self.layout).exists():
+                        selected = managed_files_path(self.layout)
+                        if selected != (self.layout.data_root / "files").resolve():
+                            preserved_files = selected
+                if (
+                    runtime_present
+                    and self.runner.run(("systemctl", "disable", "--now", _SERVICE)).returncode != 0
+                ):
                     raise _ReleaseFailure(1, "uninstall_service_failed")
                 # Revalidate after the external process boundary and before any
                 # unlink or recursive removal can observe changed ancestors.
                 self._validate_uninstall_paths(purge_data)
+                if (
+                    not purge_data
+                    and runtime_present
+                    and any(
+                        path.exists()
+                        for path in (
+                            self.layout.config_file,
+                            self.layout.auth_file,
+                            self.layout.data_root,
+                        )
+                    )
+                ):
+                    transaction = FilesystemTransaction()
+                    transaction.atomic_write(
+                        retained_state_path(self.layout),
+                        RETAINED_STATE_CONTENT,
+                        mode=0o600,
+                        uid=self.root_uid,
+                        gid=self.layout.config_file.parent.stat().st_gid,
+                    )
+                    transaction.commit()
+                    if not has_retained_state(self.layout):
+                        raise _ReleaseFailure(1, "uninstall_path_unsafe")
                 self._unlink_managed_unit()
                 self._unlink_managed_cli()
                 self._remove_uninstall_tree(self.layout.release_root, ("opt", "xferry"))
@@ -523,10 +567,17 @@ class ReleaseManager:
                         self.acme_root,
                         ("var", "lib", "xferry", ".xferry"),
                     )
-                    self._remove_uninstall_tree(
-                        self.layout.data_root,
-                        ("var", "lib", "xferry"),
-                    )
+                    if preserved_files is not None and preserved_files.is_relative_to(
+                        self.layout.data_root.resolve()
+                    ):
+                        for entry in self.layout.data_root.iterdir():
+                            if not preserved_files.is_relative_to(entry.resolve()):
+                                _remove_managed_tree(entry)
+                    else:
+                        self._remove_uninstall_tree(
+                            self.layout.data_root,
+                            ("var", "lib", "xferry"),
+                        )
                 if self.runner.run(("systemctl", "daemon-reload")).returncode != 0:
                     raise _ReleaseFailure(1, "uninstall_reload_failed")
                 return ReleaseResult(0, "purge_complete" if purge_data else "uninstall_complete")
@@ -599,13 +650,14 @@ class ReleaseManager:
             raise _ReleaseFailure(1, "release_integrity_failed") from None
         return destination
 
-    def _validate_candidate(self, executable: Path) -> None:
+    def _validate_candidate(
+        self, executable: Path, *, config_file: Path | None = None, legacy: bool = False
+    ) -> None:
+        selected_config = str(config_file or self.layout.config_file)
         command = (
-            str(executable),
-            "run",
-            "--config",
-            str(self.layout.config_file),
-            "--check-config",
+            (str(executable), "run", "--config", selected_config, "--check-config")
+            if legacy
+            else (str(executable), "config", "check", "--config", selected_config)
         )
         try:
             result = self.runner.run(command)
@@ -635,6 +687,10 @@ class ReleaseManager:
                 active=previous,
                 rollback="not_needed",
             )
+        if requires_schema_upgrade(self.layout) or needs_migration(
+            self.layout.config_file.read_text(encoding="utf-8")
+        ):
+            return self._update_schema_locked(verified_manifest, candidate, previous)
         self._validate_candidate(candidate)
         service_state = self._service_state()
         if service_state is _ServiceState.PROBE_ERROR:
@@ -700,8 +756,21 @@ class ReleaseManager:
     def _rollback_locked(self, target: str) -> ReleaseResult:
         self._validate_release_layout()
         previous = self._current_supported_version()
+        store = self._configuration_store()
+        checkpoint = store.load(target, self._release_manifest_bytes(target))
         if previous == target:
+            # A process interruption can publish some configuration files before
+            # switching current. Recover its verified matching checkpoint instead
+            # of treating the unchanged executable link as a completed rollback.
+            if checkpoint is not None:
+                legacy_unit = requires_schema_upgrade(self.layout)
+                legacy_config = needs_migration(self.layout.config_file.read_text("utf-8"))
+                if (legacy_unit, legacy_config) != (checkpoint[1], checkpoint[1]):
+                    return self._rollback_schema_locked(target, previous, checkpoint)
             return ReleaseResult(0, "rollback_complete", version=target)
+        if checkpoint is not None and (checkpoint[1] or requires_schema_upgrade(self.layout)):
+            return self._rollback_schema_locked(target, previous, checkpoint)
+        self._validate_candidate(self._release_path(target) / _EXECUTABLE_NAME)
         service_state = self._service_state()
         if service_state is _ServiceState.PROBE_ERROR:
             raise _ReleaseFailure(1, "release_operation_failed")
@@ -849,26 +918,316 @@ class ReleaseManager:
         return _ServiceState.PROBE_ERROR
 
     def _health_context(self) -> _HealthContext:
+        return self._deployment_health(self._configuration_store().capture())
+
+    def _configuration_store(self) -> ReleaseConfigurationStore:
+        return ReleaseConfigurationStore(self.layout, root_uid=self.root_uid)
+
+    def _release_manifest_bytes(self, version: str) -> bytes:
+        release = self._release_path(version)
+        if self._installed_manifest(release) is None:
+            raise _ReleaseFailure(1, "rollback_target_unverified")
+        return (release / _MANIFEST_NAME).read_bytes()
+
+    def _deployment_health(self, deployment: Deployment) -> _HealthContext:
         try:
-            settings = load_settings_file(self.layout.config_file)
-            raw_auth = self.layout.auth_file.read_text(encoding="utf-8").strip()
+            config = deployment["config"]
+            if config is None:
+                raise ValueError
+            text = config.content.decode("utf-8")
+            inline_auth = None
+            if needs_migration(text):
+                plan = canonicalize_legacy_text(
+                    text,
+                    auth_file=self.layout.auth_file,
+                    state_dir=self.layout.data_root,
+                    config_path=self.layout.config_file,
+                )
+                if plan.credentials is not None:
+                    raise ValueError("cannot rotate credentials during a release switch")
+                text, inline_auth = plan.text, plan.auth_content
+            settings = load_settings_text(text, state_dir=self.layout.data_root)
+            configured_auth = Path(settings.auth_file or self.layout.auth_file)
+            saved_auth = deployment["auth"] if configured_auth == self.layout.auth_file else None
+            raw_auth = (
+                (
+                    inline_auth
+                    if inline_auth is not None
+                    else saved_auth.content
+                    if saved_auth is not None
+                    else configured_auth.read_bytes()
+                )
+                .decode("utf-8")
+                .strip()
+            )
             username, separator, password = raw_auth.partition(":")
             if not separator or not username or not password or "\n" in password:
                 raise ValueError
             host = settings.domain
             if host is None and settings.sslip and settings.public_ip:
                 host = sslip_domain_for_ip(settings.public_ip)
-            if host is None:
-                host = "127.0.0.1"
             endpoint = HealthEndpoint(
                 "127.0.0.1",
                 settings.port,
-                host,
+                host or "127.0.0.1",
                 tls=settings.effective_tls_enabled(),
             )
             return _HealthContext(endpoint, username, password)
         except (OSError, SettingsError, UnicodeError, ValueError):
             raise _ReleaseFailure(2, "managed_config_unavailable") from None
+
+    def _validate_deployment(
+        self, executable: Path, deployment: Deployment, *, legacy: bool
+    ) -> None:
+        config = deployment["config"]
+        if config is None:
+            raise _ReleaseFailure(2, "candidate_config_invalid")
+        with self._staging_directory() as staging:
+            candidate_config = staging / "xferry.ini"
+            candidate_config.write_bytes(config.content)
+            candidate_config.chmod(0o600)
+            self._validate_candidate(executable, config_file=candidate_config, legacy=legacy)
+
+    def _migrated_deployment(self, before: Deployment) -> Deployment:
+        from .managed_files import render_managed_unit
+
+        config, unit = before["config"], before["unit"]
+        if config is None or unit is None:
+            raise _ReleaseFailure(2, "managed_config_unavailable")
+        plan = canonicalize_legacy_text(
+            config.content.decode("utf-8"),
+            auth_file=self.layout.auth_file,
+            state_dir=self.layout.data_root,
+            config_path=self.layout.config_file,
+        )
+        if plan.credentials is not None:
+            raise _ReleaseFailure(2, "managed_config_unavailable")
+        load_settings_text(plan.text, state_dir=plan.state_dir).to_server_config()
+        after = dict(before)
+        after["config"] = replace(config, content=plan.text.encode())
+        after["unit"] = replace(unit, content=render_managed_unit(self.layout, plan.files_dir))
+        if plan.auth_content is not None:
+            after["auth"] = DeploymentFile(plan.auth_content, 0o640, config.uid, config.gid)
+        from xferry.encrypted_storage import (
+            EncryptedStorageConflict,
+            prepare_legacy_encrypted_binding,
+        )
+
+        try:
+            binding = prepare_legacy_encrypted_binding(plan.state_dir, plan.files_dir)
+        except EncryptedStorageConflict as exc:
+            raise ValueError("encrypted storage cannot be safely migrated") from exc
+        if binding is not None:
+            _, content, uid, gid = binding
+            after["encrypted_binding"] = DeploymentFile(content, 0o600, uid, gid)
+        after["state"] = DeploymentFile(
+            (
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "state_dir": str(plan.state_dir),
+                        "files_dir": str(plan.files_dir),
+                    }
+                )
+                + "\n"
+            ).encode(),
+            0o600,
+            config.uid,
+            config.gid,
+        )
+        return after
+
+    def _with_live_auth(self, before: Deployment, saved: Deployment) -> Deployment:
+        """A version rollback must not undo a subsequent password rotation."""
+        config = saved["config"]
+        if config is None:
+            return saved
+        live = self._deployment_health(before)
+        credential_line = f"{live.username}:{live.password}\n".encode()
+        text = config.content.decode("utf-8")
+        inline = None
+        canonical = text
+        if needs_migration(text):
+            plan = canonicalize_legacy_text(
+                text,
+                auth_file=self.layout.auth_file,
+                state_dir=self.layout.data_root,
+                config_path=self.layout.config_file,
+            )
+            canonical, inline = plan.text, plan.auth_content
+        settings = load_settings_text(canonical, state_dir=self.layout.data_root)
+        if Path(settings.auth_file or self.layout.auth_file) != self.layout.auth_file:
+            return saved
+        result = dict(saved)
+        before_auth, target_auth = before["auth"], saved["auth"]
+        if before_auth is not None and before_auth.content.strip() == credential_line.strip():
+            result["auth"] = before_auth
+        elif target_auth is not None:
+            result["auth"] = replace(target_auth, content=credential_line)
+        else:
+            result["auth"] = DeploymentFile(credential_line, 0o640, config.uid, config.gid)
+        if inline is not None:
+            # Old runtimes support auth_file too; retain the current secret instead
+            # of re-enabling an obsolete inline password from their checkpoint.
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(text)
+            parser.remove_option("security", "auth")
+            parser.set("security", "auth_file", str(self.layout.auth_file))
+            import io
+
+            stream = io.StringIO()
+            parser.write(stream)
+            result["config"] = replace(config, content=stream.getvalue().encode())
+        return result
+
+    def _update_schema_locked(
+        self, verified: _VerifiedRemoteManifest, candidate: Path, previous: str
+    ) -> ReleaseResult:
+        if compare_release_versions(verified.manifest.version, "0.3.0") < 0:
+            raise _ReleaseFailure(2, "candidate_config_invalid")
+        store = self._configuration_store()
+        before = store.capture()
+        health_before = self._deployment_health(before)
+        after = self._migrated_deployment(before)
+        saved = store.load(verified.manifest.version, verified.manifest_payload)
+        if saved is not None and not saved[1]:
+            after = saved[0]
+        after = self._with_live_auth(before, after)
+        self._validate_deployment(candidate, after, legacy=False)
+        state = self._service_state()
+        if state is _ServiceState.PROBE_ERROR:
+            raise _ReleaseFailure(1, "release_operation_failed")
+        created = self._install_verified_release(verified, candidate)
+        try:
+            store.save(previous, self._release_manifest_bytes(previous), before, legacy=True)
+            failure = self._switch_deployment(
+                verified.manifest.version,
+                previous,
+                before,
+                after,
+                self._deployment_health(after),
+                health_before,
+                was_active=state is _ServiceState.ACTIVE,
+            )
+            if failure is not None:
+                if created:
+                    self._remove_created_if_inactive(verified.manifest.version)
+                return ReleaseResult(
+                    failure.exit_code,
+                    failure.message,
+                    version=verified.manifest.version,
+                    before=previous,
+                    target=verified.manifest.version,
+                    active=failure.active,
+                    rollback=failure.rollback,
+                )
+            self._prune_verified(verified.manifest.version, previous)
+            return ReleaseResult(
+                0,
+                "update_complete",
+                version=verified.manifest.version,
+                before=previous,
+                target=verified.manifest.version,
+                active=verified.manifest.version,
+                rollback="not_needed",
+            )
+        except (OSError, ValueError, _ReleaseFailure):
+            if created:
+                self._remove_created_if_inactive(verified.manifest.version)
+            raise
+
+    def _rollback_schema_locked(
+        self, target: str, previous: str, checkpoint: tuple[Deployment, bool]
+    ) -> ReleaseResult:
+        store = self._configuration_store()
+        before = store.capture()
+        saved, legacy = checkpoint
+        after = self._with_live_auth(before, saved)
+        self._validate_deployment(
+            self._release_path(target) / _EXECUTABLE_NAME, after, legacy=legacy
+        )
+        state = self._service_state()
+        if state is _ServiceState.PROBE_ERROR:
+            raise _ReleaseFailure(1, "release_operation_failed")
+        if target != previous:
+            store.save(
+                previous,
+                self._release_manifest_bytes(previous),
+                before,
+                legacy=requires_schema_upgrade(self.layout),
+            )
+        failure = self._switch_deployment(
+            target,
+            previous,
+            before,
+            after,
+            self._deployment_health(after),
+            self._deployment_health(before),
+            was_active=state is _ServiceState.ACTIVE,
+        )
+        if failure is not None:
+            return ReleaseResult(
+                failure.exit_code,
+                failure.message,
+                version=target,
+                active=failure.active,
+                rollback=failure.rollback,
+            )
+        self._prune_verified(target, previous)
+        return ReleaseResult(0, "rollback_complete", version=target)
+
+    def _switch_deployment(
+        self,
+        target: str,
+        previous: str,
+        before: Deployment,
+        after: Deployment,
+        target_health: _HealthContext,
+        previous_health: _HealthContext,
+        *,
+        was_active: bool,
+    ) -> _ReleaseFailure | None:
+        store = self._configuration_store()
+        try:
+            store.apply(after)
+            if self.runner.run(("systemctl", "daemon-reload")).returncode:
+                raise _ReleaseFailure(6, "candidate_restart_failed")
+            self._atomic_current(target)
+            if self.runner.run(("systemctl", "restart", _SERVICE)).returncode:
+                raise _ReleaseFailure(6, "candidate_restart_failed")
+            if self._service_state() is not _ServiceState.ACTIVE:
+                raise _ReleaseFailure(6, "candidate_restart_failed")
+            if not self._ping(target_health, target).ok:
+                raise _ReleaseFailure(6, "candidate_unhealthy")
+            if not was_active:
+                if self.runner.run(("systemctl", "stop", _SERVICE)).returncode:
+                    raise _ReleaseFailure(6, "candidate_state_restore_failed")
+                if self._service_state() is not _ServiceState.CONFIRMED_INACTIVE:
+                    raise _ReleaseFailure(6, "candidate_state_restore_failed")
+            return None
+        except (OSError, ValueError, _ReleaseFailure) as error:
+            failure = (
+                error
+                if isinstance(error, _ReleaseFailure)
+                else _ReleaseFailure(1, "release_switch_failed")
+            )
+            try:
+                store.apply(before)
+                if self.runner.run(("systemctl", "daemon-reload")).returncode:
+                    raise OSError
+                restored = self._restore(previous, previous_health, was_active=was_active)
+            except (OSError, ValueError, _ReleaseFailure):
+                restored = False
+            if not restored:
+                return _ReleaseFailure(
+                    1,
+                    "restore_incomplete",
+                    rollback="incomplete",
+                    active=self._observed_current_version(),
+                )
+            return _ReleaseFailure(
+                failure.exit_code, failure.message, rollback="restored", active=previous
+            )
 
     def _install_verified_release(
         self,
@@ -1052,6 +1411,12 @@ class ReleaseManager:
                 continue
             manifest = self._installed_manifest(path)
             if manifest is not None and is_supported_release_version(manifest.version):
+                try:
+                    self._configuration_store().remove(path.name)
+                except (OSError, ValueError):
+                    # A corrupt optional checkpoint must not invalidate an already
+                    # healthy activation or cause unsafe cleanup.
+                    continue
                 _remove_managed_tree(path)
 
     def _remove_created_if_inactive(self, version: str) -> None:

@@ -483,7 +483,7 @@ def test_public_pipx_step_installs_exact_pypi_version_and_rejects_wrong_cli(
     ]
     cli = (tmp_path / "cli.txt").read_text().splitlines()
     expected_cli = (
-        ["--version", "run", "--print-config"] if result.returncode == 0 else ["--version"]
+        ["--version", "config", "show", "--all"] if result.returncode == 0 else ["--version"]
     )
     assert cli == expected_cli
 
@@ -540,7 +540,7 @@ def test_public_ghcr_step_pulls_anonymously_and_rejects_wrong_cli(
     ]
     assert len(commands) == (4 if result.returncode == 0 else 3)
     if result.returncode == 0:
-        assert commands[-1] == f"run --rm ghcr.io/kgmnotes/xferry@{digest} run --print-config"
+        assert commands[-1] == f"run --rm ghcr.io/kgmnotes/xferry@{digest} config show --all"
 
 
 @pytest.mark.parametrize("mode", ["empty", "partial", "conflicting", "unexpected"])

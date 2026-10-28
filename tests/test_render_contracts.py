@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import fields
 from pathlib import Path
 
@@ -162,13 +163,13 @@ def test_cli_reference_captures_real_english_root_and_per_command_help() -> None
         "restart",
         "doctor",
         "credentials",
-        "examples",
+        "config",
         "update",
         "rollback",
         "uninstall",
     ):
         assert f"## `xferry {command} --help`" in rendered
-    assert "Exact immutable release version to verify and install." in rendered
+    assert "Signed release version to install." in rendered
     assert "Управляем" not in rendered
 
 
@@ -281,6 +282,9 @@ def test_render_all_detects_drift_writes_and_is_idempotent(tmp_path: Path) -> No
     docs.mkdir()
     docs.joinpath("cli-reference.md").write_bytes(_single_marked_document(CLI_REGION))
     docs.joinpath("managed-hosts.md").write_bytes(_single_marked_document(MANAGED_HOSTS_REGION))
+    docs.joinpath("settings.md").write_bytes(
+        _single_marked_document("xferry-contracts/settings-reference")
+    )
 
     assert render_contracts.render_all(check=True, repo_root=tmp_path) == 1
     assert render_contracts.render_all(check=False, repo_root=tmp_path) == 0
@@ -371,3 +375,29 @@ def test_sync_check_stops_on_contract_drift_before_mirror_check(
 
     assert sync_docs.sync(check=True) == 1
     assert calls == ["contracts"]
+
+
+def test_settings_reference_examples_are_valid_ini_and_cover_every_setting() -> None:
+    """Every documented setting must have a usable example, even with dependencies."""
+    from xferry.settings import load_settings_text
+    from xferry.settings_schema import SETTING_SPECS
+
+    rendered = render_contracts.render_settings_reference().decode("utf-8")
+    examples = re.findall(r"```ini\n(.*?)```", rendered, flags=re.DOTALL)
+    assert len(examples) == len(SETTING_SPECS)
+    for spec in SETTING_SPECS:
+        section = rendered.split(f"#### `{spec.name}`", 1)[1].split("\n#### ", 1)[0]
+        example = re.findall(r"```ini\n(.*?)```", section, flags=re.DOTALL)[0]
+        assert spec.description in section
+        assert spec.constraints in section
+        assert spec.example in example
+        assert f"{spec.name} = {spec.name} =" not in example
+        settings = load_settings_text(example, validate=False)
+        assert spec.name in settings._explicit_fields
+
+
+def test_settings_reference_does_not_embed_the_build_machine_home(monkeypatch) -> None:
+    before = render_contracts.render_settings_reference()
+    monkeypatch.setenv("XDG_DATA_HOME", "/tmp/another-build-machine")
+    monkeypatch.setenv("LOCALAPPDATA", "/tmp/another-windows-build-machine")
+    assert render_contracts.render_settings_reference() == before
