@@ -284,9 +284,32 @@ def test_existing_unsafe_or_mismatched_binding_is_never_overwritten(
     else:
         target.chmod(0o644)
     metadata = target.lstat()
+    preserved_payload = target.read_bytes() if stat.S_ISREG(metadata.st_mode) else None
+    preserved_link = target.readlink() if stat.S_ISLNK(metadata.st_mode) else None
+    if preserved_payload is not None:
+        # Reading under relatime should exercise atime changes without relying
+        # on the operation crossing a wall-clock second.
+        os.utime(target, ns=(1, metadata.st_mtime_ns))
+    metadata = target.lstat()
     with pytest.raises(EncryptedStorageConflict):
         prepare_legacy_encrypted_binding(tmp_path, tmp_path / "uploads")
-    assert target.lstat() == metadata
+    after = target.lstat()
+    for field in (
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_nlink",
+        "st_uid",
+        "st_gid",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    ):
+        assert getattr(after, field) == getattr(metadata, field), field
+    if preserved_payload is not None:
+        assert target.read_bytes() == preserved_payload
+    if preserved_link is not None:
+        assert target.readlink() == preserved_link
 
 
 @requires_posix
