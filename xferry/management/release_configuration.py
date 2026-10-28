@@ -189,6 +189,57 @@ class ReleaseConfigurationStore:
         self.directory = layout.config_file.parent / "release-configs"
         self.data_root = layout.data_root
 
+    def _runtime_uid(self) -> int:
+        """Read the delegated service identity through its protected root-owned parent."""
+        parent = self.data_root.parent
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            named_parent = parent.lstat()
+            parent_fd = os.open(parent, flags)
+            try:
+                opened_parent = os.fstat(parent_fd)
+                if (
+                    not stat.S_ISDIR(opened_parent.st_mode)
+                    or opened_parent.st_uid != self.root_uid
+                    or opened_parent.st_mode & 0o022
+                    or (opened_parent.st_dev, opened_parent.st_ino)
+                    != (named_parent.st_dev, named_parent.st_ino)
+                ):
+                    raise ValueError("unsafe managed runtime directory")
+                descriptor = os.open(self.data_root.name, flags, dir_fd=parent_fd)
+                try:
+                    metadata = os.fstat(descriptor)
+                    named = os.stat(self.data_root.name, dir_fd=parent_fd, follow_symlinks=False)
+                    if (
+                        not stat.S_ISDIR(metadata.st_mode)
+                        or metadata.st_mode & 0o022
+                        or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+                    ):
+                        raise ValueError("unsafe managed runtime directory")
+                    runtime_uid = metadata.st_uid
+                finally:
+                    os.close(descriptor)
+                final_parent = parent.lstat()
+                if (final_parent.st_dev, final_parent.st_ino) != (
+                    opened_parent.st_dev,
+                    opened_parent.st_ino,
+                ):
+                    raise ValueError("managed runtime directory changed during inspection")
+                return runtime_uid
+            finally:
+                os.close(parent_fd)
+        except OSError as error:
+            raise ValueError("unsafe managed runtime directory") from error
+
+    def _accepts_owner(self, key: str, uid: int) -> bool:
+        if type(uid) is not int or uid < 0:
+            return False
+        if key == "auth":
+            # Setup retains a service-owned 0400 auth file. Legacy inline-auth
+            # conversion can instead create a root-owned, service-readable file.
+            return uid == self.root_uid or uid == self._runtime_uid()
+        return uid == self._owner(key)
+
     def _owner(self, key: str) -> int:
         if key != "encrypted_binding":
             return self.root_uid
@@ -208,6 +259,14 @@ class ReleaseConfigurationStore:
     def _read(self, key: str) -> DeploymentFile | None:
         if key == "encrypted_binding":
             return _read_binding(self.paths[key], owner=self._owner(key))
+        if key == "auth":
+            try:
+                owner = self.paths[key].lstat().st_uid
+            except FileNotFoundError:
+                return None
+            if not self._accepts_owner(key, owner):
+                raise ValueError("unsafe release authentication file owner")
+            return _read_file(self.paths[key], _LIMITS[key], owner=owner)
         return _read_file(self.paths[key], _LIMITS[key], owner=self.root_uid)
 
     def capture(self) -> Deployment:
@@ -216,6 +275,9 @@ class ReleaseConfigurationStore:
     def apply(self, deployment: Deployment) -> None:
         if set(deployment) != set(self.paths):
             raise ValueError("invalid release configuration checkpoint")
+        for key, value in deployment.items():
+            if value is not None and not self._accepts_owner(key, value.uid):
+                raise ValueError("invalid release configuration identity")
         for key, path in self.paths.items():
             self._read(key)
             value = deployment[key]
@@ -225,7 +287,7 @@ class ReleaseConfigurationStore:
             if value is None:
                 path.unlink(missing_ok=True)
             else:
-                if value.uid != self._owner(key) or len(value.content) > _LIMITS[key]:
+                if not self._accepts_owner(key, value.uid) or len(value.content) > _LIMITS[key]:
                     raise ValueError("invalid release configuration identity")
                 _atomic_write(path, value)
 
@@ -284,7 +346,7 @@ class ReleaseConfigurationStore:
                 if (
                     any(type(number) is not int for number in (mode, uid, gid))
                     or not 0 <= mode <= 0o777
-                    or uid != self._owner(key)
+                    or not self._accepts_owner(key, uid)
                     or gid < 0
                     or len(content) > _LIMITS[key]
                 ):
@@ -297,6 +359,11 @@ class ReleaseConfigurationStore:
             raise ValueError("invalid release configuration checkpoint") from exc
 
     def save(self, version: str, manifest: bytes, deployment: Deployment, *, legacy: bool) -> None:
+        if set(deployment) != set(self.paths):
+            raise ValueError("invalid release configuration checkpoint")
+        for key, value in deployment.items():
+            if value is not None and not self._accepts_owner(key, value.uid):
+                raise ValueError("invalid release configuration identity")
         self._check_directory(create=True)
         # An existing checkpoint must belong to the same verified immutable release.
         self.load(version, manifest)
