@@ -1318,9 +1318,20 @@ def production_release_workflow_policy_findings(
         checkout = pypi_consumer.text.find("actions/checkout@")
         bootstrap = pypi_consumer.text.find("python -m pip install pipx")
         if checkout < 0 or bootstrap < 0 or checkout > bootstrap:
-            reject("public pipx checks must materialize constraints before pip bootstrap")
+            reject("public pipx checks must checkout the release source before pip bootstrap")
         if "ref: ${{ needs.preflight.outputs.source-commit }}" not in pypi_consumer.text:
             reject("public pipx checks must checkout the exact release source")
+        job_env = re.search(r"(?m)^    env:[ \t]*$", pypi_consumer.text)
+        env_body = pypi_consumer.text[job_env.end() :] if job_env else ""
+        next_field = re.search(r"(?m)^    (?!#)\S", env_body)
+        if next_field:
+            env_body = env_body[: next_field.start()]
+        empty_constraint = r"""PIP_CONSTRAINT:[ \t]*(?:""|'')[ \t]*(?:#[^\n]*)?$"""
+        if not re.search(r"(?m)^      " + empty_constraint, env_body):
+            reject("public pipx checks must clear source-build constraints for the whole job")
+        for override in re.finditer(r"(?m)^          PIP_CONSTRAINT:[^\n]*$", pypi_consumer.text):
+            if not re.fullmatch(r"          " + empty_constraint, override[0]):
+                reject("public pipx steps must not restore source-build constraints")
     ghcr_consumer = jobs.get("post-ghcr")
     if ghcr_consumer is not None and re.search(
         r"(?:GH_TOKEN|github.token|docker\s+login|packages:\s*read)", ghcr_consumer.text

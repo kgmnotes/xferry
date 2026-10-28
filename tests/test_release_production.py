@@ -337,6 +337,63 @@ def test_production_consumers_precede_each_subsequent_publication() -> None:
         assert production_policy_findings(mutation)
 
 
+@pytest.mark.parametrize("replacement", ["", "      PIP_CONSTRAINT: constraints/ci.txt"])
+def test_public_pipx_rejects_source_build_constraints(replacement: str) -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text(encoding="utf-8")
+    consumer = _job(workflow, "post-pypi")
+    assert '      PIP_CONSTRAINT: ""' in consumer
+    mutation = workflow.replace(
+        consumer, consumer.replace('      PIP_CONSTRAINT: ""', replacement, 1), 1
+    )
+    assert any(
+        "clear source-build constraints for the whole job" in finding
+        for finding in production_policy_findings(mutation)
+    )
+
+
+def test_public_pipx_keeps_full_consumer_matrix_and_source_build_pins() -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text(encoding="utf-8")
+    consumer = _job(workflow, "post-pypi")
+    assert "os: [ubuntu-latest, macos-15, windows-latest]" in consumer
+    assert 'python: ["3.10", "3.12", "3.14"]' in consumer
+    assert "  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt" in workflow
+    assert "--index-url https://pypi.org/simple/ --no-cache-dir" in consumer
+    assert '"xferry==${RELEASE_VERSION}"' in consumer
+
+
+def test_public_pipx_constraint_isolation_accepts_other_job_environment_values() -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text(encoding="utf-8")
+    consumer = _job(workflow, "post-pypi")
+    changed = consumer.replace(
+        '      PIP_CONSTRAINT: ""',
+        "      ANOTHER_VALUE: value\n\n      # Public consumer isolation\n"
+        "      PIP_CONSTRAINT: '' # Use pipx's current requirements",
+        1,
+    )
+    assert production_policy_findings(workflow.replace(consumer, changed, 1)) == []
+
+
+@pytest.mark.parametrize(
+    "step", ["Install pipx bootstrap", "Install and exercise the exact public PyPI version"]
+)
+def test_public_pipx_steps_cannot_restore_source_build_constraints(step: str) -> None:
+    workflow = PRODUCTION_WORKFLOW.read_text(encoding="utf-8")
+    consumer = _job(workflow, "post-pypi")
+    marker = f"      - name: {step}\n"
+    step_block = consumer.split(marker, 1)[1].split("      - name:", 1)[0]
+    if "        env:\n" in step_block:
+        changed = step_block.replace(
+            "        env:\n", "        env:\n          PIP_CONSTRAINT: constraints/ci.txt\n", 1
+        )
+    else:
+        changed = "        env:\n          PIP_CONSTRAINT: constraints/ci.txt\n" + step_block
+    mutation = workflow.replace(consumer, consumer.replace(step_block, changed, 1), 1)
+    assert any(
+        "steps must not restore source-build constraints" in finding
+        for finding in production_policy_findings(mutation)
+    )
+
+
 def _run_step(job: str, step: str) -> str:
     block = _job(PRODUCTION_WORKFLOW.read_text(encoding="utf-8"), job)
     content = block.split(f"      - name: {step}\n", 1)[1].split("      - name:", 1)[0]

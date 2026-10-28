@@ -3,8 +3,8 @@
 Run these commands on the host where the server will operate. The same setup
 works on your computer or on a VPS; connect to the VPS terminal first.
 
-These commands require **xferry 0.3.1 or newer**. Use matching artifacts from
-the [versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.1)
+These commands require **xferry 0.3.2 or newer**. Use matching artifacts from
+the [versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.2)
 or a [source checkout](contributing.md). Existing `0.2.x` installations should
 follow the [migration guide](migration.md); the
 [v0.2.0 commands](archive/0.2.0-installation.md) remain archived.

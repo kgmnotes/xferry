@@ -740,6 +740,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      # Exercise the public consumer environment, including pipx's shared pip.
+      # Source-build pins can conflict with the current pipx bootstrap minimum.
+      PIP_CONSTRAINT: ""
     strategy:
       fail-fast: false
       matrix:
