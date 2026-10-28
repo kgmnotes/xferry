@@ -466,15 +466,32 @@ def test_anonymous_run_command_has_exact_hardening_and_loopback_publish() -> Non
     assert "prune" not in command
 
 
-def test_dockerfile_effective_default_argv_starts_with_canonical_run_command() -> None:
+@pytest.mark.parametrize("path", ["Dockerfile", "packaging/Dockerfile.candidate"])
+def test_dockerfile_effective_default_argv_starts_with_canonical_run_command(path: str) -> None:
     """Catches an image that retains root-level server flags after packaging succeeds."""
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / path).read_text(encoding="utf-8")
+    entrypoints = [
+        line.removeprefix("ENTRYPOINT ")
+        for line in dockerfile.splitlines()
+        if line.startswith("ENTRYPOINT ")
+    ]
+    commands = [
+        line.removeprefix("CMD ") for line in dockerfile.splitlines() if line.startswith("CMD ")
+    ]
 
-    assert 'ENTRYPOINT ["xferry"]' in dockerfile
-    assert (
-        'CMD ["run", "--access", "lab", "--host", "0.0.0.0", "--port", "8080", '
-        '"--files-dir", "/data/uploads"]' in dockerfile
-    )
+    assert len(entrypoints) == len(commands) == 1
+    assert json.loads(entrypoints[0]) == ["xferry"]
+    assert json.loads(commands[0]) == [
+        "run",
+        "--access",
+        "lab",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--files-dir",
+        "/data/uploads",
+    ]
 
 
 def test_named_volume_run_changes_only_data_volume_source() -> None:

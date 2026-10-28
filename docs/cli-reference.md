@@ -276,7 +276,7 @@ options:
   --dry-run      Validate and preview changes.
   --json         Print machine-readable results.
 
-Example: xferry update --to 0.3.0
+Example: xferry update --to 0.3.1
 ```
 
 ## `xferry rollback --help`

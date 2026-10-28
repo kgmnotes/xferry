@@ -4,7 +4,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-28
+## [0.3.1] - 2026-10-28
 
 ### Added
 
@@ -59,6 +59,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Align release candidate containers with the standard Docker runtime: use
+  canonical launch options, keep private state under writable `/data`, and use
+  the same pinned base image.
+- Validate managed diagnostics against the installed CLI contract, including
+  the files-folder check in the new CLI.
+- Preserve service-owned Basic Auth files through deployment checkpoints,
+  update, and rollback while keeping control files and checkpoints root-owned.
 - Preserve passwords, file paths, notes, certificates, and encrypted state
   during supported migration and retained-data reinstallation.
 - Honor the saved foreground profile and explicit setup options, use the same
@@ -66,6 +73,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without echoing their values.
 - Generate unique HTTP demo files without pre-deleting existing user files,
   remove unused upload-comparison code, and clarify the scope of clear-all.
+
+## [0.3.0] - 2026-10-28
+
+Unpublished candidate. Release preparation stopped before signing and
+publication when the candidate container failed its startup check. No packages
+or container images were published. Its changes are included in `0.3.1`.
 
 ## [0.2.1] - 2026-10-27
 
