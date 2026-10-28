@@ -595,7 +595,7 @@ def validate_public_probe(
             ("preserved", preserved_fields),
             (
                 "checks",
-                {"platform", "installation", "configuration", "service", "network", "health"},
+                set(fixture._doctor_statuses(canonical=contracts["previous"] == "canonical")),
             ),
         ):
             if key in fields:

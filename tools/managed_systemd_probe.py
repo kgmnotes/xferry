@@ -481,6 +481,30 @@ def _setup_outcome(result: Mapping[str, Any], *, files_dir: Path | None = None) 
     )
 
 
+def _doctor_statuses(*, canonical: bool) -> dict[str, str]:
+    """Return the exact checks required by the authenticated installed CLI contract."""
+    return _DOCTOR_STATUSES | ({"files": "available"} if canonical else {})
+
+
+def _doctor_outcome(result: Mapping[str, Any], *, canonical: bool) -> dict[str, bool]:
+    """Validate the declared CLI's exact diagnostic contract without exporting details."""
+    expected = _doctor_statuses(canonical=canonical)
+    _require(
+        set(result) == _DOCTOR_FIELDS
+        and result["code"] == "doctor-ok"
+        and isinstance(result["checks"], dict)
+        and set(result["checks"]) == set(expected),
+        "doctor_outcome_invalid",
+    )
+    checks = {
+        name: isinstance(result["checks"][name], dict)
+        and result["checks"][name].get("status") == status
+        for name, status in expected.items()
+    }
+    _require(all(checks.values()), "doctor_outcome_invalid")
+    return checks
+
+
 def _version(paths: SystemPaths, expected: str) -> None:
     try:
         output = _command((str(paths.cli), "--version"))
@@ -652,20 +676,8 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
             stage = {"phase": phase, "status": "started"}
             evidence["stages"].append(stage)
             doctor = _json_command((str(paths.cli), "doctor", "--deep", "--json"))
-            _require(
-                set(doctor) == _DOCTOR_FIELDS
-                and doctor["code"] == "doctor-ok"
-                and isinstance(doctor["checks"], dict)
-                and set(doctor["checks"]) == set(_DOCTOR_STATUSES),
-                "doctor_outcome_invalid",
-            )
-            checks = {
-                name: isinstance(doctor["checks"][name], dict)
-                and doctor["checks"][name].get("status") == status
-                for name, status in _DOCTOR_STATUSES.items()
-            }
+            checks = _doctor_outcome(doctor, canonical=True)
             stage["checks"] = checks
-            _require(all(checks.values()), "doctor_outcome_invalid")
             _version(paths, SOURCE_VERSION)
             verify_health(SOURCE_VERSION, paths)
             stage.update(_release_state(paths, SOURCE_VERSION, (SOURCE_VERSION,)))

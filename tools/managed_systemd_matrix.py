@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.build_scie_release import _render_installer  # noqa: E402
 from tools.managed_systemd_probe import _FAILURE_CODES as _PROBE_FAILURE_CODES  # noqa: E402
+from tools.managed_systemd_probe import _doctor_statuses  # noqa: E402
 from xferry.management.model import SUPPORTED_MANAGED_DISTRIBUTIONS  # noqa: E402
 from xferry.management.release_contract import (  # noqa: E402
     SUPPORTED_PLATFORM_IDS,
@@ -643,14 +644,7 @@ def validate_probe(
         if "checks" in fields:
             checks = _object(
                 stage["checks"],
-                {
-                    "platform",
-                    "installation",
-                    "configuration",
-                    "service",
-                    "network",
-                    "health",
-                },
+                set(_doctor_statuses(canonical=True)),
                 "receipt_invalid",
             )
             _require(all(value is True for value in checks.values()), "receipt_invalid")

@@ -195,12 +195,20 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
                 result["files_dir"] = str(paths.data_root / "files")
             return result
         if phase == "doctor":
+            statuses = {
+                "platform": "supported",
+                "installation": "installed",
+                "configuration": "valid",
+                "service": "active",
+                "network": "reachable",
+                "health": "healthy",
+            }
+            if not conversion:
+                statuses["files"] = "available"
             result = dict.fromkeys(public.common._DOCTOR_FIELDS)
             result.update(
                 code="doctor-ok",
-                checks={
-                    key: {"status": value} for key, value in public.common._DOCTOR_STATUSES.items()
-                },
+                checks={key: {"status": value} for key, value in statuses.items()},
             )
             return result
         result = dict.fromkeys(public.common._RELEASE_FIELDS)
@@ -250,6 +258,8 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
         assert result["failure"] == {"phase": "update", "code": "state_preservation_failed"}
         assert not any(argv[1] == "rollback" for argv, _ in commands)
     else:
+        doctor_stage = next(stage for stage in result["stages"] if stage["phase"] == "doctor")
+        assert ("files" in doctor_stage["checks"]) is (not conversion)
         assert [stage["phase"] for stage in result["stages"]] == [
             "guard",
             "install",
