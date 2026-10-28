@@ -87,7 +87,7 @@ def menu(language: str, dispatch: Callable[[list[str]], int]) -> int:
         if installed
         else _text(language, "Set up a server", "Установить сервер")
     )
-    print(_text(language, "XFerry — server on this host", "XFerry — сервер на этой машине"))
+    print(_text(language, "XFerry: server on this host", "XFerry: сервер на этой машине"))
     print(f"1. {first}")
     print(
         _text(
