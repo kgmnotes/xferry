@@ -141,7 +141,7 @@ raise SystemExit(entrypoint(json.loads(sys.argv[3])))
         (["--help"], "usage: xferry [--lang LANG] COMMAND [OPTIONS]"),
         (["help", "setup"], "usage: xferry setup"),
         (["run", "--help"], "usage: xferry run"),
-        (["examples"], "Examples:"),
+        (["config", "--help"], "usage: xferry config"),
     ],
 )
 def test_module_entrypoint_keeps_portable_commands_available_without_linux_backends(
@@ -193,9 +193,8 @@ def test_update_help_requires_exact_version_and_states_managed_root_scope(
     output = capsys.readouterr().out
     assert "usage: xferry update" in output
     assert "--to VERSION" in output
-    assert "managed Linux/systemd" in output
-    assert "root" in output
-    assert "pipx upgrade xferry" in output
+    assert "Exact release version" in output
+    assert "installed server" in output
 
 
 def test_update_requires_target_before_backend_import(tmp_path: Path) -> None:
@@ -344,108 +343,6 @@ def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
     assert "pipx install xferry" in text
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=("apply", "dry-run"))
-@pytest.mark.parametrize("language", ["en", "ru"])
-@pytest.mark.parametrize("json_output", [False, True], ids=("text", "json"))
-def test_non_root_linux_update_renders_conditional_actions_from_real_manager(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    dry_run: bool,
-    language: str,
-    json_output: bool,
-) -> None:
-    """A real non-root update must render both routes without touching managed state."""
-    from xferry.management import releases
-    from xferry.management.model import ManagedLayout
-    from xferry.management.system import CommandResult
-
-    class ForbiddenEffects:
-        def read(self, url: str, max_bytes: int) -> bytes:
-            pytest.fail("non-root CLI update read a remote asset")
-
-        def download(self, url: str, destination: Path, max_bytes: int) -> None:
-            pytest.fail("non-root CLI update downloaded a remote asset")
-
-        def run(self, argv: Sequence[str]) -> CommandResult:
-            pytest.fail("non-root CLI update executed a command")
-
-    layout = ManagedLayout(
-        release_root=tmp_path / "opt/xferry",
-        config_file=tmp_path / "etc/xferry/xferry.ini",
-        auth_file=tmp_path / "etc/xferry/auth",
-        data_root=tmp_path / "var/lib/xferry",
-        lock_file=tmp_path / "run/lock/xferry-ops.lock",
-        unit_file=tmp_path / "etc/systemd/system/xferry.service",
-        cli_link=tmp_path / "usr/local/bin/xferry",
-    )
-    effects = ForbiddenEffects()
-    manager = releases.ReleaseManager(
-        layout=layout,
-        unit_path=layout.unit_file,
-        cli_link=layout.cli_link,
-        downloader=effects,
-        runner=effects,
-        effective_uid=lambda: 1000,
-        remote_updates_enabled=True,
-        host_facts=lambda: pytest.fail("non-root CLI update inspected the host"),
-        platform_id=lambda: pytest.fail("non-root CLI update inspected the platform"),
-        staging_parent=tmp_path / "staging",
-    )
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(releases, "default_update_manager", lambda: manager)
-    argv = ["--lang", language, "update", "--to", "0.2.0"]
-    if dry_run:
-        argv.append("--dry-run")
-    if json_output:
-        argv.append("--json")
-
-    def forbidden_boundary(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("non-root CLI update crossed a filesystem or lock boundary")
-
-    with monkeypatch.context() as boundary:
-        for method in ("stat", "lstat", "exists", "open", "iterdir", "readlink"):
-            boundary.setattr(Path, method, forbidden_boundary)
-        boundary.setattr(releases, "managed_mutation", forbidden_boundary)
-        boundary.setattr(releases, "has_unsupported_managed_state", forbidden_boundary)
-        assert main(argv) == 3
-
-    captured = capsys.readouterr()
-    if json_output:
-        assert captured.err == ""
-        assert json.loads(captured.out) == {
-            "active": None,
-            "before": None,
-            "code": "release_requires_root",
-            "detail": "",
-            "dry_run": dry_run,
-            "exit_code": 3,
-            "message": "This release operation requires root.",
-            "next_actions": [
-                "For a managed installation, rerun this update as root with `sudo`.",
-                "For a portable installation, run `pipx upgrade xferry`.",
-            ],
-            "rollback": "not_attempted",
-            "status": "error",
-            "target": "0.2.0",
-            "version": "0.2.0",
-        }
-    else:
-        assert captured.out == ""
-        message, prefix = (
-            ("This release operation requires root.", "Next action: ")
-            if language == "en"
-            else ("Для этой операции с выпуском нужны права root.", "Следующее действие: ")
-        )
-        assert captured.err.splitlines() == [
-            message,
-            f"{prefix}For a managed installation, rerun this update as root with `sudo`.",
-            f"{prefix}For a portable installation, run `pipx upgrade xferry`.",
-        ]
-    assert list(tmp_path.iterdir()) == []
-    assert not layout.lock_file.exists()
-
-
 @pytest.mark.parametrize(
     ("argv", "env", "expected"),
     [
@@ -482,8 +379,8 @@ def test_explicit_language_is_removed_before_canonical_run_is_forwarded(
 
     monkeypatch.setattr("xferry.cli.run_main", fake_run_main)
 
-    assert main(["--lang", "ru", "run", "--port", "8123", "--quiet"]) == 41
-    assert received == [["--port", "8123", "--quiet"]]
+    assert main(["--lang", "ru", "run", "--port", "8123", "--log-level", "warning"]) == 41
+    assert received == [["--port", "8123", "--log-level", "warning"]]
 
 
 def test_empty_argv_prints_root_help_without_importing_server_cli(
@@ -497,7 +394,7 @@ def test_empty_argv_prints_root_help_without_importing_server_cli(
 
     captured = capsys.readouterr()
     assert "usage: xferry [--lang LANG] COMMAND [OPTIONS]" in captured.out
-    assert "xferry run --preset local" in captured.out
+    assert "xferry run --files-dir ~/Shared" in captured.out
     assert "Legacy server options" not in captured.out
     assert captured.err == ""
 
@@ -515,7 +412,7 @@ def test_root_help_flags_print_root_help_without_importing_server_cli(
 
     captured = capsys.readouterr()
     assert "usage: xferry [--lang LANG] COMMAND [OPTIONS]" in captured.out
-    assert "xferry run --preset local" in captured.out
+    assert "xferry run --files-dir ~/Shared" in captured.out
     assert captured.err == ""
 
 
@@ -529,32 +426,6 @@ def test_root_version_uses_package_authority_without_server_imports(
     captured = capsys.readouterr()
     assert captured.out == f"xferry {__version__}\n"
     assert captured.err == ""
-
-
-@pytest.mark.parametrize(
-    ("language", "portable_heading", "managed_heading"),
-    [
-        ("en", "Portable commands (Windows, macOS, Linux):", "Managed Linux/systemd commands:"),
-        ("ru", "Переносимые команды (Windows, macOS, Linux):", "Команды Linux/systemd:"),
-    ],
-)
-def test_root_help_labels_portable_and_managed_lifecycles(
-    language: str,
-    portable_heading: str,
-    managed_heading: str,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert main(["--lang", language, "--help"]) == 0
-    output = capsys.readouterr().out
-    portable, managed = output.split(managed_heading)
-    assert portable_heading in portable
-    for command in ("run", "examples", "help"):
-        assert f"  {command}\n" in portable
-    assert "  setup\n" in managed
-    assert "  setup\n" not in portable
-    assert "pipx upgrade xferry" in output
-    assert "pipx uninstall xferry" in output
-    assert "--version" in output
 
 
 @pytest.mark.parametrize("language", ["en", "ru"])
@@ -608,82 +479,8 @@ def test_management_usage_errors_return_the_stable_usage_exit_code(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A malformed management command must be distinguishable from operation failure."""
-    assert main(["examples", "unexpected"]) == 2
+    assert main(["config", "unknown-action"]) == 2
     assert "usage:" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected"),
-    [
-        (["examples"], "xferry setup"),
-        (["--lang", "ru", "examples"], "xferry setup"),
-    ],
-)
-def test_examples_are_rendered_in_the_selected_language(
-    argv: Sequence[str], expected: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Removing localized example rendering would leave operators without copy-paste commands."""
-    assert main(argv) == 0
-    output = capsys.readouterr().out
-    assert expected in output
-    if "--lang" in argv:
-        assert "Примеры" in output
-    else:
-        assert "Examples" in output
-
-
-@pytest.mark.parametrize(
-    ("argv", "heading"),
-    [
-        (["examples"], "Examples:"),
-        (["--lang", "ru", "examples"], "Примеры:"),
-    ],
-)
-def test_examples_cover_the_primary_disposable_lifecycle_without_maintenance_commands(
-    argv: Sequence[str], heading: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Ordinary examples must keep the temporary deployment journey short."""
-    assert main(argv) == 0
-    output = capsys.readouterr().out
-    assert heading in output
-    for example in (
-        "xferry run --preset local",
-        "sudo xferry setup",
-        "sudo xferry status",
-        "xferry logs",
-        "sudo xferry start",
-        "sudo xferry stop",
-        "sudo xferry restart",
-        "sudo xferry doctor",
-        "sudo xferry credentials reset",
-        "xferry examples",
-        "sudo xferry uninstall",
-    ):
-        assert example in output
-    assert "xferry update" not in output
-    assert "xferry rollback" not in output
-
-
-@pytest.mark.parametrize(
-    ("argv", "maintenance_heading"),
-    [
-        (["help"], "Optional maintenance:"),
-        (["--lang", "ru", "help"], "Необязательное обслуживание:"),
-    ],
-)
-def test_root_help_separates_optional_long_lived_maintenance(
-    argv: Sequence[str],
-    maintenance_heading: str,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Local rollback must not look required for a disposable deployment."""
-    assert main(argv) == 0
-    output = capsys.readouterr().out
-    assert maintenance_heading in output
-    assert "  update" in output
-    assert "  rollback" in output
-    assert "Legacy server options" not in output
-    assert "xferry [SERVER OPTIONS]" not in output
 
 
 @pytest.mark.parametrize("command", ["update", "rollback"])
@@ -698,8 +495,8 @@ def test_optional_maintenance_commands_keep_focused_help(
 @pytest.mark.parametrize(
     ("command", "example"),
     [
-        ("update", f"sudo xferry update --to {__version__}"),
-        ("rollback", "sudo xferry rollback"),
+        ("update", f"xferry update --to {__version__}"),
+        ("rollback", "xferry rollback"),
     ],
 )
 def test_maintenance_help_uses_only_the_authoritative_release_examples(
@@ -720,7 +517,7 @@ def test_help_run_shows_the_canonical_copy_paste_example(
     assert main(["help", "run"]) == 0
     output = capsys.readouterr().out
     assert "usage: xferry run" in output
-    assert "Example: xferry run --preset local" in output
+    assert "xferry run --files-dir ./shared" in output
 
 
 def test_root_help_is_compact_and_contains_a_concrete_example(
@@ -729,7 +526,7 @@ def test_root_help_is_compact_and_contains_a_concrete_example(
     """Expanding root help beyond the compact operator reference is a regression."""
     assert main(["help"]) == 0
     output = capsys.readouterr().out
-    assert "xferry run --preset local" in output
+    assert "xferry run --files-dir ~/Shared" in output
     assert len(output.splitlines()) < 80
 
 
@@ -740,7 +537,7 @@ def test_command_help_localizes_its_description_and_example(
     assert main(["--lang", "ru", "setup", "--help"]) == 0
     output = capsys.readouterr().out
     assert "Установить и настроить" in output
-    assert "Пример: sudo xferry setup" in output
+    assert "Пример: xferry setup" in output
     assert "Показать эту справку и выйти" in output
 
 

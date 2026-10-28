@@ -76,6 +76,8 @@ class RuntimePosture:
     upload_reserve_free_mb: int
     upload_quota_externally_managed: bool
     warnings: tuple[PostureWarning, ...]
+    access: str = "private"
+    https_mode: str = "off"
     notes: tuple[str, ...] = (
         BODY_ADMISSION_BUDGET_NOTE,
         WEBSOCKET_WORKER_NOTE,
@@ -84,7 +86,8 @@ class RuntimePosture:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-safe representation that cannot contain credentials."""
         data = asdict(self)
-        data["preset"] = self.preset.value if self.preset is not None else None
+        for internal_name in ("preset", "public_direct", "public_direct_validated"):
+            data.pop(internal_name)
         data["warnings"] = [asdict(warning) for warning in self.warnings]
         data["notes"] = list(self.notes)
         return data
@@ -92,13 +95,6 @@ class RuntimePosture:
     def render_lines(self, *, effective_url: str | None = None) -> list[str]:
         """Render one shared human-readable posture for checks and startup."""
         selected_url = effective_url or self.effective_url
-        preset = self.preset.value if self.preset is not None else "custom/legacy"
-        if self.public_direct_validated:
-            public_validation = "validated"
-        elif self.preset is LaunchPreset.PUBLIC_DIRECT:
-            public_validation = "disabled by explicit configuration"
-        else:
-            public_validation = "not requested"
         encrypted_max = (
             f"{self.encrypted_upload_max_size_mb} MB"
             if self.encrypted_upload_max_size_mb
@@ -107,16 +103,12 @@ class RuntimePosture:
 
         lines = [
             "Runtime posture:",
-            f"  Preset: {preset}",
+            f"  Access: {self.access}",
             f"  Effective URL: {selected_url}",
             f"  Exposure: {self.exposure}",
-            (
-                "  Data persistence: operator-managed "
-                f"(root: {self.data_root}; uploads: {self.uploads_path}; "
-                f"notes: {self.notes_path})"
-            ),
-            f"  TLS: {self.tls_mode}; Auth: {self.auth_mode}",
-            f"  Public-direct validation: {public_validation}",
+            f"  Files folder: {self.uploads_path}",
+            f"  Private state: {self.data_root}",
+            f"  HTTPS: {self.https_mode}; authentication: {self.auth_mode}",
             (
                 "  Request authorities: "
                 + (
@@ -178,11 +170,10 @@ def derive_runtime_posture(
     if bind_exposure != "loopback" and not settings.public_direct:
         warnings.append(
             PostureWarning(
-                code="non-loopback-without-public-direct",
+                code="lab-network-access",
                 message=(
-                    "Non-loopback bind is not protected by public-direct validation; "
-                    "restrict firewall/NAT and enable TLS plus file-backed authentication "
-                    "before sharing."
+                    "Lab access is intended for a trusted test network; "
+                    "use public access before sharing outside it."
                 ),
             )
         )
@@ -247,7 +238,11 @@ def derive_runtime_posture(
         effective_url=effective_url,
         exposure=bind_exposure,
         data_root=str(data_root),
-        uploads_path=str(data_root / "uploads"),
+        uploads_path=str(
+            Path(settings.files_dir).expanduser().resolve()
+            if settings.files_dir is not None
+            else data_root / "uploads"
+        ),
         notes_path=str(data_root / "notes"),
         persistence="operator-managed",
         tls_mode=tls_mode,
@@ -272,6 +267,19 @@ def derive_runtime_posture(
         upload_reserve_free_mb=settings.upload_reserve_free_mb,
         upload_quota_externally_managed=settings.upload_quota_externally_managed,
         warnings=tuple(warnings),
+        access=settings.access,
+        https_mode=settings.https_mode
+        or (
+            "auto"
+            if settings.sslip
+            else "domain"
+            if settings.letsencrypt
+            else "files"
+            if settings.cert_file
+            else "self-signed"
+            if settings.tls
+            else "off"
+        ),
     )
 
 
@@ -291,6 +299,8 @@ def _classify_exposure(
 
 
 def _settings_display_host(settings: ServerSettings) -> str:
+    if settings.letsencrypt and settings.domain:
+        return settings.domain
     if settings.sslip and settings.public_ip:
         return f"{settings.public_ip.replace('.', '-')}.sslip.io"
     return settings.host

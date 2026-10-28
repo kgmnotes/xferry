@@ -2,7 +2,8 @@ name: xferry-public-direct
 
 services:
   xferry:
-    image: ghcr.io/kgmnotes/xferry:v0.2.0
+    # Use this exact compatible release, or pin its recorded digest.
+    image: ghcr.io/kgmnotes/xferry:v0.3.0
     restart: unless-stopped
     init: true
     read_only: true
@@ -22,6 +23,7 @@ services:
     environment:
       XFERRY_HEALTH_HOST: "${XFERRY_HEALTH_HOST:?Set XFERRY_HEALTH_HOST to the certificate hostname}"
       XFERRY_HEALTH_PORT: "8443"
+      XFERRY_STATE_HOME: /data
     volumes:
       - xferry-data:/data
       - xferry-acme-state:/home/xferry/.xferry

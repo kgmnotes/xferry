@@ -1,903 +1,423 @@
-"""Tests for operator-facing configuration loading and validation."""
+"""Public configuration, automatic paths and exposure-boundary regression tests."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from xferry.paths import (
+    automatic_state_dir,
+    default_config_path,
+    default_files_dir,
+    state_for_config,
+)
 from xferry.settings import (
-    BODY_ADMISSION_BUDGET_NOTE,
-    WEBSOCKET_WORKER_NOTE,
-    LaunchPreset,
+    RETIRED_SETTINGS,
     ServerSettings,
     SettingsError,
-    derive_runtime_posture,
     load_settings_file,
     load_settings_text,
     resolve_settings,
-    sample_config_text,
 )
+from xferry.settings_schema import SETTING_SPECS
 
 
-def test_default_settings_match_cli_runtime_defaults() -> None:
-    settings = ServerSettings()
+def test_defaults_are_private_and_independent_of_launch_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    first = resolve_settings()
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    second = resolve_settings()
+    assert first == second
+    assert first.access == "private"
+    assert first.host == "127.0.0.1"
+    assert first.port == 8080
+    assert first.https_mode == "off"
+    assert Path(first.files_dir) == default_files_dir()
+    assert not Path(first.root_dir).is_relative_to(Path(first.files_dir))
 
-    assert settings.host == "127.0.0.1"
+
+def test_precedence_preserves_explicit_default_false_and_zero(tmp_path):
+    path = tmp_path / "xferry.ini"
+    path.write_text(
+        "[server]\naccess = lab\nport = 9000\nencrypted_uploads = true\n"
+        "[limits]\nupload_file_limit = 15\nworkers = 4\n",
+        encoding="utf-8",
+    )
+    # workers belongs to server, so unknown section/key combinations stay errors.
+    with pytest.raises(SettingsError, match="unknown config key"):
+        load_settings_file(path)
+    path.write_text(
+        "[server]\naccess = lab\nport = 9000\nencrypted_uploads = true\nworkers = 4\n"
+        "[limits]\nupload_file_limit = 15\n",
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        file_settings=load_settings_file(path, validate=False),
+        env={"XFERRY_PORT": "9001", "XFERRY_UPLOAD_FILE_LIMIT": "16"},
+        cli_values={"port": 8080, "encrypted_uploads": False, "upload_file_limit": 0},
+    )
     assert settings.port == 8080
-    assert settings.root_dir == "."
-    assert not hasattr(settings, "profile")
-    assert settings.max_size_mb == 100
     assert settings.encrypted_uploads is False
-    assert settings.encrypted_upload_max_size_mb == 0
-    assert settings.encrypted_upload_incomplete_ttl_seconds == 86400
-    assert settings.upload_quota_externally_managed is False
-    assert settings.workers == 10
-
-    config = settings.to_server_config()
-    assert config.host == "127.0.0.1"
-    assert config.port == 8080
-    assert config.root_dir == Path().resolve()
-    assert config.limits.max_upload_size == 100 * 1024 * 1024
-    assert config.encrypted_uploads is False
-    assert config.limits.encrypted_upload_max_size == 32 * 1024 * 1024 * 1024
-    assert config.limits.encrypted_upload_incomplete_ttl == 86400
-    assert config.limits.max_workers == 10
-
-
-def test_encrypted_upload_settings_follow_ini_env_and_cli_precedence() -> None:
-    file_settings = load_settings_text(
-        """
-        [server]
-        encrypted_uploads = true
-
-        [limits]
-        encrypted_upload_max_size_mb = 1024
-        encrypted_upload_incomplete_ttl_seconds = 7200
-        """,
-        validate=False,
-    )
-
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={
-            "XFERRY_ENCRYPTED_UPLOADS": "false",
-            "XFERRY_ENCRYPTED_UPLOAD_MAX_SIZE_MB": "1536",
-        },
-        cli_values={
-            "encrypted_uploads": True,
-            "encrypted_upload_incomplete_ttl_seconds": 3600,
-        },
-    )
-
-    assert settings.encrypted_uploads is True
-    assert settings.encrypted_upload_max_size_mb == 1536
-    assert settings.encrypted_upload_incomplete_ttl_seconds == 3600
-
-    config = settings.to_server_config()
-    assert config.encrypted_uploads is True
-    assert config.limits.encrypted_upload_max_size == 1536 * 1024 * 1024
-    assert config.limits.encrypted_upload_incomplete_ttl == 3600
-
-
-def test_ini_file_env_and_cli_precedence(tmp_path: Path) -> None:
-    config_file = tmp_path / "xferry.ini"
-    config_file.write_text(
-        """
-        [server]
-        host = 0.0.0.0
-        port = 9000
-        root_dir = /srv/xferry
-
-        [limits]
-        max_size_mb = 64
-        body_memory_budget_mb = 256
-
-        [security]
-        auth_file = /etc/xferry/auth
-        """,
-        encoding="utf-8",
-    )
-
-    file_settings = load_settings_file(config_file)
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_PORT": "9443"},
-        cli_values={"host": "127.0.0.1"},
-    )
-
-    assert settings.host == "127.0.0.1"
-    assert settings.port == 9443
-    assert settings.root_dir == "/srv/xferry"
-    assert settings.max_size_mb == 64
-    assert settings.body_memory_budget_mb == 256
-    assert settings.auth_file == "/etc/xferry/auth"
-
-
-def test_allowed_hosts_whitespace_layers_replace_the_lower_precedence_list() -> None:
-    """Catch allowlist layers merging values or treating commas as separators."""
-    file_settings = load_settings_text(
-        """
-        [security]
-        allowed_hosts = ini.example 192.0.2.10
-        """,
-        validate=False,
-    )
-
-    from_file = resolve_settings(file_settings=file_settings)
-    from_env = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_ALLOWED_HOSTS": "env.example\t[::1]"},
-    )
-    from_cli = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_ALLOWED_HOSTS": "env.example [::1]"},
-        cli_values={"allowed_hosts": ("CLI.EXAMPLE.", "127.0.0.1")},
-    )
-
-    assert from_file.allowed_hosts == ("ini.example", "192.0.2.10")
-    assert from_env.allowed_hosts == ("env.example", "[::1]")
-    assert from_cli.allowed_hosts == ("CLI.EXAMPLE.", "127.0.0.1")
-    assert from_cli.to_server_config().allowed_hosts == ("cli.example", "127.0.0.1")
-
-
-@pytest.mark.parametrize("source", ["", " \t\n"])
-def test_empty_allowed_hosts_value_selects_auto_mode(source: str) -> None:
-    """Catch explicit empty INI/env values inheriting a lower-precedence list."""
-    file_settings = load_settings_text(
-        """
-        [security]
-        allowed_hosts = lower.example
-        """,
-        validate=False,
-    )
-
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_ALLOWED_HOSTS": source},
-    )
-
-    assert settings.allowed_hosts == ()
-    assert settings.to_server_config().allowed_hosts == ()
-
-
-def test_allowed_hosts_rejects_comma_instead_of_splitting_it() -> None:
-    """Catch the external list grammar silently accepting forbidden comma syntax."""
-    with pytest.raises(SettingsError, match="invalid allowed host"):
-        load_settings_text(
-            """
-            [security]
-            allowed_hosts = first.example,second.example
-            """
-        )
-
-
-def test_smuggle_temp_limits_follow_file_env_and_cli_precedence(tmp_path: Path) -> None:
-    config_file = tmp_path / "xferry.ini"
-    config_file.write_text(
-        """
-        [limits]
-        smuggle_temp_age = 900
-        smuggle_temp_file_limit = 12
-        smuggle_temp_storage_limit_mb = 64
-        """,
-        encoding="utf-8",
-    )
-
-    settings = resolve_settings(
-        file_settings=load_settings_file(config_file),
-        env={"XFERRY_SMUGGLE_TEMP_FILE_LIMIT": "24"},
-        cli_values={"smuggle_temp_age": 30},
-    )
-
-    assert settings.smuggle_temp_age == 30
-    assert settings.smuggle_temp_file_limit == 24
-    assert settings.smuggle_temp_storage_limit_mb == 64
-
-    config = settings.to_server_config()
-    assert config.limits.smuggle_temp_max_age == 30
-    assert config.limits.smuggle_temp_file_limit == 24
-    assert config.limits.smuggle_temp_storage_limit == 64 * 1024 * 1024
-
-
-def test_upload_quota_ownership_follows_file_env_and_cli_precedence() -> None:
-    file_settings = load_settings_text(
-        """
-        [limits]
-        upload_quota_externally_managed = true
-        """
-    )
-
-    env_settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_UPLOAD_QUOTA_EXTERNALLY_MANAGED": "false"},
-    )
-    cli_settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_UPLOAD_QUOTA_EXTERNALLY_MANAGED": "false"},
-        cli_values={"upload_quota_externally_managed": True},
-    )
-
-    assert file_settings.upload_quota_externally_managed is True
-    assert env_settings.upload_quota_externally_managed is False
-    assert cli_settings.upload_quota_externally_managed is True
-
-
-def test_public_direct_requires_real_tls_auth_file_and_memory_budget() -> None:
-    settings = ServerSettings(
-        host="0.0.0.0",
-        port=443,
-        public_direct=True,
-        tls=True,
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-    )
-
-    with pytest.raises(SettingsError, match="real TLS"):
-        settings.validate()
-
-    settings = ServerSettings(
-        host="0.0.0.0",
-        port=443,
-        public_direct=True,
-        sslip=True,
-        body_memory_budget_mb=512,
-    )
-
-    with pytest.raises(SettingsError, match="auth_file"):
-        settings.validate()
-
-
-def test_public_direct_secure_sslip_validates() -> None:
-    settings = ServerSettings(
-        host="0.0.0.0",
-        port=443,
-        public_direct=True,
-        sslip=True,
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-        upload_storage_limit_mb=4096,
-    )
-
-    settings.validate()
-    config = settings.to_server_config()
-    assert config.tls.enabled is True
-    assert config.tls.sslip is True
-    assert config.auth.auth_file == Path("/etc/xferry/auth")
-    assert config.limits.body_memory_budget == 512 * 1024 * 1024
-
-
-@pytest.mark.parametrize(
-    "host",
-    ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"],
-)
-def test_public_direct_wildcard_file_certificates_require_explicit_allowed_hosts(
-    host: str,
-) -> None:
-    """Catch wildcard public-direct deriving certificate authority from no domain."""
-    settings = ServerSettings(
-        host=host,
-        port=443,
-        public_direct=True,
-        cert_file="/etc/xferry/cert.pem",
-        key_file="/etc/xferry/key.pem",
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-        upload_storage_limit_mb=4096,
-    )
-
-    with pytest.raises(SettingsError, match="explicit allowed_hosts"):
-        settings.validate()
-
-    settings = replace(settings, allowed_hosts=("files.example",))
-    settings.validate()
-
-
-def test_explicit_acme_domain_must_be_in_allowed_hosts() -> None:
-    """Catch a certificate domain that request admission would reject after startup."""
-    settings = ServerSettings(
-        host="0.0.0.0",
-        letsencrypt=True,
-        domain="files.example",
-        allowed_hosts=("other.example",),
-    )
-
-    with pytest.raises(SettingsError, match="certificate domain"):
-        settings.validate()
-
-
-def test_public_direct_rejects_all_zero_upload_disk_controls() -> None:
-    settings = ServerSettings(
-        public_direct=True,
-        sslip=True,
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-    )
-
-    with pytest.raises(SettingsError, match="upload_quota_externally_managed"):
-        settings.validate()
-
-
-def test_public_direct_allows_explicit_external_upload_quota_ownership() -> None:
-    settings = ServerSettings(
-        public_direct=True,
-        sslip=True,
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-        upload_quota_externally_managed=True,
-    )
-
-    settings.validate()
-
-    assert settings.to_server_config().limits.upload_quota_externally_managed is True
-
-
-def test_deferred_file_validation_allows_higher_precedence_quota_ownership() -> None:
-    config = """
-        [server]
-        public_direct = true
-
-        [security]
-        auth_file = /etc/xferry/auth
-
-        [tls]
-        sslip = true
-
-        [limits]
-        body_memory_budget_mb = 512
-        upload_storage_limit_mb = 0
-        upload_file_limit = 0
-        upload_reserve_free_mb = 0
-        upload_quota_externally_managed = false
-    """
-
-    with pytest.raises(SettingsError, match="upload_quota_externally_managed"):
-        load_settings_text(config)
-
-    file_settings = load_settings_text(config, validate=False)
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_UPLOAD_QUOTA_EXTERNALLY_MANAGED": "true"},
-    )
-
-    assert settings.upload_quota_externally_managed is True
-
-
-def test_public_direct_rejects_plugins_without_explicit_allowance() -> None:
-    plugin_settings = ServerSettings(
-        public_direct=True,
-        sslip=True,
-        auth_file="/etc/xferry/auth",
-        body_memory_budget_mb=512,
-        upload_storage_limit_mb=4096,
-        plugin_allowlist=("demo_plugin",),
-    )
-    with pytest.raises(SettingsError, match="plugins"):
-        plugin_settings.validate()
-
-
-def test_redacted_json_does_not_expose_inline_auth_secret() -> None:
-    settings = ServerSettings(auth="admin:secret", auth_file="/etc/xferry/auth")
-
-    rendered = json.dumps(settings.to_redacted_dict())
-
-    assert "secret" not in rendered
-    assert '"auth": "***"' in rendered
-    assert "/etc/xferry/auth" in rendered
-
-
-def test_redacted_json_reports_effective_tls_when_enabled_via_sslip() -> None:
-    settings = ServerSettings(sslip=True)
-
-    rendered = settings.to_redacted_dict()
-
-    assert rendered["tls"] is False
-    assert rendered["effective_tls"] is True
-
-
-def test_sample_config_is_parseable() -> None:
-    config = sample_config_text()
-
-    settings = load_settings_text(config)
-
-    assert settings.root_dir == "/var/lib/xferry"
-    assert settings.public_direct is True
-    assert settings.auth_file == "/etc/xferry/auth"
-    assert settings.upload_storage_limit_mb == 4096
-    assert settings.upload_file_limit == 4096
-    assert settings.upload_reserve_free_mb == 1024
-    assert settings.upload_quota_externally_managed is False
-
-
-def test_profile_config_key_is_rejected() -> None:
-    with pytest.raises(SettingsError, match="unknown config key: server.profile"):
-        load_settings_text(
-            """
-            [server]
-            profile = workspace
-            """
-        )
-
-
-def test_profile_env_key_is_ignored() -> None:
-    settings = resolve_settings(env={"XFERRY_PROFILE": "experimental"})
-
-    assert not hasattr(settings, "profile")
-
-
-@pytest.mark.parametrize(
-    ("config_text", "message"),
-    [
-        ("[server]\ndir = /srv/legacy", "unknown config key: server.dir"),
-        ("[server]\nopen = true", "unknown config key: server.open"),
-        ("[cors]\norigin = https://app.example", "unknown config key: cors.origin"),
-        ("[plugins]\nallowlist = demo_plugin", "unknown config key: plugins.allowlist"),
-        (
-            "[plugins]\nallow_public_direct = true",
-            "unknown config key: plugins.allow_public_direct",
-        ),
-        ("[plugins]\noverride_core = true", "unknown config key: plugins.override_core"),
-    ],
-)
-def test_deprecated_config_aliases_are_rejected(config_text: str, message: str) -> None:
-    """Accepting shorthand INI keys would preserve the removed config compatibility surface."""
-    with pytest.raises(SettingsError, match=message):
-        load_settings_text(config_text)
-
-
-def test_deprecated_env_aliases_are_ignored_without_affecting_settings() -> None:
-    """Legacy env names must stay unknown rather than overriding canonical settings."""
-    settings = resolve_settings(
-        env={
-            "XFERRY_DIR": "/srv/legacy",
-            "XFERRY_OPEN": "true",
-            "XFERRY_ROOT": "/srv/legacy",
-        }
-    )
-
-    assert settings.root_dir == "."
-    assert settings.open_browser is False
-
-
-def test_canonical_env_names_replace_removed_aliases() -> None:
-    settings = resolve_settings(
-        env={
-            "XFERRY_ROOT_DIR": "/srv/xferry",
-            "XFERRY_OPEN_BROWSER": "true",
-        }
-    )
-
-    assert settings.root_dir == "/srv/xferry"
-    assert settings.open_browser is True
-
-
-def test_no_preset_preserves_legacy_defaults_and_server_config() -> None:
-    legacy = ServerSettings()
-    resolved = resolve_settings()
-
-    assert resolved.preset is None
-    assert resolved == legacy
-    assert resolved.to_server_config() == legacy.to_server_config()
-
-
-@pytest.mark.parametrize("source", ["file", "env", "cli"])
-@pytest.mark.parametrize("expected", list(LaunchPreset))
-def test_all_presets_are_accepted_from_each_configuration_source(
-    source: str,
-    expected: LaunchPreset,
-) -> None:
-    file_text = ""
-    env: dict[str, str] = {}
-    cli_values: dict[str, object] = {}
-
-    if source == "file":
-        file_text = f"[server]\npreset = {expected.value}\n"
-    elif source == "env":
-        env["XFERRY_PRESET"] = expected.value
-    else:
-        cli_values["preset"] = expected.value
-
-    if expected is LaunchPreset.PUBLIC_DIRECT:
-        cli_values.update(
-            {
-                "sslip": True,
-                "auth_file": "/run/secrets/xferry_auth",
-            }
-        )
-
-    settings = resolve_settings(
-        file_settings=load_settings_text(file_text, validate=False),
-        env=env,
-        cli_values=cli_values,
-    )
-
-    assert settings.preset is expected
-
-
-def test_preset_selection_uses_file_then_env_then_cli_precedence() -> None:
-    file_settings = load_settings_text(
-        """
-        [server]
-        preset = public-direct
-
-        [security]
-        auth_file = /run/secrets/xferry_auth
-
-        [tls]
-        sslip = true
-        """,
-        validate=False,
-    )
-
-    env_wins = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_PRESET": "local-secure"},
-    )
-    cli_wins = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_PRESET": "local-secure"},
-        cli_values={"preset": "local"},
-    )
-
-    assert env_wins.preset is LaunchPreset.LOCAL_SECURE
-    assert cli_wins.preset is LaunchPreset.LOCAL
-
-
-@pytest.mark.parametrize(
-    ("raw", "source"),
-    [
-        ("", "file"),
-        ("workspace", "file"),
-        ("", "env"),
-        ("experimental", "env"),
-        ("", "cli"),
-        ("public", "cli"),
-    ],
-)
-def test_invalid_or_empty_preset_is_rejected(raw: str, source: str) -> None:
-    file_settings = None
-    env: dict[str, str] = {}
-    cli_values: dict[str, object] = {}
-    if source == "file":
-        with pytest.raises(SettingsError, match="preset must be one of"):
-            load_settings_text(f"[server]\npreset = {raw}", validate=False)
-        return
-    if source == "env":
-        env["XFERRY_PRESET"] = raw
-    else:
-        cli_values["preset"] = raw
-
-    with pytest.raises(SettingsError, match="preset must be one of"):
-        resolve_settings(
-            file_settings=file_settings,
-            env=env,
-            cli_values=cli_values,
-        )
-
-
-def test_explicit_file_values_override_higher_source_preset_defaults() -> None:
-    file_settings = load_settings_text(
-        """
-        [server]
-        host = 127.0.0.1
-        port = 8080
-
-        [tls]
-        tls = false
-
-        [security]
-        auth =
-
-        [limits]
-        upload_storage_limit_mb = 0
-        """,
-        validate=False,
-    )
-
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_PRESET": "local-secure"},
-    )
-
-    assert settings.preset is LaunchPreset.LOCAL_SECURE
-    assert settings.host == "127.0.0.1"
-    assert settings.port == 8080
-    assert settings.tls is False
-    assert settings.auth is None
-    assert settings.upload_storage_limit_mb == 0
-
-
-@pytest.mark.parametrize("preset_source", ["file", "env", "cli"])
-@pytest.mark.parametrize("override_source", ["file", "env", "cli"])
-def test_every_explicit_source_overrides_every_preset_source(
-    preset_source: str,
-    override_source: str,
-) -> None:
-    server_lines: list[str] = []
-    tls_lines: list[str] = []
-    env: dict[str, str] = {}
-    cli_values: dict[str, object] = {}
-
-    if preset_source == "file":
-        server_lines.append("preset = local-secure")
-    elif preset_source == "env":
-        env["XFERRY_PRESET"] = "local-secure"
-    else:
-        cli_values["preset"] = "local-secure"
-
-    if override_source == "file":
-        tls_lines.append("tls = false")
-    elif override_source == "env":
-        env["XFERRY_TLS"] = "false"
-    else:
-        cli_values["tls"] = False
-
-    file_text = ""
-    if server_lines:
-        file_text += "[server]\n" + "\n".join(server_lines) + "\n"
-    if tls_lines:
-        file_text += "[tls]\n" + "\n".join(tls_lines) + "\n"
-
-    settings = resolve_settings(
-        file_settings=load_settings_text(file_text, validate=False),
-        env=env,
-        cli_values=cli_values,
-    )
-
-    assert settings.preset is LaunchPreset.LOCAL_SECURE
-    assert settings.tls is False
-
-
-def test_file_env_and_cli_values_all_override_public_direct_preset_defaults() -> None:
-    file_settings = load_settings_text(
-        """
-        [server]
-        preset = public-direct
-        host = 127.0.0.1
-        port = 8080
-        public_direct = false
-
-        [limits]
-        upload_storage_limit_mb = 0
-        """,
-        validate=False,
-    )
-
-    settings = resolve_settings(
-        file_settings=file_settings,
-        env={"XFERRY_PORT": "9443", "XFERRY_UPLOAD_FILE_LIMIT": "0"},
-        cli_values={"host": "localhost", "body_memory_budget_mb": 256},
-    )
-
-    assert settings.preset is LaunchPreset.PUBLIC_DIRECT
-    assert settings.host == "localhost"
-    assert settings.port == 9443
-    assert settings.public_direct is False
-    assert settings.body_memory_budget_mb == 256
-    assert settings.upload_storage_limit_mb == 0
     assert settings.upload_file_limit == 0
-    assert "public-direct-hardening-disabled" in {
-        warning.code for warning in derive_runtime_posture(settings).warnings
+    assert settings.workers == 4
+    assert settings._origins["port"] == "cli"
+    assert settings._origins["workers"] == "file"
+    assert settings._origins["https_mode"] == "automatic"
+
+
+@pytest.mark.parametrize("field", sorted(RETIRED_SETTINGS))
+def test_retired_names_are_rejected_in_every_public_source(field):
+    replacement = RETIRED_SETTINGS[field]
+    for action in (
+        lambda: load_settings_text(f"[server]\n{field} = user:do-not-print-this\n"),
+        lambda: resolve_settings(env={f"XFERRY_{field.upper()}": "user:do-not-print-this"}),
+        lambda: resolve_settings(cli_values={field: "user:do-not-print-this"}),
+    ):
+        with pytest.raises(SettingsError) as error:
+            action()
+        assert "removed" in str(error.value)
+        assert replacement in str(error.value)
+        assert "do-not-print-this" not in str(error.value)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.3", "example.com"])
+def test_private_rejects_every_nonloopback_bind(host):
+    with pytest.raises(SettingsError, match="loopback"):
+        resolve_settings(cli_values={"host": host})
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.2.3.4", "::1", "localhost"])
+def test_private_accepts_loopback_without_dns(host):
+    assert resolve_settings(cli_values={"host": host}).host == host
+
+
+def test_lab_must_be_explicit_to_use_plain_http_on_network():
+    settings = resolve_settings(cli_values={"access": "lab", "host": "0.0.0.0"})
+    assert settings.https_mode == "off"
+    assert settings.public_direct is False
+    assert {warning.code for warning in settings.runtime_posture().warnings} == {
+        "lab-network-access"
     }
 
 
-@pytest.mark.parametrize(
-    ("file_fragment", "expected"),
-    [
-        ("[security]\nauth_file = /run/secrets/xferry_auth", "file"),
-        ("[tls]\ncert_file = cert.pem\nkey_file = key.pem", "certificate-files"),
-        ("[tls]\nletsencrypt = true\ndomain = files.example.com", "acme-domain"),
-        ("[tls]\nsslip = true", "acme-sslip"),
-    ],
-)
-def test_explicit_security_alternative_suppresses_local_secure_fallback(
-    file_fragment: str,
-    expected: str,
-) -> None:
-    settings = resolve_settings(
-        file_settings=load_settings_text(
-            f"[server]\npreset = local-secure\n{file_fragment}",
-            validate=False,
-        )
-    )
-    posture = derive_runtime_posture(settings)
-
-    if expected == "file":
-        assert settings.auth is None
-        assert settings.auth_file == "/run/secrets/xferry_auth"
-        assert posture.auth_mode == "file"
-    else:
-        assert settings.tls is False
-        assert posture.tls_mode == expected
-
-
-def test_explicit_auth_conflicts_still_fail_after_preset_resolution() -> None:
-    with pytest.raises(SettingsError, match="auth.*auth-file|auth_file"):
-        resolve_settings(
-            file_settings=load_settings_text(
-                """
-                [server]
-                preset = local-secure
-
-                [security]
-                auth_file = /run/secrets/xferry_auth
-                """,
-                validate=False,
-            ),
-            env={"XFERRY_AUTH": "admin:explicit"},
-        )
-
-
-def test_public_direct_preset_engages_existing_hardened_validation() -> None:
-    with pytest.raises(SettingsError, match="real TLS"):
-        resolve_settings(cli_values={"preset": "public-direct"})
-
+def test_public_has_secure_defaults_and_requires_credentials():
     with pytest.raises(SettingsError, match="auth_file"):
-        resolve_settings(
-            cli_values={
-                "preset": "public-direct",
-                "sslip": True,
-            }
-        )
-
-    settings = resolve_settings(
-        cli_values={
-            "preset": "public-direct",
-            "sslip": True,
-            "auth_file": "/run/secrets/xferry_auth",
-        }
-    )
-
+        resolve_settings(cli_values={"access": "public"})
+    settings = resolve_settings(cli_values={"access": "public", "auth_file": "/private/auth"})
     assert settings.public_direct is True
+    assert settings.https_mode == "auto"
+    assert settings.sslip is True
     assert settings.host == "0.0.0.0"
     assert settings.port == 8443
     assert settings.body_memory_budget_mb == 512
     assert settings.upload_storage_limit_mb == 4096
-    assert settings.upload_file_limit == 4096
-    assert settings.upload_reserve_free_mb == 1024
+    assert settings._origins["host"] == "automatic"
+
+
+@pytest.mark.parametrize("mode", ["off", "self-signed"])
+def test_public_cannot_disable_verified_https(mode):
+    with pytest.raises(SettingsError, match="verified HTTPS"):
+        resolve_settings(cli_values={"access": "public", "https_mode": mode, "auth_file": "auth"})
 
 
 @pytest.mark.parametrize(
-    "tls_values",
+    "values,message",
     [
-        {
-            "cert_file": "cert.pem",
-            "key_file": "key.pem",
-            "allowed_hosts": ("files.example.com",),
-        },
-        {"letsencrypt": True, "domain": "files.example.com"},
-        {"sslip": True},
+        ({"https_mode": "domain"}, "requires domain"),
+        ({"https_mode": "files"}, "cert_file and key_file"),
+        ({"https_mode": "files", "cert_file": "cert"}, "cert_file and key_file"),
+        ({"cert_file": "cert", "key_file": "key"}, "https_mode = files"),
+        ({"https_mode": "auto", "domain": "example.com"}, "https_mode = domain"),
+        (
+            {"https_mode": "domain", "domain": "example.com", "public_ip": "1.2.3.4"},
+            "https_mode = auto",
+        ),
+        ({"email": "user@example.com"}, "https_mode = auto or domain"),
+        ({"acme_server": "http://example.com/directory"}, "HTTPS directory"),
     ],
 )
-def test_public_direct_preset_accepts_each_real_tls_source(
-    tls_values: dict[str, object],
-) -> None:
+def test_tls_modes_reject_incompatible_inputs(values, message):
+    with pytest.raises(SettingsError, match=message):
+        resolve_settings(cli_values=values)
+
+
+def test_domain_and_files_modes_derive_runtime_switches():
+    domain = resolve_settings(cli_values={"https_mode": "domain", "domain": "files.example.com"})
+    assert domain.letsencrypt and not domain.sslip
+    files = resolve_settings(
+        cli_values={"https_mode": "files", "cert_file": "cert", "key_file": "key"}
+    )
+    assert files.effective_tls_enabled()
+    assert not files.letsencrypt and not files.sslip
+
+
+def test_public_domain_posture_shows_connectable_hostname_instead_of_bind_address():
     settings = resolve_settings(
         cli_values={
-            "preset": "public-direct",
-            "auth_file": "/run/secrets/xferry_auth",
-            **tls_values,
+            "access": "public",
+            "https_mode": "domain",
+            "domain": "files.example.com",
+            "auth_file": "/private/auth",
         }
     )
+    assert settings.host == "0.0.0.0"
+    assert settings.runtime_posture().effective_url == "https://files.example.com:8443"
+    assert settings.runtime_posture().https_mode == "domain"
+    assert settings._origins["https_mode"] == "cli"
 
-    assert settings.public_direct is True
-    assert derive_runtime_posture(settings).public_direct_validated is True
+
+def test_acme_staging_has_one_explicit_setting():
+    settings = resolve_settings(cli_values={"https_mode": "auto", "acme_server": "staging"})
+    assert "staging" in settings.acme_server
+    assert settings.acme_staging is False
 
 
-def test_runtime_posture_derives_effective_limits_paths_and_security(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize(
+    "values,message",
+    [
+        ({"body_timeout": 0}, "body timeouts"),
+        ({"body_idle_timeout": 0}, "body timeouts"),
+        ({"stream_send_timeout": 0}, "stream send timeouts"),
+        ({"cors_origin": "*"}, "wildcard"),
+        ({"plugin_allowlist": ("example:plugin",)}, "disables plugins"),
+        (
+            {"upload_storage_limit_mb": 0, "upload_file_limit": 0, "upload_reserve_free_mb": 0},
+            "greater than zero",
+        ),
+    ],
+)
+def test_public_guards_are_mandatory(values, message):
+    with pytest.raises(SettingsError, match=message):
+        resolve_settings(cli_values={"access": "public", "auth_file": "auth", **values})
+
+
+def test_external_storage_quota_is_an_explicit_public_alternative():
     settings = resolve_settings(
         cli_values={
-            "preset": "local-secure",
-            "root_dir": str(tmp_path / "data"),
-            "workers": 7,
-            "max_size_mb": 12,
+            "access": "public",
+            "auth_file": "auth",
+            "upload_storage_limit_mb": 0,
+            "upload_file_limit": 0,
+            "upload_reserve_free_mb": 0,
+            "upload_quota_externally_managed": True,
         }
     )
-
-    posture = derive_runtime_posture(settings)
-    rendered = posture.to_dict()
-
-    assert posture.preset is LaunchPreset.LOCAL_SECURE
-    assert posture.effective_url == "https://127.0.0.1:8080"
-    assert posture.exposure == "loopback"
-    assert posture.data_root == str((tmp_path / "data").resolve())
-    assert posture.uploads_path == str((tmp_path / "data" / "uploads").resolve())
-    assert posture.notes_path == str((tmp_path / "data" / "notes").resolve())
-    assert posture.persistence == "operator-managed"
-    assert posture.tls_mode == "self-signed"
-    assert posture.auth_mode == "generated"
-    assert posture.body_admission_budget_mb == 84
-    assert posture.max_websocket_connections == 3
-    assert BODY_ADMISSION_BUDGET_NOTE in rendered["notes"]
-    assert WEBSOCKET_WORKER_NOTE in rendered["notes"]
-    assert "auth" not in rendered
+    assert settings.public_direct
 
 
-def test_runtime_posture_accounts_for_encrypted_parallel_chunk_budget() -> None:
-    settings = resolve_settings(
-        cli_values={
-            "encrypted_uploads": True,
-            "max_size_mb": 1,
-            "workers": 2,
-        }
+def test_public_wildcard_file_certificates_require_allowed_hosts():
+    values = {
+        "access": "public",
+        "https_mode": "files",
+        "cert_file": "cert",
+        "key_file": "key",
+        "auth_file": "auth",
+    }
+    with pytest.raises(SettingsError, match="allowed_hosts"):
+        resolve_settings(cli_values=values)
+    assert resolve_settings(
+        cli_values={**values, "allowed_hosts": ("files.example.com",)}
+    ).public_direct
+
+
+def test_lists_keep_their_distinct_grammars():
+    settings = load_settings_text(
+        "[security]\nallowed_hosts = first.example\tsecond.example\n"
+        "[plugins]\nplugin_allowlist = first:plugin, second:plugin\n"
     )
+    assert settings.allowed_hosts == ("first.example", "second.example")
+    assert settings.plugin_allowlist == ("first:plugin", "second:plugin")
+    reset = resolve_settings(file_settings=settings, env={"XFERRY_ALLOWED_HOSTS": ""})
+    assert reset.allowed_hosts == ()
+    with pytest.raises(SettingsError):
+        load_settings_text("[security]\nallowed_hosts = first.example,second.example\n")
 
+
+def test_automatic_limits_are_effective_in_posture_and_runtime():
+    settings = resolve_settings(cli_values={"workers": 6, "max_size_mb": 25})
+    posture = settings.runtime_posture()
     config = settings.to_server_config()
+    assert posture.body_admission_budget_mb == 150
+    assert posture.max_websocket_connections == 3
+    assert config.limits.body_memory_budget == 150 * 1024 * 1024
+    assert config.websocket.max_connections == 3
+    assert "Access: private" in "\n".join(posture.render_lines())
+    assert "custom/legacy" not in "\n".join(posture.render_lines())
+    serialized = posture.to_dict()
+    assert serialized["access"] == "private"
+    assert serialized["https_mode"] == "off"
+    assert not {"preset", "public_direct", "public_direct_validated"} & serialized.keys()
 
-    assert config.limits.body_memory_budget == 16_777_248
-    assert config.runtime_posture is not None
-    assert config.runtime_posture.body_admission_budget_mb == 17
+
+def test_redacted_settings_only_include_public_metadata():
+    rendered = ServerSettings(auth="user:secret", auth_file="/private/auth").to_redacted_dict()
+    assert set(rendered) == {spec.name for spec in SETTING_SPECS} | {"effective_tls"}
+    assert "secret" not in json.dumps(rendered)
+    assert rendered["auth_file"] == "/private/auth"
 
 
-def test_runtime_posture_warns_on_non_loopback_without_breaking_validation() -> None:
-    settings = resolve_settings(cli_values={"host": "0.0.0.0"})
-    posture = derive_runtime_posture(settings)
+def test_relative_files_are_explicit_and_share_the_default_profile_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.chdir(tmp_path)
+    first = resolve_settings(cli_values={"files_dir": "one"})
+    second = resolve_settings(cli_values={"files_dir": "two"})
+    assert Path(first.files_dir) == tmp_path / "one"
+    assert first.root_dir == second.root_dir
+    assert Path(first.root_dir) == automatic_state_dir(tmp_path / "one")
 
-    assert posture.exposure == "all-interfaces"
-    assert "non-loopback-without-public-direct" in {warning.code for warning in posture.warnings}
+
+def test_config_identity_is_retained_across_deferred_validation(tmp_path):
+    files = tmp_path / "shared"
+    first_path = tmp_path / "one.ini"
+    second_path = tmp_path / "two.ini"
+    text = f"[server]\nfiles_dir = {files}\n"
+    first_path.write_text(text)
+    second_path.write_text(text)
+    first = resolve_settings(file_settings=load_settings_file(first_path, validate=False))
+    second = resolve_settings(file_settings=load_settings_file(second_path, validate=False))
+    assert first.root_dir != second.root_dir
+    assert Path(first.root_dir) == automatic_state_dir(files, first_path)
+
+
+def test_first_default_profile_save_keeps_existing_private_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    initial = resolve_settings()
+    config = default_config_path()
+    config.parent.mkdir(parents=True)
+    config.write_text("[server]\nport = 8080\n")
+    saved = load_settings_file(config)
+    assert saved.root_dir == initial.root_dir
+    config.write_text(f"[server]\nfiles_dir = {tmp_path / 'new-share'}\n")
+    changed = load_settings_file(config)
+    assert changed.root_dir == initial.root_dir
+    assert changed.files_dir != initial.files_dir
+
+
+def test_migrated_private_state_is_used_without_legacy_setting(tmp_path):
+    path = tmp_path / "xferry.ini"
+    files = tmp_path / "uploads"
+    state = tmp_path / "old-root"
+    path.write_text(f"[server]\nfiles_dir = {files}\n")
+    sidecar = path.with_name(f".{path.name}.state.json")
+    sidecar.write_text(json.dumps({"schema": 1, "state_dir": str(state), "files_dir": str(files)}))
+    assert state_for_config(path) == state
+    assert Path(load_settings_file(path).root_dir) == state
+    assert (
+        Path(load_settings_file(path, state_dir=tmp_path / "override").root_dir)
+        == tmp_path / "override"
+    )
 
 
 @pytest.mark.parametrize(
-    ("host", "exposure", "effective_url"),
+    "content",
+    ["{}", "not json", '{"schema":1,"state_dir":"relative","files_dir":"/files"}', "x" * 16385],
+)
+def test_invalid_state_context_is_rejected(tmp_path, content):
+    path = tmp_path / "xferry.ini"
+    path.with_name(f".{path.name}.state.json").write_text(content)
+    with pytest.raises(ValueError, match="state context"):
+        state_for_config(path)
+
+
+def test_state_context_cannot_be_a_symlink(tmp_path):
+    path = tmp_path / "xferry.ini"
+    target = tmp_path / "other"
+    target.write_text("{}")
+    path.with_name(f".{path.name}.state.json").symlink_to(target)
+    with pytest.raises(ValueError, match="state context"):
+        state_for_config(path)
+
+
+def test_configuration_and_private_state_cannot_be_downloadable(tmp_path):
+    path = tmp_path / "xferry.ini"
+    path.write_text(f"[server]\nfiles_dir = {tmp_path}\n")
+    with pytest.raises(SettingsError, match="outside the public"):
+        load_settings_file(path)
+    with pytest.raises(ValueError, match="separate"):
+        resolve_settings(
+            cli_values={"files_dir": str(tmp_path)}, state_dir=tmp_path
+        ).to_server_config()
+
+
+@pytest.mark.parametrize(
+    "values",
     [
-        ("127.0.0.1", "loopback", "http://127.0.0.1:8080"),
-        ("127.8.9.10", "loopback", "http://127.8.9.10:8080"),
-        ("localhost", "loopback", "http://localhost:8080"),
-        ("::1", "loopback", "http://[::1]:8080"),
-        ("0.0.0.0", "all-interfaces", "http://0.0.0.0:8080"),
-        ("::", "all-interfaces", "http://[::]:8080"),
-        ("192.0.2.10", "network", "http://192.0.2.10:8080"),
-        ("files.internal", "network", "http://files.internal:8080"),
+        {"access": "invalid"},
+        {"https_mode": "invalid"},
+        {"log_level": "invalid"},
+        {"log_format": "invalid"},
+        {"unknown": 1},
     ],
 )
-def test_runtime_posture_classifies_bind_without_dns_side_effects(
-    host: str,
-    exposure: str,
-    effective_url: str,
-) -> None:
-    posture = derive_runtime_posture(resolve_settings(cli_values={"host": host}))
-
-    assert posture.exposure == exposure
-    assert posture.effective_url == effective_url
+def test_unknown_values_are_rejected(values):
+    with pytest.raises(SettingsError):
+        resolve_settings(cli_values=values)
 
 
-def test_runtime_posture_reports_weakened_presets_without_secrets() -> None:
-    settings = resolve_settings(
-        file_settings=load_settings_text(
-            """
-            [server]
-            preset = local-secure
-
-            [tls]
-            tls = false
-
-            [security]
-            auth = admin:supersecret
-            """,
-            validate=False,
-        )
+@pytest.mark.parametrize("validate", [False, True])
+@pytest.mark.parametrize("explicit_state", [None, "/explicit-xferry-state"])
+def test_packaged_state_or_explicit_override_does_not_read_protected_migration_context(
+    tmp_path, monkeypatch, validate, explicit_state
+):
+    path = tmp_path / "xferry.ini"
+    path.write_text(f"[server]\nfiles_dir = {tmp_path / 'files'}\n")
+    sidecar = path.with_name(f".{path.name}.state.json")
+    sidecar.write_text(
+        json.dumps({"schema": 1, "state_dir": "/old-state", "files_dir": "/old-files"})
     )
-    rendered = json.dumps(derive_runtime_posture(settings).to_dict())
+    reads = []
+    real_open = Path.open
 
-    assert "supersecret" not in rendered
-    assert '"auth_mode": "inline"' in rendered
-    assert "local-secure-weakened" in rendered
+    def protected_context(candidate, *args, **kwargs):
+        if candidate == sidecar:
+            reads.append(candidate)
+            raise PermissionError("migration context belongs to root")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", protected_context)
+    monkeypatch.setenv("XFERRY_STATE_HOME", "/var/lib/xferry")
+    loaded = load_settings_file(path, validate=validate, state_dir=explicit_state)
+    expected = explicit_state or "/var/lib/xferry"
+    assert loaded.root_dir == expected
+    resolved = resolve_settings(file_settings=loaded)
+    assert resolved.root_dir == expected
+    assert str(resolved.to_server_config().root_dir) == expected
+    assert reads == []
+
+    if explicit_state is None:
+        monkeypatch.delenv("XFERRY_STATE_HOME")
+        with pytest.raises(ValueError, match="migrated state context"):
+            load_settings_file(path, validate=validate)
+        assert reads == [sidecar]
 
 
-def test_redacted_settings_exclude_provenance_and_include_string_preset() -> None:
-    settings = resolve_settings(cli_values={"preset": "local-secure"})
-    rendered = settings.to_redacted_dict()
+def test_packaged_state_takes_precedence_over_deferred_portable_migration_state(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("XFERRY_STATE_HOME", raising=False)
+    path = tmp_path / "xferry.ini"
+    path.write_text(f"[server]\nfiles_dir = {tmp_path / 'files'}\n")
+    state = tmp_path / "portable-state"
+    path.with_name(f".{path.name}.state.json").write_text(
+        json.dumps({"schema": 1, "state_dir": str(state), "files_dir": str(tmp_path / "files")})
+    )
+    deferred = load_settings_file(path, validate=False)
+    assert deferred.root_dir == str(state)
+    assert resolve_settings(file_settings=deferred).root_dir == str(state)
+    monkeypatch.setenv("XFERRY_STATE_HOME", "/var/lib/xferry")
+    assert resolve_settings(file_settings=deferred).root_dir == "/var/lib/xferry"
 
-    assert rendered["preset"] == "local-secure"
-    assert "_explicit_fields" not in rendered
 
-
-def test_sample_config_selects_public_direct_preset() -> None:
-    settings = load_settings_text(sample_config_text())
-
-    assert settings.preset is LaunchPreset.PUBLIC_DIRECT
-    assert settings.public_direct is True
+def test_explicit_state_survives_deferred_text_loading_and_packaging_environment(monkeypatch):
+    deferred = load_settings_text(
+        "[server]\nport = 8080\n", validate=False, state_dir="/explicit-state"
+    )
+    monkeypatch.setenv("XFERRY_STATE_HOME", "/var/lib/xferry")
+    assert resolve_settings(file_settings=deferred).root_dir == "/explicit-state"
+    assert resolve_settings(file_settings=deferred, state_dir="/new-explicit-state").root_dir == (
+        "/new-explicit-state"
+    )

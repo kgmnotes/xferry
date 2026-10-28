@@ -108,6 +108,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     root_dir: Path | str = Path()
+    files_dir: Path | str | None = field(default=None, kw_only=True)
     encrypted_uploads: bool = False
     limits: ServerLimits = field(default_factory=ServerLimits)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
@@ -256,10 +257,18 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
                 "public_direct wildcard bind with certificate files requires explicit allowed_hosts"
             )
 
+    root_dir = Path(config.root_dir).expanduser().resolve()
+    if config.files_dir == "":
+        raise ValueError("files_dir must not be empty")
+    files_dir = _resolve_optional_path(config.files_dir)
+    effective_files_dir = files_dir if files_dir is not None else root_dir / "uploads"
+    _validate_files_directory(effective_files_dir, root_dir, auth, tls)
+
     return replace(
         config,
         host=host,
-        root_dir=Path(config.root_dir).expanduser().resolve(),
+        root_dir=root_dir,
+        files_dir=files_dir,
         limits=limits,
         websocket=websocket,
         tls=tls,
@@ -269,6 +278,23 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
         cors_origins=cors_origins,
         allowed_hosts=allowed_hosts,
     )
+
+
+def _validate_files_directory(
+    files_dir: Path, root_dir: Path, auth: AuthConfig, tls: TLSConfig
+) -> None:
+    """Keep private state and configured credentials outside the public tree."""
+    for private_dir in (root_dir / "notes", root_dir / ".xferry"):
+        private_dir = private_dir.resolve()
+        if private_dir.is_relative_to(files_dir) or files_dir.is_relative_to(private_dir):
+            raise ValueError("files_dir must be separate from private notes and state")
+    for private_file in (auth.auth_file, tls.cert_file, tls.key_file):
+        if private_file is not None and Path(private_file).is_relative_to(files_dir):
+            raise ValueError("files_dir must not contain authentication or TLS files")
+    if tls.letsencrypt or tls.sslip:
+        acme_dir = (Path.home() / ".xferry").resolve()
+        if acme_dir.is_relative_to(files_dir) or files_dir.is_relative_to(acme_dir):
+            raise ValueError("files_dir must be separate from private ACME state")
 
 
 def _resolve_tls(tls: TLSConfig) -> TLSConfig:

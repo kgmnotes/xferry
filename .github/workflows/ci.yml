@@ -390,7 +390,7 @@ jobs:
       - name: CLI, docs, and example sanity checks
         run: |
           set -euo pipefail
-          python -m xferry run --dir /tmp --version
+          python -m xferry run --files-dir /tmp --version
           python -m xferry --help > /dev/null
           bash -n examples/basic_file_server.sh
           python examples/notepad_client.py --help > /dev/null
@@ -444,8 +444,8 @@ jobs:
             run \
             --host 127.0.0.1 \
             --port "${source_port}" \
-            --dir "${RUNNER_TEMP}/xferry-browser-source-root" \
-            --quiet >"${artifacts}/source-server.log" 2>&1 &
+            --files-dir "${RUNNER_TEMP}/xferry-browser-source-root/uploads" \
+            --log-level warning >"${artifacts}/source-server.log" 2>&1 &
           source_pid="$!"
           wait_for_target \
             "http://127.0.0.1:${source_port}/" \
@@ -468,8 +468,8 @@ jobs:
                 run \
                 --host 127.0.0.1 \
                 --port "${wheel_port}" \
-                --dir "${RUNNER_TEMP}/xferry-browser-wheel-root" \
-                --quiet
+                --files-dir "${RUNNER_TEMP}/xferry-browser-wheel-root/uploads" \
+                --log-level warning
             ) >"${artifacts}/wheel-server.log" 2>&1 &
             wheel_pid="$!"
             wait_for_target \
@@ -565,11 +565,11 @@ jobs:
               -p 127.0.0.1::8443 \
               -v "${auth_secret}:/run/secrets/xferry_auth:ro" \
               xferry:ci \
-              run \
+              run --access lab \
               --host 0.0.0.0 \
               --port 8443 \
-              --dir /data \
-              --tls \
+              --files-dir /data/uploads \
+              --https self-signed \
               --auth-file /run/secrets/xferry_auth
           )"
           if [ "$(docker inspect --format '{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{else}}null{{end}}' "${tls_cid}")" != '["NONE"]' ]; then
@@ -680,7 +680,7 @@ jobs:
           executable="$(find "$PWD/dist/scie-${{ matrix.platform }}" -maxdepth 1 -type f -name 'xferry-*-linux-*')"
           PATH=/nonexistent "$executable" run --version
           PATH=/nonexistent "$executable" --help > /dev/null
-          PATH=/nonexistent "$executable" run --check-config
+          PATH=/nonexistent "$executable" config check
 
       - name: Smoke SCIE on every supported Linux base
         run: |
@@ -698,7 +698,7 @@ jobs:
                 candidate="/release/$2"
                 "$candidate" run --version
                 "$candidate" --help > /dev/null
-                "$candidate" run --check-config
+                "$candidate" config check
               ' sh '${{ matrix.machine }}' "$executable"
           done
 

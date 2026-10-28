@@ -49,6 +49,18 @@ from xferry.settings import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_instance_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    from xferry.management import cli
+
+    def no_sudo(_argv, _context):
+        print("managed operation requires root", file=cli.sys.stderr)
+        return 3
+
+    monkeypatch.setattr(cli, "_privileged", no_sudo)
+
+
 def _layout(tmp_path: Path) -> ManagedLayout:
     return ManagedLayout(
         release_root=tmp_path / "opt/xferry",
@@ -214,7 +226,7 @@ class FakeRunner:
     def run(self, argv: Sequence[str]) -> CommandResult:
         command = tuple(str(item) for item in argv)
         self.commands.append(command)
-        if command and command[-1] == "--check-config":
+        if command[1:3] == ("config", "check"):
             if self.on_config is not None:
                 self.on_config()
             return CommandResult(command, 0 if self.config_ok else 2)
@@ -1871,10 +1883,10 @@ def test_candidate_config_failure_prevents_install_and_service_restart(tmp_path:
     assert result.exit_code == 2
     assert runner.commands[0][0].startswith(str(tmp_path / "staging"))
     assert runner.commands[0][-4:] == (
-        "run",
+        "config",
+        "check",
         "--config",
         str(layout.config_file),
-        "--check-config",
     )
     assert not any(command[:2] == ("systemctl", "restart") for command in runner.commands)
     assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
@@ -3022,6 +3034,30 @@ def test_confirmed_purge_removes_preserved_config_data_and_acme(tmp_path: Path) 
     assert not acme.exists()
 
 
+@pytest.mark.parametrize("inside_private_root", [False, True])
+def test_purge_preserves_operator_selected_files_directory(
+    tmp_path: Path,
+    inside_private_root: bool,
+) -> None:
+    layout = _layout(tmp_path)
+    _seed_uninstall_state(tmp_path, layout)
+    folder = layout.data_root / "custom-share" if inside_private_root else tmp_path / "shared"
+    folder.mkdir()
+    (folder / "keep.txt").write_text("operator file")
+    (layout.config_file.parent / "deployment.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "kind": "managed",
+                "files_dir": str(folder),
+            }
+        )
+    )
+    result = _manager(tmp_path, layout, FakeDownloader({})).uninstall(True, True, False)
+    assert result.exit_code == 0
+    assert (folder / "keep.txt").read_text() == "operator file"
+
+
 def test_purge_rejects_broadened_custom_roots_before_disabling_or_deleting(
     tmp_path: Path,
 ) -> None:
@@ -3267,14 +3303,21 @@ def test_cli_dispatches_release_options_and_double_gates_noninteractive_purge(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Dropping a CLI option or treating noninteractive purge as confirmed changes safety."""
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     fake = FakeReleaseManager([])
     monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
     monkeypatch.setattr("xferry.management.releases.default_release_manager", lambda: fake)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    assert cli.main(["update", "--to", "0.2.0", "--dry-run"]) == 0
-    assert cli.main(["rollback", "--to", "0.1.0", "--dry-run"]) == 0
-    assert cli.main(["uninstall", "--purge-data"]) == 0
+    assert (
+        cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run"])
+        == 0
+    )
+    assert (
+        cli.main(["rollback", "--config", "/etc/xferry/xferry.ini", "--to", "0.1.0", "--dry-run"])
+        == 0
+    )
+    assert cli.main(["uninstall", "--config", "/etc/xferry/xferry.ini", "--purge-data"]) == 0
     assert fake.calls == [
         ("update", "0.2.0", True),
         ("rollback", "0.1.0", True),
@@ -3291,7 +3334,22 @@ def test_cli_update_json_schema_is_complete_and_language_independent(
     fake = FakeReleaseManager([])
     monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
 
-    assert cli.main(["--lang", "ru", "update", "--to", "0.2.0", "--dry-run", "--json"]) == 0
+    assert (
+        cli.main(
+            [
+                "--lang",
+                "ru",
+                "update",
+                "--config",
+                "/etc/xferry/xferry.ini",
+                "--to",
+                "0.2.0",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
 
     assert json.loads(capsys.readouterr().out) == {
         "active": "0.1.0",
@@ -3321,7 +3379,10 @@ def test_cli_update_text_renders_dry_run_plan_and_next_action(
     fake = FakeReleaseManager([])
     monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
 
-    assert cli.main(["update", "--to", "0.2.0", "--dry-run"]) == 0
+    assert (
+        cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run"])
+        == 0
+    )
 
     output = capsys.readouterr().out
     assert "Signed metadata verified" in output
@@ -3332,6 +3393,7 @@ def test_cli_update_text_renders_portable_pipx_action(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     """Portable users must see the lifecycle command instead of only a generic rejection."""
     fake = FakeReleaseManager([])
     fake.update = lambda to_version, dry_run: ReleaseResult(  # type: ignore[method-assign]
@@ -3345,7 +3407,7 @@ def test_cli_update_text_renders_portable_pipx_action(
     )
     monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
 
-    assert cli.main(["update", "--to", "0.2.0"]) == 4
+    assert cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0"]) == 4
 
     output = capsys.readouterr().err
     assert "No supported XFerry managed installation was found" in output
@@ -3368,7 +3430,12 @@ def test_cli_update_json_failure_preserves_dry_run_and_known_release_identities(
     )
     monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: manager)
 
-    assert cli.main(["update", "--to", "0.2.0", "--dry-run", "--json"]) == 5
+    assert (
+        cli.main(
+            ["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run", "--json"]
+        )
+        == 5
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["code"] == "release_download_failed"

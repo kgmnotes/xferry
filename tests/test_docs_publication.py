@@ -99,6 +99,7 @@ def _managed_artifact() -> dict[str, Any]:
 
 def _managed_result() -> dict[str, Any]:
     return {
+        "schema": 2,
         "scope": "native-systemd-public-matrix",
         "status": "passed",
         "sourceCommit": COMMIT,
@@ -485,6 +486,9 @@ def test_pages_never_accepts_managed_evidence_from_an_unfinished_run(
 @pytest.mark.parametrize(
     "changes",
     [
+        {"schema": 1},
+        {"schema": True},
+        {"schema": None},
         {"scope": "native-systemd-ten-pair-fixture-matrix"},
         {"status": "bootstrap"},
         {"publicReleaseEvidence": False},

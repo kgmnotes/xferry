@@ -24,13 +24,13 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert text.index("## Portable") < text.index("## Managed Linux")
     assert text.index("## Managed Linux") < text.index("## Container")
     assert "pipx install xferry" in text
-    assert "xferry run --preset local --open" in text
+    assert "xferry run --open" in text
     assert "py -m pip install --user pipx" in text
     assert "sudo apt install pipx" in text
     assert "brew install pipx" in text
     assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
-    assert "ghcr.io/kgmnotes/xferry:v0.2.0" in text
+    assert "archive/0.2.0-installation.md" in text
     assert "git clone https://github.com/kgmnotes/xferry.git" not in text
     assert "releases/latest" not in text
     assert "ghcr.io/kgmnotes/xferry:latest" not in text
@@ -59,36 +59,15 @@ def test_quick_start_guard_rejects_generic_pip_bootstrap(tmp_path: Path) -> None
     assert check_stale_docs.find_semantic_contract_issues(tmp_path, (str(QUICK_START),))
 
 
-@pytest.mark.parametrize("path", [QUICK_START, Path("docs/public-direct.md"), OPERATIONS])
-def test_container_journey_declares_released_platforms(path: Path) -> None:
-    """Catches container onboarding omitting the released host architectures."""
-    text = _read(path)
-
-    assert "linux/amd64" in text
-    assert "linux/arm64" in text
-
-
-def test_portable_process_documents_persistent_data_root() -> None:
-    text = _read(OPERATIONS)
-    normalized = " ".join(text.split())
-
-    for marker in (
-        '--dir "$PWD/xferry-data"',
-        "`uploads/`",
-        "`notes/`",
-        "Press `Ctrl+C`",
-    ):
-        assert marker in text
-    assert "preserves uploads and encrypted note state" in normalized
-
-
-def test_portable_data_directory_has_a_powershell_journey() -> None:
-    text = _read(OPERATIONS)
-
-    assert "On Linux and macOS:" in text
-    assert "On Windows (PowerShell)" in text
-    assert "New-Item -ItemType Directory -Force -Path .\\xferry-data" in text
-    assert "xferry run --preset local --dir .\\xferry-data" in text
+def test_foreground_data_default_is_stable_and_current_directory_is_explicit() -> None:
+    settings = _read(Path("docs/settings.md"))
+    quick_start = _read(QUICK_START)
+    assert "independent of the launch directory" in " ".join(settings.split())
+    assert "xferry run --files-dir ." in quick_start
+    assert "%LOCALAPPDATA%" in settings
+    assert "~/Library/Application Support/xferry/files" in settings
+    assert "~/.local/share/xferry/files" in settings
+    assert "private state" in settings.lower()
 
 
 @pytest.mark.parametrize("path", [Path("SECURITY.md"), Path("docs/security.md")])

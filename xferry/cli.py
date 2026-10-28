@@ -4,26 +4,22 @@ CLI entry point for XFerryServer.
 """
 
 import argparse
-import json
 import os
 import signal
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from .config import __version__
-from .features import registry_methods
+from .paths import default_config_path
 from .server import XFerryServer
 from .settings import (
-    BODY_ADMISSION_BUDGET_NOTE,
-    WEBSOCKET_WORKER_NOTE,
-    LaunchPreset,
     ServerSettings,
     load_settings_file,
     resolve_settings,
-    sample_config_text,
 )
 from .settings_schema import (
     CLI_GROUP_ORDER,
@@ -39,9 +35,7 @@ _NORMAL_HELP_DESTS = frozenset(
         "help_all",
         "version",
         "config",
-        "check_config",
-        "print_config",
-        "write_sample_config",
+        "open_browser",
     }
     | {spec.cli.dest for spec in SETTING_SPECS if spec.cli is not None and spec.cli.normal_help}
 )
@@ -178,47 +172,90 @@ def _add_setting_arguments(
             action.help = help_text
 
 
+_RETIRED_OPTIONS = {
+    "--preset": "--access private|public|lab",
+    "--public-direct": "--access public",
+    "--tls": "--https self-signed",
+    "--no-tls": "--https off",
+    "--letsencrypt": "--https domain",
+    "--sslip": "--https auto",
+    "--acme-staging": "--acme-server staging",
+    "--auth": "--auth-file FILE (generate it with xferry credentials)",
+    "--quiet": "--log-level warning",
+    "-q": "--log-level warning",
+    "--debug": "--log-level debug",
+    "--json-log": "--log-format json",
+    "--dir": "--files-dir DIR",
+    "-d": "--files-dir DIR",
+    "--check-config": "xferry config check",
+    "--print-config": "xferry config show",
+    "--write-sample-config": "xferry config sample",
+}
+
+
+_NamespaceT = TypeVar("_NamespaceT")
+
+
+class _RunArgumentParser(argparse.ArgumentParser):
+    @overload
+    def parse_known_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: None = None,
+    ) -> tuple[argparse.Namespace, list[str]]: ...
+
+    @overload
+    def parse_known_args(
+        self,
+        args: Iterable[str] | None,
+        namespace: _NamespaceT,
+    ) -> tuple[_NamespaceT, list[str]]: ...
+
+    @overload
+    def parse_known_args(
+        self,
+        *,
+        namespace: _NamespaceT,
+    ) -> tuple[_NamespaceT, list[str]]: ...
+
+    def parse_known_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: Any = None,
+    ) -> tuple[Any, list[str]]:
+        # Reject secrets-bearing retired options before argparse can echo values.
+        tokens = list(sys.argv[1:] if args is None else args)
+        for token in tokens:
+            option = token.split("=", 1)[0]
+            if option in _RETIRED_OPTIONS:
+                self.error(f"removed option {option}; use {_RETIRED_OPTIONS[option]}")
+            if token.startswith("-d") and not token.startswith("--") and len(token) > 2:
+                self.error("removed option -d; use --files-dir DIR")
+        return super().parse_known_args(tokens, namespace)
+
+
 def create_parser(*, show_all_help: bool = False) -> argparse.ArgumentParser:
-    """Create and configure the argument parser."""
-    description = f"""HTTP server with custom methods, TLS, Auth, and uploads-only file access.
+    """Create and configure the foreground-server argument parser."""
+    description = """Run the file server on this host.
 
-Choose a launch journey:
-  local          Loopback HTTP for first-run and demos.
-                 xferry run --preset local --open
-  local-secure   Loopback self-signed TLS plus generated auth in an interactive TTY.
-                 Service form: xferry run --preset local-secure --auth-file FILE
-  public-direct  Advanced public path. Start from the generated INI; real TLS,
-                 file-backed auth, finite quotas, and strict validation are required.
-                 xferry run --write-sample-config ./xferry.ini
-                 xferry run --config ./xferry.ini --check-config
+By default it listens at http://127.0.0.1:8080 and uses your saved configuration.
+Use xferry setup for an installed service, or xferry config to change settings.
+Use --help-all for every limit, certificate and protocol option."""
+    epilog = """Examples:
+  xferry run --open
+  xferry run --files-dir ./shared
+  xferry run --access public --auth-file /path/to/auth
+  xferry run --config ./xferry.ini
 
-Capacity model:
-  {BODY_ADMISSION_BUDGET_NOTE}
-  {WEBSOCKET_WORKER_NOTE}
-
-Use --help-all for every tuning and protocol option."""
-    if show_all_help:
-        epilog = f"""
-Examples:
-    xferry run --preset local
-    xferry run --preset local-secure
-    xferry run --preset local-secure --auth-file ./auth.txt
-    xferry run --write-sample-config ./xferry.ini
-    xferry run --config ./xferry.ini --check-config
-
-Custom HTTP methods:
-    Core methods: {", ".join(registry_methods())}
-        """
-    else:
-        epilog = """
-The named journeys select defaults only; every explicit INI, XFERRY_* or CLI
-value remains authoritative. Use --help-all for the exhaustive option list.
-        """
-    parser = argparse.ArgumentParser(
+INI settings are overridden by XFERRY_* environment variables, then explicit
+command options. Use xferry config show --all to see effective values and sources.
+"""
+    parser = _RunArgumentParser(
         prog="xferry run",
         description=description,
         formatter_class=_StableHelpFormatter,
         epilog=epilog,
+        allow_abbrev=False,
     )
 
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -240,19 +277,10 @@ value remains authoritative. Use --help-all for the exhaustive option list.
         help="Read settings from an INI configuration file",
     )
     config_group.add_argument(
-        "--check-config",
+        "--open",
+        dest="open_browser",
         action="store_true",
-        help="Validate the resolved configuration and exit without starting",
-    )
-    config_group.add_argument(
-        "--print-config",
-        action="store_true",
-        help="Print the resolved configuration as redacted JSON and exit",
-    )
-    config_group.add_argument(
-        "--write-sample-config",
-        metavar="FILE",
-        help="Write a public-direct sample INI configuration and exit",
+        help="Open the server in your browser after it starts",
     )
 
     # Basic
@@ -287,44 +315,6 @@ value remains authoritative. Use --help-all for the exhaustive option list.
                 action.help = argparse.SUPPRESS
 
     return parser
-
-
-def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    acme_mode = args.letsencrypt or args.sslip
-    has_cert = args.cert is not None
-    has_key = args.key is not None
-
-    if has_cert != has_key:
-        parser.error("--cert and --key must be provided together")
-    if has_cert and (not args.cert or not args.key):
-        parser.error("--cert and --key values must not be empty")
-    if has_cert and acme_mode:
-        parser.error("--cert/--key cannot be combined with --letsencrypt or --sslip")
-
-    if args.letsencrypt and not args.domain and not args.sslip:
-        parser.error("--letsencrypt requires --domain unless --sslip is used")
-    if args.sslip and args.domain:
-        parser.error("--sslip cannot be combined with --domain")
-    if args.public_ip and not args.sslip:
-        parser.error("--public-ip requires --sslip")
-
-    if not acme_mode:
-        acme_only_flags = [
-            ("--domain", args.domain),
-            ("--email", args.email),
-            ("--acme-staging", args.acme_staging),
-            ("--acme-server", args.acme_server),
-            ("--acme-http-address", args.acme_http_address),
-            ("--acme-http-port", args.acme_http_port != 80),
-        ]
-        for flag, active in acme_only_flags:
-            if active:
-                parser.error(f"{flag} requires --letsencrypt or --sslip")
-
-    if args.auth and args.auth_file:
-        parser.error("--auth and --auth-file cannot be combined")
-    if args.auth_file == "":
-        parser.error("--auth-file value must not be empty")
 
 
 def _collect_explicit_cli_dests(
@@ -394,53 +384,33 @@ def _restore_signal_handlers(previous_handlers: dict[signal.Signals, Any]) -> No
         signal.signal(sig, handler)
 
 
-def _stdout_is_interactive() -> bool:
-    """Return whether generated credentials can be shown to the operator."""
-    return bool(sys.stdout.isatty())
-
-
 def run_main(argv: Sequence[str] | None = None) -> int:
-    """Main entry point."""
+    """Resolve one foreground launch and keep process lifecycle predictable."""
     parser = create_parser()
     actual_argv = list(sys.argv[1:] if argv is None else argv)
     explicit_dests = _collect_explicit_cli_dests(parser, actual_argv)
     args = parser.parse_args(actual_argv)
-
-    if args.write_sample_config:
-        Path(args.write_sample_config).write_text(sample_config_text(), encoding="utf-8")
-        return 0
-
+    config_path = Path(args.config).expanduser() if args.config else default_config_path()
     try:
-        file_settings = load_settings_file(args.config, validate=False) if args.config else None
+        file_settings = (
+            load_settings_file(config_path, validate=False)
+            if args.config or config_path.exists()
+            else None
+        )
         settings = resolve_settings(
             file_settings=file_settings,
             env=dict(os.environ),
             cli_values=_cli_values_from_args(args, explicit_dests),
+            config_path=config_path if file_settings is not None else None,
         )
+        settings = replace(settings, open_browser=args.open_browser)
         server_config = settings.to_server_config()
+        if file_settings is not None:
+            assert server_config.files_dir is not None
+            if config_path.resolve().is_relative_to(Path(server_config.files_dir)):
+                raise ValueError("config file must be outside the public files_dir")
     except ValueError as exc:
         parser.error(str(exc))
-
-    posture = server_config.runtime_posture
-    assert posture is not None
-
-    if args.check_config:
-        print("Configuration valid.")
-        print("\n".join(posture.render_lines()))
-        return 0
-
-    if args.print_config:
-        rendered = settings.to_redacted_dict()
-        rendered["runtime_posture"] = posture.to_dict()
-        print(json.dumps(rendered, indent=2, sort_keys=True))
-        return 0
-
-    if settings.preset is LaunchPreset.LOCAL_SECURE and not _stdout_is_interactive():
-        if settings.auth_file is None:
-            parser.error(
-                "local-secure non-interactive/service launches require --auth-file FILE; "
-                "generated or inline credentials are interactive-only"
-            )
 
     try:
         server = XFerryServer(server_config)

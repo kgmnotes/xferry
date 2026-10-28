@@ -236,7 +236,7 @@ def pipx_smoke(wheel: Path, root: Path, workspace: Path, constraints: Path) -> N
     python, console = _venv_commands(venv)
     exposed = root / "bin" / console.name
     _run_checked((str(exposed), "--version"), cwd=probe, env=environment)
-    _run_checked((str(exposed), "run", "--print-config"), cwd=probe, env=environment)
+    _run_checked((str(exposed), "config", "show", "--all"), cwd=probe, env=environment)
     _run_checked(
         (
             str(python),

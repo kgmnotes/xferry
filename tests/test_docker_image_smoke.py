@@ -452,12 +452,14 @@ def test_anonymous_run_command_has_exact_hardening_and_loopback_publish() -> Non
         f"{RUN_LABEL}=deadbeef",
         "xferry:test",
         "run",
+        "--access",
+        "lab",
         "--host",
         "0.0.0.0",
         "--port",
         "8080",
-        "--dir",
-        "/data",
+        "--files-dir",
+        "/data/uploads",
         "--body-memory-budget",
         "512",
     ]
@@ -469,7 +471,10 @@ def test_dockerfile_effective_default_argv_starts_with_canonical_run_command() -
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert 'ENTRYPOINT ["xferry"]' in dockerfile
-    assert 'CMD ["run", "--host", "0.0.0.0", "--port", "8080", "--dir", "/data"]' in dockerfile
+    assert (
+        'CMD ["run", "--access", "lab", "--host", "0.0.0.0", "--port", "8080", '
+        '"--files-dir", "/data/uploads"]' in dockerfile
+    )
 
 
 def test_named_volume_run_changes_only_data_volume_source() -> None:
@@ -575,7 +580,7 @@ def test_inspect_validator_rejects_entrypoint_drift() -> None:
         (("Config", "User"), "root", "non-root user"),
         (
             ("Config", "Cmd"),
-            ["--host", "0.0.0.0", "--port", "8080", "--dir", "/data"],
+            ["--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/uploads"],
             "body-memory-budget",
         ),
     ],

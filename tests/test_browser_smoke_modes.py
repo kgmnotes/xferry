@@ -2392,3 +2392,171 @@ def test_ci_gates_source_wheel_image_and_preserves_diagnostics() -> None:
     assert "--mode full" in full_step
     assert "Upload browser journey diagnostics" in ci
     assert "if: always()" in ci
+
+
+def test_request_panel_demo_smoke_uses_unique_requests_and_server_canonical_paths() -> None:
+    """Exercise the smoke oracle with a server-renamed file for every demo method."""
+    script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('  async function captureRequestPanelDemoUpload(');
+const end = source.indexOf('  async function triggerRequestMethod(', start);
+assert.ok(start >= 0 && end > start, 'actual request-panel demo helpers missing');
+const load = new Function(
+  'page', 'requestPathname', 'triggerRequestMethod', 'waitForRequestPanelResponse',
+  'waitForValue', 'waitForRequestPreview', 'waitForLiveRegionText',
+  `${source.slice(start, end)}; return { captureRequestPanelDemoUpload,
+    runRequestPanelMethodScenario };`
+);
+async function check(method, invalidPath = undefined) {
+  const slug = method.toLowerCase();
+  const uploadMethod = ['POST', 'PUT', 'PATCH', 'NONE'].includes(method) ? method : 'POST';
+  const requestedName = `request-panel-${slug}-${'a'.repeat(24)}.txt`;
+  const canonicalPath = `/uploads/server-selected-${slug}.txt`;
+  const finalPath = uploadMethod === method ? '/' : canonicalPath;
+  const expectedStatus = uploadMethod === method ? 201 : 200;
+  let captures = 0;
+  let triggers = 0;
+  let inputChecks = 0;
+  const candidate = (patch = {}) => ({
+    request: () => ({
+      method: () => patch.method || uploadMethod,
+      url: () => `http://example.test${patch.path || '/'}`,
+      headers: () => ({ 'x-file-name': patch.name || requestedName }),
+    }),
+    json: async () => ({ file: { path: invalidPath ?? canonicalPath } }),
+    status: () => 201,
+  });
+  const page = {
+    waitForResponse: async (predicate, { timeout }) => {
+      captures += 1;
+      assert.equal(timeout, 15000);
+      for (const patch of [
+        { method: 'INFO' }, { method: 'DELETE' }, { path: '/uploads/existing.txt' },
+        { name: `request-panel-${slug}.txt` },
+        { name: `request-panel-${slug}-${'a'.repeat(23)}.txt` },
+        { name: `request-panel-other-${'a'.repeat(24)}.txt` },
+      ]) assert.equal(predicate(candidate(patch)), false);
+      assert.equal(predicate(candidate()), true);
+      return candidate();
+    },
+    locator: selector => ({
+      fill: async value => {
+        assert.equal(selector, '#pathInput');
+        assert.equal(value, '/uploads/existing-user-file.txt');
+      },
+      innerText: async () => {
+        if (selector === '#responseArea') return `"path": "${canonicalPath}"`;
+        assert.equal(selector, '#requestPreviewArea');
+        return `${method} ${finalPath} HTTP/1.1\nX-File-Name: ${requestedName}`;
+      },
+    }),
+  };
+  const helpers = load(
+    page,
+    request => new URL(request.url()).pathname,
+    async observed => { assert.equal(observed, method); triggers += 1; },
+    async (observed, status, path) => {
+      assert.equal(observed, method); assert.equal(status, expectedStatus);
+      assert.equal(path, finalPath);
+    },
+    async (selector, value) => {
+      assert.equal(selector, '#pathInput'); assert.equal(value, canonicalPath); inputChecks += 1;
+    },
+    async (observed, path) => { assert.equal(observed, method); assert.equal(path, finalPath); },
+    async (selector, text) => {
+      assert.equal(selector, 'responseAreaLive');
+      assert.equal(text, `${method} ${finalPath} ${expectedStatus}`);
+    },
+  );
+  const action = () => helpers.runRequestPanelMethodScenario({
+    method, demoSlug: slug, initialPath: '/uploads/existing-user-file.txt',
+    expectedRequestPath: uploadMethod === method ? '/' : '$demoPath',
+    expectedPathInput: '$demoPath', expectedStatus,
+    responseIncludes: ['"path": "$demoPath"'],
+    previewIncludes: uploadMethod === method ? ['X-File-Name: $requestedDemoName'] : [],
+  });
+  if (invalidPath !== undefined) {
+    await assert.rejects(action, /invalid canonical path/);
+    return;
+  }
+  const result = await action();
+  assert.equal(result.pathInput, canonicalPath);
+  assert.equal(result.path, finalPath);
+  assert.equal(captures, 1);
+  assert.equal(triggers, 1);
+  assert.equal(inputChecks, 1);
+}
+(async () => {
+  for (const method of ['POST', 'PUT', 'PATCH', 'NONE', 'DELETE', 'FETCH', 'SMUGGLE']) {
+    await check(method);
+  }
+  for (const path of ['', '/uploads/', '/private/file.txt']) await check('POST', path);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        ["node", "-e", script, str(REPO_ROOT / "tools/browser_smoke.playwright.js")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_clear_confirmation_smoke_matches_both_locales_and_keeps_scopes_distinct() -> None:
+    """The real clear oracles must accept the current UI warning for each scope."""
+    core = (REPO_ROOT / "xferry/data/static/ui/core.js").read_text(encoding="utf-8")
+    messages: dict[str, list[str]] = {"clearUploadsConfirm": [], "notepadClearConfirm": []}
+    for key, value in re.findall(
+        r'^\s*(clearUploadsConfirm|notepadClearConfirm): ("(?:\\.|[^"\\])*"),$',
+        core,
+        re.MULTILINE,
+    ):
+        messages[key].append(json.loads(value))
+    assert {key: len(value) for key, value in messages.items()} == {
+        "clearUploadsConfirm": 2,
+        "notepadClearConfirm": 2,
+    }
+    script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const messages = JSON.parse(process.argv[2]);
+const start = source.indexOf('  async function confirmFilesFolderClear(');
+const end = source.indexOf('  async function assertSharedDialogRoleContract(', start);
+assert.ok(start >= 0 && end > start, 'scoped clear confirmation helpers missing');
+const patterns = [];
+const helpers = new Function('confirmAppDialog', `${source.slice(start, end)}
+  return { confirmFilesFolderClear, confirmNotesClear };`
+)(async (pattern, timeout) => { assert.equal(timeout, 10000); patterns.push(pattern); });
+(async () => {
+  await helpers.confirmFilesFolderClear();
+  await helpers.confirmNotesClear();
+  for (const message of messages.clearUploadsConfirm) {
+    assert.equal(patterns[0].test(message), true);
+    assert.equal(patterns[1].test(message), false);
+  }
+  for (const message of messages.notepadClearConfirm) {
+    assert.equal(patterns[1].test(message), true);
+    assert.equal(patterns[0].test(message), false);
+  }
+  for (const oldPath of ['/uploads/', '/notes/']) {
+    assert.equal(patterns[0].test(oldPath), false);
+    assert.equal(patterns[1].test(oldPath), false);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            script,
+            str(REPO_ROOT / "tools/browser_smoke.playwright.js"),
+            json.dumps(messages),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout

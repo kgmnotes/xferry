@@ -25,6 +25,18 @@ from xferry.management.service import (
 from xferry.management.system import CommandResult, CommandRunner
 
 
+@pytest.fixture(autouse=True)
+def isolated_instance_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    from xferry.management import cli
+
+    def no_sudo(_argv, _context):
+        print("managed operation requires root", file=cli.sys.stderr)
+        return 3
+
+    monkeypatch.setattr(cli, "_privileged", no_sudo)
+
+
 def _facts(*, supported: bool = True) -> HostFacts:
     return HostFacts(
         os_id="ubuntu" if supported else "fedora",
@@ -143,10 +155,10 @@ def test_status_uses_only_the_fixed_unit_and_stable_json_fields(tmp_path: Path) 
     assert runner.commands == [
         (
             str(context.layout.current_executable),
-            "run",
+            "config",
+            "check",
             "--config",
             str(context.layout.config_file),
-            "--check-config",
         ),
         ("systemctl", "is-enabled", "xferry.service"),
         ("systemctl", "show", "--property=ActiveState", "--value", "xferry.service"),
@@ -371,15 +383,14 @@ def test_default_managed_sslip_doctor_uses_public_hostname_for_tls_identity(
         context.layout,
         config=(
             "[server]\n"
-            "preset = public-direct\n"
-            "public_direct = true\n"
+            "access = public\n"
             "host = 0.0.0.0\n"
             "port = 443\n"
-            f"root_dir = {context.layout.data_root}\n"
+            f"files_dir = {context.layout.data_root / 'files'}\n"
             "[security]\n"
             f"auth_file = {context.layout.auth_file}\n"
             "[tls]\n"
-            "sslip = true\n"
+            "https_mode = auto\n"
             "public_ip = 8.8.8.8\n"
             "acme_http_port = 80\n"
             "[limits]\n"
@@ -481,6 +492,7 @@ def test_unsupported_platform_doctor_reports_detected_matrix_and_safe_actions(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     facts = replace(
         _facts(),
         os_id="fedora",
@@ -517,7 +529,7 @@ def test_unsupported_platform_doctor_reports_detected_matrix_and_safe_actions(
     assert "known-password" not in json.dumps(payload)
 
     monkeypatch.setattr("xferry.management.service.default_service_context", lambda: context)
-    assert cli.main(["doctor", "--skip-network"]) == 4
+    assert cli.main(["doctor", "--config", "/etc/xferry/xferry.ini", "--skip-network"]) == 4
     output = capsys.readouterr().out
     assert "Detected os=fedora, version=40, architecture=aarch64, systemd=absent" in output
     assert "Next action:" in output
@@ -543,12 +555,13 @@ def test_cli_status_and_doctor_render_secret_free_stable_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Removing JSON dispatch or including a credential would break machine-safe automation."""
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     runner = FakeRunner()
     context = _context(tmp_path, runner)
     _install(context.layout)
     monkeypatch.setattr("xferry.management.service.default_service_context", lambda: context)
 
-    assert cli.main(["status", "--json"]) == 0
+    assert cli.main(["status", "--config", "/etc/xferry/xferry.ini", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "config": "valid",
         "enabled": "enabled",
@@ -559,7 +572,7 @@ def test_cli_status_and_doctor_render_secret_free_stable_json(
         "status": "ok",
     }
 
-    assert cli.main(["doctor", "--deep", "--json"]) == 0
+    assert cli.main(["doctor", "--config", "/etc/xferry/xferry.ini", "--deep", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["code"] == "doctor-ok"
     assert payload["message"] == "Managed diagnostics passed."
@@ -573,11 +586,26 @@ def test_cli_logs_forwards_options_and_preserves_journal_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Dropping CLI log options or normalizing journal failure to success misleads automation."""
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     runner = FakeRunner(journal_exit=7)
     context = _context(tmp_path, runner)
     monkeypatch.setattr("xferry.management.service.default_service_context", lambda: context)
 
-    assert cli.main(["logs", "--lines", "4", "--since", "yesterday", "--follow"]) == 1
+    assert (
+        cli.main(
+            [
+                "logs",
+                "--config",
+                "/etc/xferry/xferry.ini",
+                "--lines",
+                "4",
+                "--since",
+                "yesterday",
+                "--follow",
+            ]
+        )
+        == 1
+    )
     assert runner.commands == []
     assert runner.stream_commands == [
         (
@@ -598,6 +626,7 @@ def test_russian_text_output_translates_doctor_statuses_and_lifecycle_actions(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Interpolating machine enums into Russian templates leaves operator output untranslated."""
+    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
     from xferry.management.service import DoctorCheck, DoctorReport, ServiceStatus
 
     monkeypatch.setattr(
@@ -616,7 +645,10 @@ def test_russian_text_output_translates_doctor_statuses_and_lifecycle_actions(
     )
     monkeypatch.setattr("xferry.management.service.service_action", lambda *_args: 0)
 
-    assert cli.main(["--lang", "ru", "doctor", "--skip-network"]) == 0
+    assert (
+        cli.main(["--lang", "ru", "doctor", "--config", "/etc/xferry/xferry.ini", "--skip-network"])
+        == 0
+    )
     doctor_text = capsys.readouterr().out
     assert "Платформа: поддерживается" in doctor_text
     assert "Здоровье: исправно" in doctor_text
@@ -624,18 +656,18 @@ def test_russian_text_output_translates_doctor_statuses_and_lifecycle_actions(
     assert "supported" not in doctor_text
     assert "authenticated health check passed" not in doctor_text
 
-    assert cli.main(["--lang", "ru", "status"]) == 0
+    assert cli.main(["--lang", "ru", "status", "--config", "/etc/xferry/xferry.ini"]) == 0
     status_text = capsys.readouterr().out
     assert "Установка: установлена" in status_text
     assert "служба: активна" in status_text
     assert "installed" not in status_text
 
-    assert cli.main(["--lang", "ru", "start"]) == 0
+    assert cli.main(["--lang", "ru", "start", "--config", "/etc/xferry/xferry.ini"]) == 0
     action_text = capsys.readouterr().out
     assert "запуск" in action_text
     assert "start" not in action_text
 
-    assert cli.main(["doctor", "--skip-network"]) == 0
+    assert cli.main(["doctor", "--config", "/etc/xferry/xferry.ini", "--skip-network"]) == 0
     english_text = capsys.readouterr().out
     assert "Platform: supported" in english_text
     assert "Health: healthy" in english_text

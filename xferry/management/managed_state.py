@@ -24,6 +24,40 @@ UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS = (
 )
 _MAX_RELEASE_ENTRIES = 128
 _MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
+RETAINED_STATE_CONTENT = b"xferry-retained-v1\n"
+
+
+def retained_state_path(layout: ManagedLayout) -> Path:
+    """Return the receipt written before removing a verified managed runtime."""
+    return layout.config_file.parent / "retained-state"
+
+
+def has_retained_state(layout: ManagedLayout) -> bool:
+    """Accept only a protected receipt with the exact supported contents."""
+    capabilities = _descriptor_capabilities()
+    if capabilities is None:
+        return False
+    descriptor: int | None = None
+    try:
+        path = retained_state_path(layout)
+        descriptor, _, _, missing = _open_trusted_directory_or_missing(path.parent, capabilities)
+        if missing is not None:
+            return False
+        payload, metadata = _read_bounded_regular_file(
+            path.name, len(RETAINED_STATE_CONTENT), dir_fd=descriptor, capabilities=capabilities
+        )
+        return (
+            payload == RETAINED_STATE_CONTENT
+            and stat.S_IMODE(metadata.st_mode) == 0o600
+            and metadata.st_nlink == 1
+            and _entry_matches(descriptor, path.name, metadata)
+            and _path_matches_directory(path.parent, descriptor, capabilities)
+        )
+    except (OSError, ValueError):
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 class _ReleaseState(Enum):
@@ -408,23 +442,25 @@ def _owned_state_is_safe(
     *,
     allow_expected_entries: bool,
 ) -> bool:
+    retained = has_retained_state(layout)
     expected_entries = (
-        (layout.config_file, "file", None),
-        (layout.auth_file, "file", None),
-        (layout.data_root, "directory", None),
-        (layout.unit_file, "file", None),
-        (layout.cli_link, "symlink", Path("/opt/xferry/current/xferry")),
+        (layout.config_file, "file", None, allow_expected_entries or retained),
+        (layout.auth_file, "file", None, allow_expected_entries or retained),
+        (layout.data_root, "directory", None, allow_expected_entries or retained),
+        (layout.unit_file, "file", None, allow_expected_entries),
+        (layout.cli_link, "symlink", Path("/opt/xferry/current/xferry"), allow_expected_entries),
+        (retained_state_path(layout), "file", None, retained),
     )
     witnesses: list[_OwnedEntryWitness] = []
     safe = False
     try:
-        for path, expected_kind, expected_target in expected_entries:
+        for path, expected_kind, expected_target, allowed in expected_entries:
             witnesses.append(
                 _inspect_owned_entry(
                     path,
                     expected_kind,
                     expected_target,
-                    allow_expected_entry=allow_expected_entries,
+                    allow_expected_entry=allowed,
                     capabilities=capabilities,
                 )
             )

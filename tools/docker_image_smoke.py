@@ -23,12 +23,14 @@ PIDS_LIMIT = 256
 RUN_LABEL = "org.xferry.image-smoke"
 RUNTIME_COMMAND = (
     "run",
+    "--access",
+    "lab",
     "--host",
     "0.0.0.0",
     "--port",
     str(CONTAINER_PORT),
-    "--dir",
-    "/data",
+    "--files-dir",
+    "/data/uploads",
     "--body-memory-budget",
     "512",
 )

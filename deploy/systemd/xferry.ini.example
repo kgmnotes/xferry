@@ -4,42 +4,35 @@
 
 # BEGIN GENERATED: xferry-settings/systemd
 [server]
-preset = public-direct
+access = public
+log_level = info
+log_format = json
 host = 0.0.0.0
 port = 443
-root_dir = /var/lib/xferry
-public_direct = true
-json_log = true
+files_dir = /var/lib/xferry/files
 workers = 10
 
 [security]
 auth_file = /etc/xferry/auth
-# Auto-mode admits loopback plus the final sslip certificate hostname.
 allowed_hosts =
 
 [tls]
-# Runtime TLS becomes active through sslip/letsencrypt/cert+key even if
-# the explicit self-signed `tls` flag remains false in normalized output.
-# First-run public IPv4 option. For a real domain, replace sslip with:
-# letsencrypt = true
-# domain = files.example.com
-sslip = true
+https_mode = auto
 # public_ip = 203.0.113.10
-# acme_staging = true
 acme_http_port = 80
 
 [limits]
 max_size_mb = 100
+upload_storage_limit_mb = 4096
+upload_file_limit = 4096
+upload_reserve_free_mb = 1024
+upload_quota_externally_managed = false
 body_memory_budget_mb = 512
 body_idle_timeout = 5
 body_timeout = 300
 body_min_rate = 0
 stream_send_idle_timeout = 5
 stream_send_timeout = 300
-upload_storage_limit_mb = 4096
-upload_file_limit = 4096
-upload_reserve_free_mb = 1024
-upload_quota_externally_managed = false
 
 [cors]
 cors_origin =

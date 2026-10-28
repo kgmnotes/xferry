@@ -181,7 +181,7 @@ jobs:
           setup_credentials="$RUNNER_TEMP/managed-update-setup.credentials"
           umask 077
           setup_exit=0
-          sudo "$MANAGED_XFERRY" setup --private --json \
+          sudo "$MANAGED_XFERRY" setup --access private --json \
             > "$setup_result" 2> "$setup_credentials" || setup_exit="$?"
           if [ "$setup_exit" -ne 0 ]; then
             python - "$setup_result" <<'PY'

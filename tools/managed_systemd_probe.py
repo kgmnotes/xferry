@@ -465,6 +465,22 @@ def _json_command(argv: Sequence[str], **kwargs: Any) -> dict[str, Any]:
     return dict(result)
 
 
+def _setup_outcome(result: Mapping[str, Any], *, files_dir: Path | None = None) -> None:
+    """Require the exact setup JSON shape for the declared installed CLI contract."""
+    fields = {"exit_code", "status", "url"}
+    if files_dir is not None:
+        fields.add("files_dir")
+    _require(
+        set(result) == fields
+        and result["status"] == "ok"
+        and type(result["exit_code"]) is int
+        and result["exit_code"] == 0
+        and result["url"] == "http://127.0.0.1:8080"
+        and (files_dir is None or result["files_dir"] == str(files_dir)),
+        "setup_outcome_invalid",
+    )
+
+
 def _version(paths: SystemPaths, expected: str) -> None:
     try:
         output = _command((str(paths.cli), "--version"))
@@ -618,13 +634,9 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
             stage = {"phase": phase, "status": "started"}
             evidence["stages"].append(stage)
             setup = _json_command(
-                (str(paths.cli), "setup", "--private", "--json"), discard_stderr=True
+                (str(paths.cli), "setup", "--access", "private", "--json"), discard_stderr=True
             )
-            _require(
-                set(setup) == {"exit_code", "status", "url"}
-                and setup["url"] == "http://127.0.0.1:8080",
-                "setup_outcome_invalid",
-            )
+            _setup_outcome(setup, files_dir=paths.data_root / "files")
             _version(paths, SOURCE_VERSION)
             verify_health(SOURCE_VERSION, paths)
             descriptor = os.open(

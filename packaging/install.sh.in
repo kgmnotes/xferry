@@ -348,6 +348,33 @@ auth_file="$destdir/etc/xferry/auth"
 data_root="$destdir/var/lib/xferry"
 unit_file="$destdir/etc/systemd/system/xferry.service"
 cli_link="$destdir/usr/local/bin/xferry"
+retained_receipt="$destdir/etc/xferry/retained-state"
+
+valid_retained_receipt() {
+  regular_file "$retained_receipt" || return 1
+  [ "$(stat -c '%u:%a:%h:%s' "$retained_receipt")" = '0:600:1:19' ] || return 1
+  receipt_parent="$(dirname "$retained_receipt")"
+  while :; do
+    real_directory "$receipt_parent" || return 1
+    receipt_owner="$(stat -c '%u' "$receipt_parent")"
+    receipt_mode="$(stat -c '%a' "$receipt_parent")"
+    [ "$receipt_owner" = 0 ] || return 1
+    case "$receipt_mode" in ''|*[!0-7]*) return 1 ;; esac
+    receipt_bits=$((0$receipt_mode))
+    if [ $((receipt_bits & 0022)) -ne 0 ] && [ $((receipt_bits & 01000)) -eq 0 ]; then
+      return 1
+    fi
+    [ "$receipt_parent" != / ] || break
+    receipt_parent="$(dirname "$receipt_parent")"
+  done
+  printf 'xferry-retained-v1\n' | cmp -s - "$retained_receipt"
+}
+
+retained_state=false
+if path_present "$retained_receipt"; then
+  valid_retained_receipt || block_unsupported_managed_state
+  retained_state=true
+fi
 
 if [ "$valid_supported_marker" = true ]; then
   for owned_file in "$config_file" "$auth_file" "$unit_file"; do
@@ -363,6 +390,20 @@ if [ "$valid_supported_marker" = true ]; then
     [ "$(readlink "$cli_link")" = '/opt/xferry/current/xferry' ] \
       || block_unsupported_managed_state
   fi
+elif [ "$retained_state" = true ]; then
+  for state_file in "$config_file" "$auth_file"; do
+    if path_present "$state_file"; then
+      regular_file "$state_file" || block_unsupported_managed_state
+    fi
+  done
+  if path_present "$data_root"; then
+    real_directory "$data_root" || block_unsupported_managed_state
+  fi
+  for runtime_path in "$unit_file" "$cli_link"; do
+    if path_present "$runtime_path"; then
+      block_unsupported_managed_state
+    fi
+  done
 else
   for owned_path in "$config_file" "$auth_file" "$data_root" "$unit_file" "$cli_link"; do
     if path_present "$owned_path"; then

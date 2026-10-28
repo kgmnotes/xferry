@@ -294,8 +294,8 @@ def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_deri
 @pytest.mark.parametrize(
     ("tls_lines", "message"),
     [
-        ("cert_file =", "provided together"),
-        ("key_file =", "provided together"),
+        ("cert_file =", "requires cert_file and key_file"),
+        ("key_file =", "requires cert_file and key_file"),
         ("cert_file =\nkey_file =", "values must not be empty"),
     ],
     ids=("empty-cert", "empty-key", "both-empty"),
@@ -305,7 +305,7 @@ def test_ini_explicit_empty_tls_paths_fail_closed(tls_lines: str, message: str) 
     from xferry.settings import SettingsError, load_settings_text
 
     with pytest.raises(SettingsError, match=message):
-        load_settings_text(f"[tls]\n{tls_lines}\n")
+        load_settings_text(f"[tls]\nhttps_mode = files\n{tls_lines}\n")
 
 
 def test_direct_server_config_normalizes_disabled_zero_policies_to_none() -> None:
@@ -388,16 +388,14 @@ def test_server_constructor_signature_and_cli_construct_with_one_config(
             return None
 
     monkeypatch.setattr(cli, "XFerryServer", RecordingServer)
-    assert cli.run_main(["--dir", ".", "--port", "8765"]) == 0
+    assert cli.run_main(["--files-dir", ".", "--port", "8765"]) == 0
 
     assert len(received) == 1
     assert isinstance(received[0], ServerConfig)
     assert received[0].port == 8765
 
 
-@pytest.mark.parametrize("inspection_flag", ["--check-config", "--print-config"])
 def test_cli_inspection_rejects_invalid_cors_before_server_construction(
-    inspection_flag: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -411,15 +409,13 @@ def test_cli_inspection_rejects_invalid_cors_before_server_construction(
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.run_main([inspection_flag, "--cors-origin", "not-an-origin"])
+        cli.run_main(["--cors-origin", "not-an-origin"])
 
     assert exc_info.value.code == 2
     assert "invalid CORS origin" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("inspection_flag", ["--check-config", "--print-config"])
 def test_cli_inspection_rejects_invalid_plugin_allowlist_before_import(
-    inspection_flag: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -438,7 +434,7 @@ def test_cli_inspection_rejects_invalid_plugin_allowlist_before_import(
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.run_main([inspection_flag])
+        cli.run_main([])
 
     assert exc_info.value.code == 2
     assert "invalid plugin module entry" in capsys.readouterr().err

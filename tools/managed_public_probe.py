@@ -8,10 +8,15 @@ or exports generated authentication/configuration values or their hashes.
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
+import re
 import stat
+import tempfile
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -24,6 +29,23 @@ else:
     import managed_systemd_probe as common
 
 SCOPE = "native-systemd-public-lifecycle"
+SCHEMA = 2
+_RETIRED = frozenset(
+    {
+        "preset",
+        "public_direct",
+        "root_dir",
+        "quiet",
+        "debug",
+        "json_log",
+        "open_browser",
+        "tls",
+        "letsencrypt",
+        "sslip",
+        "acme_staging",
+        "auth",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +85,133 @@ def _digest(path: Path, expected: dict[str, Any]) -> None:
     common._require(digest.hexdigest() == expected["sha256"], "release_state_invalid")
 
 
+@contextmanager
+def _maintenance_cli(options: PublicProbeOptions, plan: dict[str, Any]) -> Iterator[Path]:
+    """Execute an exact public target independently of the installed current link."""
+    release = plan["releases"]["target"]
+    name = f"xferry-{release['version']}-{options.platform}"
+    expected = release["platforms"][options.platform]["assets"][name]
+    source = options.assets_root / release["tag"] / name
+    _digest(source, expected)
+    # The public assets mount is read-only and not executable. The dedicated
+    # container gives /var/tmp an exec tmpfs, separate from its noexec /tmp.
+    with tempfile.TemporaryDirectory(prefix="xferry-public-controller-", dir="/var/tmp") as root:
+        executable = Path(root) / "xferry"
+        with ExitStack() as handles:
+            source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            reader = handles.enter_context(os.fdopen(source_fd, "rb"))
+            target_fd = os.open(executable, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+            writer = handles.enter_context(os.fdopen(target_fd, "wb"))
+            remaining = expected["size"]
+            while remaining:
+                chunk = reader.read(min(64 * 1024, remaining))
+                common._require(bool(chunk), "release_state_invalid")
+                writer.write(chunk)
+                remaining -= len(chunk)
+            common._require(not reader.read(1), "release_state_invalid")
+            writer.flush()
+            os.fsync(writer.fileno())
+        _digest(executable, expected)
+        yield executable
+
+
+def _cli_contract(executable: Path, version: str) -> str:
+    """Inspect authenticated bytes, never retry a failed operation with other flags."""
+    output = common._command((str(executable), "--version"), environment=_environment())
+    common._require(
+        output in {f"xferry {version}".encode(), f"xferry {version}\n".encode()},
+        "cli_version_mismatch",
+    )
+    help_text = common._command(
+        (str(executable), "setup", "--help"), environment=_environment()
+    ).decode("utf-8")
+    canonical = re.search(r"(?<![\w-])--access(?=$|[\s\]=,{])", help_text) is not None
+    legacy = re.search(r"(?<![\w-])--private(?=$|[\s\]=,{])", help_text) is not None
+    common._require(canonical != legacy, "command_output_invalid")
+    return "canonical" if canonical else "legacy"
+
+
+def _config_entries(payload: bytes) -> dict[tuple[str, str], str]:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read_string(payload.decode("utf-8"))
+    common._require(not parser.defaults(), "state_preservation_failed")
+    return {
+        (section, name): value
+        for section in parser.sections()
+        for name, value in parser.items(section)
+    }
+
+
+def _configuration_transition(
+    paths: common.SystemPaths, before: bytes, previous_unit: bytes
+) -> dict[str, object]:
+    """Independently prove the private baseline's conversion, without exporting values."""
+    old = _config_entries(before)
+    after = _config_entries(common._regular_bytes(paths.config, common.MAX_HEALTH_BYTES))
+
+    def enabled(name: str) -> bool:
+        values = [value for (_section, key), value in old.items() if key == name]
+        common._require(len(values) <= 1, "state_preservation_failed")
+        value = values[0].strip().lower() if values else "false"
+        common._require(
+            value in {"true", "yes", "on", "1", "false", "no", "off", "0"},
+            "state_preservation_failed",
+        )
+        return value in {"true", "yes", "on", "1"}
+
+    # Public acceptance deliberately creates a private loopback baseline.
+    # Everything except the retired spellings must retain its exact INI value.
+    root = old.get(("server", "root_dir"))
+    common._require(root == str(paths.data_root), "state_preservation_failed")
+    common._require(
+        old.get(("server", "preset"), "local") == "local"
+        and not any(enabled(name) for name in ("public_direct", "tls", "letsencrypt", "sslip")),
+        "state_preservation_failed",
+    )
+    files = old.get(("server", "files_dir"), str(paths.data_root / "uploads"))
+    common._require(Path(files).is_absolute(), "state_preservation_failed")
+    expected = {key: value for key, value in old.items() if key[1] not in _RETIRED}
+    expected.update(
+        {
+            ("server", "access"): "private",
+            ("server", "host"): old.get(("server", "host"), "127.0.0.1"),
+            ("server", "files_dir"): files,
+            ("server", "log_level"): "debug"
+            if enabled("debug")
+            else "warning"
+            if enabled("quiet")
+            else "info",
+            ("server", "log_format"): "json" if enabled("json_log") else "text",
+            ("tls", "https_mode"): "off",
+        }
+    )
+    common._require(after == expected, "state_preservation_failed")
+    unit = common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES)
+    lines = unit.decode("utf-8").splitlines()
+    common._require(
+        unit != previous_unit
+        and b"--check-config" in previous_unit
+        and b"--check-config" not in unit
+        and f"Environment=XFERRY_STATE_HOME={root}" in lines
+        and f"ExecStartPre={paths.release_root}/current/xferry config check --config {paths.config}"
+        in lines
+        and f"ExecStart={paths.release_root}/current/xferry run --config {paths.config}" in lines,
+        "state_preservation_failed",
+    )
+    for line in previous_unit.decode("utf-8").splitlines():
+        if line.startswith(
+            ("User=", "Group=", "Protect", "NoNewPrivileges=", "ReadWritePaths=", "UMask=")
+        ):
+            common._require(line in lines, "state_preservation_failed")
+    return {
+        "transition": "legacy-to-canonical",
+        "values_preserved": True,
+        "files_path_preserved": True,
+        "state_path_preserved": True,
+        "unit_updated": True,
+    }
+
+
 def _release_state(
     paths: common.SystemPaths,
     version: str,
@@ -98,7 +247,7 @@ def _inputs(options: PublicProbeOptions) -> dict[str, Any]:
     )
     common._require(
         isinstance(document, dict)
-        and document.get("schema") == 1
+        and document.get("schema") == SCHEMA
         and document.get("scope") == "managed-public-lifecycle-plan"
         and document.get("repository") == "kgmnotes/xferry",
         "fixture_layout_invalid",
@@ -112,8 +261,6 @@ def _inputs(options: PublicProbeOptions) -> dict[str, Any]:
     )
     # The parent has already authenticated both signed release identities. Keep
     # the child path grammar narrow before using either tag as a local component.
-    import re
-
     tags = []
     for role in ("previous", "target"):
         release = document["releases"][role]
@@ -142,10 +289,11 @@ def _inputs(options: PublicProbeOptions) -> dict[str, Any]:
 def run_public_probe(
     options: PublicProbeOptions, paths: common.SystemPaths = common.SYSTEM_PATHS
 ) -> dict[str, object]:
-    evidence: dict[str, Any] = {"schema": 1, "scope": SCOPE, "status": "failed", "stages": []}
+    evidence: dict[str, Any] = {"schema": SCHEMA, "scope": SCOPE, "status": "failed", "stages": []}
     stage: dict[str, Any] = {"phase": "guard", "status": "started"}
     evidence["stages"].append(stage)
     phase = "guard"
+    owned = ExitStack()
     try:
         evidence["host"] = common.guard_host(
             distro=options.distro,
@@ -158,6 +306,8 @@ def run_public_probe(
         plan = _inputs(options)
         previous = plan["releases"]["previous"]["version"]
         target = plan["releases"]["target"]["version"]
+        controller = owned.enter_context(_maintenance_cli(options, plan))
+        target_contract = _cli_contract(controller, target)
         stage["status"] = "passed"
         phase = "install"
         stage = {"phase": phase, "status": "started"}
@@ -166,21 +316,30 @@ def run_public_probe(
         # The unchanged verified installer performs real public HTTPS downloads.
         common._command(("sh", str(installer)), environment=_environment())
         common._version(paths, previous)
+        previous_contract = _cli_contract(paths.cli, previous)
+        common._require(
+            not (previous_contract == "canonical" and target_contract == "legacy"),
+            "command_output_invalid",
+        )
+        evidence["cliContracts"] = {"previous": previous_contract, "target": target_contract}
+        conversion = previous_contract == "legacy" and target_contract == "canonical"
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))
         stage.update(service=common._service(False), status="passed")
 
         phase = "setup"
         stage = {"phase": phase, "status": "started"}
         evidence["stages"].append(stage)
+        setup_flags = (
+            ("--access", "private") if previous_contract == "canonical" else ("--private",)
+        )
         setup = common._json_command(
-            (str(paths.cli), "setup", "--private", "--json"),
+            (str(paths.cli), "setup", *setup_flags, "--json"),
             environment=_environment(),
             discard_stderr=True,
         )
-        common._require(
-            set(setup) == {"exit_code", "status", "url"}
-            and setup["url"] == "http://127.0.0.1:8080",
-            "setup_outcome_invalid",
+        common._setup_outcome(
+            setup,
+            files_dir=paths.data_root / "files" if previous_contract == "canonical" else None,
         )
         common._version(paths, previous)
         common.verify_health(previous, paths)
@@ -190,6 +349,8 @@ def run_public_probe(
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(b"xferry public managed lifecycle sentinel\n")
         baseline = common._state_hashes(paths)
+        baseline_config = common._regular_bytes(paths.config, common.MAX_HEALTH_BYTES)
+        baseline_unit = common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES)
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))
         stage.update(service=common._service(True), health=True, status="passed")
 
@@ -221,9 +382,11 @@ def run_public_probe(
             stage = {"phase": phase, "status": "started"}
             evidence["stages"].append(stage)
             if phase in {"dry_run", "update"}:
-                argv = [str(paths.cli), "update", "--to", target]
+                argv = [str(controller), "update", "--to", target]
                 if phase == "dry_run":
                     argv.append("--dry-run")
+                if target_contract == "canonical":
+                    argv.extend(("--config", str(paths.config)))
                 result = common._json_command((*argv, "--json"), environment=_environment())
                 version = previous if phase == "dry_run" else target
                 common._require(
@@ -238,9 +401,11 @@ def run_public_probe(
                     "update_outcome_invalid",
                 )
             else:
-                argv = [str(paths.cli), phase]
+                argv = [str(controller), phase]
                 if phase == "rollback":
                     argv.extend(("--to", previous))
+                if target_contract == "canonical":
+                    argv.extend(("--config", str(paths.config)))
                 result = common._json_command((*argv, "--json"), environment=_environment())
                 common._require(
                     set(result)
@@ -257,6 +422,17 @@ def run_public_probe(
                 if phase == "rollback":
                     common._require(result["version"] == previous, "rollback_outcome_invalid")
             preserved = common._preservation(baseline, paths)
+            if phase == "update" and conversion:
+                # Do not label rewritten INI bytes as unchanged. The separate
+                # proof checks every retained value and the selected state/files.
+                stage["configuration"] = _configuration_transition(
+                    paths, baseline_config, baseline_unit
+                )
+                preserved.pop("config")
+            if phase in {"dry_run", "rollback"}:
+                preserved["unit"] = (
+                    common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES) == baseline_unit
+                )
             common._require(all(preserved.values()), "state_preservation_failed")
             stage["preserved"] = preserved
             if phase == "uninstall":
@@ -280,6 +456,8 @@ def run_public_probe(
         code = str(exc) if isinstance(exc, common.ProbeFailure) else "probe_failed"
         stage.update(status="failed", code=code)
         evidence["failure"] = {"phase": phase, "code": code}
+    finally:
+        owned.close()
     options.evidence.parent.mkdir(parents=True, exist_ok=True)
     options.evidence.write_text(
         json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"

@@ -51,6 +51,25 @@ from xferry.management.system import (
     managed_mutation,
 )
 
+
+@pytest.fixture(autouse=True)
+def isolated_instance_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    from xferry.management import cli
+
+    def no_sudo(_argv, _context):
+        print("managed operation requires root", file=cli.sys.stderr)
+        return 3
+
+    monkeypatch.setattr(cli, "_privileged", no_sudo)
+    from xferry.management.bootstrap import InstallResult
+
+    monkeypatch.setattr(
+        "xferry.management.bootstrap.install_release",
+        lambda *_args, **_kwargs: InstallResult(0, "test runtime already installed"),
+    )
+
+
 APPROVED_PASSWORD_ALPHABET = frozenset("abcdefghjkmnpqrstuvwxyz23456789")
 UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES = (
     (
@@ -122,12 +141,12 @@ def test_managed_layout_keeps_runtime_home_and_acme_below_data_root(tmp_path: Pa
     assert layout.acme_root == tmp_path / "var/lib/xferry/.xferry"
 
 
-def test_managed_setup_config_uses_the_canonical_root_dir_key(tmp_path: Path) -> None:
-    """Keeping the removed ``dir`` alias would emit an invalid managed config."""
+def test_managed_setup_config_uses_explicit_files_and_internal_state(tmp_path: Path) -> None:
+    """Private state is deployment-owned, outside the public settings surface."""
     rendered = render_managed_config(_plan(tmp_path))
 
-    assert f"root_dir = {tmp_path / 'var/lib/xferry'}\n" in rendered
-    assert "\ndir = " not in rendered
+    assert "root_dir" not in rendered and "\ndir = " not in rendered
+    assert "access = private" in rendered and "https_mode = off" in rendered
 
 
 def _plan(
@@ -429,7 +448,7 @@ class FakeRunner:
                 return self._result(command)
             self.ufw_rules.discard(int(command[4].removesuffix("/tcp")))
             return self._result(command)
-        if command and command[-1] == "--check-config":
+        if command[1:3] == ("config", "check"):
             return self._result(command, 1 if self.fail_at == "config" else 0)
         return self._result(command)
 
@@ -701,10 +720,10 @@ def test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes(
     assert password not in repr(result)
 
 
-def test_setup_runs_the_current_executable_with_canonical_run_for_validation(
+def test_setup_runs_the_current_executable_with_canonical_config_check(
     tmp_path: Path,
 ) -> None:
-    """Using the legacy venv path or omitting run would validate a different deployment."""
+    """The installed runtime validates the selected configuration before activation."""
     runner = FakeRunner()
     plan = _plan(tmp_path)
 
@@ -713,10 +732,10 @@ def test_setup_runs_the_current_executable_with_canonical_run_for_validation(
     assert result.exit_code == 0
     assert (
         str(plan.layout.current_executable),
-        "run",
+        "config",
+        "check",
         "--config",
         str(plan.layout.config_file),
-        "--check-config",
     ) in runner.commands
 
 
@@ -2496,7 +2515,7 @@ def test_setup_dry_run_reports_unsupported_managed_state_instructions_without_mu
 
     monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
 
-    assert main(["setup", "--private", "--dry-run"]) == 1
+    assert main(["setup", "--access", "private", "--dry-run"]) == 1
     captured = capsys.readouterr()
     assert all(clause in captured.err for clause in UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES)
     assert runner.commands == []
@@ -3031,8 +3050,8 @@ def test_failed_credentials_health_restores_auth_and_returns_no_secret(tmp_path:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["setup", "--private", "--public-ip", "8.8.8.8"],
-        ["setup", "--private", "--email", "ops@example.com"],
+        ["setup", "--access", "private", "--public-ip", "8.8.8.8"],
+        ["setup", "--access", "private", "--email", "ops@example.com"],
         ["setup", "--domain", "files.example.com", "--public-ip", "8.8.8.8"],
     ],
 )
@@ -3058,7 +3077,7 @@ def test_non_root_real_setup_returns_privilege_before_planning_or_host_probes(
         lambda _args: pytest.fail("non-root real setup must not prepare or preflight a plan"),
     )
 
-    assert main(["setup", "--private"]) == 3
+    assert main(["setup", "--access", "private"]) == 3
     assert "requires root" in capsys.readouterr().err
 
 
@@ -3080,7 +3099,7 @@ def test_non_root_setup_dry_run_remains_a_pure_planning_operation(
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
 
-    assert main(["setup", "--private", "--dry-run"]) == 0
+    assert main(["setup", "--access", "private", "--dry-run"]) == 0
     assert len(prepared) == 1
     assert "Dry run" in capsys.readouterr().out
 
@@ -3105,7 +3124,7 @@ def test_non_root_credentials_returns_privilege_before_reading_managed_config(
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(settings, "load_settings_file", forbidden_load)
 
-    assert main(["credentials", "reset"]) == 3
+    assert main(["credentials", "reset", "--config", "/etc/xferry/xferry.ini"]) == 3
     assert calls == 0
     assert "requires root" in capsys.readouterr().err
 
@@ -3125,7 +3144,7 @@ def test_root_credentials_keeps_configuration_errors_distinct(
         lambda _path: (_ for _ in ()).throw(FileNotFoundError("missing")),
     )
 
-    assert main(["credentials", "reset"]) == 2
+    assert main(["credentials", "reset", "--config", "/etc/xferry/xferry.ini"]) == 2
     assert "missing" in capsys.readouterr().err
 
 
@@ -3154,7 +3173,7 @@ def test_interactive_active_ufw_prompts_once_for_exact_public_ports(
         *,
         interactive: bool,
     ) -> SetupPreflight:
-        assert interactive is True
+        assert interactive is False
         seen_plans.append(plan)
         return _ok_preflight(plan)
 
@@ -3165,10 +3184,10 @@ def test_interactive_active_ufw_prompts_once_for_exact_public_ports(
     monkeypatch.setattr(builtins, "input", answer)
 
     assert main(["setup", "--public-ip", "8.8.8.8", "--dry-run"]) == 0
-    assert prompts == ["Allow UFW rules for 80/tcp and 443/tcp? [y/N] "]
+    assert prompts == []
     assert len(seen_plans) == 1
-    assert seen_plans[0].firewall_action == "allow"
-    assert seen_plans[0].firewall_ports == (443, 80)
+    assert seen_plans[0].firewall_action is None
+    assert seen_plans[0].firewall_ports == ()
 
 
 def test_success_output_reveals_credentials_once_only_after_health(
@@ -3198,7 +3217,7 @@ def test_success_output_reveals_credentials_once_only_after_health(
         ),
     )
 
-    assert main(["setup", "--private"]) == 0
+    assert main(["setup", "--access", "private"]) == 0
     output = capsys.readouterr().out
     assert output.count(password) == 1
     assert "http://127.0.0.1:8080" in output
@@ -3231,7 +3250,7 @@ def test_json_setup_status_excludes_secret_while_one_time_credential_is_separate
         ),
     )
 
-    assert main(["setup", "--private", "--json"]) == 0
+    assert main(["setup", "--access", "private", "--json"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload == {

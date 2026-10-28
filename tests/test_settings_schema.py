@@ -38,23 +38,23 @@ from xferry.settings_schema import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_schema_covers_all_51_public_runtime_fields_in_dataclass_order() -> None:
+def test_schema_covers_all_public_runtime_fields_in_dataclass_order() -> None:
     runtime_fields = tuple(
         settings_field.name
         for settings_field in fields(ServerSettings)
         if not settings_field.name.startswith("_")
     )
 
-    assert len(runtime_fields) == 51
-    assert tuple(spec.name for spec in SETTING_SPECS) == runtime_fields
-    assert tuple(SETTING_SPEC_BY_NAME) == runtime_fields
-    assert len(ENV_TO_SETTING_MAP) == 51
-    assert len(CLI_TO_SETTING_MAP) == 47
+    public_fields = tuple(spec.name for spec in SETTING_SPECS)
+    assert len(public_fields) == 44
+    assert set(public_fields) <= set(runtime_fields)
+    assert tuple(SETTING_SPEC_BY_NAME) == public_fields
+    assert len(ENV_TO_SETTING_MAP) == 44
+    assert len(CLI_TO_SETTING_MAP) == 41
     assert (
         {spec.name for spec in SETTING_SPECS if spec.cli is None}
         == set(NO_CLI_SETTING_NAMES)
         == {
-            "public_direct",
             "plugin_allowlist",
             "plugins_allow_public_direct",
             "plugins_override_core",
@@ -75,13 +75,13 @@ def test_schema_records_an_explicit_disposition_for_every_target_and_field() -> 
         "active",
     )
     assert tuple(spec.name for spec in sample_specs("public-direct"))[:7] == (
-        "preset",
+        "access",
+        "https_mode",
+        "log_level",
+        "log_format",
         "host",
         "port",
-        "root_dir",
-        "public_direct",
-        "json_log",
-        "workers",
+        "files_dir",
     )
 
 
@@ -233,13 +233,13 @@ def test_ascii_whitespace_and_plugin_csv_grammars_remain_distinct() -> None:
 
 
 def test_redaction_policy_is_schema_owned_and_paths_are_not_secrets() -> None:
-    assert {spec.name for spec in SETTING_SPECS if spec.redaction == "secret"} == {"auth"}
+    assert {spec.name for spec in SETTING_SPECS if spec.redaction == "secret"} == set()
 
     rendered = ServerSettings(
         auth="researcher:credential", auth_file="/run/xferry/auth"
     ).to_redacted_dict()
 
-    assert rendered["auth"] == "***"
+    assert "auth" not in rendered
     assert rendered["auth_file"] == "/run/xferry/auth"
 
 
@@ -251,7 +251,9 @@ def test_ini_entry_helper_preserves_external_list_grammars_and_empty_shape() -> 
     assert render_ini_entry("plugin_allowlist", ("one:plugin", "two:plugin")) == (
         "plugin_allowlist = one:plugin, two:plugin"
     )
-    assert render_ini_entry("public_direct", True, commented=True) == ("# public_direct = true")
+    assert render_ini_entry("encrypted_uploads", True, commented=True) == (
+        "# encrypted_uploads = true"
+    )
     assert format_ini_value("body_timeout", 300.0) == "300"
     with pytest.raises(ValueError, match="unknown settings field"):
         render_ini_entry("remote_update", True)

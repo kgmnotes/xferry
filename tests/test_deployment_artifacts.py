@@ -16,12 +16,13 @@ from pathlib import Path
 import pytest
 
 from tools import check_stale_docs
-from xferry.settings import LaunchPreset, load_settings_file
+from xferry.config import __version__
+from xferry.settings import load_settings_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("document", ["docs/public-direct.md", "docs/operations.md"])
+@pytest.mark.parametrize("document", ["docs/operations.md"])
 def test_documented_public_compose_commands_set_required_health_host(
     tmp_path: Path, document: str
 ) -> None:
@@ -62,7 +63,7 @@ def test_documented_public_compose_commands_set_required_health_host(
     prefix = ["compose", "-f", "deploy/docker/docker-compose.public-direct.yml"]
     expected = [prefix + ["up", "-d"]]
     if document == "docs/operations.md":
-        expected += [prefix + ["down"], prefix + ["down", "--volumes"]]
+        expected += [prefix + ["down"]]
     assert [line.split("\t")[:-1] for line in capture.read_text().splitlines()] == expected
 
 
@@ -234,7 +235,7 @@ def test_systemd_public_direct_config_and_unit_are_valid() -> None:
     settings = load_settings_file(config_path)
     settings.validate()
 
-    assert settings.preset is LaunchPreset.PUBLIC_DIRECT
+    assert settings.access == "public"
     assert settings.public_direct is True
     assert settings.auth_file == "/etc/xferry/auth"
     assert settings.body_memory_budget_mb is not None
@@ -245,7 +246,7 @@ def test_systemd_public_direct_config_and_unit_are_valid() -> None:
 
     service = service_path.read_text(encoding="utf-8")
     assert (
-        "ExecStartPre=/opt/xferry/current/xferry run --config /etc/xferry/xferry.ini --check-config"
+        "ExecStartPre=/opt/xferry/current/xferry config check --config /etc/xferry/xferry.ini"
     ) in service
     assert "ExecStart=/opt/xferry/current/xferry run --config /etc/xferry/xferry.ini" in service
     assert "User=xferry" in service
@@ -319,7 +320,7 @@ def test_systemd_install_script_delegates_arguments_to_the_managed_scie(
     )
 
     result = subprocess.run(
-        ["bash", str(script_path), "--private", "--dry-run"],
+        ["bash", str(script_path), "--access", "private", "--dry-run"],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -330,7 +331,8 @@ def test_systemd_install_script_delegates_arguments_to_the_managed_scie(
     assert result.returncode == 0, result.stderr
     assert capture.read_text(encoding="utf-8").splitlines() == [
         "setup",
-        "--private",
+        "--access",
+        "private",
         "--dry-run",
     ]
 
@@ -375,7 +377,7 @@ def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_confi
     settings = load_settings_file(config_path)
     settings.validate()
 
-    assert settings.preset is LaunchPreset.PUBLIC_DIRECT
+    assert settings.access == "public"
     assert settings.public_direct is True
     assert settings.host == "0.0.0.0"
     assert settings.port == 8443
@@ -390,7 +392,7 @@ def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_confi
     compose = compose_path.read_text(encoding="utf-8")
     assert "name: xferry-public-direct" in compose
     assert "    build:" not in compose
-    assert "image: ghcr.io/kgmnotes/xferry:v0.2.0" in compose
+    assert f"image: ghcr.io/kgmnotes/xferry:v{__version__}" in compose
     assert "ghcr.io/kgmnotes/xferry:latest" not in compose
     assert "container_name:" not in compose
     assert "    command:\n      - run\n      - --config" in compose
@@ -433,20 +435,20 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
 
     for document in (readme, quick_start):
         assert "pipx install xferry" in document
-        assert "ghcr.io/kgmnotes/xferry:v0.2.0" in document
+        assert "archive/0.2.0-installation.md" in document
         assert "ghcr.io/kgmnotes/xferry:latest" not in document
         assert "curl | sudo sh" not in document
 
     assert "git clone https://github.com/kgmnotes/xferry.git" not in quick_start
-    assert "xferry run --preset local --open" in quick_start
+    assert "xferry run --open" in quick_start
     assert quick_start.index("## Portable") < quick_start.index("## Managed Linux")
     assert quick_start.index("## Managed Linux") < quick_start.index("## Container")
 
-    assert "sudo xferry update --to 0.2.0" in operations
-    assert "sudo xferry rollback" in operations
-    assert "sudo xferry uninstall" in operations
+    assert "xferry update --to VERSION" in operations
+    assert "xferry rollback" in operations
+    assert "xferry uninstall" in operations
     assert "ghcr.io/kgmnotes/xferry@sha256:" in operations
-    assert "down --volumes" in operations
+    assert "--volumes" in operations
     assert "destructive" in operations
     normalized_contributing = re.sub(r"\s+", " ", contributing)
     assert "source checkout is the contributor workflow" in normalized_contributing
@@ -585,13 +587,12 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
     security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
     for required in (
-        "ghcr.io/kgmnotes/xferry:v0.2.0",
+        "archive/0.2.0-installation.md",
         "ghcr.io/kgmnotes/xferry@sha256:",
-        "/etc/xferry/auth",
-        "--write-sample-config",
-        "--check-config",
-        "--print-config",
-        "--config /run/secrets/xferry-curl.conf",
+        "protected file-backed authentication",
+        "xferry config check",
+        "xferry config show --all",
+        "--user USER",
         "direct TCP peer",
         '"health":"ready"',
     ):
@@ -608,19 +609,19 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
         assert required in security
 
 
-def test_operator_docs_define_launch_presets_and_capacity_boundaries() -> None:
+def test_operator_docs_define_access_modes_and_capacity_boundaries() -> None:
     corpus = "\n".join(
         (REPO_ROOT / path).read_text(encoding="utf-8")
-        for path in ("docs/quick-start.md", "docs/operations.md", "SECURITY.md")
+        for path in ("docs/quick-start.md", "docs/operations.md", "docs/settings.md", "SECURITY.md")
     )
 
-    for preset in ("local", "local-secure", "public-direct"):
-        assert preset in corpus
-    assert "body-memory-budget" in corpus
+    for mode in ("access=private", "access=public", "access=lab"):
+        assert mode in corpus
+    assert "body_memory_budget_mb" in corpus
     assert "RSS ceiling" in corpus
     assert "WebSocket" in corpus
     assert "worker" in corpus
-    assert "file-backed credentials" in corpus
+    assert "file-backed authentication" in corpus
 
 
 @pytest.mark.parametrize(
@@ -790,7 +791,7 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
     assert "--output-dir 'dist/scie-${{ matrix.platform }}'" in scie_job
     assert 'PATH=/nonexistent "$executable" run --version' in scie_job
     assert 'PATH=/nonexistent "$executable" --help' in scie_job
-    assert 'PATH=/nonexistent "$executable" run --check-config' in scie_job
+    assert 'PATH=/nonexistent "$executable" config check' in scie_job
     assert "xferry-release.json" in scie_job
     assert "SHA256SUMS" in scie_job
     assert "ReleaseManifest.parse_new" in scie_job
@@ -861,4 +862,7 @@ def test_compose_contributor_commands_start_the_server_via_run() -> None:
     """Catches Compose forwarding server flags to the removed root CLI surface."""
     compose = (REPO_ROOT / "examples/docker/docker-compose.yml").read_text(encoding="utf-8")
 
-    assert compose.count("    command:\n      - run\n      - --host") == 3
+    assert (
+        compose.count("    command:\n      - run\n      - --access\n      - lab\n      - --host")
+        == 3
+    )

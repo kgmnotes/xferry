@@ -195,6 +195,17 @@ material. Release automation must sign both `xferry-release.json` and
 
 ### Privileged installer verification order
 
+The packaged `xferry setup --to VERSION` command performs download and
+verification with the embedded public-key ring before executing the privileged
+installer. Bootstrap that CLI from the same exact PyPI version through pipx;
+this path requires a release containing the new command. It does not require
+a source checkout. Manifest version/platform and installer signatures are
+verified before the downloaded script can run. Existing installations retain
+their managed update and rollback lifecycle.
+
+For existing releases without the packaged bootstrap command, use the manual
+verification procedure below.
+
 The required shape is download, offline verification with the shipped
 public-key ring, and only then explicit privileged execution. Prerequisites
 are Python available as `python` and a reviewed checkout containing

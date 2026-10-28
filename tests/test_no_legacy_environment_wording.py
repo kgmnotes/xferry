@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ACTIVE_SURFACE_PATHS = (
@@ -17,7 +19,8 @@ ACTIVE_SURFACE_PATHS = (
 )
 
 OBSOLETE_ENVIRONMENT_PATTERN = re.compile(
-    r"\b" + "la" + r"b\b|" + "la" + r"b-only|" + "la" + r"b_|" + "la" + r"b%|%20" + "la" + r"b",
+    r"\bfixturelab(?:\b|_)|\blab[-_]only\b|"
+    r"\blab[ _-](?:environment|deployment)\b",
     re.IGNORECASE,
 )
 
@@ -59,3 +62,18 @@ def test_active_surface_does_not_use_obsolete_environment_wording() -> None:
                 offenders.append(f"{rel_path}:{line_number}: {line.strip()}")
 
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["access = lab", "private/public/lab", "--access lab", "lab-network-access", "lab testing"],
+)
+def test_canonical_lab_access_is_not_obsolete_deployment_wording(text: str) -> None:
+    assert OBSOLETE_ENVIRONMENT_PATTERN.search(text) is None
+
+
+@pytest.mark.parametrize(
+    "text", ["fixturelab", "fixturelab.example", "fixturelab_server", "lab-only", "lab_environment"]
+)
+def test_obsolete_deployment_names_still_fail_the_guard(text: str) -> None:
+    assert OBSOLETE_ENVIRONMENT_PATTERN.search(text) is not None

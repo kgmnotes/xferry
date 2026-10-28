@@ -59,10 +59,11 @@ class ServiceStatus:
     enabled: str
     service: str
     health: str = "unknown"
+    files_dir: str | None = None
 
     def to_json(self) -> dict[str, object]:
         """Return fixed English machine fields with no config or credential contents."""
-        return {
+        result: dict[str, object] = {
             "config": self.config,
             "enabled": self.enabled,
             "exit_code": self.exit_code,
@@ -71,6 +72,9 @@ class ServiceStatus:
             "service": self.service,
             "status": "ok" if self.exit_code == 0 else "error",
         }
+        if self.files_dir is not None:
+            result["files_dir"] = self.files_dir
+        return result
 
 
 @dataclass(frozen=True)
@@ -122,10 +126,12 @@ class DoctorReport:
 def default_service_context() -> ServiceContext:
     """Build the real managed context without starting or modifying the service."""
     layout = ManagedLayout()
+    from .managed_files import managed_files_path
+
     return ServiceContext(
         layout=layout,
         runner=CommandRunner(),
-        facts=lambda: detect_host_facts(data_path=layout.data_root),
+        facts=lambda: detect_host_facts(data_path=managed_files_path(layout)),
     )
 
 
@@ -138,8 +144,16 @@ def service_status(context: ServiceContext) -> ServiceStatus:
     enabled = _enabled_state(context.runner)
     service = _service_state(context.runner)
     exit_code = _status_exit(installation, config, service)
-    del settings
-    return ServiceStatus(exit_code, installation, config, enabled, service)
+    files_dir = None
+    if settings is not None:
+        from .managed_files import deployment_metadata_path, managed_files_path
+
+        if deployment_metadata_path(context.layout).exists():
+            try:
+                files_dir = str(managed_files_path(context.layout))
+            except (OSError, ValueError):
+                pass
+    return ServiceStatus(exit_code, installation, config, enabled, service, files_dir=files_dir)
 
 
 def service_action(action: Literal["start", "stop", "restart"], context: ServiceContext) -> int:
@@ -210,6 +224,14 @@ def run_doctor(options: DoctorOptions, context: ServiceContext) -> DoctorReport:
         config,
         "configuration valid" if config == "valid" else "configuration unavailable",
     )
+    from .managed_files import deployment_metadata_path, managed_files_path
+
+    if deployment_metadata_path(context.layout).exists():
+        try:
+            path = managed_files_path(context.layout)
+            checks["files"] = DoctorCheck("available" if path.is_dir() else "missing", str(path))
+        except (OSError, ValueError):
+            checks["files"] = DoctorCheck("unavailable", "files directory metadata invalid")
 
     state = _service_state(context.runner)
     checks["service"] = DoctorCheck(state, f"service {state}")
@@ -273,10 +295,10 @@ def _load_candidate_config(
     result = runner.run(
         (
             str(layout.current_executable),
-            "run",
+            "config",
+            "check",
             "--config",
             str(layout.config_file),
-            "--check-config",
         )
     )
     return (settings, "valid") if result.returncode == 0 else (None, "invalid")
@@ -311,6 +333,15 @@ def _endpoint(settings: ServerSettings | None) -> HealthEndpoint | None:
     host = settings.domain
     if host is None and settings.sslip and settings.public_ip:
         host = sslip_domain_for_ip(settings.public_ip)
+    if host is None and tls and settings.allowed_hosts:
+        host = next(
+            (
+                item
+                for item in settings.allowed_hosts
+                if item not in {"127.0.0.1", "localhost", "::1"}
+            ),
+            settings.allowed_hosts[0],
+        )
     if host is None:
         host = "127.0.0.1"
     return HealthEndpoint("127.0.0.1", settings.port, host, tls=tls)

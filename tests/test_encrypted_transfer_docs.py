@@ -87,13 +87,14 @@ def test_api_documents_exact_euf_v1_wire_and_error_contract() -> None:
 
 
 def test_operations_document_configuration_recovery_and_resource_smoke() -> None:
-    operations = _read("docs/operations.md")
+    operations = _read("docs/encrypted-transfers.md")
+    assert "encrypted-transfers.md" in _read("docs/operations.md")
 
     for snippet in (
         "encrypted_uploads = true",
         "encrypted_upload_max_size_mb = 0",
         "encrypted_upload_incomplete_ttl_seconds = 604800",
-        "uploads/.xferry-encrypted/",
+        "<files_dir>/.xferry-encrypted/",
         ".xferry/encrypted-uploads/",
         "partial -> committing -> complete",
         "XFERRY_RUN_2GIB_SMOKE=1",

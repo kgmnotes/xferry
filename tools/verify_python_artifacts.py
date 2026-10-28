@@ -401,12 +401,12 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
         ((str(console), "--version"), False),
         ((str(console), "run", "--help"), True),
         ((str(console), "run", "--version"), False),
-        ((str(console), "run", "--check-config"), False),
+        ((str(console), "config", "check"), False),
         ((str(python), "-m", "xferry", "--help"), True),
         ((str(python), "-m", "xferry", "--version"), False),
         ((str(python), "-m", "xferry", "run", "--help"), True),
         ((str(python), "-m", "xferry", "run", "--version"), False),
-        ((str(python), "-m", "xferry", "run", "--check-config"), False),
+        ((str(python), "-m", "xferry", "config", "check"), False),
     )
     for command, quiet_stdout in commands:
         _run_checked(
@@ -485,9 +485,10 @@ def _server_lifecycle_smoke(*, venv_dir: Path, probe_dir: Path, workspace: Path)
         "127.0.0.1",
         "--port",
         str(port),
-        "--dir",
-        str(probe_dir),
-        "--quiet",
+        "--files-dir",
+        str(probe_dir / "files"),
+        "--log-level",
+        "warning",
     )
     print(f"+ bounded server lifecycle: {shlex.join(command)}", flush=True)
     terminated = False

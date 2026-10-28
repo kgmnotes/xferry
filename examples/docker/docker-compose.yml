@@ -48,12 +48,14 @@ services:
     # the auth-tls profile below when TLS/auth is required.
     command:
       - run
+      - --access
+      - lab
       - --host
       - 0.0.0.0
       - --port
       - "8080"
-      - --dir
-      - /data
+      - --files-dir
+      - /data/uploads
 
   xferry-auth-tls:
     profiles:
@@ -81,13 +83,16 @@ services:
       - xferry_auth
     command:
       - run
+      - --access
+      - lab
       - --host
       - 0.0.0.0
       - --port
       - "8443"
-      - --dir
-      - /data
-      - --tls
+      - --files-dir
+      - /data/uploads
+      - --https
+      - self-signed
       - --auth-file
       - /run/secrets/xferry_auth
     healthcheck:
@@ -145,24 +150,29 @@ services:
     # Auth on the HTTPS service.
     command:
       - run
+      - --access
+      - lab
       - --host
       - 0.0.0.0
       - --port
       - "8443"
-      - --dir
-      - /data
+      - --files-dir
+      - /data/uploads
       - --auth-file
       - /run/secrets/xferry_auth
-      - --sslip
+      - --https
+      - auto
       - --acme-http-port
       - "8080"
       # For dry runs before production issuance, uncomment:
-      # - --acme-staging
+      # - --acme-server
+      # - staging
       # If auto-detection sees the wrong NAT address, uncomment and set:
       # - --public-ip
       # - <global-ipv4>
-      # For a real domain instead of sslip.io, replace --sslip with:
-      # - --letsencrypt
+      # For a real domain instead of sslip.io, replace --https auto with:
+      # - --https
+      # - domain
       # - --domain
       # - files.example.com
     # The image healthcheck probes plain HTTP on :8080. ACME/TLS/auth modes

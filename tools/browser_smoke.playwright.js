@@ -324,6 +324,20 @@ async (page) => {
     await dialog.waitFor({ state: "detached", timeout });
   }
 
+  async function confirmFilesFolderClear(timeout = 10000) {
+    await confirmAppDialog(
+      /Delete all files and subfolders in the selected files folder, including files added manually\? Hidden service files will be preserved\.|Удалить все файлы и подпапки в выбранной папке файлов, включая добавленные вручную\? Служебные скрытые файлы будут сохранены\./,
+      timeout
+    );
+  }
+
+  async function confirmNotesClear(timeout = 10000) {
+    await confirmAppDialog(
+      /Delete all notes\? Files in the files folder will not be touched\.|Удалить все заметки\? Файлы в папке обмена не будут затронуты\./,
+      timeout
+    );
+  }
+
   async function assertSharedDialogRoleContract(timeout = 10000) {
     await page.locator("#themeBtn").focus();
 
@@ -4473,9 +4487,6 @@ async (page) => {
         const status = document.getElementById("uploadStatus");
         const dropZone = document.getElementById("dropZone");
         const uploadButton = document.getElementById("uploadBtn");
-        const compareProfilesButton = document.getElementById("uploadCompareBtn");
-        const compareMethodsButton = document.getElementById("uploadCompareMethodsBtn");
-        const comparisonActions = document.getElementById("uploadComparisonActions");
         const selection = document.getElementById("uploadSelectionState");
         const fileInputs = document.querySelectorAll("#upload-tab input[type='file']");
         const dropRect = dropZone?.getBoundingClientRect();
@@ -4493,9 +4504,6 @@ async (page) => {
           dropRect.height > 0 &&
           uploadButton &&
           uploadButton.disabled &&
-          compareProfilesButton?.disabled &&
-          compareMethodsButton?.disabled &&
-          comparisonActions?.hidden === true &&
           selection?.classList.contains("sr-only") &&
           buttonRect &&
           buttonRect.width > 0 &&
@@ -4570,7 +4578,6 @@ async (page) => {
       const dropZone = document.getElementById("dropZone");
       const button = document.getElementById("uploadBtn");
       const selection = document.getElementById("uploadSelectionState");
-      const comparisonActions = document.getElementById("uploadComparisonActions");
       const mode = document.getElementById("uploadMimeMode");
       if (!row || !dropZone || !button || !selection || !mode) {
         throw new Error("Upload picker action geometry targets are missing");
@@ -4604,7 +4611,6 @@ async (page) => {
         },
         selectionVisuallyHidden: selection.classList.contains("sr-only"),
         selectionText: selection.textContent?.trim() || "",
-        comparisonsHidden: comparisonActions?.hidden === true,
         customControlAbsent: !document.getElementById("uploadCustomMime"),
         mimeOptions: Array.from(mode.options).map(option => option.value),
         technicalOpen: document.getElementById("uploadTechnicalDetails")?.open,
@@ -4628,7 +4634,6 @@ async (page) => {
     if (
       empty.selectionVisuallyHidden !== true ||
       !/^(No files selected|Файлы не выбраны)$/.test(empty.selectionText) ||
-      empty.comparisonsHidden !== true ||
       empty.customControlAbsent !== true ||
       empty.mimeOptions.join(",") !== "auto,octet-stream,text-plain,pdf" ||
       empty.button.disabled !== true ||
@@ -4637,7 +4642,6 @@ async (page) => {
       Math.abs(empty.drop.bottom - empty.button.bottom) > tolerance ||
       Math.abs(empty.drop.height - empty.button.height) > tolerance ||
       selected.selectionVisuallyHidden !== true ||
-      selected.comparisonsHidden !== true ||
       selected.button.disabled !== false ||
       Math.abs(selected.drop.top - selected.button.top) > tolerance ||
       Math.abs(selected.drop.bottom - selected.button.bottom) > tolerance ||
@@ -6118,18 +6122,56 @@ async (page) => {
     );
   }
 
+  async function captureRequestPanelDemoUpload(slug, method = "POST", timeout = 15000) {
+    const filenamePattern = new RegExp(`^request-panel-${slug}-[a-f0-9]{24}\\.txt$`);
+    const response = await page.waitForResponse((candidate) => {
+      const request = candidate.request();
+      return request.method() === method &&
+        requestPathname(request) === "/" &&
+        filenamePattern.test(request.headers()["x-file-name"] || "");
+    }, { timeout });
+    const payload = await response.json();
+    const canonicalPath = payload?.file?.path;
+    if (
+      response.status() !== 201 ||
+      typeof canonicalPath !== "string" ||
+      !canonicalPath.startsWith("/uploads/") ||
+      canonicalPath === "/uploads/"
+    ) {
+      throw new Error(`Request-panel demo upload returned an invalid canonical path (${slug})`);
+    }
+    return {
+      canonicalPath,
+      requestedName: response.request().headers()["x-file-name"],
+    };
+  }
+
   async function runRequestPanelMethodScenario({
     method,
     initialPath = "/",
     expectedRequestPath,
     expectedPathInput,
     expectedStatus,
+    demoSlug = null,
     responseIncludes = [],
     previewIncludes = [],
     timeout = 15000,
   }) {
     await page.locator("#pathInput").fill(initialPath);
+    const demoUpload = demoSlug
+      ? captureRequestPanelDemoUpload(
+        demoSlug, ["POST", "PUT", "PATCH", "NONE"].includes(method) ? method : "POST", timeout
+      )
+      : null;
     await triggerRequestMethod(method);
+    const created = demoUpload ? await demoUpload : null;
+    const resolveExpectation = (value) => created && value
+      ? value.replaceAll("$demoPath", created.canonicalPath)
+        .replaceAll("$demoName", created.canonicalPath.split("/").pop())
+        .replaceAll("$requestedDemoName", created.requestedName)
+      : value;
+    expectedRequestPath = resolveExpectation(expectedRequestPath);
+    expectedPathInput = resolveExpectation(expectedPathInput);
     await waitForRequestPanelResponse(method, expectedStatus, expectedRequestPath, timeout);
 
     if (expectedPathInput) {
@@ -6137,7 +6179,7 @@ async (page) => {
     }
 
     const responseText = (await page.locator("#responseArea").innerText()).trim();
-    for (const expectedText of responseIncludes) {
+    for (const expectedText of responseIncludes.map(resolveExpectation)) {
       if (!responseText.includes(expectedText)) {
         throw new Error(`Request panel ${method} response missing "${expectedText}": ${responseText}`);
       }
@@ -6145,7 +6187,9 @@ async (page) => {
 
     await waitForRequestPreview(method, expectedRequestPath, timeout);
     const previewText = (await page.locator("#requestPreviewArea").innerText()).trim();
-    for (const expectedText of [`${method} ${expectedRequestPath} HTTP/1.1`, ...previewIncludes]) {
+    for (const expectedText of [
+      `${method} ${expectedRequestPath} HTTP/1.1`, ...previewIncludes.map(resolveExpectation)
+    ]) {
       if (!previewText.includes(expectedText)) {
         throw new Error(`Request panel ${method} preview missing "${expectedText}": ${previewText}`);
       }
@@ -6153,7 +6197,7 @@ async (page) => {
 
     await waitForLiveRegionText("responseAreaLive", `${method} ${expectedRequestPath} ${expectedStatus}`, timeout);
 
-    return responseText;
+    return { responseText, path: expectedRequestPath, pathInput: expectedPathInput };
   }
 
   async function triggerRequestMethod(method) {
@@ -6254,10 +6298,12 @@ async (page) => {
     await assertResponseViewState("summary");
     await assertResponseSummary("GET", "/index.html", ["GET", "/index.html", "200 OK"], 15000);
     await page.locator("#pathInput").fill("/ignored-post");
+    const previewPostUpload = captureRequestPanelDemoUpload("post");
     await triggerRequestMethod("POST");
+    const previewPostFile = await previewPostUpload;
     await waitForRequestPanelResponse("POST", 201, "/", 15000);
     await waitForRequestPreview("POST", "/", 15000);
-    await waitForValue("#pathInput", "/uploads/request-panel-post.txt", 15000);
+    await waitForValue("#pathInput", previewPostFile.canonicalPath, 15000);
     await assertRequestPreviewSummary("POST", "/", ["POST", "/", "201 Created"], 15000);
     await assertRequestPreviewComparison({
       method: "POST",
@@ -6553,13 +6599,14 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "POST",
+      demoSlug: "post",
       initialPath: "/ignored-post",
       expectedRequestPath: "/",
-      expectedPathInput: "/uploads/request-panel-post.txt",
+      expectedPathInput: "$demoPath",
       expectedStatus: 201,
-      responseIncludes: ['"path": "/uploads/request-panel-post.txt"'],
+      responseIncludes: ['"path": "$demoPath"'],
       previewIncludes: [
-        "X-File-Name: request-panel-post.txt",
+        "X-File-Name: $requestedDemoName",
         "Content-Type: text/plain; charset=utf-8",
         "Content-Length:",
         "request-panel demo via POST",
@@ -6568,13 +6615,14 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "PUT",
+      demoSlug: "put",
       initialPath: "/ignored-put",
       expectedRequestPath: "/",
-      expectedPathInput: "/uploads/request-panel-put.txt",
+      expectedPathInput: "$demoPath",
       expectedStatus: 201,
-      responseIncludes: ['"path": "/uploads/request-panel-put.txt"'],
+      responseIncludes: ['"path": "$demoPath"'],
       previewIncludes: [
-        "X-File-Name: request-panel-put.txt",
+        "X-File-Name: $requestedDemoName",
         "Content-Type: text/plain; charset=utf-8",
         "Content-Length:",
         "request-panel demo via PUT",
@@ -6583,13 +6631,14 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "PATCH",
+      demoSlug: "patch",
       initialPath: "/ignored-patch",
       expectedRequestPath: "/",
-      expectedPathInput: "/uploads/request-panel-patch.txt",
+      expectedPathInput: "$demoPath",
       expectedStatus: 201,
-      responseIncludes: ['"path": "/uploads/request-panel-patch.txt"'],
+      responseIncludes: ['"path": "$demoPath"'],
       previewIncludes: [
-        "X-File-Name: request-panel-patch.txt",
+        "X-File-Name: $requestedDemoName",
         "Content-Type: text/plain; charset=utf-8",
         "Content-Length:",
         "request-panel demo via PATCH",
@@ -6598,14 +6647,15 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "DELETE",
+      demoSlug: "delete",
       initialPath: "/ignored-delete",
-      expectedRequestPath: "/uploads/request-panel-delete.txt",
-      expectedPathInput: "/uploads/request-panel-delete.txt",
+      expectedRequestPath: "$demoPath",
+      expectedPathInput: "$demoPath",
       expectedStatus: 200,
       responseIncludes: [
         '"deleted_file"',
-        '"name":"request-panel-delete.txt"',
-        '"path":"/uploads/request-panel-delete.txt"',
+        '"name":"$demoName"',
+        '"path":"$demoPath"',
       ],
     });
 
@@ -6646,13 +6696,14 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "NONE",
+      demoSlug: "none",
       initialPath: "/ignored-none",
       expectedRequestPath: "/",
-      expectedPathInput: "/uploads/request-panel-none.txt",
+      expectedPathInput: "$demoPath",
       expectedStatus: 201,
-      responseIncludes: ['"path": "/uploads/request-panel-none.txt"'],
+      responseIncludes: ['"path": "$demoPath"'],
       previewIncludes: [
-        "X-File-Name: request-panel-none.txt",
+        "X-File-Name: $requestedDemoName",
         "Content-Type: text/plain; charset=utf-8",
         "Content-Length:",
         "request-panel demo via NONE",
@@ -6671,27 +6722,29 @@ async (page) => {
 
     await runRequestPanelMethodScenario({
       method: "SMUGGLE",
+      demoSlug: "smuggle",
       initialPath: "/ignored-smuggle",
-      expectedRequestPath: "/uploads/request-panel-smuggle.txt",
-      expectedPathInput: "/uploads/request-panel-smuggle.txt",
+      expectedRequestPath: "$demoPath",
+      expectedPathInput: "$demoPath",
       expectedStatus: 200,
       responseIncludes: ['"artifact"', '"url":"/uploads/smuggle_'],
     });
 
-    const fetchPath = "/uploads/request-panel-fetch.txt";
-    await runRequestPanelMethodScenario({
+    const fetchScenario = await runRequestPanelMethodScenario({
       method: "FETCH",
+      demoSlug: "fetch",
       initialPath: "/ignored-fetch",
-      expectedRequestPath: fetchPath,
-      expectedPathInput: fetchPath,
+      expectedRequestPath: "$demoPath",
+      expectedPathInput: "$demoPath",
       expectedStatus: 200,
       responseIncludes: ["HTTP/1.1 200 OK"],
     });
 
+    const fetchPath = fetchScenario.pathInput;
     const downloadButton = page.locator("#responseArea [data-download-path]");
     await downloadButton.waitFor({ state: "attached", timeout: 10000 });
 
-    const fetchFileName = "request-panel-fetch.txt";
+    const fetchFileName = decodeURIComponent(fetchPath.split("/").pop());
     const downloadPromise = page.waitForEvent("download");
     await downloadButton.click();
     await waitForPageCondition(
@@ -9616,7 +9669,7 @@ async (page) => {
     const uploadNameToPreserve = uploadPathToPreserve.split("/").pop();
 
     await page.locator("#notepadClearBtn").click();
-    await confirmAppDialog(/notes\//, 10000);
+    await confirmNotesClear(10000);
     await waitForPageCondition(
       "notepad notes cleared",
       () => {
@@ -9895,7 +9948,7 @@ async (page) => {
       (request) => request.method() === "DELETE" && /\/uploads(?:\?|$)/.test(request.url()),
       { timeout: 10000 }
     );
-    await confirmAppDialog(/uploads\//, 10000);
+    await confirmFilesFolderClear(10000);
     const clearRequest = await clearRequestPromise;
     const clearRequestTarget = clearRequest.url().replace(/^https?:\/\/[^/]+/, "");
     if (clearRequestTarget !== "/uploads?clear=true") {
@@ -10577,7 +10630,6 @@ async (page) => {
           customAbsent: !document.getElementById("uploadCustomMime"),
           errorAbsent: !document.getElementById("uploadMimeError"),
         },
-        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
       };
     });
     if (
@@ -10595,8 +10647,7 @@ async (page) => {
       initialContract.mime.labels.join(",") !==
         "Auto,application/octet-stream,text/plain,application/pdf" ||
       initialContract.mime.customAbsent !== true ||
-      initialContract.mime.errorAbsent !== true ||
-      initialContract.comparisonsHidden !== true
+      initialContract.mime.errorAbsent !== true
     ) {
       throw new Error(`Basic profile radio contract failed: ${JSON.stringify(initialContract)}`);
     }
@@ -10630,7 +10681,6 @@ async (page) => {
       const mode = document.getElementById("uploadMimeMode");
       return {
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
-        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
         modeInvalid: mode.getAttribute("aria-invalid"),
         options: Array.from(mode?.options || []).map(option => option.value),
         customAbsent: !document.getElementById("uploadCustomMime"),
@@ -10642,7 +10692,6 @@ async (page) => {
     });
     if (
       mimePreset.sendDisabled !== false ||
-      mimePreset.comparisonsHidden !== true ||
       mimePreset.modeInvalid !== "false" ||
       mimePreset.options.join(",") !== "auto,octet-stream,text-plain,pdf" ||
       mimePreset.customAbsent !== true ||
@@ -10952,7 +11001,6 @@ async (page) => {
       const app = window.XferryApp;
       const http = app.service("http");
       const calls = [];
-      const multiFileCompareStates = [];
       const batchStatusSnapshots = [];
       let active = 0;
       let maxActive = 0;
@@ -11037,11 +11085,6 @@ async (page) => {
           { type: "text/plain" }
         ));
         app.invoke("upload", "handle-files", files);
-        multiFileCompareStates.push({
-          profile,
-          compareProfilesDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-          compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
-        });
         await app.invoke("upload", "send");
         batchStatusSnapshots.push({
           message: document.getElementById("uploadStatusMessage")?.textContent || "",
@@ -11054,7 +11097,6 @@ async (page) => {
       http["reset-adapter"]();
       return {
         calls,
-        multiFileCompareStates,
         batchStatusSnapshots,
         maxActive,
         state: app.getState("upload"),
@@ -11066,10 +11108,6 @@ async (page) => {
     if (
       queuedSend.calls.length !== 8 ||
       queuedSend.maxActive !== 1 ||
-      queuedSend.multiFileCompareStates.length !== 4 ||
-      queuedSend.multiFileCompareStates.some((state) => (
-        state.compareProfilesDisabled !== true || state.compareMethodsDisabled !== true
-      )) ||
       queuedSend.batchStatusSnapshots.length !== 4 ||
       queuedSend.batchStatusSnapshots.some((snapshot) => (
         snapshot.metaHidden !== true ||
@@ -11249,16 +11287,12 @@ async (page) => {
         sessionActive: session.getSnapshot().active,
         targetPath: app.getState("upload").targetPath,
         sendDisabled: document.getElementById("uploadBtn")?.disabled,
-        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
       };
     });
     if (
       coexistenceSetup.sessionActive !== true ||
       coexistenceSetup.targetPath !== "/api" ||
-      coexistenceSetup.sendDisabled !== false ||
-      coexistenceSetup.compareDisabled !== false ||
-      coexistenceSetup.compareMethodsDisabled !== false
+      coexistenceSetup.sendDisabled !== false
     ) {
       throw new Error(
         `Basic/Advanced session coexistence setup failed: ${JSON.stringify(coexistenceSetup)}`
@@ -11331,170 +11365,6 @@ async (page) => {
     const targetPathLabelRu = await page.locator("#uploadTargetPathTitle").textContent();
     await switchLanguage("en");
 
-    const compareSetup = await page.evaluate(() => {
-      const app = window.XferryApp;
-      app.invoke("upload", "set-method", "POST");
-      app.invoke("upload", "set-profile", "multipart");
-      app.invoke("upload", "handle-files", [
-        new File(
-          [new TextEncoder().encode("basic compare while advanced is active")],
-          "basic-compare-coexists.txt",
-          { type: "text/plain" }
-        ),
-      ]);
-      return {
-        pendingCount: app.getState("upload").pendingCount,
-        targetPath: app.getState("upload").targetPath,
-        sessionActive: app.service("advanced-session").getSnapshot().active,
-        compareDisabled: document.getElementById("uploadCompareBtn")?.disabled,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
-        comparisonsHidden: document.getElementById("uploadComparisonActions")?.hidden,
-      };
-    });
-    const compareResponses = [];
-    const captureCompareResponse = (response) => {
-      const request = response.request();
-      if (
-        request.method() === "POST" &&
-        (
-          requestPathname(request).startsWith("/api/") ||
-          requestPathname(request) === "/api"
-        )
-      ) {
-        compareResponses.push({
-          status: response.status(),
-          path: requestPathname(request),
-          sessionHeaderAbsent: !request.headers()["x-xferry-advanced-session"],
-        });
-      }
-    };
-    page.on("response", captureCompareResponse);
-    await page.evaluate(() => {
-      document.getElementById("uploadComparisonActions").hidden = false;
-    });
-    await page.locator("#uploadCompareBtn").click();
-    await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
-    const profileConfirmation = await page.evaluate(() => ({
-      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
-      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
-      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
-        ?.textContent?.trim() || "",
-    }));
-    await page.locator('#appDialog [data-dialog-action="confirm"]').click();
-    await waitForPageCondition(
-      "real Basic comparison settles while Advanced session stays active",
-      () => {
-        const app = window.XferryApp;
-        const state = app.getState("upload");
-        return state.actionPhase === "idle" &&
-          state.compareResults.length === 4 &&
-          state.compareResults.every((result) => result.verdict !== "not-run") &&
-          app.service("advanced-session").getSnapshot().active === true;
-      },
-      null,
-      15000
-    );
-    page.off("response", captureCompareResponse);
-    const actualBasicCompare = await page.evaluate(() => {
-      const app = window.XferryApp;
-      const snapshot = app.service("advanced-session").getSnapshot();
-      const results = app.getState("upload").compareResults;
-      const rows = Array.from(document.querySelectorAll("[data-upload-compare-result]"));
-      return {
-        sessionActive: snapshot.active,
-        sessionPhase: snapshot.phase,
-        axis: app.getState("upload").compareAxis,
-        profiles: results.map((result) => result.profile),
-        verdicts: results.map((result) => result.verdict),
-        domProfiles: rows.map((row) => row.dataset.uploadCompareResult),
-        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
-        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
-        requestTraces: rows.map((row) => (
-          row.querySelector("[data-upload-compare-request]")?.textContent || ""
-        )),
-        requestTracesPresent: rows.every((row) => Boolean(
-          row.querySelector("[data-upload-compare-request]")?.textContent
-        )),
-        responseTracesPresent: rows.every((row) => Boolean(
-          row.querySelector("[data-upload-compare-response]")?.textContent
-        )),
-      };
-    });
-
-    const methodCompareSetup = await page.evaluate(() => {
-      const app = window.XferryApp;
-      app.invoke("upload", "set-profile", "raw-header");
-      const mode = document.getElementById("uploadMimeMode");
-      if (!mode) throw new Error("Upload MIME controls are missing");
-      mode.value = "pdf";
-      mode.dispatchEvent(new Event("change", { bubbles: true }));
-      return {
-        profile: app.getState("upload").profile,
-        summaryMime: document.querySelector('[data-upload-summary="mime"]')?.textContent,
-        compareMethodsDisabled: document.getElementById("uploadCompareMethodsBtn")?.disabled,
-      };
-    });
-    const methodCompareResponses = [];
-    const expectedMethods = ["POST", "NONE", "PUT", "PATCH"];
-    const captureMethodCompareResponse = (response) => {
-      const request = response.request();
-      if (
-        expectedMethods.includes(request.method()) &&
-        requestPathname(request) === "/api"
-      ) {
-        methodCompareResponses.push({
-          method: request.method(),
-          status: response.status(),
-          path: requestPathname(request),
-          sessionHeaderAbsent: !request.headers()["x-xferry-advanced-session"],
-        });
-      }
-    };
-    page.on("response", captureMethodCompareResponse);
-    await page.locator("#uploadCompareMethodsBtn").click();
-    await page.locator('#appDialog [role="alertdialog"]').waitFor({ state: "visible" });
-    const methodConfirmation = await page.evaluate(() => ({
-      title: document.getElementById("appDialogTitle")?.textContent?.trim() || "",
-      message: document.getElementById("appDialogMessage")?.textContent?.trim() || "",
-      action: document.querySelector('#appDialog [data-dialog-action="confirm"]')
-        ?.textContent?.trim() || "",
-    }));
-    await page.locator('#appDialog [data-dialog-action="confirm"]').click();
-    await waitForPageCondition(
-      "real Basic method comparison settles while Advanced session stays active",
-      () => {
-        const app = window.XferryApp;
-        const state = app.getState("upload");
-        return state.actionPhase === "idle" &&
-          state.compareAxis === "method" &&
-          state.compareResults.length === 4 &&
-          state.compareResults.every((result) => result.verdict !== "not-run") &&
-          app.service("advanced-session").getSnapshot().active === true;
-      },
-      null,
-      15000
-    );
-    page.off("response", captureMethodCompareResponse);
-    const actualMethodCompare = await page.evaluate(() => {
-      const app = window.XferryApp;
-      const results = app.getState("upload").compareResults;
-      const rows = Array.from(document.querySelectorAll("[data-upload-compare-result]"));
-      return {
-        axis: app.getState("upload").compareAxis,
-        methods: results.map((result) => result.method),
-        profiles: results.map((result) => result.profile),
-        verdicts: results.map((result) => result.verdict),
-        domValues: rows.map((row) => row.dataset.uploadCompareResult),
-        domAxes: rows.map((row) => row.dataset.uploadCompareAxis),
-        title: document.getElementById("uploadCompareResultsTitle")?.textContent?.trim() || "",
-        requestTraces: rows.map((row) => (
-          row.querySelector("[data-upload-compare-request]")?.textContent || ""
-        )),
-        responseTraces: rows.map((row) => (
-          row.querySelector("[data-upload-compare-response]")?.textContent || ""
-        )),
-      };
-    });
     const basicAdvancedCoexistence = {
       ...coexistenceSetup,
       actualBasicSend,
@@ -11502,14 +11372,6 @@ async (page) => {
       singleStatusRu,
       targetPathLabelRu,
       singleStatusMobile,
-      compareSetup,
-      profileConfirmation,
-      actualBasicCompare,
-      compareResponses,
-      methodCompareSetup,
-      methodConfirmation,
-      actualMethodCompare,
-      methodCompareResponses,
     };
     if (
       actualBasicSend.status !== 201 ||
@@ -11535,65 +11397,7 @@ async (page) => {
       singleStatusMobile.statusVisible !== true ||
       singleStatusMobile.documentWidth > singleStatusMobile.viewportWidth + 1 ||
       singleStatusMobile.statusRight > singleStatusMobile.viewportWidth + 1 ||
-      singleStatusMobile.metaRight > singleStatusMobile.viewportWidth + 1 ||
-      compareSetup.pendingCount !== 1 ||
-      compareSetup.targetPath !== "/api" ||
-      compareSetup.sessionActive !== true ||
-      compareSetup.compareDisabled !== false ||
-      compareSetup.compareMethodsDisabled !== false ||
-      compareSetup.comparisonsHidden !== true ||
-      profileConfirmation.action !== "Create 4 files" ||
-      !profileConfirmation.message.includes("Multipart") ||
-      !profileConfirmation.message.includes("No filename") ||
-      compareResponses.length !== 4 ||
-      compareResponses.some((response) => (
-        response.status !== 201 || response.sessionHeaderAbsent !== true
-      )) ||
-      actualBasicCompare.sessionActive !== true ||
-      actualBasicCompare.sessionPhase !== "active" ||
-      actualBasicCompare.axis !== "profile" ||
-      actualBasicCompare.profiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
-      actualBasicCompare.domProfiles.join(",") !== "multipart,raw-url,raw-header,raw-generated" ||
-      actualBasicCompare.domAxes.some((axis) => axis !== "profile") ||
-      actualBasicCompare.title !== "Profile comparison" ||
-      actualBasicCompare.verdicts.some((verdict) => verdict !== "delivered") ||
-      actualBasicCompare.requestTracesPresent !== true ||
-      actualBasicCompare.responseTracesPresent !== true ||
-      actualBasicCompare.requestTraces.some((trace, index) => {
-        const expectedPaths = [
-          "/api",
-          "/api/basic-compare-coexists.txt",
-          "/api",
-          "/api",
-        ];
-        return !trace.includes(`POST ${expectedPaths[index]} HTTP/1.1`);
-      }) ||
-      methodCompareSetup.profile !== "raw-header" ||
-      methodCompareSetup.summaryMime !== "application/pdf" ||
-      methodCompareSetup.compareMethodsDisabled !== false ||
-      methodConfirmation.action !== "Create 4 files" ||
-      !expectedMethods.every((method) => methodConfirmation.message.includes(method)) ||
-      methodCompareResponses.length !== 4 ||
-      methodCompareResponses.map((response) => response.method).join(",") !==
-        expectedMethods.join(",") ||
-      methodCompareResponses.some((response) => (
-        response.status !== 201 ||
-        response.path !== "/api" ||
-        response.sessionHeaderAbsent !== true
-      )) ||
-      actualMethodCompare.axis !== "method" ||
-      actualMethodCompare.methods.join(",") !== expectedMethods.join(",") ||
-      actualMethodCompare.profiles.some((profile) => profile !== "raw-header") ||
-      actualMethodCompare.verdicts.some((verdict) => verdict !== "delivered") ||
-      actualMethodCompare.domValues.join(",") !== expectedMethods.join(",") ||
-      actualMethodCompare.domAxes.some((axis) => axis !== "method") ||
-      actualMethodCompare.title !== "Method comparison" ||
-      actualMethodCompare.requestTraces.some((trace, index) => (
-        !trace.includes(`${expectedMethods[index]} /api HTTP/1.1`) ||
-        !trace.includes("Content-Type: application/pdf") ||
-        !trace.includes("X-File-Name: basic-compare-coexists.txt")
-      )) ||
-      actualMethodCompare.responseTraces.some((trace) => !trace.includes("HTTP/1.1 201"))
+      singleStatusMobile.metaRight > singleStatusMobile.viewportWidth + 1
     ) {
       throw new Error(
         `Real Basic/Advanced session coexistence failed: ${JSON.stringify(basicAdvancedCoexistence)}`
@@ -11603,8 +11407,6 @@ async (page) => {
       const app = window.XferryApp;
       await app.service("advanced-session").revoke();
       app.invoke("upload", "handle-files", []);
-      document.getElementById("uploadComparisonActions").hidden = true;
-      document.getElementById("uploadCompareResults").hidden = true;
     });
 
     await page.screenshot({
@@ -11619,21 +11421,18 @@ async (page) => {
     const mobile = await page.evaluate(() => {
       const group = document.getElementById("uploadProfileGroup");
       const targetPathGroup = document.getElementById("uploadTargetPathGroup");
-      const results = document.getElementById("uploadCompareResults");
       return {
         viewportWidth: innerWidth,
         documentWidth: document.documentElement.scrollWidth,
         groupWidth: group?.getBoundingClientRect().width || 0,
         targetPathGroupWidth: targetPathGroup?.getBoundingClientRect().width || 0,
-        resultsWidth: results?.getBoundingClientRect().width || 0,
       };
     });
     await page.setViewportSize({ width: 1440, height: 1024 });
     if (
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.groupWidth > mobile.viewportWidth ||
-      mobile.targetPathGroupWidth > mobile.viewportWidth ||
-      mobile.resultsWidth > mobile.viewportWidth
+      mobile.targetPathGroupWidth > mobile.viewportWidth
     ) {
       throw new Error(`Basic upload mobile layout overflowed: ${JSON.stringify(mobile)}`);
     }
@@ -12067,7 +11866,7 @@ async (page) => {
       await page.evaluate(() => { window.__canonicalConsumerContract.state.phase = "clear-malformed"; });
       await page.locator("#filesGlobalActions > summary").click();
       await page.locator("#clearUploadsBtn").click();
-      await confirmAppDialog(/uploads\//, 10000);
+      await confirmFilesFolderClear(10000);
       await waitForPageCondition(
         "malformed clear 2xx is rejected",
         () => window.XferryApp.service("inspector").getInspectorState("files")?.response?.phase === "error",
@@ -12092,7 +11891,7 @@ async (page) => {
       await page.evaluate(() => { window.__canonicalConsumerContract.state.phase = "clear-success"; });
       await page.locator("#filesGlobalActions > summary").click();
       await page.locator("#clearUploadsBtn").click();
-      await confirmAppDialog(/uploads\//, 10000);
+      await confirmFilesFolderClear(10000);
       await waitForPageCondition(
         "canonical clear renders success and refreshes",
         () => {

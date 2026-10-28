@@ -1753,7 +1753,10 @@ function renderRequestError(method, path, error) {
 }
 
 function buildDemoFilename(slug) {
-    return `request-panel-${slug}.txt`;
+    const random = new Uint32Array(3);
+    window.crypto.getRandomValues(random);
+    const suffix = Array.from(random, value => value.toString(16).padStart(8, '0')).join('');
+    return `request-panel-${slug}-${suffix}.txt`;
 }
 
 function buildDemoUploadPath(filename) {
@@ -1772,42 +1775,9 @@ function getCanonicalUploadPath(text) {
     return path;
 }
 
-async function requestPanelUploadExists(path) {
-    if (!path || !path.startsWith('/uploads/')) return false;
-    const filename = path.slice('/uploads/'.length);
-    if (!filename || filename.includes('/')) return false;
-
-    try {
-        const response = await sendCustomRequest('INFO', SERVER_URL + '/uploads', null);
-        if (!response.ok) return false;
-        const text = await response.text();
-        const payload = parseJsonSafe(text);
-        return Boolean(
-            payload &&
-            Array.isArray(payload.contents) &&
-            payload.contents.some(item => item && item.name === filename)
-        );
-    } catch (_error) {
-        return false;
-    }
-}
-
-async function deleteUploadIfPresent(path) {
-    if (!path) return;
-    const exists = await requestPanelUploadExists(path);
-    if (!exists) return;
-
-    try {
-        await sendCustomRequest('DELETE', SERVER_URL + path, null);
-    } catch (_error) {
-        // Ignore cleanup failures; deterministic demo names are best-effort only.
-    }
-}
-
 async function createRequestPanelDemoFile(slug, label) {
     const filename = buildDemoFilename(slug);
     const uploadPath = buildDemoUploadPath(filename);
-    await deleteUploadIfPresent(uploadPath);
 
     const response = await sendCustomRequest(
         'POST',
@@ -2019,8 +1989,7 @@ async function buildRequestScenario(method, typedPath) {
         case 'NONE': {
             const filename = buildDemoFilename(method.toLowerCase());
             const uploadPath = buildDemoUploadPath(filename);
-            await deleteUploadIfPresent(uploadPath);
-            return {
+                    return {
                 path: '/',
                 body: buildDemoUploadBody(method, uploadPath),
                 headers: {

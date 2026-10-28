@@ -34,6 +34,7 @@ _STATE_SCHEMA_VERSION = 1
 _MAX_STATE_BYTES = 1024 * 1024
 _DATA_DIRECTORY_NAME = ".xferry-encrypted"
 _STATE_DIRECTORY_PARTS = (".xferry", "encrypted-uploads")
+_STORAGE_BINDING_NAME = "encrypted-storage-root"
 _SUPPORTED_FALLOCATE_ERRORS = frozenset(
     {
         errno.EINVAL,
@@ -135,6 +136,213 @@ def _require_number(value: object, *, field: str) -> float:
     return result
 
 
+def prepare_legacy_encrypted_binding(
+    state_dir: Path, files_dir: Path
+) -> tuple[Path, bytes, int, int] | None:
+    """Prepare an explicit old-layout adoption without touching journals or ciphertext.
+
+    The caller owns locking and atomic publication of the returned private file.
+    This function never instantiates the runtime store, reconciles, expires, or
+    creates storage directories. Every inspected directory is rechecked before
+    returning so replacing a mount or private parent cannot change the proposal.
+    """
+    message = "unsafe encrypted storage migration path; preserve the files and private state"
+    witnessed: dict[Path, os.stat_result] = {}
+
+    def directory(path: Path) -> os.stat_result | None:
+        absolute = path.expanduser().absolute()
+        current = Path(absolute.anchor)
+        metadata: os.stat_result | None = None
+        for component in absolute.parts[1:]:
+            current /= component
+            try:
+                metadata = current.lstat()
+            except FileNotFoundError:
+                return None
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise EncryptedStorageConflict(message)
+            before = witnessed.get(current)
+            if before is not None and (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_uid,
+                before.st_gid,
+            ) != (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_uid,
+                metadata.st_gid,
+            ):
+                raise EncryptedStorageConflict(message)
+            witnessed[current] = metadata
+        return metadata
+
+    def trusted_permissions(metadata: os.stat_result | None, *, private: bool = False) -> None:
+        if metadata is not None and (
+            metadata.st_mode & 0o022 or (private and stat.S_IMODE(metadata.st_mode) != 0o700)
+        ):
+            raise EncryptedStorageConflict(message)
+
+    def unchanged() -> None:
+        for path, before in witnessed.items():
+            try:
+                after = path.lstat()
+            except OSError as exc:
+                raise EncryptedStorageConflict(message) from exc
+            if (
+                not stat.S_ISDIR(after.st_mode)
+                or stat.S_ISLNK(after.st_mode)
+                or (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid)
+                != (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid)
+            ):
+                raise EncryptedStorageConflict(message)
+
+    state = Path(state_dir).expanduser().absolute()
+    files = Path(files_dir).expanduser().absolute()
+    state_metadata = directory(state)
+    files_metadata = directory(files)
+    private_dir = state / _STATE_DIRECTORY_PARTS[0]
+    private_metadata = directory(private_dir)
+    journals = private_dir / _STATE_DIRECTORY_PARTS[1]
+    journals_metadata = directory(journals)
+    ciphertext = files / _DATA_DIRECTORY_NAME
+    ciphertext_metadata = directory(ciphertext)
+
+    def check_permissions() -> None:
+        for metadata in (state_metadata, files_metadata, private_metadata):
+            trusted_permissions(metadata)
+        for metadata in (journals_metadata, ciphertext_metadata):
+            trusted_permissions(metadata, private=True)
+
+    def require_safe_capabilities() -> None:
+        if os.name != "posix" or any(
+            type(getattr(os, name, None)) is not int or not getattr(os, name, 0)
+            for name in ("O_NOFOLLOW", "O_NONBLOCK")
+        ):
+            raise ValueError(
+                "safe encrypted-state migration is unsupported on this platform; "
+                "preserve the ciphertext and private journals before migrating"
+            )
+
+    # Only now normalize: no lexical parent may hide a symlink.
+    state, files = state.resolve(), files.resolve()
+    target = state / _STATE_DIRECTORY_PARTS[0] / _STORAGE_BINDING_NAME
+    expected = (
+        None
+        if files_metadata is None
+        else {
+            "version": 1,
+            "files_dir": str(files),
+            "device": files_metadata.st_dev,
+            "inode": files_metadata.st_ino,
+        }
+    )
+    try:
+        saved = target.lstat()
+    except FileNotFoundError:
+        saved = None
+    if saved is not None:
+        require_safe_capabilities()
+        check_permissions()
+        if (
+            private_metadata is None
+            or not stat.S_ISREG(saved.st_mode)
+            or saved.st_nlink != 1
+            or saved.st_size > 4096
+            or stat.S_IMODE(saved.st_mode) != 0o600
+            or (saved.st_uid, saved.st_gid) != (private_metadata.st_uid, private_metadata.st_gid)
+        ):
+            raise EncryptedStorageConflict("invalid encrypted storage folder binding")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        descriptor = os.open(target, flags)
+        try:
+            current = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or (current.st_dev, current.st_ino, current.st_size)
+                != (saved.st_dev, saved.st_ino, saved.st_size)
+            ):
+                raise EncryptedStorageConflict("encrypted storage folder binding changed")
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                payload = stream.read(4097)
+            if len(payload) > 4096:
+                raise EncryptedStorageConflict("invalid encrypted storage folder binding")
+            binding = json.loads(payload, object_pairs_hook=_reject_duplicate_json_members)
+        except (UnicodeError, ValueError) as exc:
+            raise EncryptedStorageConflict("invalid encrypted storage folder binding") from exc
+        finally:
+            if descriptor != -1:
+                os.close(descriptor)
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"version", "files_dir", "device", "inode"}
+            or type(binding.get("version")) is not int
+            or binding["version"] != 1
+            or not isinstance(binding.get("files_dir"), str)
+            or type(binding.get("device")) is not int
+            or type(binding.get("inode")) is not int
+            or binding != expected
+        ):
+            raise EncryptedStorageConflict("files_dir does not match encrypted upload state")
+        latest = target.lstat()
+        if (latest.st_dev, latest.st_ino, latest.st_mode, latest.st_nlink) != (
+            saved.st_dev,
+            saved.st_ino,
+            saved.st_mode,
+            saved.st_nlink,
+        ):
+            raise EncryptedStorageConflict("encrypted storage folder binding changed")
+        unchanged()
+        return None
+
+    def existing_data(path: Path, *, records: bool) -> bool:
+        if path not in witnessed:
+            return False
+        found = False
+        for child in path.iterdir():
+            if records and not child.name.endswith(".json"):
+                continue
+            metadata = child.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (records and metadata.st_size > _MAX_STATE_BYTES)
+            ):
+                raise EncryptedStorageConflict("invalid encrypted upload migration state")
+            found = True
+        return found
+
+    has_records = existing_data(journals, records=True)
+    has_ciphertext = existing_data(ciphertext, records=False)
+    if not has_records and not has_ciphertext:
+        unchanged()
+        return None
+    if files != state / "uploads" or files_metadata is None or private_metadata is None:
+        raise EncryptedStorageConflict(
+            "files_dir does not match legacy encrypted upload state; preserve both folders"
+        )
+    require_safe_capabilities()
+    check_permissions()
+    unchanged()
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise EncryptedStorageConflict("encrypted storage folder binding changed")
+    assert expected is not None
+    return (
+        target,
+        json.dumps(expected, sort_keys=True).encode("utf-8"),
+        private_metadata.st_uid,
+        private_metadata.st_gid,
+    )
+
+
 class EncryptedStorageService:
     """Own encrypted partials, state sidecars, and crash reconciliation."""
 
@@ -146,6 +354,7 @@ class EncryptedStorageService:
         max_plaintext_size: int,
         incomplete_ttl: float,
         clock: Callable[[], float] | None = None,
+        allow_legacy_adoption: bool = True,
     ) -> None:
         if (
             isinstance(max_plaintext_size, bool)
@@ -171,8 +380,69 @@ class EncryptedStorageService:
         self.state_dir = self.root_dir.joinpath(*_STATE_DIRECTORY_PARTS)
         self._ensure_private_directory(self.data_dir)
         self._ensure_private_directory(self.state_dir)
+        self._bind_storage_root(allow_legacy_adoption=allow_legacy_adoption)
         self.reconcile()
         self.expire_incomplete()
+
+    def _bind_storage_root(self, *, allow_legacy_adoption: bool) -> None:
+        """Refuse to reconcile private journals against a different files folder.
+
+        Device/inode identity also detects a changed bind-mount source when
+        the runtime path stays the same. The binding lives outside both the
+        public file tree and the per-upload journal directory.
+        """
+        target = self.state_dir.parent / _STORAGE_BINDING_NAME
+        directory = self.upload_storage.upload_dir.resolve()
+        metadata = directory.stat()
+        binding = {
+            "version": 1,
+            "files_dir": str(directory),
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+        }
+        has_records = any(self.state_dir.glob("*.json"))
+        has_data = any(self.data_dir.iterdir())
+        old_binding: object | None = None
+        try:
+            saved_metadata = target.lstat()
+            if (
+                not stat.S_ISREG(saved_metadata.st_mode)
+                or saved_metadata.st_size > 4096
+                or saved_metadata.st_nlink != 1
+            ):
+                raise EncryptedStorageConflict("invalid encrypted storage folder binding")
+            old_binding = json.loads(target.read_text(encoding="utf-8"))
+            if (
+                not isinstance(old_binding, dict)
+                or set(old_binding) != set(binding)
+                or old_binding.get("version") != 1
+                or not isinstance(old_binding.get("files_dir"), str)
+                or type(old_binding.get("device")) is not int
+                or type(old_binding.get("inode")) is not int
+            ):
+                raise EncryptedStorageConflict("invalid encrypted storage folder binding")
+        except FileNotFoundError:
+            pass
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise EncryptedStorageConflict("invalid encrypted storage folder binding") from exc
+
+        legacy_directory = (self.root_dir / "uploads").resolve()
+        if old_binding is None:
+            incompatible = (directory != legacy_directory or not allow_legacy_adoption) and (
+                has_records or has_data
+            )
+        else:
+            incompatible = old_binding != binding and (has_records or has_data)
+        if incompatible:
+            raise EncryptedStorageConflict(
+                "files_dir does not match encrypted upload state; preserve both folders "
+                "and migrate encrypted data with its private state before changing the folder"
+            )
+        if old_binding != binding:
+            self._write_private_payload(
+                target,
+                json.dumps(binding, sort_keys=True).encode("utf-8"),
+            )
 
     @staticmethod
     def _ensure_private_directory(path: Path) -> None:
@@ -320,7 +590,10 @@ class EncryptedStorageService:
         if len(payload) > _MAX_STATE_BYTES:
             raise EncryptedTransferValidationError("encrypted recovery journal exceeds its limit")
         target = self._state_path(record.file_id)
-        temporary = self.state_dir / f".{record.file_id}.{secrets.token_hex(12)}.tmp"
+        self._write_private_payload(target, payload)
+
+    def _write_private_payload(self, target: Path, payload: bytes) -> None:
+        temporary = target.parent / f".{target.name}.{secrets.token_hex(12)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         descriptor: int | None = None
@@ -333,7 +606,7 @@ class EncryptedStorageService:
                 os.fchmod(stream.fileno(), 0o600)
                 os.fsync(stream.fileno())
             os.replace(temporary, target)  # noqa: PTH105 - atomic sidecar publication
-            self._fsync_directory(self.state_dir)
+            self._fsync_directory(target.parent)
         finally:
             if descriptor is not None:
                 os.close(descriptor)

@@ -340,7 +340,7 @@ def test_setup_cli_renders_stable_unsupported_host_json(
     preflight = check_setup_preflight(plan, _probes())
     monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, preflight))
 
-    assert main(["setup", "--private", "--dry-run", "--json"]) == 4
+    assert main(["setup", "--access", "private", "--dry-run", "--json"]) == 4
     payload = json.loads(capsys.readouterr().out)
     assert payload["code"] == "unsupported-platform"
     assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
@@ -450,12 +450,13 @@ def test_managed_config_delegates_shape_and_serialization_to_settings_schema(
     assert isinstance(values, dict)
     assert isinstance(field_names, list)
     assert set(field_names) == set(values)
-    assert values["root_dir"] == plan.layout.data_root
+    assert values["files_dir"] == plan.layout.data_root / "files"
+    assert "root_dir" not in values
     assert values["auth_file"] == plan.layout.auth_file
     assert values["allowed_hosts"] == (plan.domain,)
-    assert values["public_direct"] is True
-    assert values["sslip"] is True
-    assert values["letsencrypt"] is False
+    assert values["access"] == "public"
+    assert values["https_mode"] == "auto"
+    assert "public_direct" not in values and "sslip" not in values
 
 
 def test_rendered_private_config_loads_with_the_same_auth_and_quota_boundary(
@@ -541,16 +542,16 @@ def test_preflight_rejects_firewall_ports_outside_managed_public_set() -> None:
     assert [failure.code for failure in preflight.failures] == ["invalid-firewall-port"]
 
 
-def test_setup_cli_accepts_one_mode_and_resource_override_shape(
+def test_setup_cli_selects_access_and_calculates_resources(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Removing setup planning arguments would turn a valid dry run into usage failure."""
+    """Setup asks only for access; resource controls stay in configuration."""
     from xferry.management import cli
 
     def prepare(args: argparse.Namespace) -> tuple[object, SetupPreflight]:
         assert args.private is True
-        assert args.workers == 7
+        assert args.workers is None
         assert args.dry_run is True
         plan = build_setup_plan(
             SetupOptions(
@@ -568,16 +569,35 @@ def test_setup_cli_accepts_one_mode_and_resource_override_shape(
 
     monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
 
-    assert main(["setup", "--private", "--workers", "7", "--dry-run"]) == 0
+    assert main(["setup", "--access", "private", "--dry-run"]) == 0
     output = capsys.readouterr().out
     assert "Dry run" in output
-    assert "workers=7" in output
+    assert "Private HTTP" in output
+    assert "Files:" in output
 
 
 def test_setup_cli_rejects_mutually_exclusive_modes(capsys: pytest.CaptureFixture[str]) -> None:
     """Accepting public domain plus private mode would yield an ambiguous setup plan."""
-    assert main(["setup", "--domain", "files.example.com", "--private"]) == 2
-    assert "not allowed with argument" in capsys.readouterr().err
+    assert main(["setup", "--domain", "files.example.com", "--access", "private"]) == 2
+    assert "private" in capsys.readouterr().err
+
+
+@pytest.fixture(autouse=True)
+def isolated_instance_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    from xferry.management import cli
+
+    def no_sudo(_argv, _context):
+        print("managed operation requires root", file=cli.sys.stderr)
+        return 3
+
+    monkeypatch.setattr(cli, "_privileged", no_sudo)
+    from xferry.management.bootstrap import InstallResult
+
+    monkeypatch.setattr(
+        "xferry.management.bootstrap.install_release",
+        lambda *_args, **_kwargs: InstallResult(0, "test runtime already installed"),
+    )
 
 
 def _facts(*, ram_mib: int = 1024, cpu_count: int = 2, disk_free_mib: int = 8192) -> HostFacts:

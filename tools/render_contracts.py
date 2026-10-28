@@ -150,6 +150,7 @@ def render_managed_support_matrix() -> bytes:
 CLI_REFERENCE_COMMANDS: tuple[str, ...] = (
     "run",
     "setup",
+    "config",
     "status",
     "logs",
     "start",
@@ -157,7 +158,6 @@ CLI_REFERENCE_COMMANDS: tuple[str, ...] = (
     "restart",
     "doctor",
     "credentials",
-    "examples",
     "update",
     "rollback",
     "uninstall",
@@ -201,6 +201,38 @@ def render_cli_reference() -> bytes:
     return "\n".join(sections).encode("utf-8")
 
 
+def render_settings_reference() -> bytes:
+    """Describe every setting from the same portable metadata as config explain."""
+    from xferry.management.configuration import describe_settings
+
+    rows = describe_settings("", all_settings=True)
+    lines: list[str] = []
+    for group in dict.fromkeys(str(row["group"]) for row in rows):
+        lines.extend((f"### {group}", ""))
+        for row in rows:
+            if row["group"] != group:
+                continue
+            lines.extend((f"#### `{row['name']}`", "", str(row["description"]), ""))
+            default = (
+                "platform user data folder (see the table above)"
+                if row["name"] == "files_dir"
+                else _json_cell(row["default"])
+            )
+            unit = f"; unit: {row['unit']}" if row["unit"] else ""
+            lines.append(f"Default: {default}{unit}. {row['constraints']}")
+            if row["dependencies"]:
+                lines.extend(("", str(row["dependencies"])))
+            lines.extend(("", f"Applies to: {row['applicability']}. Change: {row['apply']}.", ""))
+            spec_section = str(row["ini"]).split(" ", 1)[0]
+            lines.extend(("```ini", spec_section, str(row["example"]), "```", ""))
+            interfaces = [f"Environment: `{row['environment']}`"]
+            flags = row["cli"]
+            if isinstance(flags, list) and flags:
+                interfaces.append("launch: " + ", ".join(_code_cell(flag) for flag in flags))
+            lines.extend(("; ".join(interfaces) + ".", ""))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 REGIONS: tuple[ContractRegion, ...] = (
     ContractRegion("xferry-contracts/core-methods", render_core_methods),
     ContractRegion(
@@ -217,6 +249,10 @@ TARGETS: tuple[ContractTarget, ...] = (
     ContractTarget("API.md", REGIONS),
     ContractTarget("docs/cli-reference.md", (CLI_REGION,)),
     ContractTarget("docs/managed-hosts.md", (MANAGED_HOSTS_REGION,)),
+    ContractTarget(
+        "docs/settings.md",
+        (ContractRegion("xferry-contracts/settings-reference", render_settings_reference),),
+    ),
 )
 
 

@@ -12,13 +12,13 @@ from xferry.settings import load_settings_text
 EXPECTED_PROFILE_VALUES = {
     "docker": {
         "port": 8443,
-        "root_dir": "/data",
+        "files_dir": "/data/files",
         "auth_file": "/run/secrets/xferry_auth",
         "acme_http_port": 8080,
     },
     "systemd": {
         "port": 443,
-        "root_dir": "/var/lib/xferry",
+        "files_dir": "/var/lib/xferry/files",
         "auth_file": "/etc/xferry/auth",
         "acme_http_port": 80,
     },
@@ -63,14 +63,27 @@ def test_repository_settings_regions_are_current_and_parseable() -> None:
         document = (render_settings.REPO_ROOT / target.path).read_bytes()
         settings = load_settings_text(_generated_body(document, target.profile).decode("utf-8"))
         expected = EXPECTED_PROFILE_VALUES[target.profile]
-        assert settings.public_direct is True
+        assert settings.access == "public"
         assert settings.port == expected["port"]
-        assert settings.root_dir == expected["root_dir"]
+        assert settings.files_dir == expected["files_dir"]
+        assert "root_dir =" not in _generated_body(document, target.profile).decode("utf-8")
         assert settings.auth_file == expected["auth_file"]
         assert settings.acme_http_port == expected["acme_http_port"]
         assert settings.plugin_allowlist == ()
         assert settings.allowed_hosts == ()
         assert "remote_update" not in document.decode("utf-8").casefold()
+
+
+@pytest.mark.parametrize("profile,state_dir", [("docker", "/data"), ("systemd", "/var/lib/xferry")])
+def test_deployment_state_is_injected_separately_from_public_files_setting(profile, state_dir):
+    target = next(target for target in render_settings.TARGETS if target.profile == profile)
+    document = (render_settings.REPO_ROOT / target.path).read_bytes()
+    body = _generated_body(document, profile).decode("utf-8")
+    settings = load_settings_text(body, state_dir=state_dir)
+    runtime = settings.to_server_config()
+    assert settings.root_dir == state_dir
+    assert str(runtime.root_dir) == state_dir
+    assert str(runtime.files_dir) == EXPECTED_PROFILE_VALUES[profile]["files_dir"]
 
 
 def test_replace_generated_region_preserves_every_outside_byte() -> None:

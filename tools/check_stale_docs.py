@@ -218,7 +218,7 @@ PYPI_STATIC_CREDENTIAL_PATTERN = re.compile(
 
 SMUGGLE_LEGACY_ASSERTION_PATHS = frozenset({Path("tools/browser_smoke.playwright.js")})
 STALE_PATTERNS: tuple[StalePattern, ...] = (
-    StalePattern(re.compile(r"--root\b"), "legacy CLI flag `--root`; use `--dir`"),
+    StalePattern(re.compile(r"--root\b"), "legacy CLI flag `--root`; use `--files-dir`"),
     StalePattern(
         re.compile(r"--max-upload\b(?!-)"),
         "legacy CLI flag `--max-upload`; use `--max-size`",
@@ -288,7 +288,7 @@ STALE_PATTERNS: tuple[StalePattern, ...] = (
         "stale optional-cryptography wording; cryptography is required",
     ),
     StalePattern(
-        re.compile(r"Public access(?:\s+on port 443)?", re.IGNORECASE),
+        re.compile(r"Public access\s+on port 443", re.IGNORECASE),
         "stale public-exposure shortcut; document external prerequisites",
     ),
     StalePattern(
@@ -420,8 +420,8 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         re.compile(
             r"\A(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
-            r"(?=[\s\S]*xferry run --preset local --open)"
+            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
+            r"(?=[\s\S]*xferry run --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
             r"(?=[\s\S]*`none`[\s\S]*XOR[\s\S]*AES-256-GCM)[\s\S]*",
@@ -439,9 +439,9 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*brew install pipx)"
             r"(?=[\s\S]*pipx ensurepath)"
             r"(?=[\s\S]*pipx install xferry)"
-            r"(?=[\s\S]*xferry run --preset local --open)"
+            r"(?=[\s\S]*xferry run --open)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
+            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -545,11 +545,11 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/operations.md"),
         re.compile(
             r"\A(?=[\s\S]*pipx upgrade xferry)(?=[\s\S]*pipx uninstall xferry)"
-            r"(?=[\s\S]*xferry update --to 0\.2\.0)"
+            r"(?=[\s\S]*xferry update --to (?:[0-9]+\.[0-9]+\.[0-9]+|VERSION))"
             r"(?=[\s\S]*xferry rollback)(?=[\s\S]*xferry uninstall)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
-            r"(?=[\s\S]*uploads/)(?=[\s\S]*notes/)"
-            r"(?=[\s\S]*body-memory-budget[\s\S]*not an[\s\S]*RSS ceiling)"
+            r"(?=[\s\S]*files_dir)(?=[\s\S]*notes/)"
+            r"(?=[\s\S]*body_memory_budget_mb[\s\S]*not an[\s\S]*RSS ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
             r"(?=[\s\S]*destructive)[\s\S]*",
             re.IGNORECASE,
@@ -560,10 +560,10 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/public-direct.md"),
         re.compile(
             r"\A(?=[\s\S]*security\.md#external-exposure-baseline)"
-            r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry:v0\.2\.0)"
+            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
-            r"(?=[\s\S]*--write-sample-config)"
-            r"(?=[\s\S]*--check-config)(?=[\s\S]*--print-config)"
+            r"(?=[\s\S]*xferry config check)"
+            r"(?=[\s\S]*xferry config show --all)"
             r"(?=[\s\S]*direct TCP peer)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -2903,7 +2903,7 @@ def find_source_first_issues(
         r"(?<!\S)xferry(?:\b|\[)|"
         r"curl[^\n|]{0,300}\|\s*(?:sudo\s+)?(?:ba)?sh\b|"
         r"(?<![\w-])xferry\s+update\b"
-        r"(?!\s+--to\s+[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?(?:\s|`|$)))",
+        r"(?!\s+--to\s+(?:[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?|VERSION)(?:\s|`|$)))",
         re.IGNORECASE,
     )
     for path in (
@@ -2939,9 +2939,9 @@ def find_source_first_issues(
         return findings
     folded = text.casefold()
     markers = (
-        "## portable",
         "pipx install xferry",
-        "xferry run --preset local --open",
+        "## portable",
+        "xferry run --open",
         "## managed linux",
         "## container",
     )

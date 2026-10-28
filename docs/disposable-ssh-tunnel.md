@@ -24,10 +24,9 @@ python -c 'import secrets; print("xferry:" + secrets.token_urlsafe(24))' \
   > "$XFERRY_TUNNEL_DIR/auth"
 
 xferry run \
-  --preset local \
   --host 127.0.0.1 \
   --port 8080 \
-  --dir "$XFERRY_TUNNEL_DIR/data" \
+  --files-dir "$XFERRY_TUNNEL_DIR/data" \
   --auth-file "$XFERRY_TUNNEL_DIR/auth" \
   --max-size 32 \
   --upload-storage-limit 256 \
@@ -83,5 +82,6 @@ test "$XFERRY_TUNNEL_DIR" = /tmp/xferry-tunnel-demo
 find "$XFERRY_TUNNEL_DIR" -depth -delete
 ```
 
-This deletes the generated credentials, uploads, notes, and temporary
-artifacts. Do not terminate unrelated processes by a broad process name.
+This deletes the generated credentials and shared files. Private notes remain
+in the automatically selected state directory; consult `xferry config show --all`
+with the same files folder when locating state for intentional cleanup. Do not terminate unrelated processes by a broad process name.

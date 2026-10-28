@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import configparser
+import ipaddress
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from .encrypted_transfer import EUF_MAX_FILE_SIZE
 from .handlers.smuggle import (
@@ -22,6 +24,7 @@ from .http.io import (
     DEFAULT_MAX_HEADER_SIZE,
 )
 from .notepad_service import DEFAULT_MAX_NOTE_STORAGE_BYTES, DEFAULT_MAX_NOTES
+from .paths import automatic_state_dir, default_files_dir, runtime_state_dir, state_for_config
 from .request_admission import is_unspecified_host, normalize_allowed_hosts
 from .runtime_posture import (
     BODY_ADMISSION_BUDGET_NOTE,
@@ -68,10 +71,15 @@ class SettingsError(ValueError):
 class ServerSettings:
     """Normalized operator settings before conversion to runtime configuration."""
 
+    access: str = field(default="private", kw_only=True)
+    https_mode: str | None = field(default=None, kw_only=True)
+    log_level: str = field(default="info", kw_only=True)
+    log_format: str = field(default="text", kw_only=True)
     preset: LaunchPreset | None = None
     host: str = "127.0.0.1"
     port: int = 8080
     root_dir: str = "."
+    files_dir: str | None = field(default=None, kw_only=True)
     quiet: bool = False
     debug: bool = False
     open_browser: bool = False
@@ -129,8 +137,48 @@ class ServerSettings:
         compare=False,
     )
 
+    _derived: bool = field(default=False, repr=False, compare=False, kw_only=True)
+    _origins: dict[str, str] = field(default_factory=dict, repr=False, compare=False, kw_only=True)
+    _config_path: str | None = field(default=None, repr=False, compare=False, kw_only=True)
+    _state_explicit: bool = field(default=False, repr=False, compare=False, kw_only=True)
+
+    def _runtime_settings(self) -> ServerSettings:
+        if not self._derived and (
+            self.access != "private"
+            or self.https_mode is not None
+            or self.log_level != "info"
+            or self.log_format != "text"
+        ):
+            return _derive_operator_settings(
+                self,
+                set(self._explicit_fields),
+                state_dir=self.root_dir if self.root_dir != "." else None,
+                config_path=self._config_path,
+            )
+        return self
+
     def validate(self) -> None:
         """Validate settings independently from argparse."""
+        runtime = self._runtime_settings()
+        if runtime is not self:
+            runtime.validate()
+            return
+        if self.access not in {"private", "public", "lab"}:
+            raise SettingsError("access must be private, public or lab")
+        if self.https_mode not in {None, "off", "auto", "domain", "files", "self-signed"}:
+            raise SettingsError("https_mode must be off, auto, domain, files or self-signed")
+        if self.log_level not in {"warning", "info", "debug"}:
+            raise SettingsError("log_level must be warning, info or debug")
+        if self.log_format not in {"text", "json"}:
+            raise SettingsError("log_format must be text or json")
+        if self.acme_server is not None:
+            directory = urlsplit(self.acme_server)
+            if directory.scheme != "https" or not directory.hostname or directory.username:
+                raise SettingsError("acme_server must be an HTTPS directory URL or staging")
+        if self._derived and self.access == "private" and not _is_loopback_host(self.host):
+            raise SettingsError(
+                "private access requires a loopback host; choose public or lab explicitly"
+            )
         if self.preset is not None and not isinstance(self.preset, LaunchPreset):
             try:
                 parse_launch_preset(self.preset)
@@ -138,6 +186,8 @@ class ServerSettings:
                 raise SettingsError(str(exc)) from None
         if not self.host:
             raise SettingsError("host must not be empty")
+        if self.files_dir == "":
+            raise SettingsError("files_dir must not be empty")
         _require_int_range("port", self.port, minimum=1, maximum=65535)
         _require_int_range("max_size_mb", self.max_size_mb, minimum=1)
         _require_int_range(
@@ -192,18 +242,20 @@ class ServerSettings:
         has_cert = self.cert_file is not None
         has_key = self.key_file is not None
         acme_mode = self.letsencrypt or self.sslip
+        if self._derived and self.https_mode == "files" and not (has_cert and has_key):
+            raise SettingsError("https_mode = files requires cert_file and key_file")
         if has_cert != has_key:
             raise SettingsError("--cert and --key must be provided together")
         if has_cert and (not self.cert_file or not self.key_file):
             raise SettingsError("--cert and --key values must not be empty")
         if has_cert and acme_mode:
-            raise SettingsError("--cert/--key cannot be combined with --letsencrypt or --sslip")
+            raise SettingsError("certificate files require https_mode = files")
         if self.letsencrypt and not self.domain and not self.sslip:
-            raise SettingsError("--letsencrypt requires --domain unless --sslip is used")
+            raise SettingsError("https_mode = domain requires domain")
         if self.sslip and self.domain:
-            raise SettingsError("--sslip cannot be combined with --domain")
+            raise SettingsError("domain requires https_mode = domain")
         if self.public_ip and not self.sslip:
-            raise SettingsError("--public-ip requires --sslip")
+            raise SettingsError("public_ip requires https_mode = auto")
         if not acme_mode:
             acme_only = {
                 "domain": self.domain,
@@ -215,7 +267,7 @@ class ServerSettings:
             }
             for name, active in acme_only.items():
                 if active:
-                    raise SettingsError(f"{name} requires --letsencrypt or --sslip")
+                    raise SettingsError(f"{name} requires https_mode = auto or domain")
 
         if self.auth and self.auth_file:
             raise SettingsError("--auth and --auth-file cannot be combined")
@@ -238,12 +290,12 @@ class ServerSettings:
         real_tls = bool((self.cert_file and self.key_file) or self.letsencrypt or self.sslip)
         if not real_tls:
             raise SettingsError(
-                "public_direct requires real TLS via cert_file/key_file, letsencrypt, or sslip"
+                "public access requires verified HTTPS: https_mode = auto, domain or files"
             )
         if not self.auth_file:
-            raise SettingsError("public_direct requires auth_file")
+            raise SettingsError("public access requires auth_file")
         if self.body_memory_budget_mb is None:
-            raise SettingsError("public_direct requires body_memory_budget_mb")
+            raise SettingsError("public access requires body_memory_budget_mb")
         if not (
             self.upload_storage_limit_mb > 0
             or self.upload_file_limit > 0
@@ -251,19 +303,19 @@ class ServerSettings:
             or self.upload_quota_externally_managed
         ):
             raise SettingsError(
-                "public_direct requires upload_storage_limit_mb, upload_file_limit, or "
+                "public access requires upload_storage_limit_mb, upload_file_limit, or "
                 "upload_reserve_free_mb to be greater than zero unless "
                 "upload_quota_externally_managed is true"
             )
         if self.body_idle_timeout <= 0 or self.body_timeout <= 0:
-            raise SettingsError("public_direct requires enabled body timeouts")
+            raise SettingsError("public access requires enabled body timeouts")
         if self.stream_send_idle_timeout <= 0 or self.stream_send_timeout <= 0:
-            raise SettingsError("public_direct requires enabled stream send timeouts")
+            raise SettingsError("public access requires enabled stream send timeouts")
         if self.cors_origin.strip() == "*":
-            raise SettingsError("public_direct does not allow wildcard cors_origin")
+            raise SettingsError("public access does not allow wildcard cors_origin")
         if self.plugin_allowlist and not self.plugins_allow_public_direct:
             raise SettingsError(
-                "public_direct disables plugins unless plugins_allow_public_direct is true"
+                "public access disables plugins unless plugins_allow_public_direct is true"
             )
         wildcard_bind = is_unspecified_host(self.host)
         if (
@@ -273,17 +325,21 @@ class ServerSettings:
             and not normalize_allowed_hosts(tuple(self.allowed_hosts))
         ):
             raise SettingsError(
-                "public_direct wildcard bind with certificate files requires explicit allowed_hosts"
+                "public access with a wildcard host and certificate files requires allowed_hosts"
             )
 
     def to_server_config(self) -> ServerConfig:
         """Convert operator settings to one fully resolved runtime configuration."""
+        runtime = self._runtime_settings()
+        if runtime is not self:
+            return runtime.to_server_config()
         self.validate()
         return resolve_server_config(
             ServerConfig(
                 host=self.host,
                 port=self.port,
                 root_dir=self.root_dir,
+                files_dir=self.files_dir,
                 encrypted_uploads=self.encrypted_uploads,
                 limits=ServerLimits(
                     max_upload_size=self.max_size_mb * _MIB,
@@ -358,98 +414,158 @@ class ServerSettings:
 
     def effective_tls_enabled(self) -> bool:
         """Return whether runtime HTTPS will be enabled after normalization."""
-        return self.tls or bool(self.cert_file) or self.letsencrypt or self.sslip
+        runtime = self._runtime_settings()
+        return runtime.tls or bool(runtime.cert_file) or runtime.letsencrypt or runtime.sslip
 
     def to_redacted_dict(self) -> dict[str, object]:
         """Return settings as JSON-safe data without inline secrets."""
-        data = asdict(self)
-        data.pop("_explicit_fields", None)
-        data["preset"] = self.preset.value if self.preset is not None else None
-        for spec in SETTING_SPECS:
-            if spec.redaction == "secret" and data.get(spec.name):
-                data[spec.name] = "***"
-        data["effective_tls"] = self.effective_tls_enabled()
+        runtime = self._runtime_settings()
+        data = {spec.name: getattr(runtime, spec.name) for spec in SETTING_SPECS}
+        data["effective_tls"] = runtime.effective_tls_enabled()
         return data
 
     def runtime_posture(self) -> RuntimePosture:
         """Return the shared secret-free effective runtime posture."""
-        return derive_runtime_posture(self)
+        return derive_runtime_posture(self._runtime_settings())
 
 
-_PRESET_DEFAULTS: dict[LaunchPreset, dict[str, object]] = {
-    LaunchPreset.LOCAL: {},
-    LaunchPreset.LOCAL_SECURE: {
-        "tls": True,
-        "auth": "random",
-    },
-    LaunchPreset.PUBLIC_DIRECT: {
-        # Public-direct mode intentionally listens on all interfaces.
-        "host": "0.0.0.0",  # nosec B104
-        "port": 8443,
-        "public_direct": True,
-        "json_log": True,
-        "body_memory_budget_mb": 512,
-        "upload_storage_limit_mb": 4096,
-        "upload_file_limit": 4096,
-        "upload_reserve_free_mb": 1024,
-    },
+RETIRED_SETTINGS: Mapping[str, str] = {
+    "preset": "access",
+    "public_direct": "access",
+    "tls": "https_mode",
+    "letsencrypt": "https_mode",
+    "sslip": "https_mode",
+    "acme_staging": "acme_server",
+    "auth": "auth_file / credentials reset",
+    "quiet": "log_level",
+    "debug": "log_level",
+    "json_log": "log_format",
+    "root_dir": "automatic private state",
+    "open_browser": "run --open",
 }
-
-_PRESET_EXCLUSIVE_GROUPS = (
-    frozenset({"auth", "auth_file"}),
-    frozenset({"tls", "cert_file", "key_file", "letsencrypt", "sslip"}),
-)
-
-
 _SECTION_KEYS: Mapping[str, Mapping[str, str]] = section_key_map()
 _ENV_KEYS: Mapping[str, str] = env_to_setting_map()
 
 
 def load_settings_file(
-    path: str | Path,
-    *,
-    validate: bool = True,
+    path: str | Path, *, validate: bool = True, state_dir: str | Path | None = None
 ) -> ServerSettings:
-    """Load settings from an INI file."""
-    config_path = Path(path)
+    config_path = Path(path).expanduser().resolve()
     try:
         text = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise SettingsError(f"config file does not exist: {config_path}") from None
     except OSError as exc:
         raise SettingsError(f"config file could not be read: {config_path}") from exc
-    return load_settings_text(text, validate=validate)
+    explicit_state = state_dir is not None
+    if state_dir is None:
+        state_dir = runtime_state_dir()
+    if state_dir is None:
+        state_dir = state_for_config(config_path)
+    settings = load_settings_text(
+        text, validate=validate, state_dir=state_dir, config_path=config_path
+    )
+    settings = replace(settings, _state_explicit=explicit_state)
+    selected = Path(settings.files_dir or default_files_dir()).expanduser().resolve()
+    if config_path.is_relative_to(selected):
+        raise SettingsError("config file must be outside the public files_dir")
+    return settings
 
 
-def load_settings_text(text: str, *, validate: bool = True) -> ServerSettings:
-    """Load settings from an INI string."""
+def load_settings_text(
+    text: str,
+    *,
+    validate: bool = True,
+    state_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> ServerSettings:
     parser = configparser.ConfigParser(interpolation=None)
     try:
         parser.read_string(text)
     except configparser.Error as exc:
-        raise SettingsError(f"config file is not valid INI: {exc}") from exc
-
+        raise SettingsError("config file is not valid INI") from exc
+    if parser.defaults():
+        raise SettingsError("config DEFAULT values are not supported; use named sections")
     values: dict[str, object] = {}
     for section in parser.sections():
         section_key = section.strip().lower()
         if section_key not in _SECTION_KEYS:
             raise SettingsError(f"unknown config section: {section}")
-        key_map = _SECTION_KEYS[section_key]
         for raw_key, raw_value in parser.items(section):
             key = raw_key.strip().lower()
-            if key not in key_map:
+            if key in RETIRED_SETTINGS:
+                raise SettingsError(
+                    f"removed setting {key}; use {RETIRED_SETTINGS[key]} (run config migration)"
+                )
+            if key not in _SECTION_KEYS[section_key]:
                 raise SettingsError(f"unknown config key: {section}.{raw_key}")
-            field_name = key_map[key]
+            field_name = _SECTION_KEYS[section_key][key]
             values[field_name] = _parse_field_value(field_name, raw_value)
-
     settings = replace(
         ServerSettings(),
         **cast(Any, values),
         _explicit_fields=frozenset(values),
+        _config_path=str(Path(config_path).expanduser().resolve()) if config_path else None,
     )
+    if state_dir is not None:
+        settings = replace(
+            settings, root_dir=str(Path(state_dir).expanduser().resolve()), _state_explicit=True
+        )
     if validate:
-        return resolve_settings(file_settings=settings)
+        return resolve_settings(
+            file_settings=settings, state_dir=state_dir, config_path=config_path
+        )
     return settings
+
+
+def _derive_operator_settings(
+    settings: ServerSettings,
+    explicit: set[str],
+    *,
+    state_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> ServerSettings:
+    access = settings.access
+    mode = settings.https_mode or ("auto" if access == "public" else "off")
+    values: dict[str, object] = {
+        "https_mode": mode,
+        "public_direct": access == "public",
+        "preset": None,
+        "tls": mode == "self-signed",
+        "letsencrypt": mode == "domain",
+        "sslip": mode == "auto",
+        "acme_staging": False,
+        "auth": None,
+        "quiet": settings.log_level == "warning",
+        "debug": settings.log_level == "debug",
+        "json_log": settings.log_format == "json",
+        "_derived": True,
+    }
+    if settings.acme_server == "staging":
+        from .security.tls import LE_STAGING_DIRECTORY
+
+        values["acme_server"] = LE_STAGING_DIRECTORY
+    if mode != "files" and (settings.cert_file is not None or settings.key_file is not None):
+        raise SettingsError("certificate files require https_mode = files")
+    if access == "public":
+        defaults: dict[str, object] = {
+            # guarded public-mode default.
+            "host": "0.0.0.0",  # nosec B104
+            "port": 8443,
+            "body_memory_budget_mb": 512,
+            "upload_storage_limit_mb": 4096,
+            "upload_file_limit": 4096,
+            "upload_reserve_free_mb": 1024,
+        }
+        values.update({name: value for name, value in defaults.items() if name not in explicit})
+    selected_files = settings.files_dir or str(default_files_dir())
+    values["files_dir"] = str(Path(selected_files).expanduser().resolve())
+    values["root_dir"] = (
+        str(Path(state_dir).expanduser().resolve())
+        if state_dir is not None
+        else str(automatic_state_dir(selected_files, config_path))
+    )
+    return replace(settings, **cast(Any, values))
 
 
 def resolve_settings(
@@ -457,41 +573,72 @@ def resolve_settings(
     file_settings: ServerSettings | None = None,
     env: dict[str, str] | None = None,
     cli_values: dict[str, object] | None = None,
+    state_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
 ) -> ServerSettings:
-    """Resolve defaults < preset < explicit file < env < CLI values."""
     file_values = _file_layer_values(file_settings)
     env_values: dict[str, object] = {}
+    environment = env or {}
+    for name in RETIRED_SETTINGS:
+        if f"XFERRY_{name.upper()}" in environment:
+            raise SettingsError(
+                f"removed environment setting XFERRY_{name.upper()}; use {RETIRED_SETTINGS[name]}"
+            )
     for env_name, field_name in _ENV_KEYS.items():
-        if env and env_name in env:
-            env_values[field_name] = _parse_field_value(field_name, env[env_name])
-    normalized_cli_values = dict(cli_values or {})
-
-    selected_preset: LaunchPreset | None = None
-    for layer in (file_values, env_values, normalized_cli_values):
-        if "preset" not in layer:
-            continue
-        try:
-            selected_preset = parse_launch_preset(layer["preset"])
-        except ValueError as exc:
-            raise SettingsError(str(exc)) from None
-
-    explicit_fields = set(file_values) | set(env_values) | set(normalized_cli_values)
-    preset_values = dict(_PRESET_DEFAULTS[selected_preset]) if selected_preset is not None else {}
-    for group in _PRESET_EXCLUSIVE_GROUPS:
-        if explicit_fields & group:
-            for field_name in group:
-                preset_values.pop(field_name, None)
-
-    settings = replace(ServerSettings(), **cast(Any, preset_values))
-    for layer in (file_values, env_values, normalized_cli_values):
-        explicit_layer = {key: value for key, value in layer.items() if key != "preset"}
-        if explicit_layer:
-            settings = replace(settings, **cast(Any, explicit_layer))
+        if env_name in environment:
+            env_values[field_name] = _parse_field_value(field_name, environment[env_name])
+    cli = dict(cli_values or {})
+    removed = set(cli) & set(RETIRED_SETTINGS)
+    if removed:
+        name = sorted(removed)[0]
+        raise SettingsError(f"removed setting {name}; use {RETIRED_SETTINGS[name]}")
+    unknown = set(cli) - set(SETTING_SPEC_BY_NAME)
+    if unknown:
+        raise SettingsError(f"unknown setting: {sorted(unknown)[0]}")
+    values: dict[str, object] = {}
+    origins = {spec.name: "default" for spec in SETTING_SPECS}
+    for layer, origin in ((file_values, "file"), (env_values, "environment"), (cli, "cli")):
+        values.update(layer)
+        origins.update(dict.fromkeys(layer, origin))
+    explicit = set(values)
+    # State injection is internal and unavailable through operator configuration.
+    inherited_state = state_dir
+    explicit_state = state_dir is not None or bool(file_settings and file_settings._state_explicit)
+    if inherited_state is None and file_settings is not None and file_settings._state_explicit:
+        inherited_state = file_settings.root_dir
+    if inherited_state is None:
+        inherited_state = runtime_state_dir()
+    if inherited_state is None and file_settings is not None and file_settings.root_dir != ".":
+        inherited_state = file_settings.root_dir
     settings = replace(
-        settings,
-        preset=selected_preset,
-        _explicit_fields=frozenset(explicit_fields),
+        ServerSettings(),
+        **cast(Any, values),
+        _explicit_fields=frozenset(explicit),
+        _origins=origins,
+        _state_explicit=explicit_state,
+        _config_path=(
+            str(config_path)
+            if config_path is not None
+            else file_settings._config_path
+            if file_settings is not None
+            else None
+        ),
     )
+    settings = _derive_operator_settings(
+        settings, explicit, state_dir=inherited_state, config_path=settings._config_path
+    )
+    for name in (
+        "host",
+        "port",
+        "body_memory_budget_mb",
+        "upload_storage_limit_mb",
+        "upload_file_limit",
+        "upload_reserve_free_mb",
+    ):
+        if settings.access == "public" and name not in explicit:
+            origins[name] = "automatic"
+    if "https_mode" not in explicit:
+        origins["https_mode"] = "automatic"
     settings.validate()
     return settings
 
@@ -590,7 +737,7 @@ def public_direct_sample_ini(
     base_profile = get_sample_profile("public-direct")
     values: dict[str, object] = {
         **base_profile.value_map(),
-        "root_dir": root_dir,
+        "files_dir": str(Path(root_dir) / "files"),
         "port": port,
         "auth_file": auth_file,
     }
@@ -605,7 +752,7 @@ def public_direct_sample_ini(
     if allowed_hosts_comment is not None:
         comments["allowed_hosts"] = (allowed_hosts_comment,)
     if tls_comments is not None:
-        comments["sslip"] = tls_comments
+        comments["https_mode"] = tls_comments
     return render_settings_ini(
         target=target,
         values=values,
@@ -623,11 +770,12 @@ def _parse_field_value(field_name: str, raw_value: object) -> object:
         return None
     value = str(raw_value).strip()
     value_kind = SETTING_SPEC_BY_NAME[field_name].value_kind
-    if value_kind == "preset":
-        try:
-            return parse_launch_preset(value)
-        except ValueError as exc:
-            raise SettingsError(str(exc)) from None
+    if value_kind == "choice":
+        spec = SETTING_SPEC_BY_NAME[field_name]
+        choices = spec.cli.choices if spec.cli else ()
+        if value not in choices:
+            raise SettingsError(f"{field_name} must be one of: {', '.join(choices)}")
+        return value
     if value_kind == "boolean":
         return _parse_bool(field_name, value)
     if value_kind in {"integer", "optional_integer"}:
@@ -668,7 +816,7 @@ def _file_layer_values(file_settings: ServerSettings | None) -> dict[str, object
     values: dict[str, object] = {}
     for settings_field in fields(ServerSettings):
         field_name = settings_field.name
-        if field_name.startswith("_"):
+        if field_name not in SETTING_SPEC_BY_NAME:
             continue
         value = getattr(file_settings, field_name)
         if value != getattr(defaults, field_name):
@@ -683,6 +831,16 @@ def _parse_bool(name: str, value: str) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise SettingsError(f"{name} must be a boolean")
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower().strip("[]")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _require_int_range(

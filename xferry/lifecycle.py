@@ -118,6 +118,9 @@ class ServerLifecycle:
             listener.bind((self.host, self.port))
             listener.listen(128)
             self._running = True
+            start_renewal = getattr(self.tls_manager, "start_renewal", None)
+            if callable(start_renewal):
+                start_renewal()
             self._metrics.mark_started()
             self._on_started()
             self._executor = self._executor_factory(self.max_workers)
@@ -130,6 +133,9 @@ class ServerLifecycle:
     def stop(self) -> None:
         """Request loop termination; cleanup remains safe when called repeatedly."""
         self._running = False
+        stop_renewal = getattr(self.tls_manager, "stop_renewal", None)
+        if callable(stop_renewal):
+            stop_renewal()
 
     def cleanup(self) -> None:
         """Close every owned runtime resource at most once."""
@@ -141,6 +147,9 @@ class ServerLifecycle:
             executor, self._executor = self._executor, None
             listener, self._listener = self._listener, None
 
+        stop_renewal = getattr(self.tls_manager, "stop_renewal", None)
+        if callable(stop_renewal):
+            stop_renewal()
         try:
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)

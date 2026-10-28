@@ -14,10 +14,11 @@ import ipaddress
 import os
 import subprocess
 import tempfile
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,14 @@ class CertKeyPairValidation:
     valid: bool
     reason: str = ""
     recoverable_by_renewal: bool = False
+
+
+class ACMERetryAfterError(RuntimeError):
+    """Keep the CA retry interval when ACME problem parsing drops HTTP headers."""
+
+    def __init__(self, retry_after: str) -> None:
+        super().__init__("ACME server requested a delayed retry")
+        self.retry_after = retry_after
 
 
 def _default_temp_path(prefix: str) -> Path:
@@ -132,8 +141,19 @@ def _acme_client_for_key(
     from acme import client
     from josepy.jwk import JWKRSA
 
+    class RetryAwareNetwork(client.ClientNetwork):
+        @classmethod
+        def _check_response(cls, response: Any, content_type: str | None = None) -> Any:
+            try:
+                return super()._check_response(response, content_type)
+            except Exception as exc:
+                retry_after = response.headers.get("Retry-After")
+                if response.status_code in {429, 503} and retry_after:
+                    raise ACMERetryAfterError(str(retry_after)) from exc
+                raise
+
     jwk = JWKRSA(key=account_key)
-    net = client.ClientNetwork(jwk, user_agent=user_agent, timeout=timeout)
+    net = RetryAwareNetwork(jwk, user_agent=user_agent, timeout=timeout)
     directory = client.ClientV2.get_directory(directory_url, net)
     return client.ClientV2(directory, net=net)
 
@@ -312,22 +332,27 @@ def check_certbot_available() -> bool:
         return False
 
 
-def check_cert_needs_renewal(cert_path: str | Path, days: int = DEFAULT_RENEWAL_DAYS) -> bool:
+def check_cert_needs_renewal(cert_path: str | Path, days: int | None = None) -> bool:
     """
-    Check if a certificate is missing, invalid, or expires within *days* days.
+    Check expiry using the certificate lifetime, or an explicit fixed-day window.
     """
     cert_path = Path(cert_path)
     if not cert_path.exists():
         return True
 
     try:
-        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        payload = cert_path.read_bytes()
+        cert = x509.load_pem_x509_certificate(payload)
     except (OSError, ValueError):
         return True
 
     expires_at = _certificate_datetime_utc(cert, "not_valid_after")
-    renewal_cutoff = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=days)
-    return expires_at <= renewal_cutoff
+    now = dt.datetime.now(dt.timezone.utc)
+    if days is not None:
+        return expires_at <= now + dt.timedelta(days=days)
+    from .renewal import certificate_schedule
+
+    return now >= certificate_schedule(payload)[1]
 
 
 def _certificate_datetime_utc(certificate: x509.Certificate, field_name: str) -> dt.datetime:
@@ -462,6 +487,9 @@ def obtain_letsencrypt_cert(
     network_timeout: int = 45,
     challenge_timeout: int = 30,
     order_timeout: int = 90,
+    stop_event: threading.Event | None = None,
+    publish_certificate: Callable[[Path, Path, Path], None] | None = None,
+    expected_certificate: bytes | None = None,
 ) -> tuple[Path, Path]:
     """
     Obtain a Let's Encrypt certificate through the ACME HTTP-01 flow.
@@ -469,11 +497,55 @@ def obtain_letsencrypt_cert(
     Returns:
         Tuple (path to fullchain.pem, path to privkey.pem).
     """
+    from .renewal import acme_cache_lock
+
     domain = normalize_domain(domain)
     if config_dir is None:
         config_dir = Path.home() / ".xferry" / "acme"
     config_root = Path(config_dir)
+    with acme_cache_lock(config_root, stop_event):
+        cert, key = _certificate_paths(config_root, domain)
+        if expected_certificate is not None and cert.exists():
+            if cert.read_bytes() != expected_certificate:
+                if publish_certificate is not None:
+                    publish_certificate(cert, key, cert)
+                return cert, key
+        return _obtain_locked(
+            domain,
+            email,
+            config_root,
+            server_url=server_url,
+            http_address=http_address,
+            http_port=http_port,
+            user_agent=user_agent,
+            network_timeout=network_timeout,
+            challenge_timeout=challenge_timeout,
+            order_timeout=order_timeout,
+            stop_event=stop_event,
+            publish_certificate=publish_certificate,
+        )
 
+
+def _obtain_locked(
+    domain: str,
+    email: str | None,
+    config_root: Path,
+    *,
+    server_url: str,
+    http_address: str,
+    http_port: int,
+    user_agent: str,
+    network_timeout: int,
+    challenge_timeout: int,
+    order_timeout: int,
+    stop_event: threading.Event | None,
+    publish_certificate: Callable[[Path, Path, Path], None] | None,
+) -> tuple[Path, Path]:
+    def check_running() -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("certificate renewal stopped")
+
+    check_running()
     cert_path, key_path = _certificate_paths(config_root, domain)
     account_key = _load_or_create_rsa_key(_account_key_path(config_root, server_url))
     domain_key = _load_or_create_rsa_key(key_path)
@@ -485,14 +557,18 @@ def obtain_letsencrypt_cert(
         user_agent=user_agent,
         timeout=network_timeout,
     )
+    check_running()
     _ensure_account(acme_client, email=email)
 
+    check_running()
     csr_pem = _make_csr_pem(domain_key_pem, [domain])
     order = acme_client.new_order(csr_pem)
+    check_running()
     resources, answers = _http01_challenges(acme_client, order)
 
     deadline = dt.datetime.now() + dt.timedelta(seconds=order_timeout)
     try:
+        check_running()
         with _challenge_server(
             resources,
             address=http_address,
@@ -500,8 +576,13 @@ def obtain_letsencrypt_cert(
             timeout=challenge_timeout,
         ):
             for challenge_body, response in answers:
+                check_running()
                 acme_client.answer_challenge(challenge_body, response)
-            finalized_order = acme_client.poll_and_finalize(order, deadline=deadline)
+            check_running()
+            if stop_event is None:
+                finalized_order = acme_client.poll_and_finalize(order, deadline=deadline)
+            else:
+                finalized_order = _poll_interruptibly(acme_client, order, deadline, stop_event)
     except OSError as err:
         bind_host = http_address or _WILDCARD_BIND_HOST
         raise RuntimeError(
@@ -512,9 +593,71 @@ def obtain_letsencrypt_cert(
     if not fullchain_pem:
         raise RuntimeError("ACME order finalized without a certificate chain")
 
-    _write_atomic(cert_path, fullchain_pem.encode("utf-8"), 0o644)
-    _write_atomic(key_path, domain_key_pem, 0o600)
+    check_running()
+    if publish_certificate is None:
+        _write_atomic(cert_path, fullchain_pem.encode("utf-8"), 0o644)
+    else:
+        candidate = _default_temp_path("xferry_renewal_")
+        try:
+            _write_atomic(candidate, fullchain_pem.encode("utf-8"), 0o600)
+            publish_certificate(candidate, key_path, cert_path)
+        finally:
+            candidate.unlink(missing_ok=True)
     return cert_path, key_path
+
+
+def _poll_interruptibly(
+    acme_client: client.ClientV2,
+    order: messages.OrderResource,
+    deadline: dt.datetime,
+    stop: threading.Event,
+) -> messages.OrderResource:
+    """ACME v5 polling with cancellable waits and bounded individual requests."""
+    from acme import errors, messages
+
+    def wait(seconds: float = 0) -> None:
+        if stop.wait(max(0, min(seconds, (deadline - dt.datetime.now()).total_seconds()))):
+            raise InterruptedError("certificate renewal stopped")
+        if dt.datetime.now() >= deadline:
+            raise errors.TimeoutError()
+
+    authorizations = []
+    for auth in order.authorizations:
+        while True:
+            wait()
+            auth, response = acme_client.poll(auth)
+            if auth.body.status == messages.STATUS_VALID:
+                authorizations.append(auth)
+                break
+            if auth.body.status != messages.STATUS_PENDING:
+                raise errors.ValidationError([auth])
+            retry = acme_client.retry_after(response, 1)
+            wait((retry - dt.datetime.now()).total_seconds())
+    order = order.update(authorizations=authorizations)
+    wait()
+    try:
+        order = acme_client.begin_finalization(order)
+    except messages.Error as exc:
+        if exc.code != "orderNotReady":
+            raise
+    while True:
+        wait(1)
+        # ACME's public finalization loop sleeps without cancellation. Keep the
+        # small v5 protocol adapter here rather than changing its global clock.
+        response = acme_client._post_as_get(order.uri)
+        body = messages.Order.from_json(response.json())
+        if body.status == messages.STATUS_INVALID:
+            raise errors.IssuanceError(body.error)
+        if body.status == messages.STATUS_READY:
+            wait()
+            order = acme_client.begin_finalization(order)
+        elif body.status == messages.STATUS_VALID and body.certificate:
+            wait()
+            chain = acme_client._post_as_get(body.certificate).text
+            return cast(messages.OrderResource, order.update(body=body, fullchain_pem=chain))
+        elif body.status == messages.STATUS_PROCESSING:
+            retry = acme_client.retry_after(response, 1)
+            wait((retry - dt.datetime.now()).total_seconds())
 
 
 def get_cert_info(cert_path: str | Path) -> dict[str, str]:

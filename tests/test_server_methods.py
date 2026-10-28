@@ -3008,7 +3008,7 @@ class TestServerHelpers:
         assert "https://127.0.0.1:8080" in output
         assert "[TLS]     certificate: self-signed" in output
         assert "[AUTH]    Basic Auth enabled" in output
-        assert "File access: uploads/ only" in output
+        assert f"Files folder: {temp_dir.resolve() / 'uploads'}" in output
         assert "Max headers: 64 KiB" in output
         assert "Profile:" not in output
         assert "Advanced upload:" not in output

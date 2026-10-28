@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Serve the current directory over HTTPS on port 8443 with a random Basic Auth
-# password. File access is restricted to `uploads/` by default.
-# Self-signed certificate is generated automatically.
-
+# Serve the selected folder on loopback over self-signed HTTPS.
+# Generate file-backed credentials first through `xferry config` → Password.
 set -euo pipefail
 
-ROOT_DIR="${1:-$(pwd)}"
+FILES_DIR="${1:-$(pwd)}"
 PORT="${PORT:-8443}"
 
 exec xferry run \
   --host 127.0.0.1 \
   --port "${PORT}" \
-  --dir "${ROOT_DIR}" \
-  --tls \
-  --auth random \
+  --files-dir "${FILES_DIR}" \
+  --https self-signed \
   --max-size 100

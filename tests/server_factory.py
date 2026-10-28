@@ -122,6 +122,7 @@ def make_server_config(**kwargs: Any) -> ServerConfig:
         host=kwargs.pop("host", config_defaults.host),
         port=kwargs.pop("port", config_defaults.port),
         root_dir=kwargs.pop("root_dir", config_defaults.root_dir),
+        files_dir=kwargs.pop("files_dir", config_defaults.files_dir),
         encrypted_uploads=kwargs.pop("encrypted_uploads", config_defaults.encrypted_uploads),
         limits=limits,
         websocket=websocket,
