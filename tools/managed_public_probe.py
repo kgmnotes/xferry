@@ -360,19 +360,7 @@ def run_public_probe(
         doctor = common._json_command(
             (str(paths.cli), "doctor", "--deep", "--json"), environment=_environment()
         )
-        common._require(
-            set(doctor) == common._DOCTOR_FIELDS
-            and doctor["code"] == "doctor-ok"
-            and isinstance(doctor["checks"], dict)
-            and set(doctor["checks"]) == set(common._DOCTOR_STATUSES),
-            "doctor_outcome_invalid",
-        )
-        checks = {
-            name: isinstance(doctor["checks"][name], dict)
-            and doctor["checks"][name].get("status") == status
-            for name, status in common._DOCTOR_STATUSES.items()
-        }
-        common._require(all(checks.values()), "doctor_outcome_invalid")
+        checks = common._doctor_outcome(doctor, canonical=previous_contract == "canonical")
         common._version(paths, previous)
         common.verify_health(previous, paths)
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))

@@ -49,7 +49,16 @@ def _lifecycle(distro: str, version: str, platform: str) -> dict[str, Any]:
             stage["health"] = True
         if phase == "doctor":
             stage["checks"] = dict.fromkeys(
-                ("platform", "installation", "configuration", "service", "network", "health"), True
+                (
+                    "platform",
+                    "installation",
+                    "configuration",
+                    "files",
+                    "service",
+                    "network",
+                    "health",
+                ),
+                True,
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
             stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
@@ -419,6 +428,30 @@ def test_probe_receipt_validator_rejects_fabricated_or_sensitive_fields(invalid:
         matrix.validate_probe(
             receipt, distro="ubuntu", distro_version="24.04", platform="linux-x86_64"
         )
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "missing-files", "false-files", "numeric-files", "missing-health", "extra"]
+)
+def test_native_fixture_doctor_requires_all_seven_successful_checks(mutation: str | None) -> None:
+    receipt = _lifecycle("ubuntu", "24.04", "linux-x86_64")
+    checks = receipt["stages"][3]["checks"]
+    if mutation == "missing-files":
+        checks.pop("files")
+    elif mutation == "false-files":
+        checks["files"] = False
+    elif mutation == "numeric-files":
+        checks["files"] = 1
+    elif mutation == "missing-health":
+        checks.pop("health")
+    elif mutation == "extra":
+        checks["unexpected"] = True
+    arguments = {"distro": "ubuntu", "distro_version": "24.04", "platform": "linux-x86_64"}
+    if mutation is None:
+        assert matrix.validate_probe(receipt, **arguments) == receipt
+    else:
+        with pytest.raises(matrix.MatrixFailure, match="^receipt_invalid$"):
+            matrix.validate_probe(receipt, **arguments)
 
 
 def test_docker_construction_has_private_namespaces_only_four_scoped_mounts(fixtures: Any) -> None:

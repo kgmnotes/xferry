@@ -290,6 +290,44 @@ def test_doctor_reports_missing_installation_without_reading_secrets(tmp_path: P
     assert "known-password" not in json.dumps(report.to_json())
 
 
+def test_real_managed_doctor_matches_the_native_probe_contract(tmp_path: Path) -> None:
+    """Catch producer/consumer drift without mocking the doctor's JSON response."""
+    from tools import managed_systemd_probe as probe
+    from xferry.management.managed_files import deployment_metadata_path
+
+    runner = FakeRunner()
+    context = _context(tmp_path, runner)
+    files = tmp_path / "shared-files"
+    files.mkdir()
+    _install(context.layout, config=f"[server]\naccess = private\nfiles_dir = {files}\n")
+    deployment_metadata_path(context.layout).write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "kind": "managed",
+                "files_dir": str(files),
+                "state_dir": str(context.layout.data_root),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(DoctorOptions(deep=True), context)
+    checks = probe._doctor_outcome(report.to_json(), canonical=True)
+
+    assert report.exit_code == 0
+    assert report.checks["files"].status == "available"
+    assert checks == {
+        "platform": True,
+        "installation": True,
+        "configuration": True,
+        "files": True,
+        "service": True,
+        "network": True,
+        "health": True,
+    }
+
+
 @pytest.mark.parametrize("config", [None, "[server]\nport = not-a-port\n"])
 def test_doctor_maps_missing_or_invalid_config_to_usage_exit(
     config: str | None, tmp_path: Path

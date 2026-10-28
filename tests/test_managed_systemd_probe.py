@@ -623,17 +623,7 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
         if argv[1] == "doctor":
             assert argv[2:] == ("--deep", "--json")
             assert "environment" not in kwargs
-            result = dict.fromkeys(probe._DOCTOR_FIELDS, "unemitted diagnostic")
-            result.update(
-                status="ok",
-                exit_code=0,
-                code="doctor-ok",
-                checks={
-                    key: {"status": value, "detail": "unemitted sensitive diagnostic"}
-                    for key, value in probe._DOCTOR_STATUSES.items()
-                },
-            )
-            return json.dumps(result).encode()
+            return json.dumps(_doctor_result(canonical=True)).encode()
         result = dict.fromkeys(probe._RELEASE_FIELDS)
         result.update(
             status="ok",
@@ -747,3 +737,88 @@ def test_setup_outcome_accepts_only_the_exact_declared_cli_shape(canonical, muta
             probe._setup_outcome(result, files_dir=folder)
     else:
         probe._setup_outcome(result, files_dir=folder)
+
+
+def _doctor_result(*, canonical: bool) -> dict[str, Any]:
+    """Model the installed CLI independently of the consumer's expected-key constants."""
+    statuses = {
+        "platform": "supported",
+        "installation": "installed",
+        "configuration": "valid",
+        "service": "active",
+        "network": "reachable",
+        "health": "healthy",
+    }
+    if canonical:
+        statuses["files"] = "available"
+    return {
+        "status": "ok",
+        "exit_code": 0,
+        "code": "doctor-ok",
+        "checks": {
+            name: {"status": status, "detail": "unemitted sensitive diagnostic"}
+            for name, status in statuses.items()
+        },
+        "detail": "unemitted diagnostic",
+        "message": "unemitted diagnostic",
+        "detected": {},
+        "next_actions": [],
+        "supported_matrix": [],
+    }
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_doctor_outcome_accepts_only_the_declared_legacy_or_canonical_checks(canonical):
+    result = _doctor_result(canonical=canonical)
+    checks = probe._doctor_outcome(result, canonical=canonical)
+    assert set(checks) == {
+        "platform",
+        "installation",
+        "configuration",
+        "service",
+        "network",
+        "health",
+    } | ({"files"} if canonical else set())
+    assert all(value is True for value in checks.values())
+    assert "sensitive" not in json.dumps(checks)
+
+
+@pytest.mark.parametrize(
+    ("canonical", "mutation"),
+    [
+        (True, "missing-files"),
+        (True, "missing-check"),
+        (True, "unknown-check"),
+        (True, "missing-files-directory"),
+        (True, "unavailable-files-directory"),
+        (True, "malformed-files-check"),
+        (True, "unknown-top-level-field"),
+        (False, "unexpected-files"),
+        (False, "missing-check"),
+        (False, "unknown-check"),
+        (False, "failed-health"),
+    ],
+)
+def test_doctor_outcome_rejects_incomplete_unknown_or_failing_checks(canonical, mutation):
+    result = _doctor_result(canonical=canonical)
+    checks = result["checks"]
+    if mutation == "missing-files":
+        checks.pop("files")
+    elif mutation == "missing-check":
+        checks.pop("configuration")
+    elif mutation == "unknown-check":
+        checks["unexpected"] = {"status": "healthy"}
+    elif mutation == "missing-files-directory":
+        checks["files"]["status"] = "missing"
+    elif mutation == "unavailable-files-directory":
+        checks["files"]["status"] = "unavailable"
+    elif mutation == "malformed-files-check":
+        checks["files"] = "available"
+    elif mutation == "unknown-top-level-field":
+        result["unexpected"] = "sensitive diagnostic"
+    elif mutation == "unexpected-files":
+        checks["files"] = {"status": "available"}
+    else:
+        checks["health"]["status"] = "unhealthy"
+    with pytest.raises(probe.ProbeFailure, match="doctor_outcome_invalid"):
+        probe._doctor_outcome(result, canonical=canonical)

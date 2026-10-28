@@ -147,7 +147,16 @@ def _lifecycle(plan: dict[str, Any], platform: str, distro: str, version: str) -
             stage["health"] = True
         if phase == "doctor":
             stage["checks"] = dict.fromkeys(
-                ("platform", "installation", "configuration", "service", "network", "health"), True
+                (
+                    "platform",
+                    "installation",
+                    "configuration",
+                    "files",
+                    "service",
+                    "network",
+                    "health",
+                ),
+                True,
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
             stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
@@ -243,6 +252,40 @@ def test_offline_full_public_contract_accepts_all_ten_bound_pairs(signed: Any) -
     result = _result(plan)
     assert _validate(result, plan) == result
     assert sum(len(arch["receipts"]) for arch in result["architectures"]) == 10
+
+
+@pytest.mark.parametrize("contract", ["legacy", "canonical"])
+@pytest.mark.parametrize(
+    "mutation", [None, "missing", "false", "numeric", "missing-health", "extra"]
+)
+def test_doctor_receipts_require_exact_successful_checks_for_declared_cli(
+    signed: Any, contract: str, mutation: str | None
+) -> None:
+    plan, _, _ = signed
+    result = _result(plan)
+    if contract == "legacy":
+        for architecture in result["architectures"]:
+            for pair in architecture["receipts"]:
+                lifecycle = pair["lifecycle"]
+                lifecycle["cliContracts"] = {"previous": "legacy", "target": "legacy"}
+                lifecycle["stages"][3]["checks"].pop("files")
+    checks = result["architectures"][0]["receipts"][0]["lifecycle"]["stages"][3]["checks"]
+    required = "files" if contract == "canonical" else "configuration"
+    if mutation == "missing":
+        checks.pop(required)
+    elif mutation == "false":
+        checks[required] = False
+    elif mutation == "numeric":
+        checks[required] = 1
+    elif mutation == "missing-health":
+        checks.pop("health")
+    elif mutation == "extra":
+        checks["files" if contract == "legacy" else "unexpected"] = True
+    if mutation is None:
+        assert _validate(result, plan) == result
+    else:
+        with pytest.raises(public.PublicFailure):
+            _validate(result, plan)
 
 
 @pytest.mark.parametrize(
@@ -552,6 +595,7 @@ def _cross_schema_result(plan: dict[str, Any]) -> dict[str, Any]:
         for pair in architecture["receipts"]:
             lifecycle = pair["lifecycle"]
             lifecycle["cliContracts"] = {"previous": "legacy", "target": "canonical"}
+            lifecycle["stages"][3]["checks"].pop("files")
             stage = lifecycle["stages"][5]
             stage["preserved"].pop("config")
             stage["configuration"] = {
