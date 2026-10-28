@@ -394,6 +394,11 @@ def _venv_commands(venv_dir: Path) -> tuple[Path, Path]:
 def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None:
     python, console = _venv_commands(venv_dir)
     environment = _probe_environment(workspace=workspace, venv_dir=venv_dir)
+    config = probe_dir / "artifact.ini"
+    config.write_text(
+        f"[server]\naccess = private\nfiles_dir = {probe_dir / 'files'}\n",
+        encoding="utf-8",
+    )
     commands: tuple[tuple[tuple[str, ...], bool], ...] = (
         ((str(python), "-m", "pip", "check"), False),
         ((str(python), "-I", "-c", _IMPORT_PROBE), False),
@@ -401,12 +406,12 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
         ((str(console), "--version"), False),
         ((str(console), "run", "--help"), True),
         ((str(console), "run", "--version"), False),
-        ((str(console), "config", "check"), False),
+        ((str(console), "config", "check", "--config", str(config)), False),
         ((str(python), "-m", "xferry", "--help"), True),
         ((str(python), "-m", "xferry", "--version"), False),
         ((str(python), "-m", "xferry", "run", "--help"), True),
         ((str(python), "-m", "xferry", "run", "--version"), False),
-        ((str(python), "-m", "xferry", "config", "check"), False),
+        ((str(python), "-m", "xferry", "config", "check", "--config", str(config)), False),
     )
     for command, quiet_stdout in commands:
         _run_checked(
@@ -418,11 +423,12 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
 
 
 def _probe_environment(*, workspace: Path, venv_dir: Path) -> dict[str, str]:
-    """Keep application probes independent of ambient Python and pip configuration."""
+    """Keep probes independent of ambient application, Python and pip configuration."""
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("PYTHON") and key not in {"PIP_CONSTRAINT", "PYTEST_ADDOPTS"}
+        if not key.startswith(("PYTHON", "XFERRY_"))
+        and key not in {"PIP_CONSTRAINT", "PYTEST_ADDOPTS"}
     }
     environment.update(
         GITHUB_WORKSPACE=str(workspace),

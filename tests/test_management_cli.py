@@ -37,6 +37,8 @@ def _run_module_with_blocked_management_backends(
 import importlib.abc
 import os
 import sys
+# Initialize host-specific stdlib imports before simulating another platform.
+import tempfile
 
 
 class BlockedManagementBackends(importlib.abc.MetaPathFinder):
