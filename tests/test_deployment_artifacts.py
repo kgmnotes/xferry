@@ -540,6 +540,114 @@ def test_candidate_consumers_verify_independent_producer_digests_without_rebuild
     assert "org.opencontainers.image.revision=$SOURCE_COMMIT" in dockerfile
 
 
+def test_candidate_runtime_matches_source_image_with_writable_private_state() -> None:
+    """Catch candidate-only runtime drift that a rebuilt contributor image cannot expose."""
+
+    def runtime(path: str) -> list[tuple[str, tuple[str, ...]]]:
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        lines = re.sub(r"\\\r?\n[ \t]*", " ", text).splitlines()
+        active = False
+        instructions = []
+        shared = {
+            "FROM",
+            "ENV",
+            "RUN",
+            "USER",
+            "WORKDIR",
+            "EXPOSE",
+            "HEALTHCHECK",
+            "ENTRYPOINT",
+            "CMD",
+        }
+        for line in lines:
+            instruction, _, value = line.strip().partition(" ")
+            if instruction == "FROM":
+                active = value.endswith(" AS runtime")
+            if active and (
+                instruction in shared
+                or instruction == "ARG"
+                and value.startswith(("APP_USER=", "APP_UID="))
+            ):
+                instructions.append((instruction, tuple(shlex.split(value))))
+        assert instructions, f"{path} must declare its runtime stage"
+        return instructions
+
+    source = runtime("Dockerfile")
+    candidate = runtime("packaging/Dockerfile.candidate")
+    assert candidate == source
+    environment = {
+        name: value
+        for instruction, words in candidate
+        if instruction == "ENV"
+        for name, value in (word.split("=", 1) for word in words)
+    }
+    assert environment["XFERRY_STATE_HOME"] == "/data"
+    base = next(words[0] for instruction, words in candidate if instruction == "FROM")
+    assert re.fullmatch(r"python:\S+@sha256:[0-9a-f]{64}", base)
+    assert any(
+        words[:3] == ("mkdir", "-p", "/data/uploads")
+        and "chown" in words
+        and "${APP_USER}:${APP_USER}" in words
+        and "/data" in words
+        for instruction, words in candidate
+        if instruction == "RUN"
+    )
+
+
+def test_pr_release_smoke_exercises_candidate_recipe_with_the_verified_source_wheel() -> None:
+    """Catch a green PR that checks the contributor image but skips the publishing recipe."""
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    smoke = _workflow_job(workflow, "smoke")
+    source_wheel = _workflow_named_step(smoke, "Static UI release gates")
+    installed_wheel = _workflow_named_step(smoke, "Prepare installed-wheel browser target")
+    source_image = _workflow_named_step(smoke, "Docker smoke")
+    candidate = _workflow_named_step(smoke, "Candidate Docker smoke")
+    assert (
+        smoke.index(source_wheel)
+        < smoke.index(installed_wheel)
+        < smoke.index(source_image)
+        < smoke.index(candidate)
+    )
+    assert 'wheel_dir="${RUNNER_TEMP}/xferry-browser-wheel"' in source_wheel
+    assert 'python -m pip wheel . --no-deps --wheel-dir "${wheel_dir}"' in source_wheel
+    assert 'tools/check_static_ui_assets.py --wheel "${wheel_dir}"/xferry-*.whl' in source_wheel
+    for step in (source_wheel, candidate):
+        assert "if: ${{ !inputs.candidate-gates }}" in step
+        assert "set -euo pipefail" in step
+        assert "continue-on-error" not in step
+        assert re.search(r"\|\|\s*true\b", step) is None
+    for rebuild in ("pip wheel", "python -m build", "--wheel-dir"):
+        assert rebuild not in candidate
+
+    logical = re.sub(r"\\\r?\n[ \t]*", " ", candidate)
+    commands = [shlex.split(line.strip()) for line in logical.splitlines()]
+    builds = [command for command in commands if command[:3] == ["docker", "buildx", "build"]]
+    assert len(builds) == 1
+    build = builds[0]
+    assert "--load" in build
+    assert build[build.index("--file") + 1] == "packaging/Dockerfile.candidate"
+    assert build[build.index("--build-context") + 1] == "wheel=${RUNNER_TEMP}/xferry-browser-wheel"
+    build_arguments = {
+        build[index + 1] for index, word in enumerate(build) if word == "--build-arg"
+    }
+    assert {"RELEASE_VERSION=${release_version}", "SOURCE_COMMIT=$GITHUB_SHA"} <= build_arguments
+    image = build[build.index("--tag") + 1]
+    assert image == "xferry:ci-candidate"
+    assert build[-1] == "."
+    assert ["python", "tools/verify_docker_image.py", "--image", image] in commands
+    assert ["docker", "run", "--rm", image, "run", "--version"] in commands
+    helpers = [
+        command for command in commands if command[:2] == ["python", "tools/docker_image_smoke.py"]
+    ]
+    assert len(helpers) == 1
+    helper = helpers[0]
+    assert helper[helper.index("--image") + 1] == image
+    assert "--browser-first-run" in helper
+    assert helper[helper.index("--browser-artifacts-dir") + 1] == (
+        "${RUNNER_TEMP}/browser-smoke-artifacts/candidate-docker-first-run"
+    )
+
+
 def test_candidate_artifact_id_downloads_use_the_expected_flat_archive_path() -> None:
     for path in ("release.yml", "candidate-scie.yml"):
         workflow = (REPO_ROOT / ".github/workflows" / path).read_text(encoding="utf-8")

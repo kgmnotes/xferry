@@ -1,9 +1,9 @@
 # Migrate an existing configuration
 
-Version `0.3.0` simplifies the CLI and settings. Versions `0.2.x` use the
+Version `0.3.1` simplifies the CLI and settings. Versions `0.2.x` use the
 previous interface; the [v0.2.0 instructions](archive/0.2.0-installation.md)
 remain archived. Upgrade the runtime and configuration together using the
-matching [versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.0).
+matching [versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.1).
 Back up configuration, protected credentials, files and private state.
 
 ## Native Linux service from the old release
@@ -13,10 +13,10 @@ installed old CLI cannot perform the configuration conversion itself. The exact
 version keeps the controller consistent through update and rollback:
 
 ```bash
-pipx run --spec xferry==0.3.0 xferry update \
-  --to 0.3.0 --config /etc/xferry/xferry.ini --dry-run
-pipx run --spec xferry==0.3.0 xferry update \
-  --to 0.3.0 --config /etc/xferry/xferry.ini
+pipx run --spec xferry==0.3.1 xferry update \
+  --to 0.3.1 --config /etc/xferry/xferry.ini --dry-run
+pipx run --spec xferry==0.3.1 xferry update \
+  --to 0.3.1 --config /etc/xferry/xferry.ini
 ```
 
 The update verifies the signed release, stages the converted configuration and
@@ -30,7 +30,7 @@ verified previous release. To return to the retained `0.2.1` release, use the
 same new controller:
 
 ```bash
-pipx run --spec xferry==0.3.0 xferry rollback \
+pipx run --spec xferry==0.3.1 xferry rollback \
   --to 0.2.1 --config /etc/xferry/xferry.ini
 ```
 

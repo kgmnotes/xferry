@@ -5,7 +5,7 @@ an automatic address. Use `xferry setup --docker` for a generated Docker
 deployment. Setup generates a 12-character Basic Auth password, configures HTTPS,
 starts the server and prints the URL. Later changes use `xferry config`.
 
-These commands require **xferry 0.3.0 or newer**. Existing `0.2.x` installations
+These commands require **xferry 0.3.1 or newer**. Existing `0.2.x` installations
 use [migration](migration.md); the [v0.2.0 guide](archive/0.2.0-installation.md)
 remains archived. Review the
 [external exposure baseline](security.md#external-exposure-baseline) before

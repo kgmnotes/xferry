@@ -2,17 +2,17 @@
 
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)](https://www.python.org/)
-![Source version](https://img.shields.io/badge/version-0.3.0-orange.svg)
+![Source version](https://img.shields.io/badge/version-0.3.1-orange.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 xferry is an HTTP toolkit for testing Secure Web Gateways on systems you are
 authorized to test. Its web UI provides **Upload**, **Download**, **Requests**,
 **Advanced**, and **Notepad** tabs.
 
-These commands require **xferry 0.3.0 or newer**. Existing `0.2.x` installations
+These commands require **xferry 0.3.1 or newer**. Existing `0.2.x` installations
 use the [migration guide](docs/migration.md); [v0.2.0 instructions](docs/archive/0.2.0-installation.md)
 remain archived. Obtain matching native/container artifacts from the
-[versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.0).
+[versioned release](https://github.com/kgmnotes/xferry/releases/tag/v0.3.1).
 Contributors can use a [source checkout](CONTRIBUTING.md).
 
 ## Start here

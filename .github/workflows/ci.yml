@@ -582,6 +582,24 @@ jobs:
             exit 1
           fi
 
+      - name: Candidate Docker smoke
+        if: ${{ !inputs.candidate-gates }}
+        run: |
+          set -euo pipefail
+          release_version="$(python -c 'from xferry.config import __version__; print(__version__)')"
+          docker buildx build --load \
+            --file packaging/Dockerfile.candidate \
+            --build-context "wheel=${RUNNER_TEMP}/xferry-browser-wheel" \
+            --build-arg RELEASE_VERSION="${release_version}" \
+            --build-arg SOURCE_COMMIT="$GITHUB_SHA" \
+            --tag xferry:ci-candidate .
+          python tools/verify_docker_image.py --image xferry:ci-candidate
+          docker run --rm xferry:ci-candidate run --version
+          python tools/docker_image_smoke.py \
+            --image xferry:ci-candidate \
+            --browser-first-run \
+            --browser-artifacts-dir "${RUNNER_TEMP}/browser-smoke-artifacts/candidate-docker-first-run"
+
       - name: Upload browser journey diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
