@@ -63,7 +63,7 @@ removed with the runtime. Saved-data purge remains available after uninstall.
 
 ## Container lifecycle
 
-These lifecycle commands require `0.3.1` or newer. Existing `0.2.x`
+These lifecycle commands require `0.3.2` or newer. Existing `0.2.x`
 installations use the previous interface; see [migration](migration.md).
 
 For a deployment created by `xferry setup --docker`, use the same lifecycle and
@@ -77,7 +77,7 @@ Pin an immutable image version or digest such as
 `ghcr.io/kgmnotes/xferry@sha256:${XFERRY_DIGEST}`. Published v0.2.0 uses the
 [archived image instructions](archive/0.2.0-installation.md).
 
-The manual public sample pins the compatible `v0.3.1` image; you can replace its
+The manual public sample pins the compatible `v0.3.2` image; you can replace its
 tag with the recorded digest. Images from 0.2.x require their archived
 configuration. The health hostname must match an admitted TLS hostname:
 

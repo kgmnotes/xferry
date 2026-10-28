@@ -6,7 +6,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-28
+
+Includes the setup, configuration, migration, and file-transfer features from
+`0.3.1`.
+
+### Fixed
+
+- Use a compatible toolchain for public pipx installation checks, preventing
+  the bootstrap's shared pip upgrade from conflicting with CI tool constraints.
+
 ## [0.3.1] - 2026-10-28
+
+PyPI-only partial publication: the wheel and source distribution were published
+with verified hashes. Public pipx checks then stopped on a bootstrap dependency
+conflict. No GHCR image or public GitHub Release was published for this version.
 
 ### Added
 

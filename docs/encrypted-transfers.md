@@ -65,7 +65,7 @@ the existing ciphertext and private journals are preserved. Keep them together
 and retain the old layout until a supported migration is available.
 
 This restriction does not affect ordinary portable configuration migration
-without legacy encrypted state, or fresh encrypted transfers created by `0.3.1`.
+without legacy encrypted state, or fresh encrypted transfers created by `0.3.2`.
 See the [configuration migration guide](migration.md) for the upgrade commands.
 
 State advances `partial -> committing -> complete`. A chunk is acknowledged
