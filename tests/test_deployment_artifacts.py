@@ -808,6 +808,25 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
         assert lifecycle in scie_job
 
 
+@pytest.mark.parametrize("workflow_name", ["ci.yml", "candidate-scie.yml"])
+def test_scie_smokes_check_explicit_temporary_configs(workflow_name: str) -> None:
+    """Fresh SCIE smoke hosts must validate a real config without a saved user profile."""
+    workflow = (REPO_ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+    host = _workflow_named_step(workflow, "Smoke SCIE without host Python")
+    containers = _workflow_named_step(workflow, "Smoke SCIE on every supported Linux base")
+
+    assert 'mktemp -d "${RUNNER_TEMP}/' in host
+    assert 'PATH=/nonexistent "$executable" config check --config ' in host
+    assert '"$candidate" config check --config /tmp/' in containers
+    for step in (host, containers):
+        checks = [line for line in step.splitlines() if " config check" in line]
+        assert len(checks) == 1
+        assert " --config " in checks[0]
+        assert "[server]\\naccess = private\\nfiles_dir = " in step
+        assert "/release/xferry.ini" not in step
+        assert "$bundle/xferry.ini" not in step
+
+
 def test_cross_platform_acceptance_transfers_one_wheel_across_all_nine_pairs() -> None:
     """Catches editable acceptance, rebuilt consumers, or an incomplete portable matrix."""
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

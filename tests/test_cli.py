@@ -27,10 +27,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def isolated_user_config(monkeypatch, tmp_path):
+    profile_home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(profile_home))
+    monkeypatch.setenv("USERPROFILE", str(profile_home))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
     for name in tuple(os.environ):
         if name.startswith("XFERRY_"):
             monkeypatch.delenv(name)
+
+
+@pytest.mark.parametrize("platform_name", ["linux", "darwin", "win32"])
+def test_default_user_config_stays_in_test_profile(monkeypatch, tmp_path, platform_name):
+    """Every native profile path must stay isolated from the user's real configuration."""
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(sys, "platform", platform_name)
+        config_path = default_config_path()
+
+    assert config_path.is_relative_to(tmp_path)
+    assert config_path.name == "xferry.ini"
 
 
 class TestCLIParser:
