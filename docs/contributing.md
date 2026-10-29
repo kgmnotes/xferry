@@ -6,6 +6,9 @@ Focused fixes, tests, and documentation improvements are welcome. Open an
 issue before a large behavior or protocol change so the contract can be agreed
 before implementation.
 
+For a map of the source, execution paths and focused tests, read the
+[developer guide](developer-guide.md).
+
 ## Development setup
 
 Use Python 3.11 or newer for development and pre-commit hook environments;

@@ -35,6 +35,7 @@ MIRRORS: tuple[MirrorSpec, ...] = (
         "docs/contributing.md",
         replacements=(
             ("(docs/ADR/", "(ADR/"),
+            ("(docs/developer-guide.md)", "(developer-guide.md)"),
             ("(SECURITY.md)", "(security.md)"),
         ),
     ),

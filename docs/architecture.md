@@ -3,6 +3,9 @@
 xferry is a synchronous Python HTTP server with a bundled no-build web UI. The
 `xferry` package is the runtime and public import namespace.
 
+See the [developer guide](developer-guide.md) for the repository map, startup
+entry points and source locations behind the request path below.
+
 ## Request path
 
 1. The accept loop admits a TCP connection and applies TLS when configured.
@@ -30,10 +33,19 @@ validation posture; they do not enable or disable methods.
 
 ## Storage boundaries
 
-The operator supplies a root directory. User-visible file operations resolve
-under `<root>/uploads/`; Secure Notepad state is stored separately under
-`<root>/notes/`. The shared descendant resolver resolves paths and rejects
-escapes, including symlink escapes.
+User-visible file operations use the configured `files_dir` directly. The HTTP
+prefix remains `/uploads/`; it does not add an `uploads/` subdirectory to that
+folder. When a server is constructed without `files_dir`, it falls back to
+`<root>/uploads/`. Normal CLI launches resolve an explicit files directory from
+the settings and platform defaults.
+
+The state root is separate from the public files directory in normal CLI and
+managed deployments. It holds Secure Notepad state in `<root>/notes/`, encrypted
+transfer sidecars and TLS state. Hidden encrypted payloads in the files directory
+belong to the encrypted-transfer API and are excluded from ordinary file actions.
+See [files and private state](settings.md#files-and-private-state) for defaults
+and backup boundaries. The shared descendant resolver rejects paths outside
+the configured file boundary, including symlink escapes.
 
 `UploadStorageService` applies upload quotas and publication rules. Generated
 SMUGGLE artifacts share the upload volume and have additional retention and

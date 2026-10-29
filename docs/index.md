@@ -23,5 +23,6 @@ Portable installs are owned by pipx, managed Linux installs by the signed SCIE
 lifecycle, and containers by immutable GHCR version tags or digests. Contributor
 source builds remain documented separately and are not the first user path.
 
-Developer reference material includes the [architecture](architecture.md),
+Start with the [developer guide](developer-guide.md) for source navigation and
+focused tests. Developer reference material includes the [architecture](architecture.md),
 [frontend contract](frontend-contract.md), and [active ADR set](ADR/README.md).

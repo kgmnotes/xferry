@@ -58,6 +58,7 @@ nav:
       - Published v0.2.0 instructions: archive/0.2.0-installation.md
   - Development:
       - Contributing: contributing.md
+      - Developer guide: developer-guide.md
       - Architecture: architecture.md
       - Frontend contract: frontend-contract.md
       - Architecture decisions:
