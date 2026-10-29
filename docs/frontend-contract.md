@@ -7,19 +7,30 @@ commands and redacted state through that namespace.
 
 ## Load order
 
+In `xferry/data/index.html`, `theme.js` runs in the document head before the
+stylesheets to restore the saved theme. The bundled `/static/crypto-js.min.js`
+library is also declared in the head with `defer`.
+
+At the end of the body, the remaining modules from `static/ui/` run in this order:
+
 1. `bootstrap.js` creates the namespace, event bus, DOM contract, and
    registries.
-2. `core.js`, `notifications.js`, `dialogs.js`, and `inspector.js` register shared services.
-3. `upload.js` and `requests.js` register the ordinary request workflows.
-   `encrypted-transfer-crypto.js` then registers EUF v1 primitives,
+2. `core.js`, `notifications.js`, `dialogs.js`, `inspector.js`, and
+   `http-errors.js` register shared services and error presentation.
+3. `advanced-routing.js` registers Advanced Session management, followed by
+   `advanced-compiler.js` for constructing Advanced payloads.
+4. `upload.js` and `requests.js` register the ordinary request workflows.
+5. `encrypted-transfer-crypto.js` registers EUF v1 primitives,
    `encrypted-transfer-persistence.js` and `encrypted-transfer-network.js`
    register recovery storage and bounded retry transport, and
    `encrypted-transfer.js` registers the capability-gated large-file workflow.
-   `files.js`, `opsec.js`, and `notepad.js` register the remaining workflows.
-4. `app.js` initializes discovery and shortcuts, then emits `app.ready`.
+6. `smuggle.js`, `files.js`, `opsec.js`, and `notepad.js` register the remaining
+   workflows.
+7. `app.js` initializes discovery and shortcuts, then emits `app.ready`.
 
 No Node.js runtime, package manager, bundler, or generated frontend artifact
-is required.
+is required to run the application. Browser and Node-based tests are described
+in the [developer guide](developer-guide.md#testing-and-documentation-conventions).
 
 ## Public surface
 
