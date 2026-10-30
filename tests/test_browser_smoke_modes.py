@@ -15,6 +15,7 @@ EXPECTED_MODES = (
     "first-run",
     "basic-upload-profiles",
     "encrypted-transfer",
+    "encrypted-compatibility",
     "ui-contracts",
     "http-errors",
     "recovery",
@@ -1480,8 +1481,9 @@ def test_external_target_does_not_import_or_start_a_server(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, session, cwd
+        del base_cmd, session, cwd, local_target
         calls.append(args)
         if "run-code" not in args:
             return ""
@@ -1532,8 +1534,9 @@ def test_browser_smoke_opens_with_the_installed_chromium_distribution(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, session, cwd
+        del base_cmd, session, cwd, local_target
         if "open" in args:
             config_path = Path(args[args.index("--config") + 1])
             opened_config.update(json.loads(config_path.read_text(encoding="utf-8")))
@@ -1568,8 +1571,9 @@ def test_external_target_failure_is_labeled_and_persisted(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, session, cwd
+        del base_cmd, session, cwd, local_target
         if "run-code" in args:
             raise RuntimeError("semantic outcome missing")
         return ""
@@ -1601,8 +1605,9 @@ def test_browser_cli_failure_preserves_bounded_original_output(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, session, cwd
+        del base_cmd, session, cwd, local_target
         return raw if "run-code" in args else ""
 
     monkeypatch.setattr(browser_smoke, "MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS", 64)
@@ -1678,8 +1683,9 @@ def test_local_full_runs_composite_and_all_named_journeys_in_isolation(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, cwd
+        del base_cmd, cwd, local_target
         if "open" in args:
             sessions.append(session)
             configs.append(Path(args[args.index("--config") + 1]))
@@ -1751,7 +1757,9 @@ def test_local_full_collects_all_failures_without_fabricating_completions(
         mode: str,
         target_url: str | None,
         artifacts_dir: str | Path | None,
+        browser: str,
     ) -> dict[str, object]:
+        assert browser == "chromium"
         assert installed_package is False
         assert target_url is None
         assert Path(artifacts_dir).is_dir()
@@ -1814,8 +1822,9 @@ def test_external_full_remains_one_composite_not_a_local_aggregate(
         session: str,
         *args: str,
         cwd: Path,
+        local_target: bool = False,
     ) -> str:
-        del base_cmd, session, cwd
+        del base_cmd, session, cwd, local_target
         if "run-code" not in args:
             return ""
         script_path = Path(args[args.index("--filename") + 1])

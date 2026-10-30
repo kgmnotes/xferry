@@ -5500,7 +5500,7 @@ async (page) => {
       throw new Error(`Unexpected batch export summary: ${snapshot.content}`);
     }
 
-    if (!Array.isArray(report.results) || report.results.length !== total) {
+    if (!Array.isArray(report.results) || report.results.length !== completed) {
       throw new Error(`Unexpected batch export result count: ${snapshot.content}`);
     }
 
@@ -5532,6 +5532,7 @@ async (page) => {
         throw new Error(`Invalid attempt payload for ${method}: ${snapshot.content}`);
       }
     }
+    return report;
   }
 
   async function assertRequestBatchIssuesFilter({
@@ -11932,6 +11933,54 @@ async (page) => {
     }
   }
 
+  async function runEncryptedCompatibilityJourney() {
+    await page.locator("#tab-large-files").waitFor({ state: "visible", timeout: 30000 });
+    await page.locator("#tab-large-files").click();
+    await waitForPageCondition(
+      "encrypted compatibility server capability ready",
+      () => window.XferryApp?.getState("encrypted-transfer")?.capabilityStatus === "valid",
+      null,
+      30000
+    );
+    // Observe the real engine. Unlike the positive transfer journey, this
+    // checkpoint must never install a file-picker or storage polyfill.
+    const capabilities = await page.evaluate(() => ({
+      indexedDB: typeof globalThis.indexedDB?.open === "function",
+      webLocks: typeof navigator.locks?.request === "function",
+      opfs: typeof navigator.storage?.getDirectory === "function",
+      filePicker: typeof window.showSaveFilePicker === "function",
+      webCrypto: Boolean(globalThis.crypto?.subtle),
+    }));
+    const supported = Object.values(capabilities).every(Boolean);
+    await page.locator("#encryptedFileInput").setInputFiles(uploadFilePath);
+    await page.locator("#encryptedPasswordInput").fill("browser compatibility fixture");
+    await page.locator("#encryptedPasswordConfirmInput").fill("browser compatibility fixture");
+    const messages = {
+      en: "Use desktop Chrome or Edge with file storage access for large file transfers. This browser does not support the required features.",
+      ru: "Для передачи больших файлов используйте настольный Chrome или Edge с доступом к файловому хранилищу. Этот браузер не поддерживает необходимые функции.",
+    };
+    const locales = {};
+    for (const locale of ["en", "ru"]) {
+      await switchLanguage(locale);
+      await waitForPageCondition(
+        `encrypted browser compatibility (${locale})`,
+        ({ expectedSupport, message }) => {
+          const support = document.getElementById("encryptedBrowserSupport");
+          const start = document.getElementById("encryptedUploadStartBtn");
+          return Boolean(support && start && (
+            expectedSupport
+              ? support.hidden && support.textContent === "" && !start.disabled
+              : !support.hidden && support.textContent === message && start.disabled
+          ));
+        },
+        { expectedSupport: supported, message: messages[locale] },
+        15000
+      );
+      locales[locale] = await page.locator("#encryptedBrowserSupport").textContent();
+    }
+    return { capabilities, supported, locales, realBrowserApis: true };
+  }
+
   async function runEncryptedTransferJourney() {
     const password = "correct horse battery staple";
     const encryptedUploadName = fixtureName(uploadFilePath);
@@ -12256,15 +12305,166 @@ async (page) => {
     };
   }
 
+  async function assertCooperativeRequestBatchStop() {
+    await openRequestTechnicalDetails({ includeBatch: true });
+    await switchLanguage("en");
+
+    async function stoppedRun({
+      gateMethod, expectedCalls, completed, kind = "all", executionTotal = 13,
+      executionPhase = "stopped", matrixPhase = "stopped", mismatchCount = 0,
+      expectedAttempts = {},
+    }) {
+      await page.evaluate((methodToGate) => {
+        const http = window.XferryApp.service("http");
+        const checkpoint = { calls: [], gated: false, release: null, original: null };
+        const pending = new Promise(resolve => { checkpoint.release = resolve; });
+        checkpoint.original = http["set-adapter"](async (...args) => {
+          const [method, path] = args;
+          const phase = window.XferryApp.getState("requests").execution.phase;
+          if (["running", "stopping"].includes(phase)) {
+            checkpoint.calls.push({ method, path });
+            if (!checkpoint.gated && method === methodToGate) {
+              checkpoint.gated = true;
+              await pending;
+            }
+          }
+          return checkpoint.original(...args);
+        });
+        window.__xferryBatchStopCheckpoint = checkpoint;
+      }, gateMethod);
+      try {
+        await page.locator(kind === "all" ? "#requestRunAllBtn" : "#requestBatchRerunIssuesBtn").click();
+        await waitForPageCondition(
+          "batch reaches held request",
+          () => window.__xferryBatchStopCheckpoint?.gated === true,
+          null,
+          15000
+        );
+        const stop = page.locator("#requestBatchStopBtn");
+        await stop.focus();
+        await page.keyboard.press("Enter");
+        await waitForPageCondition(
+          "batch acknowledges cooperative stop",
+          () => window.XferryApp.getState("requests").execution.phase === "stopping",
+          null,
+          10000
+        );
+        // Public commands and repeated Stop cannot race the owned batch.
+        await page.evaluate(async () => {
+          document.getElementById("requestBatchStopBtn").click();
+          await window.XferryApp.invoke("requests", "send", "PING");
+          await window.XferryApp.invoke("requests", "run-all");
+          window.__xferryBatchStopCheckpoint.release();
+        });
+        await waitForPageCondition(
+          "batch settles after current logical check",
+          ({ phase }) => {
+            const state = window.XferryApp.getState("requests");
+            return state.execution.phase === phase && !state.busy && !state.batchRunning;
+          },
+          { phase: executionPhase },
+          30000
+        );
+        // Live-region updates intentionally clear the previous message before
+        // announcing the final status on the next timer tick.
+        await waitForPageCondition(
+          "settled batch announces its final status",
+          () => {
+            const live = document.getElementById("requestBatchLive")?.textContent?.trim();
+            const status = document.getElementById("requestBatchStatus")?.textContent?.trim();
+            return Boolean(live && live === status);
+          },
+          null,
+          10000
+        );
+        const observed = await page.evaluate(() => ({
+          calls: window.__xferryBatchStopCheckpoint.calls.map(call => call.method),
+          focus: document.activeElement?.id,
+          live: document.getElementById("requestBatchLive")?.textContent,
+        }));
+        if (JSON.stringify(observed.calls) !== JSON.stringify(expectedCalls)) {
+          throw new Error(`Unexpected requests after Stop: ${JSON.stringify(observed)}`);
+        }
+        if (!observed.live || observed.focus === "requestBatchStopBtn") {
+          throw new Error(`Stopped batch lost feedback/focus: ${JSON.stringify(observed)}`);
+        }
+        const matrixCompleted = kind === "all" ? completed : 13;
+        const report = await assertRequestBatchExport({
+          phase: matrixPhase,
+          total: 13,
+          completed: matrixCompleted,
+          matchCount: matrixCompleted - mismatchCount,
+          mismatchCount,
+          failedCount: 0,
+          expectedAttemptCounts: expectedAttempts,
+        });
+        const expectedExecution = { kind, phase: executionPhase, completed, total: executionTotal };
+        if (JSON.stringify(report.execution) !== JSON.stringify(expectedExecution)) {
+          throw new Error(`Unexpected stopped execution: ${JSON.stringify(report.execution)}`);
+        }
+        if (!Array.isArray(report.unrunMethods) || report.unrunMethods.length !== 13 - matrixCompleted) {
+          throw new Error(`Incorrect unrun methods: ${JSON.stringify(report.unrunMethods)}`);
+        }
+        if (report.unrunMethods.some(method => report.results.some(result => result.method === method))) {
+          throw new Error("An executed method is also marked unrun");
+        }
+        return { execution: report.execution, matrixCompleted, calls: observed.calls };
+      } finally {
+        await page.evaluate(() => {
+          const checkpoint = window.__xferryBatchStopCheckpoint;
+          if (checkpoint) {
+            checkpoint.release();
+            window.XferryApp.service("http")["set-adapter"](checkpoint.original);
+            delete window.__xferryBatchStopCheckpoint;
+          }
+        });
+      }
+    }
+
+    const partial = await stoppedRun({ gateMethod: "GET", expectedCalls: ["GET"], completed: 1 });
+    await page.locator("#requestBatchIssuesOnlyToggle").check();
+    const partialMessage = await page.locator("#requestBatchSummary").innerText();
+    if (partialMessage.includes("All methods completed without issues.") || !partialMessage.includes("12")) {
+      throw new Error(`Partial run is presented as a complete success: ${partialMessage}`);
+    }
+    await page.locator("#requestBatchIssuesOnlyToggle").uncheck();
+    await switchLanguage("ru");
+    const preparation = await stoppedRun({
+      gateMethod: "POST", expectedCalls: ["GET", "HEAD", "OPTIONS", "POST", "FETCH"], completed: 4,
+    });
+    await page.locator("#requestRunAllBtn").click();
+    await waitForRequestBatchSummary({
+      phase: "complete", total: 13, completed: 13, matchCount: 13, mismatchCount: 0,
+      failedCount: 0, timeout: 60000,
+    });
+    for (const method of ["GET", "HEAD"]) {
+      await injectRequestBatchMismatch({
+        method, path: "/index.html", status: 404, statusText: "Not Found",
+        attemptCount: 2, rerunOutcome: "regressed",
+      });
+    }
+    const issues = await stoppedRun({
+      gateMethod: "GET", expectedCalls: ["GET"], completed: 1, kind: "issues", executionTotal: 2,
+      matrixPhase: "complete", mismatchCount: 1, expectedAttempts: { GET: 3, HEAD: 2 },
+    });
+    const last = await stoppedRun({
+      gateMethod: "HEAD", expectedCalls: ["HEAD"], completed: 1, kind: "issues", executionTotal: 1,
+      executionPhase: "complete", matrixPhase: "complete", expectedAttempts: { GET: 3, HEAD: 3 },
+    });
+    return { partial, preparation, issues, last };
+  }
+
   async function runRequestMatrixJourney() {
     await page.locator("#tab-request").click();
     await waitForTabState("request", { focused: true });
     const fetchPath = await fetchViaRequestPanelAndAssert();
+    const cooperativeStop = await assertCooperativeRequestBatchStop();
     return {
       methods: 13,
       fetchPath,
       summaryAndRaw: true,
       batchRerunAndExport: true,
+      cooperativeStop,
     };
   }
 
@@ -14550,6 +14750,7 @@ async (page) => {
     "first-run": runFirstRunJourney,
     "basic-upload-profiles": runBasicUploadProfilesJourney,
     "encrypted-transfer": runEncryptedTransferJourney,
+    "encrypted-compatibility": runEncryptedCompatibilityJourney,
     "ui-contracts": runUiContractsJourney,
     "http-errors": runHttpErrorsJourney,
     "recovery": runRecoveryJourney,

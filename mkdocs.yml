@@ -41,6 +41,7 @@ nav:
       - Disposable SSH tunnel: disposable-ssh-tunnel.md
   - Operations:
       - Data and lifecycle: operations.md
+      - Cold backup and restore: backup-restore.md
       - Public deployment: public-direct.md
       - Configuration migration: migration.md
       - Encrypted transfers and recovery: encrypted-transfers.md
@@ -59,6 +60,7 @@ nav:
   - Development:
       - Contributing: contributing.md
       - Developer guide: developer-guide.md
+      - Performance measurements: performance.md
       - Architecture: architecture.md
       - Frontend contract: frontend-contract.md
       - Architecture decisions:

@@ -55,6 +55,52 @@ The Advanced workflow uses the public session endpoints and the
 `X-XFerry-Advanced-Session` header. The token remains in closure memory and
 transient request headers. There is no UI-only Advanced API.
 
+## Requests batch execution
+
+**Stop after current check** applies to both **Run all** and **Rerun issues**.
+The current logical check finishes, including its demo-file preparation and
+primary request; the next check does not start. Completed server operations are
+not rolled back. While stopping, another single request or batch cannot start
+through either the UI or the workflow commands.
+
+The execution state advances through `running`, `stopping`, then `stopped` or
+`complete`. A stop during the final check still produces `complete`. Results,
+attempt history and the selected HTTP exchange survive a stop; export, clearing
+and another run become available after the current check settles. A fresh full
+run replaces the old matrix. There is no resume operation.
+
+The JSON export retains the existing matrix `phase`, `completed`, `total` and
+`results`. A partial full run has `phase: "stopped"` and only executed results;
+unstarted checks are not failures. The additive `execution` object contains
+`kind` (`all` or `issues`), `phase`, `completed` and `total` for the last batch
+operation. Its counters are separate from matrix counters, so rerunning one
+issue does not turn a thirteen-method matrix into a one-method matrix.
+`unrunMethods` lists methods in the original full plan with no result yet.
+These additions expose no request bodies or secrets. Filtering to issues still
+identifies incomplete runs instead of claiming that every method passed.
+
+## Browser support and acceptance
+
+| Workflow | Browser acceptance |
+| --- | --- |
+| Ordinary Upload and Download | Chromium, Firefox and WebKit |
+| Requests, including batch stop and JSON export | Chromium, Firefox and WebKit |
+| Notepad over HTTP and WebSocket | Chromium, Firefox and WebKit |
+| Large files (client-encrypted upload and download) | Desktop Chrome/Edge with the required file APIs |
+
+The required base matrix uses the bundled engines installed by the pinned
+Playwright CLI on Ubuntu 24.04. A passing WebKit check is not a claim that every
+Safari or iOS version has been tested. The existing full Chromium, installed-wheel
+and Docker acceptance checks remain separate gates.
+
+Large files requires IndexedDB, Web Locks, OPFS, File System Access and Web Crypto.
+The current browser capability gate applies to its upload as well as download
+workflow. Unsupported browsers show an English/Russian compatibility explanation
+and cannot start an encrypted upload. The `encrypted-compatibility` journey
+observes the actual browser APIs without a file-picker replacement. The positive
+Chromium encrypted-transfer journey separately exercises its file-writing flow
+with a controlled picker adapter.
+
 ## Encrypted transfer workflow
 
 The Large files tab remains hidden until `PING.encrypted_uploads` has the exact

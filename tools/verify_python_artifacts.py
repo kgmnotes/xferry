@@ -402,6 +402,7 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
     commands: tuple[tuple[tuple[str, ...], bool], ...] = (
         ((str(python), "-m", "pip", "check"), False),
         ((str(python), "-I", "-c", _IMPORT_PROBE), False),
+        ((str(python), "-I", "-m", "xferry.management.storage_rebind", "--help"), True),
         ((str(console), "--help"), True),
         ((str(console), "--version"), False),
         ((str(console), "run", "--help"), True),

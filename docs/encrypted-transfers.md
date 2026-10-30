@@ -55,6 +55,12 @@ caps are independent of the smaller ordinary `--max-size` limit.
 Ciphertext lives under `<files_dir>/.xferry-encrypted/`; private state sidecars
 live under `.xferry/encrypted-uploads/` in the automatic state directory.
 Preserve both together during backup or restore.
+The private `.xferry/encrypted-storage-root` binding also records the files
+directory's path, device and inode. A copied directory on another disk cannot
+simply be started with that old binding. Follow [cold backup and restore](backup-restore.md)
+to validate the isolated copy and explicitly rebind it in the final runtime
+mount namespace before starting the server. Rebinding does not recover client
+keys, replace the browser nonce journal or extend incomplete-upload retention.
 
 ### Migrating existing encrypted state
 
@@ -135,3 +141,6 @@ XFERRY_RUN_2GIB_SMOKE=1 \
 Run it on the same filesystem and under the same memory limits intended for
 production. A passing smoke demonstrates bounded application buffers for this
 path; it is not a substitute for host disk quotas or process-level limits.
+
+For authenticated transfers over real HTTP/TLS, concurrent workloads, restart
+recovery and CI comparison receipts, see [performance measurements](performance.md).
