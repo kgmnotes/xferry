@@ -35,7 +35,8 @@ dependent publishers; successful publication does not waive final managed checks
 
 All items in this list are blocking. Stop on the first missing item.
 
-- Release code passes automated agent review and all 23 mandatory CI checks
+- Release code passes automated agent review and all CI/Security jobs,
+  including Authenticated network transfer smoke and Browser (firefox/webkit),
   against up-to-date `main`, then merges into protected `main` before creating
   the production tag. Active development does not require human PR approval;
   production signing retains its separate required-reviewer approval.

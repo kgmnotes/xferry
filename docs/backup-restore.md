@@ -5,8 +5,8 @@ rollback restores executable/configuration state; it is not a backup of user
 files. Rehearse this procedure on an isolated replacement installation before
 depending on it.
 
-The offline rebind module described here ships with the next release containing
-this guide. It supports snapshots captured with that release or later and an
+The offline rebind module was introduced in xferry `0.4.0`. It supports
+snapshots captured with `0.4.0` or later and an
 **exactly matching recovery package**. Already published `0.3.2` packages do not
 contain the module. Older archives need separately verified compatibility; do
 not relabel their version file or combine recovery with an upgrade.
