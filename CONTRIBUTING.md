@@ -47,9 +47,10 @@ for example `fix(upload): reject an invalid filename` or
 `docs(api): clarify Advanced Session ownership`.
 
 Use automated agent review and resolve its findings before merging into `main`.
-During active development, human PR approval is not required. All 23 mandatory
-CI checks must pass for the current change against up-to-date `main`; strict
-status checks and branch protection remain enforced.
+During active development, human PR approval is not required. All CI and
+Security jobs must pass for the current change against up-to-date `main`,
+including Authenticated network transfer smoke and Browser (firefox/webkit).
+Strict status checks and branch protection remain enforced.
 
 Development review does not authorize a production release. The separate
 `production-release` signer approval still authorizes the exact prepared
