@@ -22,10 +22,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.9"
 MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS = 65536
+BROWSER_NAMES = ("chromium", "firefox", "webkit")
+CROSS_BROWSER_MODES = frozenset(
+    {
+        "first-run",
+        "basic-upload-profiles",
+        "request-matrix",
+        "files",
+        "notepad",
+        "encrypted-compatibility",
+    }
+)
 SMOKE_MODES = (
     "first-run",
     "basic-upload-profiles",
     "encrypted-transfer",
+    "encrypted-compatibility",
     "ui-contracts",
     "http-errors",
     "recovery",
@@ -148,14 +160,39 @@ def _run_playwright(
     session: str,
     *args: str,
     cwd: Path,
+    local_target: bool = False,
 ) -> str:
     """Run a Playwright CLI command and return stdout."""
+    environment = None
+    if local_target:
+        # Keep package-download proxies available to npx, but do not send the
+        # temporary loopback server through an inherited browser/system proxy.
+        environment = os.environ.copy()
+        bypass = ",".join(
+            dict.fromkeys(
+                entry.strip()
+                for value in (
+                    environment.get("NO_PROXY", ""),
+                    environment.get("no_proxy", ""),
+                    "localhost,127.0.0.1,::1",
+                )
+                for entry in value.split(",")
+                if entry.strip()
+            )
+        )
+        environment["NO_PROXY"] = bypass
+        environment["no_proxy"] = bypass
+        if environment.get("PLAYWRIGHT_MCP_PROXY_SERVER"):
+            environment["PLAYWRIGHT_MCP_PROXY_BYPASS"] = ",".join(
+                filter(None, (environment.get("PLAYWRIGHT_MCP_PROXY_BYPASS"), bypass))
+            )
     completed = subprocess.run(
         [*base_cmd, f"-s={session}", *args],
         cwd=cwd,
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "unknown playwright error"
@@ -164,12 +201,19 @@ def _run_playwright(
     return "\n".join(outputs)
 
 
-def _write_cli_config(config_path: Path) -> None:
+def _write_cli_config(
+    config_path: Path, *, browser: str = "chromium", local_target: bool = False
+) -> None:
     """Write a minimal headless Playwright CLI config."""
+    launch_options: dict[str, object] = {"headless": True}
+    if browser == "chromium":
+        launch_options["channel"] = "chromium"
+    elif browser == "firefox" and local_target:
+        launch_options["firefoxUserPrefs"] = {"network.proxy.type": 0}
     config = {
         "browser": {
-            "browserName": "chromium",
-            "launchOptions": {"channel": "chromium", "headless": True},
+            "browserName": browser,
+            "launchOptions": launch_options,
             "contextOptions": {"viewport": {"width": 1440, "height": 1024}},
         }
     }
@@ -258,6 +302,7 @@ def _run_single_journey(
     mode: str = "full",
     target_url: str | None = None,
     artifacts_dir: str | Path | None = None,
+    browser: str = "chromium",
 ) -> dict[str, object]:
     """Drive one isolated journey; ``full`` here is the original cross-tool composite."""
     smoke_mode = mode
@@ -269,13 +314,12 @@ def _run_single_journey(
 
     smoke_script = REPO_ROOT / "tools" / "browser_smoke.playwright.js"
     playwright = _playwright_command()
-    session = f"xferry-smoke-{os.getpid()}-{uuid4().hex}"
+    session = f"xferry-smoke-{browser}-{os.getpid()}-{uuid4().hex}"
+    default_artifacts = REPO_ROOT / "output" / "playwright" / "browser-smoke"
+    if browser != "chromium":
+        default_artifacts /= browser
     resolved_artifacts_dir = (
-        (
-            Path(artifacts_dir)
-            if artifacts_dir is not None
-            else REPO_ROOT / "output" / "playwright" / "browser-smoke" / smoke_mode
-        )
+        (Path(artifacts_dir) if artifacts_dir is not None else default_artifacts / smoke_mode)
         .expanduser()
         .resolve()
     )
@@ -310,7 +354,7 @@ def _run_single_journey(
         opsec_upload_fixture = work_dir / "browser-smoke-opsec-auto-switch-small.bin"
         opsec_upload_boundary_fixture = work_dir / "browser-smoke-opsec-no-switch-boundary.bin"
         opsec_upload_large_fixture = work_dir / "browser-smoke-opsec-auto-switch-large.bin"
-        _write_cli_config(config_path)
+        _write_cli_config(config_path, browser=browser, local_target=not external_target)
         upload_fixture.write_text("browser smoke upload\n", encoding="utf-8")
         unicode_upload_fixture.write_bytes(b"custom FETCH filename regression\n")
         opsec_upload_url_boundary_fixture.write_bytes(b"U" * 1125)
@@ -366,6 +410,7 @@ def _run_single_journey(
                 "--config",
                 str(config_path),
                 cwd=REPO_ROOT,
+                local_target=not external_target,
             )
             raw_output = ""
             try:
@@ -377,6 +422,7 @@ def _run_single_journey(
                     "--filename",
                     str(local_smoke_script),
                     cwd=REPO_ROOT,
+                    local_target=not external_target,
                 )
                 result = _parse_playwright_json(raw_output)
                 if result.get("journey") != smoke_mode:
@@ -394,11 +440,12 @@ def _run_single_journey(
                     (resolved_artifacts_dir / f"{smoke_mode}-cli-output.log").write_text(
                         raw_output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS], encoding="utf-8"
                     )
-                raise RuntimeError(f"[{smoke_mode}] {exc}") from exc
+                raise RuntimeError(f"[{browser}][{smoke_mode}] {exc}") from exc
             result["serverModulePath"] = (
                 str(server_module_path) if server_module_path is not None else None
             )
             result["smokeMode"] = smoke_mode
+            result["browserName"] = browser
             result["status"] = "passed"
             target_scope = "external" if external_target else "local"
             journey_scope = "cross-tool-composite" if smoke_mode == "full" else "single-journey"
@@ -413,7 +460,13 @@ def _run_single_journey(
             return result
         finally:
             try:
-                _run_playwright(playwright, session, "close", cwd=REPO_ROOT)
+                _run_playwright(
+                    playwright,
+                    session,
+                    "close",
+                    cwd=REPO_ROOT,
+                    local_target=not external_target,
+                )
             except Exception:
                 pass
             if unavailable_live is not None:
@@ -428,6 +481,7 @@ def run_browser_smoke(
     mode: str = "full",
     target_url: str | None = None,
     artifacts_dir: str | Path | None = None,
+    browser: str = "chromium",
 ) -> dict[str, object]:
     """Run a named journey or the full isolated local aggregate.
 
@@ -439,6 +493,13 @@ def run_browser_smoke(
     """
     if mode not in SMOKE_MODES:
         raise ValueError(f"--mode must be one of: {', '.join(SMOKE_MODES)}")
+    if browser not in BROWSER_NAMES:
+        raise ValueError(f"--browser must be one of: {', '.join(BROWSER_NAMES)}")
+    if browser != "chromium" and mode not in CROSS_BROWSER_MODES:
+        raise ValueError(
+            f"--mode {mode} requires Chromium; {browser} supports: "
+            f"{', '.join(sorted(CROSS_BROWSER_MODES))}"
+        )
     if installed_package and target_url is not None:
         raise ValueError("--installed-package cannot be combined with --target-url")
     normalized_target = normalize_target_url(target_url) if target_url is not None else None
@@ -448,6 +509,7 @@ def run_browser_smoke(
             mode=mode,
             target_url=normalized_target,
             artifacts_dir=artifacts_dir,
+            browser=browser,
         )
 
     resolved_artifacts_dir = (
@@ -473,6 +535,7 @@ def run_browser_smoke(
                 mode=journey,
                 target_url=None,
                 artifacts_dir=journey_artifacts,
+                browser=browser,
             )
             if result.get("journey") != journey or result.get("status") != "passed":
                 raise RuntimeError(
@@ -496,6 +559,7 @@ def run_browser_smoke(
         executionScope="isolated-local-aggregate",
         externalTarget=False,
         installedPackage=installed_package,
+        browserName=browser,
         artifactsDir=str(resolved_artifacts_dir),
         expectedJourneys=list(journeys),
         completedJourneys=list(results),
@@ -535,6 +599,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--browser",
+        choices=BROWSER_NAMES,
+        default="chromium",
+        help="Browser engine (default: chromium); full is Chromium-only.",
+    )
+    parser.add_argument(
         "--target-url",
         help=(
             "Run against an existing HTTP(S) server without starting a local server. "
@@ -556,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             target_url=args.target_url,
             artifacts_dir=args.artifacts_dir,
+            browser=args.browser,
         )
     except Exception as exc:
         print(f"Browser smoke failed: {exc}", file=sys.stderr)

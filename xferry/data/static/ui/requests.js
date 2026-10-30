@@ -49,6 +49,7 @@ const requestPreviewPaneEl = requestPreviewAreaEl
     ? requestPreviewAreaEl.closest('.exchange-pane--request')
     : null;
 const requestRunAllBtnEl = document.getElementById('requestRunAllBtn');
+const requestBatchStopBtnEl = document.getElementById('requestBatchStopBtn');
 const requestTechnicalDetailsEl = document.getElementById('requestTechnicalDetails');
 const requestBatchDetailsEl = document.getElementById('requestBatchDetails');
 const requestBatchRerunIssuesBtnEl = document.getElementById('requestBatchRerunIssuesBtn');
@@ -104,6 +105,15 @@ const requestState = {
     },
     busy: false,
     batchRunning: false,
+    batchPlanMethods: [],
+    execution: {
+        kind: 'all',
+        phase: 'idle',
+        completed: 0,
+        total: 0,
+        stopRequested: false,
+        returnStopFocus: false,
+    },
     showBatchIssuesOnly: Boolean(requestBatchIssuesOnlyToggleEl?.checked),
     batchRun: {
         phase: 'idle',
@@ -128,6 +138,7 @@ try {
 
 requestMethodButtons.forEach(button => {
     button.addEventListener('click', async () => {
+        if (requestState.busy || requestState.batchRunning) return;
         const method = button.dataset.requestMethod;
         if (method) {
             if (method === 'SMUGGLE' && isRequestPanelSmuggleUploadPath(normalizeRequestPath(pathInputEl ? pathInputEl.value : '', ''))) {
@@ -216,6 +227,10 @@ requestPreviewModeButtons.forEach(button => {
 
 if (requestRunAllBtnEl) {
     requestRunAllBtnEl.addEventListener('click', runAllRequestMethods);
+}
+
+if (requestBatchStopBtnEl) {
+    requestBatchStopBtnEl.addEventListener('click', stopRequestBatch);
 }
 
 if (requestBatchRerunIssuesBtnEl) {
@@ -347,6 +362,7 @@ function syncRequestControlState() {
     updateRequestBatchClearButtonState();
     updateRequestBatchRerunIssuesButtonState();
     updateRequestBatchRerunButtonState();
+    updateRequestBatchStopButtonState();
 }
 
 function setRequestButtonsBusy(isBusy) {
@@ -366,6 +382,86 @@ function openRequestBatchDetails() {
 function setRequestBatchBusy(isBusy) {
     requestState.batchRunning = isBusy;
     syncRequestControlState();
+}
+
+function getRequestBatchExecution() {
+    const { kind, phase, completed, total } = requestState.execution;
+    return { kind, phase, completed, total };
+}
+
+function getUnrunRequestBatchMethods() {
+    const completedMethods = new Set(requestState.batchRun.results.map(result => result.method));
+    return requestState.batchPlanMethods.filter(method => !completedMethods.has(method));
+}
+
+function updateRequestBatchStopButtonState() {
+    if (!requestBatchStopBtnEl) return;
+    requestBatchStopBtnEl.hidden = !requestState.batchRunning;
+    requestBatchStopBtnEl.disabled = !requestState.batchRunning || requestState.execution.stopRequested;
+}
+
+function stopRequestBatch() {
+    if (!requestState.batchRunning || requestState.execution.stopRequested) return;
+    requestState.execution.stopRequested = true;
+    requestState.execution.returnStopFocus = document.activeElement === requestBatchStopBtnEl;
+    requestState.execution.phase = 'stopping';
+    if (requestState.execution.kind === 'all') requestState.batchRun.phase = 'stopping';
+    updateRequestBatchStopButtonState();
+    renderRequestBatchSummary();
+    announceLiveRegion('requestBatchLive', t('requestBatchStopping'));
+}
+
+async function executeRequestBatch(plan, kind) {
+    requestState.execution = {
+        kind, phase: 'running', completed: 0, total: plan.length,
+        stopRequested: false, returnStopFocus: false,
+    };
+    setRequestBatchBusy(true);
+    renderRequestBatchSummary();
+    try {
+        for (const step of plan) {
+            if (requestState.execution.stopRequested) break;
+            const path = step.initialPath || step.path;
+            setRequestPathValue(path);
+            let result;
+            try {
+                result = await executeRequestScenario(step.method);
+            } catch (error) {
+                result = buildRequestExecutionResult(step.method, path, {
+                    kind: 'error', message: error.message,
+                });
+            }
+            result = result || buildRequestExecutionResult(step.method, path, {
+                kind: 'error', message: t('error'),
+            });
+            if (kind === 'issues') {
+                updateRequestBatchResult(step.method, step.path, result);
+            } else {
+                const batchResult = buildRequestBatchResult(result);
+                requestState.batchRun = {
+                    ...requestState.batchRun,
+                    completed: requestState.batchRun.completed + 1,
+                    results: [...requestState.batchRun.results, batchResult],
+                    selectedExchangeId: batchResult.exchangeSnapshot?.id || requestState.batchRun.selectedExchangeId,
+                };
+            }
+            requestState.execution.completed += 1;
+            renderRequestBatchSummary();
+        }
+    } finally {
+        const execution = requestState.execution;
+        execution.phase = execution.completed === execution.total ? 'complete' : 'stopped';
+        if (kind === 'all') requestState.batchRun.phase = execution.phase;
+        const returnFocus = document.activeElement === requestBatchStopBtnEl || (
+            execution.returnStopFocus && (!document.activeElement || document.activeElement === document.body)
+        );
+        setRequestBatchBusy(false);
+        renderRequestBatchSummary();
+        if (returnFocus) focusElementWithoutScroll(requestRunAllBtnEl);
+        announceLiveRegion('requestBatchLive', getRequestBatchStatusText(
+            requestState.batchRun, countRequestBatchResults(requestState.batchRun.results)
+        ));
+    }
 }
 
 function setResponseAreaState(method, path, phase, status = '') {
@@ -873,6 +969,20 @@ function buildRequestBatchRow(result) {
 }
 
 function getRequestBatchStatusText(state, counts) {
+    const execution = requestState.execution;
+    if (execution.phase === 'stopping') {
+        return `${t('requestBatchStopping')} (${execution.completed}/${execution.total})`;
+    }
+    if (execution.kind === 'issues' && execution.phase !== 'idle') {
+        const label = t(execution.phase === 'running'
+            ? 'requestBatchRerunIssuesStarted'
+            : execution.phase === 'stopped' ? 'requestBatchRerunStopped' : 'requestBatchRetried');
+        const remaining = execution.total - execution.completed;
+        return `${label}: ${execution.completed}/${execution.total}${remaining > 0 ? `; ${t('requestBatchNotRetried')}: ${remaining}` : ''}`;
+    }
+    if (state.phase === 'stopped') {
+        return `${t('requestBatchStopped')}: ${state.completed}/${state.total}; ${t('requestBatchNotRun')}: ${state.total - state.completed}`;
+    }
     if (state.phase === 'running') {
         return `${t('requestBatchRunning')}: ${state.completed}/${state.total}`;
     }
@@ -901,6 +1011,8 @@ function buildRequestBatchReport() {
         phase: requestState.batchRun.phase,
         completed: requestState.batchRun.completed,
         total: requestState.batchRun.total,
+        execution: getRequestBatchExecution(),
+        unrunMethods: getUnrunRequestBatchMethods(),
         summary: {
             label: getRequestBatchStatusText(requestState.batchRun, counts),
             matchCount: counts.match,
@@ -993,7 +1105,7 @@ function updateRequestBatchRerunButtonState() {
 }
 
 function exportRequestBatchReport() {
-    if (requestState.batchRun.total === 0) {
+    if (requestState.busy || requestState.batchRunning || requestState.batchRun.total === 0) {
         updateRequestBatchExportButtonState();
         return;
     }
@@ -1011,7 +1123,13 @@ function exportRequestBatchReport() {
 }
 
 function clearRequestBatchRun(options = {}) {
+    if (requestState.busy || requestState.batchRunning) return;
     const { announce = false, resetFilter = false } = options;
+    requestState.batchPlanMethods = [];
+    requestState.execution = {
+        kind: 'all', phase: 'idle', completed: 0, total: 0,
+        stopRequested: false, returnStopFocus: false,
+    };
     requestState.batchRun = {
         phase: 'idle',
         completed: 0,
@@ -1125,38 +1243,21 @@ async function rerunRequestBatchIssues() {
     const issueResults = getRequestBatchIssueResults();
     if (issueResults.length === 0) {
         updateRequestBatchRerunIssuesButtonState();
-        announceLiveRegion('requestBatchLive', t('requestBatchNoIssues'));
+        announceLiveRegion('requestBatchLive', getRequestBatchEmptyText());
         return;
     }
 
     openRequestBatchDetails();
-    setRequestBatchBusy(true);
     announceLiveRegion('requestBatchLive', `${t('requestBatchRerunIssuesStarted')}: ${issueResults.length}`);
+    await executeRequestBatch(issueResults, 'issues');
+}
 
-    try {
-        for (const issueResult of issueResults) {
-            setRequestPathValue(issueResult.path);
-            let result;
-            try {
-                result = await sendRequest(issueResult.method);
-            } catch (error) {
-                result = buildRequestExecutionResult(issueResult.method, issueResult.path, {
-                    kind: 'error',
-                    message: error.message,
-                });
-            }
-
-            if (result) {
-                updateRequestBatchResult(issueResult.method, issueResult.path, result);
-            }
-        }
-    } finally {
-        setRequestBatchBusy(false);
-        renderRequestBatchSummary();
+function getRequestBatchEmptyText() {
+    const unrun = getUnrunRequestBatchMethods().length;
+    if (unrun > 0) {
+        return `${t('requestBatchNoIssuesPartial')} ${t('requestBatchNotRun')}: ${unrun}.`;
     }
-
-    const remainingIssues = getRequestBatchIssueResults().length;
-    announceLiveRegion('requestBatchLive', `${t('requestBatchRerunIssuesCompleted')}: ${remainingIssues}`);
+    return t(requestState.batchRunning ? 'requestBatchNoIssuesYet' : 'requestBatchNoIssues');
 }
 
 function renderRequestBatchSummary() {
@@ -1165,9 +1266,7 @@ function renderRequestBatchSummary() {
     const hasContent = requestState.batchRun.total > 0;
     const counts = countRequestBatchResults(requestState.batchRun.results);
     const visibleResults = getVisibleRequestBatchResults(requestState.batchRun.results);
-    const emptyStateText = requestState.batchRun.phase === 'running'
-        ? t('requestBatchNoIssuesYet')
-        : t('requestBatchNoIssues');
+    const emptyStateText = getRequestBatchEmptyText();
     requestBatchSummaryEl.dataset.batchPhase = requestState.batchRun.phase;
     requestBatchSummaryEl.dataset.batchCompleted = String(requestState.batchRun.completed);
     requestBatchSummaryEl.dataset.batchTotal = String(requestState.batchRun.total);
@@ -1176,6 +1275,10 @@ function renderRequestBatchSummary() {
     requestBatchSummaryEl.dataset.batchFailedCount = String(counts.failed);
     requestBatchSummaryEl.dataset.batchFilter = requestState.showBatchIssuesOnly ? 'issues' : 'all';
     requestBatchSummaryEl.dataset.batchVisibleCount = String(visibleResults.length);
+    requestBatchSummaryEl.dataset.executionPhase = requestState.execution.phase;
+    requestBatchSummaryEl.dataset.executionKind = requestState.execution.kind;
+    requestBatchSummaryEl.dataset.executionCompleted = String(requestState.execution.completed);
+    requestBatchSummaryEl.dataset.executionTotal = String(requestState.execution.total);
 
     if (requestBatchStatusEl) {
         requestBatchStatusEl.textContent = hasContent
@@ -1888,6 +1991,7 @@ async function executeRequestPanelSmuggle(filePath, builderState) {
 }
 
 async function launchRequestPanelSmuggleBuilder(triggerEl = null) {
+    if (requestState.busy || requestState.batchRunning) return;
     const stableTriggerEl = resolveStableRequestTriggerElement(triggerEl);
     if (!responseAreaEl) {
         return;
@@ -2048,6 +2152,11 @@ function isRequestPanelSmuggleStateReady(state) {
 }
 
 async function sendRequest(method, triggerEl = null) {
+    if (requestState.busy || requestState.batchRunning) return;
+    return executeRequestScenario(method, triggerEl);
+}
+
+async function executeRequestScenario(method, triggerEl = null) {
     if (!responseAreaEl) return;
     const requestOrigin = resolveStableRequestTriggerElement(triggerEl || document.activeElement);
     httpErrors.close('requestHttpErrorHost', { restore: false });
@@ -2167,7 +2276,7 @@ async function sendRequest(method, triggerEl = null) {
 }
 
 async function runAllRequestMethods() {
-    if (requestState.batchRunning) return;
+    if (requestState.busy || requestState.batchRunning) return;
 
     const plan = getRequestBatchPlan();
     if (plan.length === 0) {
@@ -2175,6 +2284,7 @@ async function runAllRequestMethods() {
     }
 
     openRequestBatchDetails();
+    requestState.batchPlanMethods = plan.map(step => step.method);
     requestState.batchRun = {
         phase: 'running',
         completed: 0,
@@ -2182,49 +2292,7 @@ async function runAllRequestMethods() {
         results: [],
         selectedExchangeId: '',
     };
-    setRequestBatchBusy(true);
-    renderRequestBatchSummary();
-
-    try {
-        for (const step of plan) {
-            setRequestPathValue(step.initialPath);
-            let result;
-            try {
-                result = await sendRequest(step.method);
-            } catch (error) {
-                result = buildRequestExecutionResult(
-                    step.method,
-                    normalizeRequestPath(step.initialPath, '/'),
-                    { kind: 'error', message: error.message }
-                );
-            }
-
-            const batchResult = buildRequestBatchResult(
-                result || buildRequestExecutionResult(
-                    step.method,
-                    normalizeRequestPath(step.initialPath, '/'),
-                    { kind: 'error', message: t('error') }
-                )
-            );
-            requestState.batchRun = {
-                ...requestState.batchRun,
-                completed: requestState.batchRun.completed + 1,
-                results: [
-                    ...requestState.batchRun.results,
-                    batchResult,
-                ],
-                selectedExchangeId: batchResult.exchangeSnapshot?.id || requestState.batchRun.selectedExchangeId,
-            };
-            renderRequestBatchSummary();
-        }
-    } finally {
-        requestState.batchRun = {
-            ...requestState.batchRun,
-            phase: 'complete',
-        };
-        renderRequestBatchSummary();
-        setRequestBatchBusy(false);
-    }
+    await executeRequestBatch(plan, 'all');
 }
 
 // Универсальная функция для кастомных HTTP-методов
@@ -2579,6 +2647,7 @@ app.registerWorkflow('requests', {
         'download-file': downloadFile,
         'resolve-download-filename': resolveDownloadFilename,
         'record-batch-result': (method, path, response) => {
+            if (requestState.busy || requestState.batchRunning) return;
             const result = buildRequestExecutionResult(method, path, response);
             updateRequestBatchResult(method, path, result);
             return result;
@@ -2594,6 +2663,7 @@ app.registerWorkflow('requests', {
         batchRunning: requestState.batchRunning,
         batchPhase: requestState.batchRun.phase,
         batchResultCount: requestState.batchRun.results.length,
+        execution: getRequestBatchExecution(),
     }),
 });
 })(window.XferryApp);

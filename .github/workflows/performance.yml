@@ -1,0 +1,63 @@
+name: Performance measurements
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    # Only the reviewed default branch can produce an eligible baseline.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/ci.txt
+      - name: Install measured toolchain
+        run: python -m pip install -e ".[dev,test]"
+      - name: Authenticated TLS transfers and recovery
+        run: |
+          python tools/network_transfer_smoke.py --profile weekly --allow-large \
+            --output performance-results/network.json
+      - name: Existing workspace microbenchmarks
+        run: |
+          python -m pytest -q tests/benchmarks \
+            --benchmark-json=performance-results/microbenchmarks.json
+      - name: Compare compatible default-branch evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python tools/compare_performance.py \
+            --current performance-results/network.json \
+            --microbenchmarks performance-results/microbenchmarks.json \
+            --branch "$DEFAULT_BRANCH" \
+            --output performance-results/comparison.json \
+            --summary "$GITHUB_STEP_SUMMARY"
+      - name: Preserve measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        with:
+          name: performance-measurements
+          path: performance-results/
+          retention-days: 30
+          if-no-files-found: warn

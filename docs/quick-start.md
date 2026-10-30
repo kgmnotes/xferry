@@ -112,6 +112,8 @@ curl --fail-with-body http://127.0.0.1:8080/uploads/sample.txt
 
 For public access, use the printed HTTPS URL and `--user USER`; curl prompts for
 the password. See [Scenarios](scenarios.md) for the other tabs.
+Follow [Complete a gateway check and share the result](scenarios.md#complete-a-gateway-check-and-share-the-result)
+for the method matrix, stopping a run, retrying issues and exporting a report.
 
 ## Stop and protect data
 

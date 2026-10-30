@@ -171,6 +171,26 @@ Follow the [release runbook](release-runbook.md) for publication procedures.
   external target, `--mode full` runs all journeys against temporary servers.
   With `--target-url`, `full` covers only the cross-tool scenario and modifies
   the target's data; see [browser checks](contributing.md#checks).
+- `--browser chromium|firefox|webkit` selects an engine; Chromium remains the
+  default. The base browser matrix runs `first-run`, `basic-upload-profiles`,
+  `request-matrix`, `files`, `notepad` and `encrypted-compatibility`. The full
+  suite and positive encrypted-transfer journey require Chromium. Install and
+  run a second engine with:
+
+  ```bash
+  npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser firefox --with-deps
+  python tools/browser_smoke.py --browser firefox --mode request-matrix
+  python tools/browser_smoke.py --browser firefox --mode encrypted-compatibility
+  ```
+
+  Substitute `webkit` for the other matrix job. Non-default engines use
+  `output/playwright/browser-smoke/<browser>/<mode>` unless `--artifacts-dir`
+  supplies an explicit directory. Receipts record `browserName`; CI preserves
+  each engine's results and failure diagnostics independently. Refer to the
+  [browser support contract](frontend-contract.md#browser-support-and-acceptance)
+  for the Large files capability boundary. Temporary local servers bypass
+  inherited proxies; package downloads keep their proxy settings. Explicit
+  `--target-url` runs retain the caller's proxy configuration.
 - Do not add whole-package coverage to a focused test selection: the configured
   85% threshold belongs to the full suite. Use the full coverage command from
   Contributing when checking that threshold.

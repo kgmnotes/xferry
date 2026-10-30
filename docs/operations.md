@@ -104,6 +104,8 @@ in `/var/lib/xferry`; Docker keeps separate state/ACME volumes. See
 Back up configuration, protected auth files, files, private state and ACME
 material together. Restore these consistently before starting the server.
 Notepad ciphertext does not include the browser's recovery key.
+Follow the [cold backup and restore procedure](backup-restore.md), including
+offline validation before starting encrypted storage on a replacement disk.
 
 Encrypted uploads are disabled by default. Enable them with `xferry config set
 encrypted_uploads=true` or the wizard. See [Encrypted transfer operations](encrypted-transfers.md)

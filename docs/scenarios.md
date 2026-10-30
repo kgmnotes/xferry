@@ -28,6 +28,45 @@ headers and automation, use curl or another HTTP client with the [API reference]
 Demo preparation does not delete pre-existing files. Successful upload responses
 provide the actual saved path, including any server-side collision rename.
 
+### Complete a gateway check and share the result
+
+For example, check how your gateway handles a small text file and the HTTP
+methods exposed by xferry:
+
+1. Use a dedicated test files folder. In **Upload**, send a small, non-sensitive
+   text file, note the returned path, and download it once to verify its contents.
+2. Open xferry from the client and network path that passes through the gateway
+   under test. In **Requests**, enter the saved file path and run `GET` or `HEAD`
+   to inspect that resource.
+3. Open **Technical requests** and select **Run all**. This uses prepared paths
+   for the method matrix, rather than applying the path field to every method.
+   Some checks create unique demonstration files; `DELETE` deletes only its
+   newly prepared demo file.
+4. Inspect the expected and actual status and the response body. A matching
+   status confirms the HTTP scenario's expectation, not compliance with your
+   gateway policy. A network failure alone does not prove the gateway blocked
+   the request. Record your intended policy outcome separately.
+5. To shorten a run, select **Stop after current check**. The current scenario,
+   including any preparation and primary request, finishes before the run stops.
+   A slow request may still wait for its timeout. Completed actions are not
+   undone; unstarted methods are listed as not run, not as failures.
+6. Select **Only issues** to inspect completed failures. **Rerun issues** retries
+   those rows and retains their attempt history; it can also be stopped after
+   the current check. Unretried rows keep their previous results. A new **Run
+   all** starts a fresh matrix.
+7. Select **Export JSON** after completion or stopping. A partial report retains
+   completed results, identifies unrun methods, and records the progress of the
+   last full run or issue rerun. Copy or download the relevant HTTP details from
+   the request/response inspector when supporting evidence is useful. Review
+   paths and response content before sharing them.
+8. Download reports before reloading the page: the matrix and attempt history
+   are held in this page's memory. In **Download**, remove only the demo files
+   you no longer need; **Clear files folder** also removes unrelated shared files.
+
+To compare direct access with access through the gateway, repeat the check from
+each network path and give the two exported reports descriptive filenames. The
+interface does not automatically compare separate runs or save reusable scenarios.
+
 ## Test Advanced routing
 
 **Advanced** creates an Advanced Session with an immutable path prefix, decoder,

@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Stop Requests batches after the current logical check, retaining partial
+  reports and attempt history, with a complete checking/reporting guide.
+- Offline encrypted-storage validation and explicit directory rebind, a cold
+  backup/restore runbook and a synthetic HTTP restore rehearsal.
+- Authenticated TLS transfer measurements with bounded-memory acceptance,
+  restart recovery and advisory weekly performance comparisons.
+- Firefox and WebKit base-workflow checks alongside the full Chromium suite,
+  with explicit Large files capability checks and browser support documentation.
+
 ## [0.3.2] - 2026-10-28
 
 Includes the setup, configuration, migration, and file-transfer features from

@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from .encrypted_transfer import (
     EUF_CHUNK_SIZE,
@@ -134,6 +134,178 @@ def _require_number(value: object, *, field: str) -> float:
     if result < 0 or not math.isfinite(result):
         raise EncryptedStorageCorrupt(f"invalid {field}")
     return result
+
+
+def encrypted_chunk_length(manifest: EncryptedTransferManifest, index: int) -> int:
+    """Return one ciphertext chunk length without accessing storage."""
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise EncryptedTransferValidationError("chunk index is outside the manifest")
+    if index < 0 or index >= manifest.chunk_count:
+        raise EncryptedTransferValidationError("chunk index is outside the manifest")
+    plaintext_length = min(
+        manifest.chunk_size,
+        manifest.plaintext_size - index * manifest.chunk_size,
+    )
+    return plaintext_length + EUF_GCM_TAG_SIZE
+
+
+def _decode_encrypted_manifest(raw: object) -> EncryptedTransferManifest:
+    if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
+        raise EncryptedStorageCorrupt("invalid manifest")
+    manifest_data = raw
+    _require_exact_keys(
+        manifest_data,
+        {
+            "version",
+            "file_id",
+            "plaintext_size",
+            "chunk_size",
+            "chunk_count",
+            "salt",
+            "nonce_prefix",
+            "encrypted_metadata",
+        },
+        field="manifest",
+    )
+    file_id = manifest_data["file_id"]
+    if not isinstance(file_id, str):
+        raise EncryptedStorageCorrupt("invalid manifest file_id")
+    for name in ("salt", "nonce_prefix", "encrypted_metadata"):
+        if not isinstance(manifest_data[name], str):
+            raise EncryptedStorageCorrupt(f"invalid manifest {name}")
+    try:
+        manifest = EncryptedTransferManifest(
+            version=_require_int(manifest_data["version"], field="manifest version"),
+            file_id=file_id,
+            plaintext_size=_require_int(
+                manifest_data["plaintext_size"],
+                field="manifest plaintext_size",
+            ),
+            chunk_size=_require_int(
+                manifest_data["chunk_size"],
+                field="manifest chunk_size",
+            ),
+            chunk_count=_require_int(
+                manifest_data["chunk_count"],
+                field="manifest chunk_count",
+            ),
+            salt=b64url_decode(manifest_data["salt"], field="salt"),
+            nonce_prefix=b64url_decode(
+                manifest_data["nonce_prefix"],
+                field="nonce_prefix",
+            ),
+            encrypted_metadata=b64url_decode(
+                manifest_data["encrypted_metadata"],
+                field="encrypted_metadata",
+            ),
+        )
+        # The operator's new-upload limit must not hide existing files or
+        # invalidate their recovery journal after a configuration change.
+    except (EncryptedTransferValidationError, TypeError, ValueError) as exc:
+        raise EncryptedStorageCorrupt("invalid manifest") from exc
+    return manifest
+
+
+def decode_encrypted_state(raw: bytes, *, expected_file_id: str) -> EncryptedStoredFile:
+    """Decode a bounded journal without opening, reconciling or expiring storage."""
+    if len(raw) > _MAX_STATE_BYTES:
+        raise EncryptedStorageCorrupt("encrypted recovery journal exceeds its limit")
+    try:
+        decoded = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise EncryptedStorageCorrupt("invalid state JSON") from exc
+    if not isinstance(decoded, dict) or not all(isinstance(key, str) for key in decoded):
+        raise EncryptedStorageCorrupt("invalid state object")
+    _require_exact_keys(
+        decoded,
+        {
+            "schema_version",
+            "status",
+            "created_at",
+            "updated_at",
+            "manifest",
+            "received_chunks",
+        },
+        field="state",
+    )
+    if _require_int(decoded["schema_version"], field="schema_version") != 1:
+        raise EncryptedStorageCorrupt("unsupported state schema")
+    status_value = decoded["status"]
+    if not isinstance(status_value, str) or status_value not in {
+        "partial",
+        "committing",
+        "complete",
+    }:
+        raise EncryptedStorageCorrupt("invalid state status")
+    status = cast(EncryptedStorageStatus, status_value)
+    manifest = _decode_encrypted_manifest(decoded["manifest"])
+    if manifest.file_id != expected_file_id:
+        raise EncryptedStorageCorrupt("state file ID does not match manifest")
+    chunks_raw = decoded["received_chunks"]
+    if not isinstance(chunks_raw, dict):
+        raise EncryptedStorageCorrupt("invalid received_chunks")
+    chunks: list[EncryptedStoredChunk] = []
+    for raw_index, raw_chunk in chunks_raw.items():
+        if (
+            not isinstance(raw_index, str)
+            or not raw_index
+            or (
+                raw_index != "0"
+                and (not raw_index.isascii() or not raw_index.isdigit() or raw_index[0] == "0")
+            )
+        ):
+            raise EncryptedStorageCorrupt("invalid chunk index")
+        index = int(raw_index)
+        expected_length = encrypted_chunk_length(manifest, index)
+        if not isinstance(raw_chunk, dict):
+            raise EncryptedStorageCorrupt("invalid chunk state")
+        _require_exact_keys(
+            raw_chunk,
+            {"length", "resume_mac", "ciphertext_sha256"},
+            field="chunk state",
+        )
+        length = _require_int(raw_chunk["length"], field="chunk length")
+        if length != expected_length:
+            raise EncryptedStorageCorrupt("invalid chunk length")
+        resume_mac_raw = raw_chunk["resume_mac"]
+        ciphertext_hash_raw = raw_chunk["ciphertext_sha256"]
+        if not isinstance(resume_mac_raw, str) or not isinstance(ciphertext_hash_raw, str):
+            raise EncryptedStorageCorrupt("invalid chunk digest")
+        try:
+            resume_mac = b64url_decode(resume_mac_raw, field="resume_mac")
+            ciphertext_hash = b64url_decode(
+                ciphertext_hash_raw,
+                field="ciphertext_sha256",
+            )
+        except EncryptedTransferValidationError as exc:
+            raise EncryptedStorageCorrupt("invalid chunk digest") from exc
+        if len(resume_mac) != 32 or len(ciphertext_hash) != 32:
+            raise EncryptedStorageCorrupt("invalid chunk digest length")
+        chunks.append(
+            EncryptedStoredChunk(
+                index=index,
+                length=length,
+                resume_mac=resume_mac,
+                ciphertext_sha256=ciphertext_hash,
+            )
+        )
+    chunks.sort(key=lambda chunk: chunk.index)
+    if status in {"committing", "complete"} and len(chunks) != manifest.chunk_count:
+        raise EncryptedStorageCorrupt("final state is missing chunks")
+    created_at = _require_number(decoded["created_at"], field="created_at")
+    updated_at = _require_number(decoded["updated_at"], field="updated_at")
+    if updated_at < created_at:
+        raise EncryptedStorageCorrupt("updated_at predates created_at")
+    return EncryptedStoredFile(
+        manifest=manifest,
+        status=status,
+        received_chunks=tuple(chunks),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
 
 
 def prepare_legacy_encrypted_binding(
@@ -500,15 +672,7 @@ class EncryptedStorageService:
 
     @staticmethod
     def _expected_chunk_length(manifest: EncryptedTransferManifest, index: int) -> int:
-        if isinstance(index, bool) or not isinstance(index, int):
-            raise EncryptedTransferValidationError("chunk index is outside the manifest")
-        if index < 0 or index >= manifest.chunk_count:
-            raise EncryptedTransferValidationError("chunk index is outside the manifest")
-        plaintext_length = min(
-            manifest.chunk_size,
-            manifest.plaintext_size - index * manifest.chunk_size,
-        )
-        return plaintext_length + EUF_GCM_TAG_SIZE
+        return encrypted_chunk_length(manifest, index)
 
     @staticmethod
     def _chunk_offset(manifest: EncryptedTransferManifest, index: int) -> int:
@@ -612,151 +776,9 @@ class EncryptedStorageService:
                 os.close(descriptor)
             temporary.unlink(missing_ok=True)
 
-    def _decode_manifest(self, raw: object) -> EncryptedTransferManifest:
-        if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
-            raise EncryptedStorageCorrupt("invalid manifest")
-        manifest_data = raw
-        _require_exact_keys(
-            manifest_data,
-            {
-                "version",
-                "file_id",
-                "plaintext_size",
-                "chunk_size",
-                "chunk_count",
-                "salt",
-                "nonce_prefix",
-                "encrypted_metadata",
-            },
-            field="manifest",
-        )
-        file_id = manifest_data["file_id"]
-        if not isinstance(file_id, str):
-            raise EncryptedStorageCorrupt("invalid manifest file_id")
-        for name in ("salt", "nonce_prefix", "encrypted_metadata"):
-            if not isinstance(manifest_data[name], str):
-                raise EncryptedStorageCorrupt(f"invalid manifest {name}")
-        try:
-            manifest = EncryptedTransferManifest(
-                version=_require_int(manifest_data["version"], field="manifest version"),
-                file_id=file_id,
-                plaintext_size=_require_int(
-                    manifest_data["plaintext_size"],
-                    field="manifest plaintext_size",
-                ),
-                chunk_size=_require_int(
-                    manifest_data["chunk_size"],
-                    field="manifest chunk_size",
-                ),
-                chunk_count=_require_int(
-                    manifest_data["chunk_count"],
-                    field="manifest chunk_count",
-                ),
-                salt=b64url_decode(manifest_data["salt"], field="salt"),
-                nonce_prefix=b64url_decode(
-                    manifest_data["nonce_prefix"],
-                    field="nonce_prefix",
-                ),
-                encrypted_metadata=b64url_decode(
-                    manifest_data["encrypted_metadata"],
-                    field="encrypted_metadata",
-                ),
-            )
-            # The operator's new-upload limit must not hide existing files or
-            # invalidate their recovery journal after a configuration change.
-        except (EncryptedTransferValidationError, TypeError, ValueError) as exc:
-            raise EncryptedStorageCorrupt("invalid manifest") from exc
-        return manifest
-
-    def _decode_state(self, raw: bytes, *, expected_file_id: str) -> EncryptedStoredFile:
-        try:
-            decoded = json.loads(
-                raw.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_json_members,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            raise EncryptedStorageCorrupt("invalid state JSON") from exc
-        if not isinstance(decoded, dict) or not all(isinstance(key, str) for key in decoded):
-            raise EncryptedStorageCorrupt("invalid state object")
-        _require_exact_keys(
-            decoded,
-            {
-                "schema_version",
-                "status",
-                "created_at",
-                "updated_at",
-                "manifest",
-                "received_chunks",
-            },
-            field="state",
-        )
-        if _require_int(decoded["schema_version"], field="schema_version") != 1:
-            raise EncryptedStorageCorrupt("unsupported state schema")
-        status_value = decoded["status"]
-        if status_value not in {"partial", "committing", "complete"}:
-            raise EncryptedStorageCorrupt("invalid state status")
-        status: EncryptedStorageStatus = status_value
-        manifest = self._decode_manifest(decoded["manifest"])
-        if manifest.file_id != expected_file_id:
-            raise EncryptedStorageCorrupt("state file ID does not match manifest")
-        chunks_raw = decoded["received_chunks"]
-        if not isinstance(chunks_raw, dict):
-            raise EncryptedStorageCorrupt("invalid received_chunks")
-        chunks: list[EncryptedStoredChunk] = []
-        for raw_index, raw_chunk in chunks_raw.items():
-            if not isinstance(raw_index, str) or (
-                raw_index != "0"
-                and (not raw_index.isascii() or not raw_index.isdigit() or raw_index[0] == "0")
-            ):
-                raise EncryptedStorageCorrupt("invalid chunk index")
-            index = int(raw_index)
-            expected_length = self._expected_chunk_length(manifest, index)
-            if not isinstance(raw_chunk, dict):
-                raise EncryptedStorageCorrupt("invalid chunk state")
-            _require_exact_keys(
-                raw_chunk,
-                {"length", "resume_mac", "ciphertext_sha256"},
-                field="chunk state",
-            )
-            length = _require_int(raw_chunk["length"], field="chunk length")
-            if length != expected_length:
-                raise EncryptedStorageCorrupt("invalid chunk length")
-            resume_mac_raw = raw_chunk["resume_mac"]
-            ciphertext_hash_raw = raw_chunk["ciphertext_sha256"]
-            if not isinstance(resume_mac_raw, str) or not isinstance(ciphertext_hash_raw, str):
-                raise EncryptedStorageCorrupt("invalid chunk digest")
-            try:
-                resume_mac = b64url_decode(resume_mac_raw, field="resume_mac")
-                ciphertext_hash = b64url_decode(
-                    ciphertext_hash_raw,
-                    field="ciphertext_sha256",
-                )
-            except EncryptedTransferValidationError as exc:
-                raise EncryptedStorageCorrupt("invalid chunk digest") from exc
-            if len(resume_mac) != 32 or len(ciphertext_hash) != 32:
-                raise EncryptedStorageCorrupt("invalid chunk digest length")
-            chunks.append(
-                EncryptedStoredChunk(
-                    index=index,
-                    length=length,
-                    resume_mac=resume_mac,
-                    ciphertext_sha256=ciphertext_hash,
-                )
-            )
-        chunks.sort(key=lambda chunk: chunk.index)
-        if status in {"committing", "complete"} and len(chunks) != manifest.chunk_count:
-            raise EncryptedStorageCorrupt("final state is missing chunks")
-        created_at = _require_number(decoded["created_at"], field="created_at")
-        updated_at = _require_number(decoded["updated_at"], field="updated_at")
-        if updated_at < created_at:
-            raise EncryptedStorageCorrupt("updated_at predates created_at")
-        return EncryptedStoredFile(
-            manifest=manifest,
-            status=status,
-            received_chunks=tuple(chunks),
-            created_at=created_at,
-            updated_at=updated_at,
-        )
+    @staticmethod
+    def _decode_state(raw: bytes, *, expected_file_id: str) -> EncryptedStoredFile:
+        return decode_encrypted_state(raw, expected_file_id=expected_file_id)
 
     def _read_state_path(self, path: Path) -> EncryptedStoredFile:
         try:
@@ -1129,4 +1151,6 @@ __all__ = [
     "EncryptedStorageService",
     "EncryptedStoredChunk",
     "EncryptedStoredFile",
+    "decode_encrypted_state",
+    "encrypted_chunk_length",
 ]
