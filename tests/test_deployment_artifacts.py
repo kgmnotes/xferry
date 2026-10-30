@@ -392,7 +392,24 @@ def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_confi
     compose = compose_path.read_text(encoding="utf-8")
     assert "name: xferry-public-direct" in compose
     assert "    build:" not in compose
-    assert f"image: ghcr.io/kgmnotes/xferry:v{__version__}" in compose
+    # Published install examples follow the documented release, not an unpublished source bump.
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    published = re.findall(
+        r"https://github\.com/kgmnotes/xferry/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)",
+        readme,
+    )
+    assert len(published) == 1
+    pinned_images = re.findall(
+        r"^    image: ghcr\.io/kgmnotes/xferry:(v[0-9]+\.[0-9]+\.[0-9]+)$",
+        compose,
+        re.MULTILINE,
+    )
+    assert pinned_images == published
+    published_version = tuple(int(part) for part in published[0][1:].split("."))
+    source_version = tuple(int(part) for part in __version__.split("."))
+    assert (0, 3, 2) <= published_version <= source_version
+    operations = (REPO_ROOT / "docs/operations.md").read_text(encoding="utf-8")
+    assert f"pins the compatible `{published[0]}` image" in operations
     assert "ghcr.io/kgmnotes/xferry:latest" not in compose
     assert "container_name:" not in compose
     assert "    command:\n      - run\n      - --config" in compose
