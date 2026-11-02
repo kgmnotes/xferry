@@ -55,7 +55,7 @@ pip-requirements-parser==32.0.1
 pex==2.99.0
 platformdirs==4.12.4
 pluggy==1.6.0
-pre-commit==4.6.0
+pre-commit==4.6.2
 py-cpuinfo==9.0.0
 py-serializable==2.1.0
 pycparser==3.0
