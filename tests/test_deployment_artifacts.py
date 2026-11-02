@@ -921,8 +921,28 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
         "debian:13",
     ):
         assert image in scie_job
-    for lifecycle in ("setup", "status", "doctor", "rollback", "uninstall"):
-        assert lifecycle in scie_job
+    lifecycle_step = _workflow_named_step(
+        workflow, "Exercise isolated managed lifecycle and failure paths"
+    )
+    script = lifecycle_step.split("        run: |\n", maxsplit=1)[1].replace("\\\n", " ")
+    commands = [shlex.split(line.strip()) for line in script.splitlines()]
+    assert [command for command in commands if command[:3] == ["python", "-m", "pytest"]] == [
+        [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_scie_release.py",
+            "tests/test_management_setup.py::"
+            "test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes",
+            # This complete module covers current status/doctor JSON and secret redaction.
+            "tests/test_management_application_cli.py",
+            "tests/test_management_releases.py::"
+            "test_default_rollback_selects_previous_verified_release_and_keeps_old_current",
+            "tests/test_management_releases.py::"
+            "test_default_uninstall_removes_only_managed_runtime_and_preserves_state",
+        ]
+    ]
 
 
 @pytest.mark.parametrize("workflow_name", ["ci.yml", "candidate-scie.yml"])
