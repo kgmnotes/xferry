@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,9 @@ def test_files_dir_is_exact_folder_for_existing_files_and_new_uploads(tmp_path: 
 
 
 def test_files_dir_surfaces_preserve_precedence_and_effective_path(tmp_path: Path) -> None:
-    file_settings = load_settings_text(f"[server]\nfiles_dir = {tmp_path / 'file'}\n")
+    file_settings = load_settings_text(
+        f"[server]\nconfig_version=1\nfiles_dir = {tmp_path / 'file'}\n"
+    )
     settings = resolve_settings(
         file_settings=file_settings,
         env={"XFERRY_FILES_DIR": str(tmp_path / "environment")},
@@ -86,6 +89,82 @@ def test_files_dir_cannot_expose_private_state(tmp_path: Path, folder: str) -> N
         resolve_server_config(ServerConfig(root_dir=tmp_path, files_dir=tmp_path / folder))
 
 
+@pytest.mark.parametrize("relation", ["exact", "nested", "parent", "symlink"])
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="native mapping requires POSIX identities")
+def test_native_mapping_cannot_publish_private_transfer_state(
+    tmp_path: Path, relation: str
+) -> None:
+    from xferry.management.managed_files import stage_managed_files_folder
+    from xferry.management.model import ManagedLayout
+    from xferry.management.system import FilesystemTransaction
+
+    layout = ManagedLayout(
+        data_root=tmp_path / "state",
+        config_file=tmp_path / "etc/xferry.ini",
+        release_root=tmp_path / "releases",
+        unit_file=tmp_path / "units/xferry.service",
+    )
+    private = layout.data_root / ".xferry"
+    private.mkdir(parents=True)
+    sentinel = private / "transfer-state.json"
+    sentinel.write_bytes(b"private transfer metadata")
+    selected = private
+    if relation == "nested":
+        selected = private / "chunks"
+        selected.mkdir()
+    elif relation == "parent":
+        selected = layout.data_root
+    elif relation == "symlink":
+        selected = tmp_path / "alias"
+        selected.symlink_to(private, target_is_directory=True)
+
+    def snapshot():
+        return {
+            str(path): (info.st_mode, info.st_uid, info.st_gid, info.st_ino, info.st_size)
+            for path in tmp_path.rglob("*")
+            for info in [path.lstat()]
+        }
+
+    before = snapshot()
+    transaction = FilesystemTransaction(chown=lambda *_: None)
+
+    with pytest.raises(ValueError, match="expose private"):
+        stage_managed_files_folder(layout, selected, transaction, os.getuid(), os.getgid())
+
+    assert snapshot() == before
+    assert sentinel.read_bytes() == b"private transfer metadata"
+    assert not layout.unit_file.exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="native setup requires POSIX identities")
+def test_native_first_setup_rejects_private_transfer_bind_alias(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from tests.test_management_setup import FakeRunner, _executor, _plan
+
+    plan = _plan(tmp_path)
+    private = plan.layout.data_root / ".xferry"
+    private.mkdir(parents=True)
+    sentinel = private / "transfer-state.json"
+    sentinel.write_bytes(b"private transfer metadata")
+    plan = replace(plan, files_dir=private)
+    runner = FakeRunner()
+    executor = _executor(tmp_path, runner)
+    executor.acme_root = plan.layout.acme_root
+
+    result = executor.apply(plan)
+
+    assert result.exit_code != 0
+    assert sentinel.read_bytes() == b"private transfer metadata"
+    assert not plan.layout.unit_file.exists()
+    assert not plan.layout.config_file.exists()
+    assert not plan.layout.auth_file.exists()
+    assert not any(
+        command[:2] in {("systemctl", "start"), ("systemctl", "restart")}
+        for command in runner.commands
+    )
+
+
 @pytest.mark.parametrize("secret", ["auth", "cert", "key"])
 def test_files_dir_cannot_expose_configured_secrets(tmp_path: Path, secret: str) -> None:
     files = tmp_path / "shared"
@@ -103,7 +182,7 @@ def test_files_dir_cannot_expose_configured_secrets(tmp_path: Path, secret: str)
 
 def test_config_file_cannot_be_placed_in_files_dir(tmp_path: Path) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text(f"[server]\nfiles_dir = {tmp_path}\n", encoding="utf-8")
+    config.write_text(f"[server]\nconfig_version=1\nfiles_dir = {tmp_path}\n", encoding="utf-8")
     with pytest.raises(SettingsError, match="config file.*public files_dir"):
         load_settings_file(config)
 
@@ -112,7 +191,7 @@ def test_cli_override_cannot_make_config_file_public(tmp_path: Path) -> None:
     from xferry.cli import run_main
 
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\n", encoding="utf-8")
+    config.write_text("[server]\nconfig_version=1\n", encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         run_main(["--config", str(config), "--files-dir", str(tmp_path)])
     assert exc.value.code == 2
@@ -183,15 +262,16 @@ def test_empty_encrypted_storage_can_select_another_files_directory(tmp_path: Pa
     assert binding["files_dir"] == str(tmp_path / "second")
 
 
-def test_legacy_encrypted_storage_is_adopted_without_losing_data(tmp_path: Path) -> None:
+def test_unbound_encrypted_storage_fails_without_losing_data(tmp_path: Path) -> None:
     files = tmp_path / "uploads"
     service = _encrypted(tmp_path, files)
     service.create(_manifest())
     (tmp_path / ".xferry" / "encrypted-storage-root").unlink()
 
-    restarted = _encrypted(tmp_path, files)
-    assert restarted.get(FILE_ID) is not None
-    assert (restarted.data_dir / f"{FILE_ID}.part").exists()
+    with pytest.raises(EncryptedStorageConflict, match="files_dir"):
+        _encrypted(tmp_path, files)
+    assert (service.data_dir / f"{FILE_ID}.part").exists()
+    assert (service.state_dir / f"{FILE_ID}.json").exists()
 
 
 def test_corrupt_encrypted_binding_fails_without_reconciliation(tmp_path: Path) -> None:
@@ -204,12 +284,12 @@ def test_corrupt_encrypted_binding_fails_without_reconciliation(tmp_path: Path) 
     assert (service.state_dir / f"{FILE_ID}.json").exists()
 
 
-def test_files_directory_addition_preserves_positional_configuration_api(tmp_path: Path) -> None:
+def test_operator_configuration_uses_explicit_keyword_fields(tmp_path: Path) -> None:
     from xferry.server_config import ServerConfig
     from xferry.settings import ServerSettings
 
     config = ServerConfig("127.0.0.1", 8080, tmp_path, True, files_dir=tmp_path / "files")
-    settings = ServerSettings(None, "127.0.0.1", 8080, str(tmp_path), True)
+    settings = ServerSettings(state_dir=str(tmp_path), log_level="warning")
     assert config.encrypted_uploads is True
-    assert settings.quiet is True
+    assert settings.log_level == "warning"
     assert settings.files_dir is None

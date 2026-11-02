@@ -19,6 +19,8 @@ from pathlib import Path
 
 from cryptography import x509
 
+from xferry.paths import StateLayout, automatic_state_dir
+
 from .renewal import UTC, certificate_schedule, load_schedule
 from .tls import (
     DEFAULT_ACME_HTTP_ADDRESS,
@@ -54,6 +56,7 @@ class TLSManager:
         self,
         *,
         enabled: bool,
+        state_dir: str | Path | None = None,
         cert_file: str | None,
         key_file: str | None,
         letsencrypt: bool,
@@ -67,6 +70,9 @@ class TLSManager:
         acme_http_address: str = DEFAULT_ACME_HTTP_ADDRESS,
         acme_http_port: int = DEFAULT_ACME_HTTP_PORT,
     ) -> None:
+        self.state = StateLayout(
+            Path(state_dir) if state_dir is not None else automatic_state_dir()
+        )
         self.enabled = enabled
         self.cert_file = cert_file
         self.key_file = key_file
@@ -139,16 +145,9 @@ class TLSManager:
             raise _CertificateRetryDeferred(
                 "certificate issuance is deferred by the persisted retry schedule"
             )
-        config_dir = Path.home() / ".xferry" / "acme"
+        config_dir = self.state.acme
         cert_path = config_dir / "live" / self.domain / "fullchain.pem"
         key_path = config_dir / "live" / self.domain / "privkey.pem"
-        legacy_cert_path = (
-            Path.home() / ".xferry" / "letsencrypt" / "live" / self.domain / "fullchain.pem"
-        )
-        legacy_key_path = (
-            Path.home() / ".xferry" / "letsencrypt" / "live" / self.domain / "privkey.pem"
-        )
-
         if cert_path.exists() and not self._cached_certificate_due(cert_path):
             validation = validate_cert_key_pair(cert_path, key_path)
             if validation.valid:
@@ -170,24 +169,7 @@ class TLSManager:
                 validation = validate_cert_key_pair(cert_path, key_path)
                 if not validation.valid and not validation.recoverable_by_renewal:
                     self._raise_broken_acme_cache(validation.reason)
-            if (
-                not cert_path.exists()
-                and legacy_cert_path.exists()
-                and not check_cert_needs_renewal(legacy_cert_path)
-            ):
-                validation = validate_cert_key_pair(legacy_cert_path, legacy_key_path)
-                if validation.valid:
-                    print(f"[TLS] Using legacy Let's Encrypt certificate for {self.domain}")
-                    cert_path = legacy_cert_path
-                    key_path = legacy_key_path
-                else:
-                    print(
-                        f"[TLS] Legacy Let's Encrypt cache for {self.domain} is unusable "
-                        f"({validation.reason}); obtaining a new certificate..."
-                    )
-                    cert_path, key_path = self._obtain_valid_letsencrypt_cert(config_dir)
-            else:
-                cert_path, key_path = self._obtain_valid_letsencrypt_cert(config_dir)
+            cert_path, key_path = self._obtain_valid_letsencrypt_cert(config_dir)
 
         self.cert_file = str(cert_path)
         self.key_file = str(key_path)
@@ -219,7 +201,7 @@ class TLSManager:
 
     def _raise_broken_acme_cache(self, reason: str) -> None:
         assert self.domain is not None
-        cache_dir = Path.home() / ".xferry" / "acme" / "live" / self.domain
+        cache_dir = self.state.acme / "live" / self.domain
         raise RuntimeError(
             f"Cached Let's Encrypt certificate for {self.domain} is unusable: {reason}. "
             f"Remove the broken ACME cache directory {cache_dir} and retry."
@@ -284,7 +266,7 @@ class TLSManager:
     def _retain_valid_cache(self) -> bool:
         if not self.domain:
             return False
-        root = Path.home() / ".xferry" / "acme" / "live" / self.domain
+        root = self.state.acme / "live" / self.domain
         cert, key = root / "fullchain.pem", root / "privkey.pem"
         try:
             if not validate_cert_key_pair(cert, key).valid:
@@ -380,7 +362,7 @@ class TLSManager:
             obtain_letsencrypt_cert(
                 domain=self.domain or "",
                 email=self.email,
-                config_dir=Path.home() / ".xferry" / "acme",
+                config_dir=self.state.acme,
                 server_url=self._acme_directory_url(),
                 http_address=self.acme_http_address,
                 http_port=self.acme_http_port,
@@ -399,7 +381,7 @@ class TLSManager:
         return True
 
     def _renewal_info(self, payload: bytes) -> tuple[dt.datetime | None, dt.datetime]:
-        root = Path.home() / ".xferry" / "acme"
+        root = self.state.acme
         client = _acme_client_for_key(
             _load_private_key(_account_key_path(root, self._acme_directory_url())),
             directory_url=self._acme_directory_url(),
@@ -432,7 +414,7 @@ class TLSManager:
         if self.cert_file:
             return Path(self.cert_file).with_name("issuance-retry.json")
         if self.domain:
-            return Path.home() / ".xferry" / "acme" / "live" / self.domain / "issuance-retry.json"
+            return self.state.acme / "live" / self.domain / "issuance-retry.json"
         return None
 
     def _issuance_retry_scope(self) -> str:

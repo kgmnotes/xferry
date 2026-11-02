@@ -25,7 +25,7 @@ from .release_trust import (
     verify_detached_signature,
     verify_signed_manifest,
 )
-from .versions import is_supported_release_version
+from .versions import MIN_DEPLOYMENT_RELEASE, compare_release_versions, is_supported_release_version
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,10 @@ def install_release(
     """Authenticate manifest and installer bytes before any privileged execution."""
     if not is_supported_release_version(version):
         return InstallResult(2, "an exact supported release version is required")
+    if compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0:
+        return InstallResult(
+            2, f"deployment requires xferry {MIN_DEPLOYMENT_RELEASE} or newer", version, dry_run
+        )
     if not dry_run and os.geteuid() != 0:
         return InstallResult(3, "managed installation requires root", version)
     from .platform import detect_host_facts

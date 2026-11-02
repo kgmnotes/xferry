@@ -8,6 +8,7 @@ from typing import get_type_hints
 
 import pytest
 
+from xferry.resource_policy import default_body_memory_budget
 from xferry.settings import ServerSettings
 
 
@@ -76,13 +77,15 @@ def test_enabled_encrypted_uploads_reject_insufficient_request_capacity() -> Non
     from xferry.server_config import ServerConfig, ServerLimits, resolve_server_config
 
     minimum_budget = 2 * (EUF_CHUNK_SIZE + EUF_GCM_TAG_SIZE)
-    with pytest.raises(ValueError, match="at least 2 workers"):
+    assert (
         resolve_server_config(
             ServerConfig(
                 encrypted_uploads=True,
                 limits=ServerLimits(max_workers=1, body_memory_budget=minimum_budget),
             )
-        )
+        ).limits.max_workers
+        == 1
+    )
 
     with pytest.raises(ValueError, match="two encrypted chunks"):
         resolve_server_config(
@@ -216,7 +219,9 @@ def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_deri
     settings = ServerSettings(
         host="0.0.0.0",
         port=8443,
-        root_dir=str(tmp_path / "site" / ".." / "site"),
+        state_dir=str(tmp_path / "site" / ".." / "site"),
+        access="lab",
+        https_mode="files",
         max_size_mb=3,
         upload_storage_limit_mb=7,
         upload_file_limit=9,
@@ -242,11 +247,9 @@ def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_deri
         plugin_allowlist=("tests.fake_plugin:plugin", "tests.fake_plugin:plugin"),
         plugins_override_core=True,
         plugins_allow_public_direct=True,
-        quiet=True,
-        debug=True,
+        log_level="debug",
         open_browser=True,
-        json_log=True,
-        public_direct=False,
+        log_format="json",
     )
 
     config = settings.to_server_config()
@@ -265,21 +268,21 @@ def test_server_settings_to_server_config_resolves_units_paths_cors_tls_and_deri
     assert config.limits.smuggle_temp_file_limit is None
     assert config.limits.smuggle_temp_storage_limit is None
     assert config.limits.max_header_size == 8 * 1024
-    assert config.limits.body_memory_budget == 12 * 1024 * 1024
+    assert config.limits.body_memory_budget == default_body_memory_budget()
     assert config.limits.body_idle_timeout is None
     assert config.limits.body_timeout is None
     assert config.limits.body_min_rate == 12.5
     assert config.limits.stream_send_idle_timeout == 1.25
     assert config.limits.stream_send_timeout is None
     assert config.limits.max_workers == 4
-    assert config.websocket.max_connections == 2
+    assert config.websocket.max_connections == 8
     assert config.websocket.frame_idle_timeout == 1.0
     assert config.tls.enabled is True
     assert config.tls.cert_file == (tmp_path / "cert.pem").resolve()
     assert config.tls.key_file == (tmp_path / "key.pem").resolve()
     assert config.auth.auth is None
     assert config.auth.auth_file == (tmp_path / "auth.txt").resolve()
-    assert config.logging.quiet is True
+    assert config.logging.quiet is False
     assert config.logging.debug is True
     assert config.logging.open_browser is True
     assert config.logging.json_log is True
@@ -305,7 +308,7 @@ def test_ini_explicit_empty_tls_paths_fail_closed(tls_lines: str, message: str) 
     from xferry.settings import SettingsError, load_settings_text
 
     with pytest.raises(SettingsError, match=message):
-        load_settings_text(f"[tls]\nhttps_mode = files\n{tls_lines}\n")
+        load_settings_text(f"[server]\nconfig_version=1\n[tls]\nhttps_mode = files\n{tls_lines}\n")
 
 
 def test_direct_server_config_normalizes_disabled_zero_policies_to_none() -> None:
@@ -357,8 +360,7 @@ def test_direct_public_config_requires_explicit_body_memory_budget(tmp_path: Pat
         auth=AuthConfig(auth_file=tmp_path / "auth.txt"),
     )
 
-    with pytest.raises(ValueError, match="body_memory_budget"):
-        resolve_server_config(config)
+    assert resolve_server_config(config).limits.body_memory_budget == default_body_memory_budget()
 
 
 def test_server_constructor_signature_and_cli_construct_with_one_config(
@@ -450,8 +452,8 @@ def test_server_request_cors_uses_resolved_origins_without_reparsing(
 
     server = XFerryServer(
         ServerSettings(
-            root_dir=str(tmp_path),
-            quiet=True,
+            state_dir=str(tmp_path),
+            log_level="warning",
             cors_origin="https://app.example",
         ).to_server_config()
     )
@@ -560,13 +562,13 @@ def test_each_invalid_config_category_rejects_before_runtime_side_effects(
             public_direct=True,
             limits=replace(
                 base.limits,
-                body_memory_budget=None,
+                body_timeout=None,
                 upload_storage_limit=1024,
             ),
             tls=TLSConfig(letsencrypt=True, domain="files.example"),
             auth=AuthConfig(auth_file=auth_file),
         )
-        expected_message = "body_memory_budget"
+        expected_message = "body timeouts"
 
     with pytest.raises(ValueError, match=expected_message):
         XFerryServer(config)

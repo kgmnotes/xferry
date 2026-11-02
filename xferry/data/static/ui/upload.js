@@ -35,9 +35,6 @@ const uploadState = {
     mimeMode: 'auto',
     customMime: '',
     previewSequence: 0,
-    technicalDetailsUserToggled: false,
-    technicalDetailsAutoOpened: false,
-    ignoreNextTechnicalDetailsToggle: false,
     files: [],
     renderFileListRAF: null,
     actionPhase: 'idle',
@@ -213,39 +210,6 @@ function openUploadTechnicalDetails() {
         uploadTechnicalDetails.scrollIntoView({ block: 'nearest' });
     }
     focusElementWithoutScroll(uploadTechnicalDetailsSummary);
-}
-
-function maybeAutoOpenUploadTechnicalDetails() {
-    if (
-        !uploadTechnicalDetails
-        || uploadState.technicalDetailsUserToggled
-        || uploadState.technicalDetailsAutoOpened
-        || window.matchMedia('(max-width: 640px)').matches
-    ) {
-        return false;
-    }
-    uploadState.technicalDetailsAutoOpened = true;
-    if (!uploadTechnicalDetails.open) {
-        uploadState.ignoreNextTechnicalDetailsToggle = true;
-        uploadTechnicalDetails.open = true;
-    }
-    syncUploadStatusDetailsExpanded();
-    return true;
-}
-
-function collapseAutoOpenedUploadTechnicalDetailsForEmptyState() {
-    if (
-        !uploadTechnicalDetails
-        || uploadState.technicalDetailsUserToggled
-        || !uploadState.technicalDetailsAutoOpened
-        || !uploadTechnicalDetails.open
-    ) {
-        return false;
-    }
-    uploadState.ignoreNextTechnicalDetailsToggle = true;
-    uploadTechnicalDetails.open = false;
-    syncUploadStatusDetailsExpanded();
-    return true;
 }
 
 function buildUploadMultipartPreviewEnvelope(filename, mime) {
@@ -898,7 +862,6 @@ function refreshUploadRequestPreview() {
                 emptyText: t('exchangeResponseEmpty'),
             },
         });
-        collapseAutoOpenedUploadTechnicalDetailsForEmptyState();
         return;
     }
 
@@ -915,7 +878,6 @@ function refreshUploadRequestPreview() {
             emptyText: t('exchangeResponseEmpty'),
         },
     });
-    maybeAutoOpenUploadTechnicalDetails();
     void refreshUploadRequestPreviewBodySamples(sequence, getUploadPendingSignature());
 }
 
@@ -1043,11 +1005,6 @@ if (uploadStatusDetailsBtn) {
 }
 if (uploadTechnicalDetails) {
     uploadTechnicalDetails.addEventListener('toggle', () => {
-        if (uploadState.ignoreNextTechnicalDetailsToggle) {
-            uploadState.ignoreNextTechnicalDetailsToggle = false;
-        } else {
-            uploadState.technicalDetailsUserToggled = true;
-        }
         syncUploadStatusDetailsExpanded();
     });
 }
@@ -1772,8 +1729,6 @@ app.registerWorkflow('upload', {
         fileCount: uploadState.files.length,
         pendingCount: uploadState.files.filter(file => file.status === 'pending').length,
         previewSequence: uploadState.previewSequence,
-        technicalDetailsUserToggled: uploadState.technicalDetailsUserToggled,
-        technicalDetailsAutoOpened: uploadState.technicalDetailsAutoOpened,
         actionPhase: uploadState.actionPhase,
         routingPhase: uploadState.routing.phase,
         routingBlockedReason: uploadState.routing.blockedReason,

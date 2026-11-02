@@ -150,7 +150,12 @@ def _require_package_data(
 
 def _reject_forbidden_public_members(members: frozenset[str], artifact_label: str) -> None:
     """Reject internal repository surfaces from every distributable archive."""
+    retired = ("xferry/management/migration.py", "xferry/management/release_configuration.py")
     for member in sorted(members):
+        if any(member == name or member.endswith("/" + name) for name in retired):
+            raise ArtifactValidationError(
+                f"{artifact_label} contains retired deployment module: {member}"
+            )
         if is_forbidden_path(member):
             raise ArtifactValidationError(
                 f"{artifact_label} contains forbidden public-surface path: {member}"
@@ -396,7 +401,7 @@ def _probe_installed_artifact(*, venv_dir: Path, probe_dir: Path, workspace: Pat
     environment = _probe_environment(workspace=workspace, venv_dir=venv_dir)
     config = probe_dir / "artifact.ini"
     config.write_text(
-        f"[server]\naccess = private\nfiles_dir = {probe_dir / 'files'}\n",
+        f"[server]\nconfig_version=1\naccess = private\nfiles_dir = {probe_dir / 'files'}\n",
         encoding="utf-8",
     )
     commands: tuple[tuple[tuple[str, ...], bool], ...] = (

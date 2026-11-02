@@ -11,10 +11,10 @@ from xferry.settings import load_settings_text
 
 EXPECTED_PROFILE_VALUES = {
     "docker": {
-        "port": 8443,
-        "files_dir": "/data/files",
-        "auth_file": "/run/secrets/xferry_auth",
-        "acme_http_port": 8080,
+        "port": 443,
+        "files_dir": "/srv/xferry/files",
+        "auth_file": "/srv/xferry/auth",
+        "acme_http_port": 80,
     },
     "systemd": {
         "port": 443,
@@ -81,7 +81,7 @@ def test_deployment_state_is_injected_separately_from_public_files_setting(profi
     body = _generated_body(document, profile).decode("utf-8")
     settings = load_settings_text(body, state_dir=state_dir)
     runtime = settings.to_server_config()
-    assert settings.root_dir == state_dir
+    assert settings.state_dir == state_dir
     assert str(runtime.root_dir) == state_dir
     assert str(runtime.files_dir) == EXPECTED_PROFILE_VALUES[profile]["files_dir"]
 

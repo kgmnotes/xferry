@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -18,7 +16,6 @@ from xferry.management.model import (
     ResourcePlan,
     SetupMode,
     SetupOptions,
-    SetupPreflight,
     SetupProbes,
 )
 from xferry.management.planning import (
@@ -329,28 +326,6 @@ def test_unsupported_preflight_has_actionable_secret_free_host_diagnostics(
     assert any("pipx install xferry" in action for action in failure.next_actions)
 
 
-def test_setup_cli_renders_stable_unsupported_host_json(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from xferry.management import cli
-
-    facts = replace(_facts(), os_id="fedora", os_version="40", machine="aarch64")
-    plan = build_setup_plan(SetupOptions(mode=SetupMode.PRIVATE), facts)
-    preflight = check_setup_preflight(plan, _probes())
-    monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, preflight))
-
-    assert main(["setup", "--access", "private", "--dry-run", "--json"]) == 4
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["code"] == "unsupported-platform"
-    assert payload["message"] == "Managed commands are Linux/systemd-only on supported hosts."
-    assert "os=fedora" in payload["detail"]
-    assert "version=40" in payload["detail"]
-    assert "architecture=aarch64" in payload["detail"]
-    assert "systemd=present" in payload["detail"]
-    assert any("pipx upgrade xferry" in action for action in payload["next_actions"])
-
-
 def test_preflight_requires_explicit_firewall_consent_even_when_interactive() -> None:
     """Allowing active UFW without an answer would cross the mutation gate without consent."""
     plan = build_setup_plan(SetupOptions(), _facts(), resolve_public_ip=lambda: "8.8.8.8")
@@ -421,8 +396,8 @@ def test_rendered_public_config_loads_with_finite_security_limits(tmp_path: Path
 
     settings = load_settings_file(config_path)
 
-    assert settings.public_direct is True
-    assert settings.sslip is True
+    assert settings.access == "public"
+    assert settings.https_mode == "auto"
     assert settings.auth_file == "/etc/xferry/auth"
     assert settings.allowed_hosts == ("8-8-8-8.sslip.io",)
     assert settings.port == 443
@@ -489,10 +464,10 @@ def test_rendered_domain_config_loads_with_acme_domain_tls(tmp_path: Path) -> No
 
     settings = load_settings_file(config_path)
 
-    assert settings.letsencrypt is True
+    assert settings.https_mode == "domain"
     assert settings.domain == "files.example.com"
     assert settings.allowed_hosts == ("files.example.com",)
-    assert settings.sslip is False
+    assert settings.https_mode != "auto"
 
 
 @pytest.mark.parametrize(
@@ -540,40 +515,6 @@ def test_preflight_rejects_firewall_ports_outside_managed_public_set() -> None:
     )
 
     assert [failure.code for failure in preflight.failures] == ["invalid-firewall-port"]
-
-
-def test_setup_cli_selects_access_and_calculates_resources(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Setup asks only for access; resource controls stay in configuration."""
-    from xferry.management import cli
-
-    def prepare(args: argparse.Namespace) -> tuple[object, SetupPreflight]:
-        assert args.private is True
-        assert args.workers is None
-        assert args.dry_run is True
-        plan = build_setup_plan(
-            SetupOptions(
-                mode=SetupMode.PRIVATE,
-                resources=ResourceOverrides(workers=7),
-            ),
-            _facts(),
-        )
-        return plan, SetupPreflight(
-            executable_ready=True,
-            required_bind_ports=(8080,),
-            unavailable_bind_ports=(),
-            ufw_active=False,
-        )
-
-    monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
-
-    assert main(["setup", "--access", "private", "--dry-run"]) == 0
-    output = capsys.readouterr().out
-    assert "Dry run" in output
-    assert "Private HTTP" in output
-    assert "Files:" in output
 
 
 def test_setup_cli_rejects_mutually_exclusive_modes(capsys: pytest.CaptureFixture[str]) -> None:

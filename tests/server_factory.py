@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import Any
 
 from xferry.extensions import PluginSpec
@@ -39,43 +40,10 @@ def make_server_config(**kwargs: Any) -> ServerConfig:
         if kwargs.get(field_name) == 0:
             kwargs[field_name] = None
     limits = ServerLimits(
-        max_upload_size=kwargs.pop("max_upload_size", limit_defaults.max_upload_size),
-        encrypted_upload_max_size=kwargs.pop(
-            "encrypted_upload_max_size",
-            limit_defaults.encrypted_upload_max_size,
-        ),
-        encrypted_upload_incomplete_ttl=kwargs.pop(
-            "encrypted_upload_incomplete_ttl",
-            limit_defaults.encrypted_upload_incomplete_ttl,
-        ),
-        upload_storage_limit=kwargs.pop(
-            "upload_storage_limit", limit_defaults.upload_storage_limit
-        ),
-        upload_file_limit=kwargs.pop("upload_file_limit", limit_defaults.upload_file_limit),
-        upload_reserved_free_space=kwargs.pop(
-            "upload_reserved_free_space", limit_defaults.upload_reserved_free_space
-        ),
-        note_storage_limit=kwargs.pop("note_storage_limit", limit_defaults.note_storage_limit),
-        note_count_limit=kwargs.pop("note_count_limit", limit_defaults.note_count_limit),
-        smuggle_temp_max_age=kwargs.pop(
-            "smuggle_temp_max_age", limit_defaults.smuggle_temp_max_age
-        ),
-        smuggle_temp_file_limit=kwargs.pop(
-            "smuggle_temp_file_limit", limit_defaults.smuggle_temp_file_limit
-        ),
-        smuggle_temp_storage_limit=kwargs.pop(
-            "smuggle_temp_storage_limit", limit_defaults.smuggle_temp_storage_limit
-        ),
-        max_header_size=kwargs.pop("max_header_size", limit_defaults.max_header_size),
-        body_memory_budget=kwargs.pop("body_memory_budget", limit_defaults.body_memory_budget),
-        body_idle_timeout=kwargs.pop("body_idle_timeout", limit_defaults.body_idle_timeout),
-        body_timeout=kwargs.pop("body_timeout", limit_defaults.body_timeout),
-        body_min_rate=kwargs.pop("body_min_rate", limit_defaults.body_min_rate),
-        stream_send_idle_timeout=kwargs.pop(
-            "stream_send_idle_timeout", limit_defaults.stream_send_idle_timeout
-        ),
-        stream_send_timeout=kwargs.pop("stream_send_timeout", limit_defaults.stream_send_timeout),
-        max_workers=kwargs.pop("max_workers", limit_defaults.max_workers),
+        **{
+            item.name: kwargs.pop(item.name, getattr(limit_defaults, item.name))
+            for item in fields(ServerLimits)
+        }
     )
     websocket = WebSocketConfig(
         max_connections=kwargs.pop("max_websocket_connections", websocket_defaults.max_connections),

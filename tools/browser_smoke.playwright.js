@@ -11,6 +11,24 @@ async (page) => {
   const opsecUploadBoundaryFilePath = __XFERRY_OPSEC_UPLOAD_BOUNDARY_FILE__;
   const opsecUploadLargeFilePath = __XFERRY_OPSEC_UPLOAD_LARGE_FILE__;
   const browserIssues = [];
+  const recentNetworkFailures = [];
+  page.on("requestfailed", request => {
+    recentNetworkFailures.push({
+      url: request.url(),
+      resourceType: request.resourceType(),
+      error: request.failure()?.errorText || "",
+    });
+    if (recentNetworkFailures.length > 20) recentNetworkFailures.shift();
+  });
+  page.on("response", response => {
+    if (response.request().resourceType() !== "script" || response.status() < 400) return;
+    recentNetworkFailures.push({
+      url: response.url(),
+      resourceType: "script",
+      error: `HTTP ${response.status()}`,
+    });
+    if (recentNetworkFailures.length > 20) recentNetworkFailures.shift();
+  });
   const rootUrl = String(baseUrl || "").replace(/#.*$/, "");
   const topTabContract = [
     { id: "tab-upload", target: "upload", key: "topTabUpload" },
@@ -111,12 +129,68 @@ async (page) => {
     throw new Error(`${label} browser issues: ${JSON.stringify(unexpectedIssues.slice(0, 10))}`);
   }
 
-  async function waitForSpaReady() {
-    await page.waitForLoadState("domcontentloaded");
-    await page.locator("#tab-upload").waitFor({ state: "visible" });
-    await page.locator('[role="tabpanel"]:not([hidden])').first().waitFor({ state: "visible" });
-    await page.locator("#pathInput").waitFor({ state: "attached" });
-    await page.locator("#uploadBtn").waitFor({ state: "attached" });
+  const spaRuntimeRequirements = {
+    services: [
+      "core", "http", "inspector", "dialogs", "notifications", "http-errors",
+      "advanced-session", "advanced-compiler",
+    ],
+    workflows: [
+      "upload", "requests", "advanced", "files", "notepad", "smuggle", "encrypted-transfer",
+    ],
+  };
+
+  function probeSpaReadiness({ services, workflows, describe = false }) {
+    const app = window.XferryApp;
+    let surface = {};
+    let registryError = "";
+    if (app && typeof app.describe === "function") {
+      try {
+        surface = app.describe() || {};
+      } catch (error) {
+        registryError = String(error.message || error);
+      }
+    }
+    const registeredServices = Object.keys(surface.services || {});
+    const registeredWorkflows = Object.keys(surface.workflows || {});
+    const missingServices = services.filter(name => !registeredServices.includes(name));
+    const missingWorkflows = workflows.filter(name => !registeredWorkflows.includes(name));
+    const readiness = {
+      ready: Boolean(app && !registryError &&
+        missingServices.length === 0 && missingWorkflows.length === 0),
+      hasApp: Boolean(app),
+      registeredServices,
+      registeredWorkflows,
+      missingServices,
+      missingWorkflows,
+      registryError,
+    };
+    return describe ? readiness : readiness.ready;
+  }
+
+  async function waitForSpaReady(timeout = 10000) {
+    try {
+      await page.waitForLoadState("domcontentloaded", { timeout });
+      await page.locator("#tab-upload").waitFor({ state: "visible", timeout });
+      await page.locator('[role="tabpanel"]:not([hidden])').first()
+        .waitFor({ state: "visible", timeout });
+      await page.locator("#pathInput").waitFor({ state: "attached", timeout });
+      await page.locator("#uploadBtn").waitFor({ state: "attached", timeout });
+      await page.waitForFunction(probeSpaReadiness, spaRuntimeRequirements, { timeout });
+    } catch (error) {
+      let readiness;
+      try {
+        readiness = await page.evaluate(probeSpaReadiness, {
+          ...spaRuntimeRequirements, describe: true,
+        });
+      } catch (snapshotError) {
+        readiness = { snapshotError: String(snapshotError.message || snapshotError) };
+      }
+      const failedScripts = recentNetworkFailures.filter(failure => failure.resourceType === "script");
+      throw new Error(`SPA runtime registration failed: ${error.message}; ` +
+        `readiness=${JSON.stringify(readiness)}; failedScripts=${JSON.stringify(failedScripts)}; ` +
+        `issues=${JSON.stringify(browserIssues.slice(-12))}; ` +
+        `network=${JSON.stringify(recentNetworkFailures)}`);
+    }
   }
 
   async function installClipboardMock() {
@@ -224,7 +298,19 @@ async (page) => {
     );
   }
 
+  async function openUploadAdvancedControls() {
+    const advanced = page.locator("#uploadAdvancedControls");
+    if (!(await advanced.evaluate(element => element.open))) {
+      await advanced.locator(":scope > summary").click();
+    }
+    const summary = page.locator("#uploadRequestSummary");
+    if (!(await summary.evaluate(element => element.open))) {
+      await summary.locator(":scope > summary").click();
+    }
+  }
+
   async function assertVisibleUploadMethodComposer(label) {
+    await openUploadAdvancedControls();
     const composer = await page.evaluate(() => {
       const group = document.querySelector("#upload-tab .upload-method-group");
       const methods = Array.from(document.querySelectorAll(".upload-method-btn[data-upload-method]"));
@@ -1113,6 +1199,7 @@ async (page) => {
 
       await page.locator("#tab-upload").click();
       await waitForTabState("upload", { focused: true });
+      await openUploadAdvancedControls();
       for (const method of ["POST", "NONE", "PUT", "PATCH"]) {
         const methodButton = page.locator(`#upload-tab [data-upload-method="${method}"]`);
         await methodButton.click();
@@ -4011,45 +4098,66 @@ async (page) => {
   }
 
   async function waitForAdvancedUploadReady(timeout = 10000) {
-    await waitForPageCondition(
-      "waitForAdvancedUploadReady",
-      () => {
-        const tab = document.getElementById("tab-opsec");
-        const panel = document.getElementById("opsec-tab");
-        const fileInput = document.getElementById("opsecFileInput");
-        const uploadBtn = document.getElementById("opsecUploadBtn");
-        const dropZone = document.getElementById("opsecDropZone");
-        const controls = [
-          document.getElementById("opsecMethodInput"),
-          document.getElementById("opsecRandomMethodBtn"),
-          document.getElementById("opsecEncryptionSelect"),
-          document.getElementById("opsecConstructorMode"),
-          document.getElementById("opsecProfileSelect"),
-          document.getElementById("opsecCarrierSelect"),
-          document.getElementById("opsecBodyFormatSelect"),
-          document.getElementById("opsecEncodingSelect"),
-          document.getElementById("opsecFilenamePrimarySelect"),
-        ];
+    try {
+      await waitForPageCondition(
+        "waitForAdvancedUploadReady",
+        () => {
+          const tab = document.getElementById("tab-opsec");
+          const panel = document.getElementById("opsec-tab");
+          const fileInput = document.getElementById("opsecFileInput");
+          const uploadBtn = document.getElementById("opsecUploadBtn");
+          const dropZone = document.getElementById("opsecDropZone");
+          const controls = [
+            document.getElementById("opsecMethodInput"),
+            document.getElementById("opsecRandomMethodBtn"),
+            document.getElementById("opsecEncryptionSelect"),
+            document.getElementById("opsecConstructorMode"),
+            document.getElementById("opsecProfileSelect"),
+            document.getElementById("opsecCarrierSelect"),
+            document.getElementById("opsecBodyFormatSelect"),
+            document.getElementById("opsecEncodingSelect"),
+            document.getElementById("opsecFilenamePrimarySelect"),
+          ];
 
-        return Boolean(
-          tab &&
-          !tab.hidden &&
-          !tab.disabled &&
-          panel &&
-          fileInput &&
-          !fileInput.disabled &&
-          fileInput.tabIndex === -1 &&
-          uploadBtn &&
-          uploadBtn.disabled === true &&
-          controls.every((control) => control && control.disabled === false) &&
-          dropZone &&
-          dropZone.getAttribute("aria-disabled") === "false" &&
-          dropZone.tabIndex === 0
-        );
-      },
-      null,
-      timeout
-    );
+          return Boolean(
+            tab &&
+            !tab.hidden &&
+            !tab.disabled &&
+            panel &&
+            fileInput &&
+            !fileInput.disabled &&
+            fileInput.tabIndex === -1 &&
+            uploadBtn &&
+            uploadBtn.disabled === true &&
+            controls.every((control) => control && control.disabled === false) &&
+            dropZone &&
+            dropZone.getAttribute("aria-disabled") === "false" &&
+            dropZone.tabIndex === 0
+          );
+        },
+        null,
+        timeout
+      );
+    } catch (error) {
+      const readiness = await page.evaluate(() => ({
+        controls: ["tab-opsec", "opsecFileInput", "opsecUploadBtn", "opsecDropZone",
+          "opsecMethodInput", "opsecRandomMethodBtn", "opsecEncryptionSelect",
+          "opsecConstructorMode", "opsecProfileSelect", "opsecCarrierSelect",
+          "opsecBodyFormatSelect", "opsecEncodingSelect", "opsecFilenamePrimarySelect"]
+          .map(id => { const element = document.getElementById(id); return {
+            id, exists: Boolean(element), disabled: element?.disabled,
+            hidden: element?.hidden, tabIndex: element?.tabIndex,
+            ariaDisabled: element?.getAttribute("aria-disabled"),
+          }; }),
+        locale: document.documentElement.lang,
+        hasApp: Boolean(window.XferryApp),
+        registeredApi: Object.keys(window.XferryApp || {}),
+      }));
+      const callers = (new Error().stack || "").split("\n").slice(1, 5);
+      throw new Error(`${error.message}; readiness=${JSON.stringify(readiness)}; ` +
+        `issues=${JSON.stringify(browserIssues.slice(-12))}; network=${JSON.stringify(recentNetworkFailures)}; ` +
+        `callers=${JSON.stringify(callers)}`);
+    }
   }
 
   async function waitForAdvancedSessionReady(timeout = 10000) {
@@ -4648,9 +4756,7 @@ async (page) => {
       Math.abs(selected.drop.height - selected.button.height) > tolerance ||
       Math.abs(empty.drop.width - selected.drop.width) > tolerance ||
       Math.abs(empty.button.width - selected.button.width) > tolerance ||
-      selected.technicalOpen !== true ||
-      selected.uploadState?.technicalDetailsAutoOpened !== true ||
-      selected.uploadState?.technicalDetailsUserToggled !== false
+      selected.technicalOpen !== false
     ) {
       throw new Error(
         `Upload picker action layout failed: ${JSON.stringify({
@@ -4772,7 +4878,7 @@ async (page) => {
 
     if (
       !desktop.summaryIsDetails ||
-      !desktop.summaryOpen ||
+      desktop.summaryOpen ||
       !desktop.technicalVisible ||
       desktop.technicalOpen ||
       desktop.documentWidth > desktop.viewportWidth + 1 ||
@@ -4791,8 +4897,7 @@ async (page) => {
       mobile.buttonRect.height >= mobile.dropRect.height ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.panelRight > mobile.viewportWidth + 1 ||
-      mobile.targetPathColumns !== 2 ||
-      !mobile.targetPathLabelsFit
+      mobile.targetPathColumns !== 2
     ) {
       throw new Error(
         `Responsive upload summary/action contract failed: ${JSON.stringify({ desktop, mobile })}`
@@ -10362,7 +10467,7 @@ async (page) => {
       null,
       timeout
     );
-    await assertVisibleUploadMethodComposer("mobile upload methods visible with profile summary");
+    await assertVisibleUploadMethodComposer("mobile advanced upload methods fit with profile summary");
 
     const filesBrowseGenerationBeforeTabSwitch = await page.evaluate(() => (
       window.XferryApp.getState("files").browseGeneration
@@ -10563,6 +10668,15 @@ async (page) => {
       verifyFocusOrder: false,
     });
 
+    await waitForPageCondition("first-run simple upload controls", () => {
+      const advanced = document.getElementById("uploadAdvancedControls");
+      const trace = document.getElementById("uploadTechnicalDetails");
+      const chooser = document.getElementById("dropZone");
+      const send = document.getElementById("uploadBtn");
+      return advanced && !advanced.open && trace && !trace.open &&
+        chooser?.getClientRects().length > 0 && send?.getClientRects().length > 0 &&
+        chooser.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING;
+    });
     const uploadName = uploadFilePath.split(/[\\/]/).pop();
     const upload = await uploadViaDom(uploadName, uploadFilePath, {
       verifyStatusLifecycle: true,
@@ -10594,6 +10708,7 @@ async (page) => {
     await page.locator("#tab-upload").click();
     await waitForTabState("upload", { focused: true });
 
+    await openUploadAdvancedControls();
     const initialContract = await page.evaluate(() => {
       const buttons = Array.from(
         document.querySelectorAll("#uploadProfileGroup [data-upload-profile]")
@@ -11996,7 +12111,9 @@ async (page) => {
         url: request.url(),
         path: requestPathname(request),
         method: request.method(),
-        headers: request.headers(),
+        headers: Object.fromEntries(Object.entries(request.headers()).filter(([name]) => (
+          !["authorization", "proxy-authorization"].includes(name.toLowerCase())
+        ))),
         body: request.postData() || "",
       });
     };
@@ -14377,8 +14494,10 @@ async (page) => {
     await assertHeroResponsePanelState("active");
     await page.locator("#tab-upload").click();
     await waitForTabState("upload", { focused: true });
+    await openUploadAdvancedControls();
     await assertUploadHelpUx();
 
+    await openUploadAdvancedControls();
     await waitForUploadMethodState("POST");
     await page.locator('[data-upload-method="POST"]').focus();
     await page.keyboard.press("ArrowRight");

@@ -46,15 +46,16 @@ def test_schema_covers_all_public_runtime_fields_in_dataclass_order() -> None:
     )
 
     public_fields = tuple(spec.name for spec in SETTING_SPECS)
-    assert len(public_fields) == 44
+    assert len(public_fields) == 55
     assert set(public_fields) <= set(runtime_fields)
     assert tuple(SETTING_SPEC_BY_NAME) == public_fields
-    assert len(ENV_TO_SETTING_MAP) == 44
-    assert len(CLI_TO_SETTING_MAP) == 41
+    assert len(ENV_TO_SETTING_MAP) == 55
+    assert len(CLI_TO_SETTING_MAP) == 51
     assert (
         {spec.name for spec in SETTING_SPECS if spec.cli is None}
         == set(NO_CLI_SETTING_NAMES)
         == {
+            "config_version",
             "plugin_allowlist",
             "plugins_allow_public_direct",
             "plugins_override_core",
@@ -74,14 +75,9 @@ def test_schema_records_an_explicit_disposition_for_every_target_and_field() -> 
         "active",
         "active",
     )
-    assert tuple(spec.name for spec in sample_specs("public-direct"))[:7] == (
-        "access",
-        "https_mode",
-        "log_level",
-        "log_format",
-        "host",
-        "port",
-        "files_dir",
+    assert tuple(spec.name for spec in sample_specs("public-direct"))[:2] == (
+        "config_version",
+        "state_dir",
     )
 
 
@@ -197,6 +193,8 @@ def test_encrypted_upload_cli_switch_and_limits_are_exposed() -> None:
 def test_ascii_whitespace_and_plugin_csv_grammars_remain_distinct() -> None:
     file_settings = load_settings_text(
         """
+        [server]
+        config_version = 1
         [security]
         allowed_hosts = lower.example
         [plugins]
@@ -235,9 +233,7 @@ def test_ascii_whitespace_and_plugin_csv_grammars_remain_distinct() -> None:
 def test_redaction_policy_is_schema_owned_and_paths_are_not_secrets() -> None:
     assert {spec.name for spec in SETTING_SPECS if spec.redaction == "secret"} == set()
 
-    rendered = ServerSettings(
-        auth="researcher:credential", auth_file="/run/xferry/auth"
-    ).to_redacted_dict()
+    rendered = ServerSettings(auth_file="/run/xferry/auth").to_redacted_dict()
 
     assert "auth" not in rendered
     assert rendered["auth_file"] == "/run/xferry/auth"
@@ -269,8 +265,8 @@ def test_static_profiles_are_parseable_deterministic_and_whitespace_clean() -> N
         assert first.endswith("\n") and not first.endswith("\n\n")
         assert all(not line.endswith(" ") for line in first.splitlines())
         parsed = load_settings_text(first)
-        assert parsed.public_direct is True
+        assert parsed.access == "public"
 
     assert "acme_http_port" not in render_sample_profile("public-direct")
-    assert "acme_http_port = 8080\n" in render_sample_profile("docker")
+    assert "acme_http_port = 80\n" in render_sample_profile("docker")
     assert "acme_http_port = 80\n" in render_sample_profile("systemd")

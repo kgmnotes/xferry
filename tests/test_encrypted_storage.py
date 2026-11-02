@@ -311,10 +311,8 @@ def test_restart_does_not_delete_ciphertext_when_reconciliation_io_fails(
 
 
 def test_restart_removes_orphan_partial_data_without_a_sidecar(tmp_path: Path) -> None:
-    upload_dir = tmp_path / "uploads"
-    data_dir = upload_dir / ".xferry-encrypted"
-    data_dir.mkdir(parents=True)
-    orphan = data_dir / f"{FILE_ID}.part"
+    initial = _service(tmp_path)
+    orphan = initial.data_dir / f"{FILE_ID}.part"
     orphan.write_bytes(b"orphan")
 
     service = _service(tmp_path)

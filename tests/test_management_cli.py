@@ -264,7 +264,6 @@ def test_internal_release_envelope_verifier_is_hidden_and_forwards_exact_paths(
     [
         ["setup", "--dry-run"],
         ["credentials", "reset"],
-        ["status"],
         ["logs"],
         ["start"],
         ["stop"],
@@ -338,7 +337,7 @@ def test_non_linux_managed_diagnostics_are_actionable_in_text_and_json(
     assert display_name in update_detail
     assert "Supported matrix:" in update_detail
 
-    assert main(["status"]) == 4
+    assert main(["start"]) == 4
     text = capsys.readouterr().err
     assert "Linux/systemd-only" in text
     assert display_name in text

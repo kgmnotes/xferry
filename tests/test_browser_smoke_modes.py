@@ -46,7 +46,7 @@ def test_browser_cli_defaults_to_ci_pin_even_when_an_ambient_wrapper_exists(
         "npx",
         "--yes",
         "--package",
-        "@playwright/cli@0.1.9",
+        "@playwright/cli@0.1.23",
         "playwright-cli",
     ]
 

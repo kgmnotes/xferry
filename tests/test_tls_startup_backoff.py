@@ -15,6 +15,11 @@ from xferry.security.renewal import UTC, certificate_schedule
 from xferry.security.tls_manager import TLSManager
 
 
+@pytest.fixture(autouse=True)
+def isolated_private_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("xferry.security.tls_manager.automatic_state_dir", lambda: tmp_path)
+
+
 def startup_manager() -> TLSManager:
     return TLSManager(
         enabled=True,
@@ -28,7 +33,7 @@ def startup_manager() -> TLSManager:
 
 
 def live_root(home: Path) -> Path:
-    return home / ".xferry" / "acme" / "live" / "example.com"
+    return home / "acme" / "live" / "example.com"
 
 
 def test_restart_honors_persisted_ari_due_instead_of_fallback(tmp_path: Path, monkeypatch) -> None:

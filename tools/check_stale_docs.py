@@ -384,17 +384,18 @@ STALE_DOCUMENT_PATTERNS: tuple[StalePattern, ...] = (
     ),
 )
 
-REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 13))
+REQUIRED_ADR_NAV_PATHS: tuple[str, ...] = tuple(f"ADR-{number:03d}" for number in range(1, 14))
 
 ORDERED_MARKER_REQUIREMENTS: tuple[OrderedMarkersRequirement, ...] = (
     OrderedMarkersRequirement(
         Path("docs/quick-start.md"),
         (
-            "## Portable",
-            "## Managed Linux",
-            "## Container",
+            "## Install the CLI",
+            "## Run once",
+            "## Persistent Linux service",
+            "## Container through setup",
             "## Send a first file",
-            "## Stop and protect data",
+            "## Stop, reinstall and remove",
         ),
         "quick start must keep portable, managed, container, first-success, and lifecycle ordered",
     ),
@@ -420,7 +421,6 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         re.compile(
             r"\A(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
             r"(?=[\s\S]*xferry run --open)"
             r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
@@ -441,7 +441,6 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --open)"
             r"(?=[\s\S]*managed-hosts\.md)"
-            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
         ),
@@ -549,7 +548,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*xferry rollback)(?=[\s\S]*xferry uninstall)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*files_dir)(?=[\s\S]*notes/)"
-            r"(?=[\s\S]*body_memory_budget_mb[\s\S]*not an[\s\S]*RSS ceiling)"
+            r"(?=[\s\S]*body_memory_budget_mb[\s\S]*not an[\s\S]*RSS\s+ceiling)"
             r"(?=[\s\S]*docker compose)(?=[\s\S]*--volumes)"
             r"(?=[\s\S]*destructive)[\s\S]*",
             re.IGNORECASE,
@@ -560,7 +559,6 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("docs/public-direct.md"),
         re.compile(
             r"\A(?=[\s\S]*security\.md#external-exposure-baseline)"
-            r"(?=[\s\S]*archive/0\.2\.0-installation\.md)"
             r"(?=[\s\S]*ghcr\.io/kgmnotes/xferry@sha256:)"
             r"(?=[\s\S]*xferry config check)"
             r"(?=[\s\S]*xferry config show --all)"
@@ -669,14 +667,19 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             (2, "ADR-002-payload-protection.md"),
             (3, "ADR-003-runtime-crypto-acme.md"),
             (4, "ADR-004-upload-containment.md"),
-            (5, "ADR-005-thread-pool.md"),
             (7, "ADR-007-trusted-proxy-identity.md"),
             (8, "ADR-008-notepad-recovery.md"),
             (9, "ADR-009-api-client-compatibility.md"),
             (10, "ADR-010-methods-and-presets.md"),
             (11, "ADR-011-controlled-distribution.md"),
             (12, "ADR-012-encrypted-streaming-transfers.md"),
+            (13, "ADR-013-unified-deployment-and-capacity.md"),
         )
+    ),
+    SemanticRequirement(
+        Path("docs/ADR/ADR-005-thread-pool.md"),
+        re.compile(r"\*\*Status:\*\*\s+superseded by ADR-013", re.IGNORECASE),
+        "ADR-005 must remain recorded as superseded by ADR-013",
     ),
     SemanticRequirement(
         Path("docs/ADR/ADR-006-release-artifacts.md"),
@@ -2342,7 +2345,7 @@ def managed_update_rehearsal_policy_findings(
         'test "$(sudo stat -c \'%u:%a\' /usr/local/bin)" = "0:755"',
     )
     normalization_marker = "      - name: Normalize disposable runner managed parents"
-    install_marker = "      - name: Install signed 0.1.1"
+    install_marker = "      - name: Install signed 0.5.0"
     normalization_start = lifecycle.text.find(normalization_marker)
     install_start = lifecycle.text.find(install_marker)
     next_step_start = lifecycle.text.find(
@@ -2366,10 +2369,10 @@ def managed_update_rehearsal_policy_findings(
         reject("managed update rehearsal requires exactly amd64 and arm64 native runners")
 
     if (
-        'SOURCE_VERSION: "0.1.1"' not in rehearsal_text
-        or 'TARGET_VERSION: "0.1.2"' not in rehearsal_text
+        'SOURCE_VERSION: "0.5.0"' not in rehearsal_text
+        or 'TARGET_VERSION: "0.5.1"' not in rehearsal_text
     ):
-        reject("managed update rehearsal versions must remain fixed at 0.1.1 to 0.1.2")
+        reject("managed update rehearsal versions must remain fixed at 0.5.0 to 0.5.1")
     if "MANAGED_XFERRY: /usr/local/bin/xferry" not in rehearsal_text:
         reject("managed update rehearsal must pin the installed managed CLI path")
     bare_managed_cli_patterns = (
@@ -2381,12 +2384,12 @@ def managed_update_rehearsal_policy_findings(
         reject("managed update rehearsal must not resolve lifecycle commands from PATH")
 
     lifecycle_steps = (
-        "Install signed 0.1.1",
+        "Install signed 0.5.0",
         "Setup private managed service",
-        "Dry-run signed update to 0.1.2",
-        "Apply signed update to 0.1.2",
-        "Verify exact 0.1.2 health",
-        "Rollback to retained 0.1.1",
+        "Dry-run signed update to 0.5.1",
+        "Apply signed update to 0.5.1",
+        "Verify exact 0.5.1 health",
+        "Rollback to retained 0.5.0",
         "Conservative uninstall",
     )
     try:
@@ -2914,7 +2917,7 @@ def find_source_first_issues(
         r"(?<!\S)xferry(?:\b|\[)|"
         r"curl[^\n|]{0,300}\|\s*(?:sudo\s+)?(?:ba)?sh\b|"
         r"(?<![\w-])xferry\s+update\b"
-        r"(?!\s+--to\s+(?:[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?|VERSION)(?:\s|`|$)))",
+        r"(?!\s+(?:--instance\s+[A-Za-z0-9_-]+\s+)?--to\s+(?:[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?|VERSION)(?:\s|`|$)))",
         re.IGNORECASE,
     )
     for path in (
@@ -2951,10 +2954,10 @@ def find_source_first_issues(
     folded = text.casefold()
     markers = (
         "pipx install xferry",
-        "## portable",
+        "## run once",
         "xferry run --open",
-        "## managed linux",
-        "## container",
+        "## persistent linux service",
+        "## container through setup",
     )
     offsets = tuple(folded.find(marker) for marker in markers)
     if any(offset < 0 for offset in offsets) or offsets != tuple(sorted(offsets)):

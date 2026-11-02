@@ -37,12 +37,12 @@ def _lifecycle(distro: str, version: str, platform: str) -> dict[str, Any]:
                 "listener_gone": not active,
             }
         if phase not in {"guard", "uninstall"}:
-            release = "0.1.2" if phase == "update" else "0.1.1"
+            release = "0.5.1" if phase == "update" else "0.5.0"
             stage.update(
                 version=release,
                 current_link=f"releases/{release}",
                 retained_versions=(
-                    ["0.1.1", "0.1.2"] if phase in {"update", "rollback"} else ["0.1.1"]
+                    ["0.5.0", "0.5.1"] if phase in {"update", "rollback"} else ["0.5.0"]
                 ),
             )
         if phase not in {"guard", "install", "uninstall"}:
@@ -50,18 +50,16 @@ def _lifecycle(distro: str, version: str, platform: str) -> dict[str, Any]:
         if phase == "doctor":
             stage["checks"] = dict.fromkeys(
                 (
-                    "platform",
-                    "installation",
+                    "manifest",
                     "configuration",
+                    "runtime",
                     "files",
-                    "service",
-                    "network",
                     "health",
                 ),
                 True,
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
-            stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
+            stage["preserved"] = dict.fromkeys(("config", "auth", "profile", "sentinel"), True)
         if phase == "uninstall":
             stage["removed"] = True
         stages.append(stage)
@@ -267,7 +265,7 @@ def test_fixture_validation_binds_all_sources_assets_and_four_signatures(fixture
     options, metadata, calls, _ = fixtures
     result = matrix.validate_fixtures(options)
     assert result["fixturesSha"] == matrix._sha(options.fixture_evidence)
-    assert set(result["fixtureSources"]) == {"0.1.1", "0.1.2"}
+    assert set(result["fixtureSources"]) == {"0.5.0", "0.5.1"}
     assert set(result["helpers"]) == {"matrixSha", "probeSha"}
     signature_calls = [argv for argv in calls if argv[0] == sys.executable]
     assert len(signature_calls) == 4
@@ -312,10 +310,10 @@ def test_fixture_validation_rejects_malformed_or_unbound_inventory(
     invalid: str,
 ) -> None:
     options, metadata, calls, command = fixtures
-    version = "0.1.1"
+    version = "0.5.0"
     entry = metadata["versions"][version]
-    hosted = options.fixtures_root / "releases" / "download" / "v0.1.1"
-    executable = hosted / "xferry-0.1.1-linux-x86_64"
+    hosted = options.fixtures_root / "releases" / "download" / "v0.5.0"
+    executable = hosted / "xferry-0.5.0-linux-x86_64"
     if invalid in {"base", "run", "platform", "release_url"}:
         key = {
             "base": "base_commit",
@@ -413,9 +411,9 @@ def test_probe_receipt_validator_rejects_fabricated_or_sensitive_fields(invalid:
     else:
         stage = receipt["stages"][5]
         if invalid == "version":
-            stage["version"] = "0.1.1"
+            stage["version"] = "0.5.0"
         elif invalid == "retained":
-            stage["retained_versions"] = ["0.1.2"]
+            stage["retained_versions"] = ["0.5.1"]
         elif invalid == "health":
             stage["health"] = 1
         elif invalid == "preserved":
@@ -433,7 +431,7 @@ def test_probe_receipt_validator_rejects_fabricated_or_sensitive_fields(invalid:
 @pytest.mark.parametrize(
     "mutation", [None, "missing-files", "false-files", "numeric-files", "missing-health", "extra"]
 )
-def test_native_fixture_doctor_requires_all_seven_successful_checks(mutation: str | None) -> None:
+def test_native_fixture_doctor_requires_all_five_deployment_checks(mutation: str | None) -> None:
     receipt = _lifecycle("ubuntu", "24.04", "linux-x86_64")
     checks = receipt["stages"][3]["checks"]
     if mutation == "missing-files":

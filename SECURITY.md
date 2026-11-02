@@ -46,9 +46,9 @@ configuration procedure.
 
 ## Security boundaries
 
-- `local` and `local-secure` are intended for loopback or trusted-local use.
-- `public-direct` enables strict configuration validation, but presets do not
-  add or remove HTTP methods.
+- `access = private` requires loopback; `access = lab` permits an explicit trusted test network.
+- `access = public` enables strict public-direct configuration validation. Access
+  modes do not add or remove HTTP methods.
 - Basic Auth credentials travel with every request and require TLS on an
   untrusted network.
 - The runtime identifies the direct accepted-socket peer. Forwarding headers do
@@ -59,7 +59,8 @@ configuration procedure.
 - Configure request authorities with `[security] allowed_hosts`,
   `XFERRY_ALLOWED_HOSTS`, or repeatable `--allowed-host`. CORS is independent
   and never expands this allowlist.
-- Each active WebSocket occupies one worker.
+- TCP, TLS, authentication, short operations, transfers and WebSockets have separate
+  finite limits. Idle connections and WebSockets hold no processing worker.
 - Request-body admission limits are not a process memory ceiling.
 - Filesystem quotas assume the operator controls other writers to the data
   directory.

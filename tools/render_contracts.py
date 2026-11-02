@@ -224,7 +224,13 @@ def render_settings_reference() -> bytes:
                 lines.extend(("", str(row["dependencies"])))
             lines.extend(("", f"Applies to: {row['applicability']}. Change: {row['apply']}.", ""))
             spec_section = str(row["ini"]).split(" ", 1)[0]
-            lines.extend(("```ini", spec_section, str(row["example"]), "```", ""))
+            example = ["```ini", "[server]"]
+            if row["name"] != "config_version":
+                example.append("config_version = 1")
+            if spec_section != "[server]":
+                example.append(spec_section)
+            example.extend((str(row["example"]), "```", ""))
+            lines.extend(example)
             interfaces = [f"Environment: `{row['environment']}`"]
             flags = row["cli"]
             if isinstance(flags, list) and flags:

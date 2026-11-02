@@ -6,6 +6,45 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-03
+
+Candidate source notes; this version has not been published.
+
+### Changed
+
+- Unified foreground, native and Compose journeys around versioned profiles,
+  checked deployment manifests, observed states and a shared management service.
+- Separated TCP, TLS, authentication, short operations, transfers and WebSocket
+  capacity; idle sockets no longer consume processing workers.
+- Added reversible directory ACL grants and ownership-based removal, preserving
+  shared files and the separately installed controller.
+- Moved certificate state into the deployment's explicit private state root.
+- Simplified Upload with a file chooser first and collapsed advanced controls.
+- Start a new compatible managed release line at 0.5.0. Older deployment and
+  configuration formats require the explicit migration procedure.
+
+### Fixed
+
+- Require explicit purge confirmation in the shared management application and
+  both backends. Declining the prompt cancels removal; scripts require `--yes`.
+- Preserve shared folders during purge, including the native default folder,
+  and retain a service account still needed by those files or directories.
+- Keep native state-directory permissions consistent across start and recovery;
+  handle an already removed primary group and a confirmed missing inactive unit.
+- Use the same TLS hostname for retained-service recovery and health diagnostics.
+- Recognize the generated retained-state manifest in the installer, suppress
+  credentials in both JSON output streams, and reject retired modules in archives.
+- Refuse native bind mappings that would expose private transfer state,
+  including nested paths and symlink aliases.
+- Use an admitted certificate hostname when displaying URLs for file-based TLS.
+- Exercise the current configuration and lifecycle contracts in native release
+  fixtures and standalone executable checks.
+
+### Removed
+
+- Automatic conversion of old profiles, deployment schemas and release checkpoints.
+  Unsupported formats are refused without changing their files.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added

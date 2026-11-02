@@ -6,8 +6,8 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
@@ -16,9 +16,9 @@ from xferry.config import __version__
 from .i18n import LanguageSelection, Translator, resolve_language
 
 if TYPE_CHECKING:
-    from .model import SetupPlan, SetupPreflight
-    from .releases import ReleaseResult
-    from .setup import Credentials, CredentialsResult, SetupResult
+    from .deployment import OperationResult
+    from .instances import Instance
+
 _PRIMARY_COMMANDS = (
     "run",
     "setup",
@@ -34,10 +34,9 @@ _PRIMARY_COMMANDS = (
 )
 _MAINTENANCE_COMMANDS = ("update", "rollback")
 _COMMANDS = (*_PRIMARY_COMMANDS, *_MAINTENANCE_COMMANDS, "help")
-_LINUX_MANAGEMENT_COMMANDS = frozenset({"doctor"})
 _COMMAND_EXAMPLES = {
     "run": "xferry run --files-dir ~/Shared",
-    "setup": "xferry setup",
+    "setup": "xferry setup --backend native",
     "config": "xferry config explain files_dir",
     "status": "xferry status",
     "logs": "xferry logs --follow",
@@ -113,7 +112,9 @@ def _root_help(translator: Translator) -> str:
     return "\n".join(lines)
 
 
-def _command_parser(command: str, translator: Translator) -> _Parser:
+def _command_parser(
+    command: str, translator: Translator, *, show_all_help: bool = False
+) -> _Parser:
     parser = _Parser(
         prog=f"xferry {command}",
         description=translator.get(f"command_{command}"),
@@ -123,12 +124,27 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
     )
     parser.add_argument("-h", "--help", action="help", help=translator.get("help_option"))
     parser.add_argument("--help-all", action="help", help="Show all command options.")
-    parser.add_argument(
-        "--config", metavar="FILE", help="Select a server by its configuration file."
-    )
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--instance", metavar="ID", help="Select a persistent deployment by ID.")
+    if command in {"config", "credentials"}:
+        selection.add_argument(
+            "--config", metavar="FILE", help="Edit an explicit foreground configuration profile."
+        )
+    else:
+        parser.set_defaults(config=None)
     if command == "setup":
         parser.add_argument(
-            "--docker", action="store_true", help="Use Docker Compose instead of a Linux service."
+            "--backend",
+            choices=("native", "docker"),
+            default="native",
+            help="Install a Linux service or Docker Compose deployment (default: native).",
+        )
+        parser.add_argument(
+            "--output",
+            metavar="DIRECTORY",
+            help="Create a Docker deployment bundle in this directory."
+            if show_all_help
+            else argparse.SUPPRESS,
         )
         parser.add_argument(
             "--access",
@@ -148,11 +164,17 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
         parser.add_argument(
             "--firewall", choices=("allow", "deny"), help="Allow or decline required UFW rules."
         )
-        parser.add_argument(
+        artifact = parser.add_mutually_exclusive_group()
+        artifact.add_argument(
             "--to",
-            default=__version__,
+            default=None,
             metavar="VERSION",
-            help="Signed release version to install.",
+            help=f"Signed release version to install (default: {__version__}).",
+        )
+        artifact.add_argument(
+            "--image",
+            metavar="REPOSITORY@sha256:DIGEST",
+            help="Use an explicit immutable Docker image instead of a release version.",
         )
         parser.set_defaults(
             body_budget_mib=None,
@@ -199,22 +221,18 @@ def _command_parser(command: str, translator: Translator) -> _Parser:
         )
     elif command == "uninstall":
         parser.add_argument(
-            "--purge-data",
+            "--purge",
             action="store_true",
-            help="Also delete configuration, credentials and stored data.",
+            help="Delete owned configuration, credentials and private state; keep external files.",
         )
         parser.add_argument("--yes", action="store_true", help="Confirm deletion without a prompt.")
     if command in {"setup", "config", "update", "rollback", "uninstall"}:
         parser.add_argument("--dry-run", action="store_true", help="Validate and preview changes.")
-    if command not in {"logs", "start", "stop", "restart"}:
+    if command != "logs":
         parser.add_argument("--json", action="store_true", help="Print machine-readable results.")
+    else:
+        parser.set_defaults(json=False)
     return parser
-
-
-def _not_implemented_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    """Return the stable operation failure result until later command tasks land."""
-    print(context.translator.get("not_implemented", command=args.command), file=sys.stderr)
-    return 1
 
 
 def _configure_handler(args: argparse.Namespace, context: ManagementContext) -> int:
@@ -236,14 +254,34 @@ def _configure_handler(args: argparse.Namespace, context: ManagementContext) -> 
         args.target,
         context.language.code,
         dispatch=lambda argv: main(["--lang", context.language.code, *argv]),
+        instance=getattr(args, "instance_record", None),
     )
+
+
+def _annotate_deployment_rows(rows: list[dict[str, object]], instance: Instance) -> None:
+    """Present real backend storage rather than an internal compilation path."""
+    if instance.backend != "docker":
+        return
+    storage = instance.spec.backend_options.get("state_storage")
+    if not isinstance(storage, Mapping) or not isinstance(storage.get("name"), str):
+        raise ValueError("Docker deployment does not declare its private state volume")
+    for row in rows:
+        if row["name"] == "state_dir":
+            location = "Docker volume " + str(storage["name"])
+            row.update(
+                value=location,
+                effective=location,
+                configured=None,
+                runtime_value="/data",
+                source="deployment",
+                read_only=True,
+            )
 
 
 def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int:
     from xferry.settings import load_settings_text, resolve_settings
 
     from .configuration import (
-        annotate_host_folder,
         change_configuration,
         describe_settings,
         parse_assignments,
@@ -261,27 +299,15 @@ def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int
             if not args.values or path is None:
                 raise ValueError("config set requires at least one KEY=VALUE")
             changes = parse_assignments(args.values)
-            if target == "docker":
-                from .docker_deploy import default_files_directory, deploy_docker
+            if target != "portable":
+                from .application import default_application
 
-                folder = changes.pop("files_dir", None)
-                selected_folder = (
-                    (Path(folder).expanduser().resolve() if folder else default_files_directory())
-                    if folder is not None
-                    else None
+                result = default_application().configure(
+                    args.instance_record, changes, apply=not args.dry_run
                 )
-                result = deploy_docker(
-                    path.parent,
-                    files_dir=selected_folder,
-                    settings_changes=changes,
-                    dry_run=args.dry_run,
+                return _render_application_result(
+                    result, json_output=args.json, language=context.language.code
                 )
-                print(
-                    json.dumps({"exit_code": result.exit_code, "message": result.message})
-                    if args.json
-                    else result.message
-                )
-                return result.exit_code
             changed = change_configuration(path, changes, target=target, dry_run=args.dry_run)
             if args.json:
                 print(
@@ -314,7 +340,9 @@ def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int
             if path is None or not path.is_file():
                 raise ValueError("configuration file does not exist; run xferry config first")
             resolve_settings(
-                file_settings=load_settings_text(text, validate=False),
+                file_settings=load_settings_text(
+                    text or "[server]\nconfig_version = 1\n", validate=False
+                ),
                 env=environment,
                 state_dir=state,
                 config_path=path,
@@ -335,27 +363,8 @@ def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int
             state_dir=state,
             config_path=path,
         )
-        if path and path.exists():
-            annotate_host_folder(rows, path, target)
-        if args.action == "show" and args.all and not args.group and not args.search:
-            effective = resolve_settings(
-                file_settings=load_settings_text(text, validate=False),
-                env=environment,
-                state_dir=state,
-                config_path=path,
-            )
-            rows.append(
-                {
-                    "name": "state_directory",
-                    "group": "paths",
-                    "description": "Private notes and server state. "
-                    "Managed automatically; this is not a setting.",
-                    "value": effective.root_dir,
-                    "effective": effective.root_dir,
-                    "source": "internal",
-                    "read_only": True,
-                }
-            )
+        if target != "portable":
+            _annotate_deployment_rows(rows, args.instance_record)
         render_rows(rows, json_output=args.json)
         if key and not args.json:
             row = rows[0]
@@ -380,513 +389,179 @@ def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int
         return 2
 
 
-def _setup_handler(args: argparse.Namespace, _context: ManagementContext) -> int:
-    """Plan, display, and transactionally apply a managed setup."""
-    from .versions import is_supported_release_version
-
-    if not is_supported_release_version(args.to):
-        raise ValueError("--to requires an exact supported release version, such as " + __version__)
-    interactive_wizard = bool(sys.stdin.isatty()) and not args.json and not args.dry_run
-    if args.docker:
-        from .docker_deploy import deploy_docker
-        from .instances import user_data_dir
-        from .wizard import docker_wizard
-
-        path = (
-            Path(args.config).expanduser().absolute()
-            if args.config
-            else user_data_dir() / "deployment/xferry.ini"
-        )
-        if path.name != "xferry.ini":
-            raise ValueError("Docker configuration filename must be xferry.ini")
-        if path.is_file() and not args.dry_run and interactive_wizard:
-            return main(["--lang", _context.language.code, "config", "--config", str(path)])
-        if (
-            interactive_wizard
-            and not args.access
-            and not args.domain
-            and not args.files_dir
-            and args.public_ip is None
-            and args.email is None
-            and args.to == __version__
-        ):
-            return docker_wizard(path.parent, _context.language.code)
-        docker_result = deploy_docker(
-            path.parent,
-            files_dir=Path(args.files_dir).expanduser().resolve() if args.files_dir else None,
-            domain=args.domain,
-            private=args.access == "private",
-            public_ip=args.public_ip,
-            settings_changes={"email": args.email} if args.email else None,
-            image=f"ghcr.io/kgmnotes/xferry:v{args.to}",
-            dry_run=args.dry_run,
-        )
-        payload = {
-            "exit_code": docker_result.exit_code,
-            "message": docker_result.message,
-            "url": docker_result.url,
-            "files_dir": docker_result.files_dir,
-            "username": docker_result.username,
-            "password": docker_result.password,
-        }
-        if args.json:
-            print(json.dumps(payload))
-        else:
-            print(docker_result.message)
-            if docker_result.url:
-                print(f"URL: {docker_result.url}\nFiles: {docker_result.files_dir}")
-            if docker_result.password:
-                print(f"Credentials: {docker_result.username}:{docker_result.password}")
-        return docker_result.exit_code
-    if args.config and Path(args.config).expanduser().absolute() != Path("/etc/xferry/xferry.ini"):
-        raise ValueError(
-            "the Linux service uses --config /etc/xferry/xferry.ini; use --docker for Docker"
-        )
-    from .managed_state import has_retained_state
-    from .model import ManagedLayout
-
-    layout = ManagedLayout()
-    if has_retained_state(layout):
-        if args.dry_run:
-            return _render_operation_result(
-                _OperationResult(
-                    0,
-                    "Saved configuration and data will be resumed "
-                    "after signed runtime installation.",
-                ),
-                json_output=args.json,
-            )
-        from .bootstrap import install_release
-        from .setup import SetupExecutor
-
-        if not layout.current_executable.is_file():
-            installed = install_release(args.to)
-            if installed.exit_code:
-                return _render_operation_result(
-                    _OperationResult(installed.exit_code, installed.message), json_output=args.json
-                )
-        resumed = SetupExecutor().resume(layout)
-        return _render_operation_result(resumed, json_output=args.json)
-    if Path("/etc/xferry/xferry.ini").is_file() and not args.dry_run:
-        if interactive_wizard:
-            return main(
-                ["--lang", _context.language.code, "config", "--config", "/etc/xferry/xferry.ini"]
-            )
-        return _render_operation_result(
-            _OperationResult(2, "already configured; use xferry config or config set"),
-            json_output=args.json,
-        )
-    from .platform import detect_host_facts
-
-    facts = detect_host_facts()
-    if not facts.is_supported:
-        return _non_linux_management_result("setup", args)
-    args.private = args.access == "private"
-    if interactive_wizard and not args.domain and args.access is None and args.public_ip is None:
-        from .wizard import prepare_setup
-
-        try:
-            prepare_setup(args, _context.language.code)
-        except (EOFError, KeyboardInterrupt):
-            return 0
-        except ValueError as exc:
-            print(f"xferry setup: error: {exc}", file=sys.stderr)
-            return 2
-    option_error = _setup_option_error(args)
-    if option_error is not None:
-        print(f"xferry setup: error: {option_error}", file=sys.stderr)
-        return 2
-    if not args.dry_run and os.geteuid() != 0:
-        return _render_operation_result(
-            _OperationResult(3, "managed setup requires root"),
-            json_output=args.json,
-        )
-    try:
-        plan, preflight = _prepare_setup_plan(args)
-    except ValueError as exc:
-        print(f"xferry setup: error: {exc}", file=sys.stderr)
-        return 2
-    except RuntimeError:
-        print("xferry setup: network discovery failed", file=sys.stderr)
-        return 5
-    except OSError:
-        print("xferry setup: host inspection failed", file=sys.stderr)
-        return 1
-
-    if not preflight.executable_ready:
-        preflight = replace(
-            preflight,
-            failures=tuple(
-                failure for failure in preflight.failures if failure.code != "executable-missing"
-            ),
-        )
-    if not preflight.ok:
-        from .setup import preflight_result
-
-        result = preflight_result(preflight)
-        return _render_operation_result(result, json_output=args.json)
-    if args.dry_run:
-        _render_dry_run(plan, json_output=args.json, version=args.to)
-        return 0
-
-    _display_plan_before_mutation(plan, json_output=args.json)
-    if interactive_wizard:
-        from .wizard import confirm
-
-        try:
-            if not confirm(_context.language.code):
-                return 0
-        except (EOFError, KeyboardInterrupt):
-            return 0
-    if not plan.layout.current_executable.is_file():
-        from .bootstrap import install_release
-
-        installed = install_release(args.to)
-        if installed.exit_code:
-            return _render_operation_result(
-                _OperationResult(installed.exit_code, installed.message), json_output=args.json
-            )
-    result = _apply_setup_plan(plan, preflight)
-    return _render_operation_result(result, json_output=args.json, files_dir=plan.files_dir)
-
-
-def _credentials_handler(args: argparse.Namespace, _context: ManagementContext) -> int:
-    """Rotate managed credentials under the shared mutation boundary."""
-    if os.geteuid() != 0:
-        return _render_operation_result(
-            _OperationResult(3, "credential reset requires root"),
-            json_output=args.json,
-        )
-    try:
-        from xferry.security.tls import sslip_domain_for_ip
-        from xferry.settings import load_settings_file
-
-        from .health import HealthEndpoint
-        from .model import ManagedLayout
-        from .setup import CredentialsContext, reset_credentials
-        from .system import CommandRunner
-
-        settings = load_settings_file("/etc/xferry/xferry.ini")
-        tls = settings.effective_tls_enabled()
-        host = settings.domain
-        if host is None and settings.sslip and settings.public_ip:
-            host = sslip_domain_for_ip(settings.public_ip)
-        if host is None:
-            host = "127.0.0.1"
-        result = reset_credentials(
-            CredentialsContext(
-                layout=ManagedLayout(),
-                endpoint=HealthEndpoint("127.0.0.1", settings.port, host, tls=tls),
-                runner=CommandRunner(),
-            )
-        )
-    except (OSError, ValueError) as exc:
-        print(f"xferry credentials: error: {exc}", file=sys.stderr)
-        return 2
-    return _render_operation_result(result, json_output=args.json)
-
-
-def _status_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    """Render root-gated, read-only fixed-unit status without taking the mutation lock."""
-    from .service import default_service_context, service_status
-
-    status = service_status(default_service_context())
-    if args.json:
-        print(json.dumps(status.to_json(), sort_keys=True))
-    else:
-        print(
-            context.translator.get(
-                "service_status_text",
-                installation=context.translator.managed_text("status", status.installation),
-                config=context.translator.managed_text("status", status.config),
-                enabled=context.translator.managed_text("status", status.enabled),
-                service=context.translator.managed_text("status", status.service),
-                health=context.translator.managed_text("status", status.health),
-            )
-        )
-        if getattr(status, "files_dir", None):
-            print(f"Files: {status.files_dir}")
-    return status.exit_code
-
-
-def _logs_handler(args: argparse.Namespace, _context: ManagementContext) -> int:
-    """Delegate fixed-unit journal output while preserving journalctl's exit code."""
-    from .service import default_service_context, stream_logs
-
-    return stream_logs(args.lines, args.since, args.follow, default_service_context())
-
-
-def _service_action_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    """Perform one root-gated fixed-unit lifecycle operation."""
-    from .service import default_service_context, service_action
-
-    exit_code = service_action(args.command, default_service_context())
-    if exit_code:
-        print(
-            context.translator.get(
-                "service_action_failed",
-                action=context.translator.managed_text("action", args.command),
-            ),
-            file=sys.stderr,
-        )
-    else:
-        print(
-            context.translator.get(
-                "service_action_done",
-                action=context.translator.managed_text("action", args.command),
-            )
-        )
-    return exit_code
-
-
-def _doctor_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    """Render local and optionally deep secret-free managed diagnostics."""
-    from .service import DoctorOptions, default_service_context, run_doctor
-
-    report = run_doctor(
-        DoctorOptions(deep=args.deep, skip_network=args.skip_network), default_service_context()
-    )
-    if args.json:
-        print(json.dumps(report.to_json(), sort_keys=True))
-    else:
-        for name, check in report.checks.items():
-            print(
-                context.translator.get(
-                    "doctor_check_text",
-                    name=context.translator.managed_text("check", name),
-                    status=context.translator.managed_text("status", check.status),
-                    detail=context.translator.managed_text("detail", check.detail),
-                )
-            )
-        for action in report.next_actions:
-            print(context.translator.get("next_action_text", action=action))
-    return report.exit_code
-
-
-def _release_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    """Run one verified release lifecycle command through injectable boundaries."""
-    from .releases import default_release_manager, default_update_manager
-
-    if args.command == "update":
-        manager = default_update_manager()
-        result = manager.update(args.to, args.dry_run)
-    elif args.command == "rollback":
-        manager = default_release_manager()
-        result = manager.rollback(args.to, args.dry_run)
-    else:
-        manager = default_release_manager()
-        confirmed = bool(args.yes)
-        if args.purge_data and not confirmed and sys.stdin.isatty():
-            response = input(context.translator.get("purge_prompt"))
-            confirmed = response.strip().casefold() in {"y", "yes"}
-        result = manager.uninstall(args.purge_data, confirmed, args.dry_run)
-    return _render_release_result(result, context=context, json_output=args.json)
-
-
-def _render_release_result(
-    result: ReleaseResult,
-    *,
-    context: ManagementContext,
-    json_output: bool,
+def _render_application_result(
+    result: OperationResult, *, json_output: bool, language: str = "en"
 ) -> int:
+    translator = Translator(language)
     if json_output:
-        payload: dict[str, object] = {
-            "active": result.active,
-            "before": result.before,
-            "code": result.code or result.message,
-            "detail": result.detail,
-            "dry_run": result.dry_run,
-            "exit_code": result.exit_code,
-            "message": Translator("en").release_text(
-                result.message,
-                version=result.target or result.version,
-            ),
-            "next_actions": list(result.next_actions),
-            "rollback": result.rollback,
-            "status": "ok" if result.exit_code == 0 else "error",
-            "target": result.target,
-        }
-        if result.version is not None:
-            payload["version"] = result.version
-        print(json.dumps(payload, sort_keys=True))
-        return result.exit_code
-    output = sys.stderr if result.exit_code else sys.stdout
-    message = context.translator.release_text(
-        result.message,
-        version=result.target or result.version,
-    )
-    print(message, file=output)
-    if result.detail:
-        print(result.detail, file=output)
-    for action in result.next_actions:
-        print(context.translator.get("next_action_text", action=action), file=output)
+        print(json.dumps(result.to_json(), ensure_ascii=False, sort_keys=True))
+    else:
+        output = sys.stderr if result.exit_code else sys.stdout
+        print(translator.managed_text("message", result.message), file=output)
+        if result.plan:
+            for step in result.plan.steps:
+                print(f"  {step}", file=output)
+            for retained in result.plan.retains:
+                print(translator.get("retained_text", path=retained), file=output)
+        if result.state:
+            state = result.state
+            print(
+                translator.get(
+                    "deployment_state_text",
+                    instance=state.instance_id,
+                    backend=state.backend,
+                    state=translator.managed_text("status", state.state),
+                    health=translator.managed_text("status", state.health),
+                ),
+                file=output,
+            )
+            if state.detail:
+                print(translator.managed_text("detail", state.detail), file=output)
+        if result.url:
+            print(f"URL: {result.url}", file=output)
+        for name, value in result.details.items():
+            if name == "checks" and isinstance(value, Mapping):
+                for check_name, check in value.items():
+                    if isinstance(check, Mapping):
+                        print(
+                            translator.get(
+                                "doctor_check_text",
+                                name=translator.managed_text("check", str(check_name)),
+                                status=translator.managed_text(
+                                    "status", str(check.get("status", "unknown"))
+                                ),
+                                detail=translator.managed_text(
+                                    "detail", str(check.get("detail", ""))
+                                ),
+                            ),
+                            file=output,
+                        )
+            elif value is not None:
+                label = translator.managed_text("check", name)
+                print(f"{label}: {value}", file=output)
+    credentials = result.credentials
+    if credentials is not None and not json_output:
+        print(f"Credentials: {credentials.username}:{credentials.password}")
     return result.exit_code
+
+
+def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
+    from .application import default_application
+    from .wizard import confirm, prepare_setup
+
+    interactive = sys.stdin.isatty() and not args.json and not args.dry_run
+    if interactive and not args.instance and not any((args.access, args.domain, args.public_ip)):
+        prepare_setup(args, context.language.code)
+    options = {
+        "backend": args.backend,
+        "instance_id": args.instance,
+        "version": None if args.image else (args.to or __version__),
+        "image": args.image,
+        "output": Path(args.output).expanduser().absolute() if args.output else None,
+        "files_dir": Path(args.files_dir).expanduser().absolute() if args.files_dir else None,
+        "access": args.access or "public",
+        "domain": args.domain,
+        "public_ip": args.public_ip,
+        "email": args.email,
+        "firewall": {"allow": True, "deny": False}.get(args.firewall),
+    }
+    app = default_application()
+    if interactive:
+        preview = app.setup(**options, dry_run=True)
+        if preview.details.get("firewall_consent_required"):
+            supplied_ports = preview.details.get("firewall_ports")
+            ports = supplied_ports if isinstance(supplied_ports, list | tuple) else (80, 443)
+            rules = ", ".join(f"{port}/tcp" for port in ports)
+            description = (
+                f"Разрешить правила UFW: {rules}?"
+                if context.language.code == "ru"
+                else f"Allow UFW rules for {rules}?"
+            )
+            if not confirm(context.language.code, description):
+                return 0
+            options["firewall"] = True
+            preview = app.setup(**options, dry_run=True)
+        _render_application_result(preview, json_output=False, language=context.language.code)
+        if preview.exit_code or not confirm(context.language.code):
+            return preview.exit_code
+    return _render_application_result(
+        app.setup(**options, dry_run=args.dry_run),
+        json_output=args.json,
+        language=context.language.code,
+    )
+
+
+def _credentials_handler(args: argparse.Namespace, context: ManagementContext) -> int:
+    if args.target == "portable":
+        from .configuration import reset_portable_password
+
+        result = reset_portable_password(Path(args.config))
+        if args.json:
+            print(json.dumps({"exit_code": result.exit_code, "message": result.message}))
+        else:
+            print(result.message)
+        if result.password and not args.json:
+            print(f"Credentials: {result.username}:{result.password}")
+        return result.exit_code
+    from .application import default_application
+
+    return _render_application_result(
+        default_application().credentials(args.instance_record),
+        json_output=args.json,
+        language=context.language.code,
+    )
+
+
+def _persistent_handler(args: argparse.Namespace, context: ManagementContext) -> int:
+    from .application import default_application
+
+    app = default_application()
+    instance = args.instance_record
+    if args.command == "doctor":
+        result = app.doctor(instance, check_http=args.deep and not args.skip_network)
+    else:
+        options: dict[str, object] = {}
+        if args.command == "logs":
+            options.update(lines=args.lines, since=args.since, follow=args.follow)
+        if args.command in {"update", "rollback"}:
+            options.update(version=args.to, dry_run=args.dry_run)
+        if args.command == "uninstall":
+            confirmed = args.yes
+            if args.purge and not confirmed and not args.dry_run and sys.stdin.isatty():
+                from .wizard import confirm
+
+                preview = app.operate(
+                    "uninstall", instance, purge=True, confirmed=True, dry_run=True
+                )
+                _render_application_result(
+                    preview, json_output=False, language=context.language.code
+                )
+                if preview.exit_code:
+                    return preview.exit_code
+                confirmed = confirm(context.language.code, context.translator.get("purge_prompt"))
+                if not confirmed:
+                    return 0
+            options.update(purge=args.purge, confirmed=confirmed, dry_run=args.dry_run)
+        result = app.operate(args.command, instance, **options)
+    return _render_application_result(result, json_output=args.json, language=context.language.code)
 
 
 def _setup_option_error(args: argparse.Namespace) -> str | None:
-    if args.private and args.domain is not None:
+    if args.output and args.backend != "docker":
+        return "--output requires --backend docker"
+    if args.image and args.backend != "docker":
+        return "--image requires --backend docker"
+    if args.access == "private" and args.domain is not None:
         return "--access private cannot be combined with --domain"
-    if args.private and args.public_ip is not None:
+    if args.access == "private" and args.public_ip is not None:
         return "--access private cannot be combined with --public-ip"
-    if args.private and args.email is not None:
+    if args.access == "private" and args.email is not None:
         return "--access private cannot be combined with --email"
     if args.domain is not None and args.public_ip is not None:
         return "--domain cannot be combined with --public-ip"
+    if args.backend == "docker" and args.firewall is not None:
+        return "--firewall is for native services; Docker manages its published ports"
     return None
-
-
-def _prepare_setup_plan(args: argparse.Namespace) -> tuple[SetupPlan, SetupPreflight]:
-    """Create and preflight one immutable plan without changing the host."""
-    from .model import ManagedLayout, ResourceOverrides, SetupMode, SetupOptions
-    from .planning import build_setup_plan
-    from .platform import detect_host_facts
-    from .setup import default_setup_preflight, ufw_is_active
-    from .system import CommandRunner
-
-    layout = ManagedLayout()
-    runner = CommandRunner()
-    mode = (
-        SetupMode.PRIVATE
-        if args.private
-        else (SetupMode.DOMAIN if args.domain is not None else SetupMode.SSLIP)
-    )
-    firewall_answer = {"allow": True, "deny": False}.get(args.firewall)
-    interactive = bool(sys.stdin.isatty()) and not args.dry_run and not args.json
-    if mode is not SetupMode.PRIVATE and firewall_answer is None and ufw_is_active(runner):
-        if interactive:
-            response = input("Allow UFW rules for 80/tcp and 443/tcp? [y/N] ")
-            firewall_answer = response.strip().casefold() in {"y", "yes"}
-    facts = detect_host_facts(
-        data_path=Path(args.files_dir).expanduser().resolve()
-        if args.files_dir
-        else layout.data_root
-    )
-    plan = build_setup_plan(
-        SetupOptions(
-            mode=mode,
-            domain=args.domain,
-            public_ip=args.public_ip,
-            email=args.email,
-            firewall_answer=firewall_answer,
-            resources=ResourceOverrides(
-                body_budget_mib=args.body_budget_mib,
-                max_upload_mib=args.max_upload_mib,
-                workers=args.workers,
-                reserve_mib=args.reserve_mib,
-                upload_storage_mib=args.upload_storage_mib,
-            ),
-            layout=layout,
-            files_dir=Path(args.files_dir).expanduser().resolve() if args.files_dir else None,
-        ),
-        facts,
-    )
-    return plan, default_setup_preflight(plan, runner, interactive=interactive)
-
-
-def _apply_setup_plan(plan: SetupPlan, preflight: SetupPreflight) -> SetupResult:
-    """Apply the exact successfully preflighted plan, rechecking it under lock."""
-    from .setup import SetupExecutor, preflight_result
-
-    if not preflight.ok:
-        return preflight_result(preflight)
-    return SetupExecutor().apply(plan)
-
-
-def _display_plan_before_mutation(plan: SetupPlan, *, json_output: bool) -> None:
-    access = "Private HTTP on this host" if plan.mode.value == "private" else "Public HTTPS"
-    if plan.domain:
-        access += f" ({plan.domain})"
-    message = f"Server: {access}\nFiles: {plan.files_dir}\nConfiguration: {plan.layout.config_file}"
-    if plan.firewall_action:
-        message += "\nFirewall: allow 80/tcp and 443/tcp"
-    print(message, file=sys.stderr if json_output else sys.stdout)
-
-
-def _render_dry_run(plan: SetupPlan, *, json_output: bool, version: str | None = None) -> None:
-    payload = {
-        "body_budget_mib": plan.resources.body_budget_mib,
-        "dry_run": True,
-        "firewall_action": plan.firewall_action,
-        "firewall_ports": list(plan.firewall_ports),
-        "mode": plan.mode.value,
-        "port": plan.port,
-        "status": "ok",
-        "upload_storage_mib": plan.resources.upload_storage_mib,
-        "workers": plan.resources.workers,
-        "files_dir": str(plan.files_dir),
-        "runtime_install_required": not plan.layout.current_executable.is_file(),
-        "version": version or __version__,
-    }
-    if json_output:
-        print(json.dumps(payload, sort_keys=True))
-    else:
-        print("Dry run; no managed state was changed.")
-        if payload["runtime_install_required"]:
-            print(f"Setup will download and verify signed release {payload['version']}.")
-        _display_plan_before_mutation(plan, json_output=False)
-
-
-def _render_operation_result(
-    result: _OperationResult | SetupResult | CredentialsResult,
-    *,
-    json_output: bool,
-    files_dir: Path | None = None,
-) -> int:
-    credentials: Credentials | None = result.credentials
-    if json_output:
-        payload: dict[str, object] = {
-            "exit_code": result.exit_code,
-            "status": "ok" if result.exit_code == 0 else "error",
-        }
-        if result.exit_code == 0 and files_dir is not None:
-            payload["files_dir"] = str(files_dir)
-        if credentials is not None:
-            payload["url"] = credentials.url
-        else:
-            payload["message"] = result.message
-            if result.code is not None:
-                payload.update(
-                    {
-                        "code": result.code,
-                        "detail": result.detail,
-                        "next_actions": list(result.next_actions),
-                    }
-                )
-        print(json.dumps(payload, sort_keys=True))
-        if credentials is not None:
-            print(
-                f"Credentials: {credentials.username}:{credentials.password}",
-                file=sys.stderr,
-            )
-        return result.exit_code
-
-    if credentials is None:
-        print(result.message, file=sys.stderr if result.exit_code else sys.stdout)
-        if result.detail:
-            print(f"Detail: {result.detail}", file=sys.stderr if result.exit_code else sys.stdout)
-        for action in result.next_actions:
-            print(
-                f"Next action: {action}",
-                file=sys.stderr if result.exit_code else sys.stdout,
-            )
-        return result.exit_code
-    print(f"URL: {credentials.url}")
-    print(f"Credentials: {credentials.username}:{credentials.password}")
-    if files_dir is not None:
-        print(f"Files: {files_dir}")
-    return result.exit_code
-
-
-@dataclass(frozen=True)
-class _OperationResult:
-    """Portable operation result used before a Linux backend is available."""
-
-    exit_code: int
-    message: str
-    credentials: None = None
-    code: str | None = None
-    detail: str = ""
-    next_actions: tuple[str, ...] = ()
 
 
 def _non_linux_management_result(command: str, args: argparse.Namespace) -> int:
@@ -974,61 +649,26 @@ def _privileged(argv: Sequence[str], context: ManagementContext) -> int:
         (f"--preserve-env={proxy_names}", "--", *executable, "--lang", context.language.code, *argv)
     )
     result = subprocess.run(command, check=False)
-    if result.returncode == 0 and argv[0] == "setup":
-        from .instances import register_instance
-
-        register_instance(Path("/etc/xferry/xferry.ini"), "managed")
     return result.returncode
 
 
-def _docker_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    from .docker_deploy import deploy_docker, docker_operation
+def _select_persistent_instance(selector: str | None, context: ManagementContext) -> Instance:
+    from .application import default_application
+    from .instances import discover_instances
 
-    path = Path(args.config)
-    if args.command == "credentials":
-        result = deploy_docker(path.parent, reset_credentials=True)
-    else:
-        if args.command == "uninstall" and args.purge_data and not args.yes and not args.dry_run:
-            from .wizard import confirm
+    app = default_application()
+    found = discover_instances() if selector is None else ()
+    if len(found) > 1 and sys.stdin.isatty():
+        from .wizard import prompt
 
-            if not sys.stdin.isatty() or not confirm(
-                context.language.code, "Delete Docker configuration, credentials and stored data?"
-            ):
-                raise ValueError("data deletion requires --yes or terminal confirmation")
-        result = docker_operation(
-            path,
-            args.command,
-            version=getattr(args, "to", None),
-            purge_data=getattr(args, "purge_data", False),
-            dry_run=getattr(args, "dry_run", False),
-            lines=getattr(args, "lines", 100),
-            since=getattr(args, "since", None),
-            follow=getattr(args, "follow", False),
-        )
-    if getattr(args, "json", False):
-        print(
-            json.dumps(
-                {
-                    "exit_code": result.exit_code,
-                    "message": result.message,
-                    **(result.details or {}),
-                    **(
-                        {"username": result.username, "password": result.password}
-                        if result.password
-                        else {}
-                    ),
-                }
-            )
-        )
-    else:
-        print(result.message)
-        if result.details:
-            for name, value in result.details.items():
-                if value is not None:
-                    print(f"{name}: {value}")
-        if result.password:
-            print(f"Credentials: {result.username}:{result.password}")
-    return result.exit_code
+        print("Выберите сервер:" if context.language.code == "ru" else "Choose a server:")
+        for index, instance in enumerate(found, 1):
+            print(f"  {index}. {instance.id} ({instance.backend}) - {instance.config}")
+        answer = prompt("Номер" if context.language.code == "ru" else "Number")
+        if not answer.isdigit() or not 1 <= int(answer) <= len(found):
+            raise ValueError("choose one of the listed server numbers")
+        selector = found[int(answer) - 1].id
+    return app.resolve(selector)
 
 
 def _run_management(command: str, argv: Sequence[str], context: ManagementContext) -> int:
@@ -1037,21 +677,20 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
             print(_root_help(context.translator))
             return 0
         if len(argv) != 1 or argv[0] not in _COMMAND_EXAMPLES:
+            message = (
+                context.translator.get("unknown_command", command=argv[0])
+                if len(argv) == 1 and argv[0] not in _COMMANDS
+                else "choose one available command"
+            )
             print(
-                f"xferry help: {context.translator.get('usage_error')}: "
-                + (
-                    context.translator.get("unknown_command", command=argv[0])
-                    if len(argv) == 1 and argv[0] not in _COMMANDS
-                    else "choose one available command"
-                ),
-                file=sys.stderr,
+                f"xferry help: {context.translator.get('usage_error')}: {message}", file=sys.stderr
             )
             return 2
         try:
             return main(["--lang", context.language.code, argv[0], "--help"])
         except SystemExit as exc:
             return exc.code if isinstance(exc.code, int) else 1
-    parser = _command_parser(command, context.translator)
+    parser = _command_parser(command, context.translator, show_all_help="--help-all" in argv)
     try:
         args = (
             parser.parse_intermixed_args(argv) if command == "config" else parser.parse_args(argv)
@@ -1060,168 +699,84 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         return exc.code if isinstance(exc.code, int) else 1
     args.command = command
     try:
-        from .instances import discover_instances, select_instance, target_for_config
+        if command == "status" and not args.instance:
+            from .application import default_application
+            from .deployment import OperationResult
+            from .instances import discover_instances
 
+            if not discover_instances():
+                observed = default_application().observe(None)
+                if observed.state == "absent":
+                    return _render_application_result(
+                        OperationResult(
+                            0, "No persistent deployment is installed.", state=observed
+                        ),
+                        json_output=args.json,
+                        language=context.language.code,
+                    )
         if command == "setup":
             from .versions import is_supported_release_version
 
-            if not is_supported_release_version(args.to):
+            if args.to is not None and not is_supported_release_version(args.to):
                 raise ValueError(
                     "--to requires an exact supported release version, such as " + __version__
                 )
-            args.private = args.access == "private"
-            option_error = _setup_option_error(args)
-            if option_error:
-                raise ValueError(option_error)
-        if command == "setup" and not args.docker:
-            if args.config and target_for_config(Path(args.config)) == "docker":
-                args.docker = True
-            elif not args.config and discover_instances():
-                existing = select_instance(
-                    interactive=sys.stdin.isatty(), language=context.language.code
-                )
-                args.docker = existing.target == "docker"
-                args.config = str(existing.config)
-        explain_without_file = command == "config" and args.action == "explain" and not args.config
-        if command != "setup" and not explain_without_file:
-            instance = select_instance(
-                args.config, interactive=sys.stdin.isatty(), language=context.language.code
-            )
-            args.config, args.target = str(instance.config), instance.target
-        elif command == "setup":
-            args.target = "docker" if args.docker else "managed"
-            if args.docker and args.firewall is not None:
-                raise ValueError(
-                    "--firewall is for Linux services; Docker port mappings are managed by Compose"
-                )
-        else:
+            error = _setup_option_error(args)
+            if error:
+                raise ValueError(error)
+            args.target = "managed" if args.backend == "native" else "docker"
+        elif command in {"config", "credentials"} and args.config:
+            args.config = str(Path(args.config).expanduser().absolute())
             args.target = "portable"
-        if (
-            command == "setup"
-            and args.target == "managed"
-            and args.config
-            and Path(args.config).expanduser().absolute() != Path("/etc/xferry/xferry.ini")
-        ):
-            raise ValueError(
-                "the Linux service uses /etc/xferry/xferry.ini; "
-                "use --docker for a Docker deployment"
-            )
-        native = args.target == "managed" or command == "doctor"
-        if sys.platform != "linux" and args.target == "portable" and command != "config":
-            native = True
+        elif command == "config" and args.action == "explain" and not args.instance:
+            args.target = "portable"
+        else:
+            # Platform rejection precedes Linux backend imports. Docker is portable
+            # when an explicitly selected deployment is present in the registry.
+            if sys.platform != "linux" and not args.instance:
+                if command == "config":
+                    from .instances import foreground_config
+
+                    args.config, args.target = str(foreground_config()), "portable"
+                else:
+                    return _non_linux_management_result(command, args)
+            else:
+                from .instances import discover_instances, foreground_config
+
+                if command == "config" and not args.instance and not discover_instances():
+                    args.config, args.target = str(foreground_config()), "portable"
+                else:
+                    instance = _select_persistent_instance(args.instance, context)
+                    args.instance_record = instance
+                    args.config, args.target = str(instance.config), instance.target
+        if command == "config" and not args.config and args.target == "portable":
+            from .instances import foreground_config
+
+            args.config = str(foreground_config())
+        native = args.target == "managed"
         if native and sys.platform != "linux":
             return _non_linux_management_result(command, args)
-        read_only_config = command == "config" and args.action in {"show", "explain", "check"}
-        readable_config = read_only_config and (not args.config or os.access(args.config, os.R_OK))
+        read_only = command == "config" and args.action in {"show", "explain", "check"}
+        readable = read_only and (not args.config or os.access(args.config, os.R_OK))
         if (
             native
-            and not readable_config
+            and not readable
             and getattr(os, "geteuid", lambda: -1)() != 0
-            and not getattr(args, "dry_run", False)
+            and not (command == "setup" and getattr(args, "dry_run", False))
         ):
             return _privileged([command, *argv], context)
-        if command == "credentials" and args.target == "portable":
-            from .configuration import reset_portable_password
-
-            password_result = reset_portable_password(Path(args.config))
-            if args.json:
-                print(
-                    json.dumps(
-                        {
-                            "exit_code": password_result.exit_code,
-                            "message": password_result.message,
-                            "username": password_result.username,
-                            "password": password_result.password,
-                        }
-                    )
-                )
-            else:
-                print(password_result.message)
-                if password_result.password:
-                    print(f"Credentials: {password_result.username}:{password_result.password}")
-            return password_result.exit_code
-        if command != "setup" and args.target == "portable" and command not in {"config", "doctor"}:
-            raise ValueError("no installed server was found; run xferry setup or xferry run")
-        if args.target == "docker" and command not in {"setup", "config"}:
-            return _docker_handler(args, context)
-        if (
-            command == "config"
-            and args.action is None
-            and (
-                not sys.stdin.isatty()
-                or args.json
-                or args.dry_run
-                or args.all
-                or args.group
-                or args.search
-            )
-        ):
-            return _configure_handler(args, context)
-        if command == "config" and args.config and Path(args.config).is_file():
-            from .migration import inspect_migration, migrate_config, needs_migration
-
-            path = Path(args.config)
-            if needs_migration(path.read_text(encoding="utf-8")):
-                if args.action is not None or args.dry_run:
-                    raise ValueError(
-                        "old settings require a one-time migration; "
-                        "run xferry config to review and migrate"
-                    )
-                from .configuration import state_for_config
-                from .wizard import confirm, prompt
-
-                migration_state = state_for_config(path, args.target)
-                try:
-                    inspect_migration(path, state_dir=migration_state)
-                except ValueError as error:
-                    if args.target != "portable" or "working directory is unknown" not in str(
-                        error
-                    ):
-                        raise
-                    answer = prompt("Previous server working directory (absolute path)")
-                    if not answer or not Path(answer).expanduser().is_absolute():
-                        raise ValueError(
-                            "an absolute previous server directory is required"
-                        ) from None
-                    migration_state = Path(answer).expanduser().resolve()
-                migration = migrate_config(
-                    path,
-                    state_dir=migration_state,
-                    confirm=(
-                        lambda plan: confirm(
-                            context.language.code,
-                            f"Private state: {plan.state_dir}\nFiles: {plan.files_dir}\n"
-                            "Migrate settings? A private backup will be saved.",
-                        )
-                    )
-                    if sys.stdin.isatty()
-                    else None,
-                )
-                print(migration.message)
-                if migration.exit_code or not migration.changed:
-                    return migration.exit_code
-                if migration.credentials:
-                    print(f"Credentials: {migration.credentials[0]}:{migration.credentials[1]}")
-        handlers: dict[str, CommandHandler] = {
-            "config": _config_handler,
-            "credentials": _credentials_handler,
-            "doctor": _doctor_handler,
-            "logs": _logs_handler,
-            "update": _release_handler,
-            "rollback": _release_handler,
-            "setup": _setup_handler,
-            "start": _service_action_handler,
-            "status": _status_handler,
-            "stop": _service_action_handler,
-            "uninstall": _release_handler,
-            "restart": _service_action_handler,
-        }
-        return handlers.get(command, _not_implemented_handler)(args, context)
+        if command == "setup":
+            return _setup_handler(args, context)
+        if command == "config":
+            return _config_handler(args, context)
+        if command == "credentials":
+            return _credentials_handler(args, context)
+        return _persistent_handler(args, context)
     except (EOFError, KeyboardInterrupt):
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         if getattr(args, "json", False):
-            print(json.dumps({"status": "error", "exit_code": 2, "message": str(exc)}))
+            print(json.dumps({"exit_code": 2, "message": str(exc)}))
         else:
             print(f"xferry {command}: error: {exc}", file=sys.stderr)
         return 2

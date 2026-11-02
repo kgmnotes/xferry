@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -161,11 +162,12 @@ def _render_bundle(
     platform_id: PlatformId = LINUX_X86_64,
     signing_key_id: str | None = None,
     require_hosted_signature: bool = False,
+    version: str = "0.1.0",
 ) -> ReleaseBundle:
     return build_release_bundle(
         REPO_ROOT,
         tmp_path / "bundle",
-        "0.1.0",
+        version,
         FakeRunner(payload),
         platform_id=platform_id,
         source_commit=TEST_SOURCE_COMMIT,
@@ -295,6 +297,7 @@ def _run_installer(
     signature_payload: bytes | None = None,
     require_https_transport: bool = False,
     forced_mkdir_mode: int | None = None,
+    virtual_root_owner: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir(parents=True)
@@ -357,6 +360,32 @@ def _run_installer(
             '    *) chmod "$XFERRY_TEST_FORCED_MKDIR_MODE" "$argument" ;;\n'
             "  esac\n"
             "done\n",
+            encoding="utf-8",
+        )
+    if virtual_root_owner:
+        # The existing helper already models id -u as0. Map only this test
+        # user's UID, for DESTDIR and its ancestors/descendants, to virtual root.
+        # Real stat still supplies file type, permissions, links and byte size;
+        # production installer ownership checks are never modified or skipped.
+        real_stat = shutil.which("stat")
+        assert real_stat is not None
+        (fake_bin / "stat").write_text(
+            "#!/bin/sh\n"
+            f"real_stat={shlex.quote(real_stat)}\n"
+            f"fixture_uid={os.getuid()}\n"
+            'if [ "$#" = 3 ] && [ "$1" = -c ]; then\n'
+            '  format="$2"; path="$3"; mapped=false\n'
+            '  case "$path" in "$DESTDIR"|"$DESTDIR"/*) mapped=true ;; esac\n'
+            '  case "$DESTDIR" in "$path"/*) mapped=true ;; esac\n'
+            '  if [ "$mapped" = true ] && '
+            '[ "$("$real_stat" -c %u "$path")" = "$fixture_uid" ]; then\n'
+            '    case "$format" in\n'
+            '      %u) exec "$real_stat" -c 0 "$path" ;;\n'
+            '      %u:%a:%h:%s) exec "$real_stat" -c "0:%a:%h:%s" "$path" ;;\n'
+            "    esac\n"
+            "  fi\n"
+            "fi\n"
+            'exec "$real_stat" "$@"\n',
             encoding="utf-8",
         )
     for tool in fake_bin.iterdir():
@@ -449,7 +478,7 @@ def _seed_valid_supported_installation(
     version: str = "0.2.0",
     *,
     manifest_version: str | None = None,
-    manifest_schema: int = 1,
+    manifest_schema: int = 2,
 ) -> None:
     described_version = manifest_version or version
     payload = f"xferry-{version}".encode()
@@ -810,10 +839,12 @@ except ReleaseEnvelopeError as failure:
 def _hosted_envelope(
     payload: bytes,
     private_key: Ed25519PrivateKey,
+    *,
+    version: str = "0.1.0",
 ) -> tuple[bytes, bytes]:
     key_id = "test-release-2026"
     manifest = ReleaseManifest.create_v2(
-        version="0.1.0",
+        version=version,
         platform=LINUX_X86_64,
         executable_size=len(payload),
         executable_sha256=hashlib.sha256(payload).hexdigest(),
@@ -1515,7 +1546,7 @@ def test_installer_blocks_unmarked_owned_state_before_mktemp_or_download(
     assert not root.joinpath("opt/xferry").exists()
 
 
-@pytest.mark.parametrize("manifest_schema", [1, 2], ids=["v1-migration", "v2"])
+@pytest.mark.parametrize("manifest_schema", [2], ids=["current-v2"])
 def test_installer_allows_a_valid_same_major_managed_installation(
     tmp_path: Path,
     manifest_schema: int,
@@ -1876,11 +1907,13 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     bootstrap_manifest, bootstrap_signature = _hosted_envelope(
         bootstrap_payload,
         private_key,
+        version="0.5.0",
     )
     bundle = _render_bundle(
         tmp_path,
         bootstrap_payload,
         require_hosted_signature=True,
+        version="0.5.0",
     )
     installed = _run_installer(
         bundle,
@@ -1902,12 +1935,13 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     )
     layout.config_file.parent.mkdir(parents=True)
     layout.config_file.parent.chmod(0o755)
-    layout.config_file.write_text("[server]\nport = 8080\n", encoding="utf-8")
+    layout.config_file.write_text("[server]\nconfig_version=1\nport = 8080\n", encoding="utf-8")
     layout.auth_file.write_text("admin:known-password\n", encoding="utf-8")
+    layout.config_file.with_name("profile.ini").write_bytes(layout.config_file.read_bytes())
     update_payload = b"updated-release"
     base_url = "https://releases.example.test/xferry/releases"
     update_manifest = ReleaseManifest.create_v2(
-        version="0.2.0",
+        version="0.5.1",
         platform="linux-x86_64",
         executable_size=len(update_payload),
         executable_sha256=hashlib.sha256(update_payload).hexdigest(),
@@ -1923,9 +1957,9 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
     )
     downloader = _LifecycleDownloader(
         {
-            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json": update_manifest,
-            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json.sig": update_signature,
-            f"{base_url}/download/v0.2.0/xferry-0.2.0-linux-x86_64": update_payload,
+            f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json": update_manifest,
+            f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json.sig": update_signature,
+            f"{base_url}/download/v0.5.1/xferry-0.5.1-linux-x86_64": update_payload,
         }
     )
 
@@ -1933,13 +1967,13 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         active = layout.release_root.joinpath("current").readlink().name
         return HealthResult(True, "healthy", active)
 
-    installed_bootstrap = layout.release_root / "releases/0.1.0"
+    installed_bootstrap = layout.release_root / "releases/0.5.0"
     verified_bootstrap = verify_signed_manifest(
         installed_bootstrap.joinpath("xferry-release.json").read_bytes(),
         installed_bootstrap.joinpath("xferry-release.json.sig").read_bytes(),
         key_ring=key_ring,
     )
-    assert verified_bootstrap.version == "0.1.0"
+    assert verified_bootstrap.version == "0.5.0"
     manager = ReleaseManager(
         layout=layout,
         runner=_LifecycleRunner(),
@@ -1966,10 +2000,159 @@ def test_bootstrap_install_is_eligible_for_default_rollback_after_update(tmp_pat
         ),
     )
 
-    updated = manager.update("0.2.0", False)
+    from xferry.management.deployment import DeploymentSpec, write_manifest
+
+    write_manifest(
+        layout.config_file.parent / "deployment.json",
+        DeploymentSpec.new(
+            "native",
+            layout.config_file.parent / "profile.ini",
+            layout.data_root / "files",
+            layout.data_root,
+            {"version": "0.5.0", "sha256": hashlib.sha256(bootstrap_payload).hexdigest()},
+        ),
+    )
+    updated = manager.update("0.5.1", False)
     rolled_back = manager.rollback(None, False)
 
     assert updated.exit_code == 0
     assert rolled_back.exit_code == 0
-    assert rolled_back.version == "0.1.0"
-    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.1.0")
+    assert rolled_back.version == "0.5.0"
+    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.5.0")
+
+
+def _seed_retained_current_deployment(root: Path) -> dict[Path, tuple[bytes, int, int, int]]:
+    """Real current-format state, without an installed runtime or service unit."""
+    from xferry.management.deployment import DeploymentSpec
+    from xferry.management.managed_state import RETAINED_STATE_CONTENT
+
+    config_dir = root / "etc/xferry"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.chmod(0o755)
+    runtime = (
+        b"[server]\nconfig_version = 1\naccess = private\nport = 8080\n"
+        b"state_dir = /var/lib/xferry\nfiles_dir = /var/lib/xferry/files\n"
+        b"[security]\nauth_file = /etc/xferry/auth\n"
+    )
+    profile = runtime.replace(
+        b"files_dir = /var/lib/xferry/files", b"files_dir = /srv/retained-files"
+    )
+    spec = DeploymentSpec.new(
+        "native",
+        Path("/etc/xferry/profile.ini"),
+        Path("/srv/retained-files"),
+        Path("/var/lib/xferry"),
+        {"version": "0.5.0", "sha256": "a" * 64},
+    )
+    deployment = (json.dumps(spec.to_json(), indent=2) + "\n").encode()
+    assert deployment.splitlines()[-2].strip() == b'"schema": 2'
+    assert len(RETAINED_STATE_CONTENT) == 19
+    contents = {
+        config_dir / "xferry.ini": (runtime, 0o640),
+        config_dir / "profile.ini": (profile, 0o640),
+        config_dir / "deployment.json": (deployment, 0o644),
+        config_dir / "auth": (b"admin:retained-fixture-password\n", 0o400),
+        config_dir / "retained-state": (RETAINED_STATE_CONTENT, 0o600),
+        root / "var/lib/xferry/notes/keep.txt": (b"retained private note\n", 0o600),
+        root / "var/lib/xferry/acme/keep.txt": (b"retained certificate state\n", 0o600),
+        root / "srv/retained-files/keep.txt": (b"retained public file\n", 0o644),
+    }
+    snapshots = {}
+    for path, (payload, mode) in contents.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        path.chmod(mode)
+        metadata = path.stat()
+        snapshots[path] = (payload, mode, metadata.st_uid, metadata.st_mtime_ns)
+    return snapshots
+
+
+def _assert_retained_fixture_unchanged(snapshots: dict[Path, tuple[bytes, int, int, int]]) -> None:
+    for path, (contents, mode, uid, modified_ns) in snapshots.items():
+        metadata = path.stat()
+        assert path.read_bytes() == contents
+        assert (stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_mtime_ns) == (
+            mode,
+            uid,
+            modified_ns,
+        )
+
+
+def test_full_installer_reinstalls_retained_current_deployment_with_schema_last(
+    tmp_path: Path,
+) -> None:
+    """Accept the exact schema-last JSON emitted by DeploymentSpec, preserving all state."""
+    payload = b"new-current-scie"
+    bundle = _render_bundle(tmp_path / "bundle", payload, version="0.5.0")
+    snapshots: dict[Path, tuple[bytes, int, int, int]] = {}
+
+    def prepare(root: Path) -> None:
+        snapshots.update(_seed_retained_current_deployment(root))
+        assert not (root / "opt/xferry").exists()
+        assert not (root / "etc/systemd/system/xferry.service").exists()
+        assert not (root / "usr/local/bin/xferry").exists()
+
+    case = tmp_path / "reinstall"
+    result = _run_installer(bundle, case, payload, prepare_root=prepare, virtual_root_owner=True)
+    assert result.returncode == 0, result.stderr
+    assert (case / "mktemp-called").exists() and (case / "curl-called").exists()
+    root = case / "root"
+    assert (root / "opt/xferry/current").readlink() == Path("releases/0.5.0")
+    assert (root / "opt/xferry/releases/0.5.0/xferry").read_bytes() == payload
+    assert (root / "usr/local/bin/xferry").readlink() == Path("/opt/xferry/current/xferry")
+    assert not (root / "etc/systemd/system/xferry.service").exists()
+    _assert_retained_fixture_unchanged(snapshots)
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        "schema1",
+        "legacy-operator-profile",
+        "legacy-runtime-profile",
+        "marker-v1",
+        "unsafe-marker-mode",
+    ],
+)
+def test_full_installer_refuses_unsupported_retained_state_before_download(
+    tmp_path: Path, unsupported: str
+) -> None:
+    payload = b"new-current-scie"
+    bundle = _render_bundle(tmp_path / "bundle", payload, version="0.5.0")
+    snapshots: dict[Path, tuple[bytes, int, int, int]] = {}
+
+    def prepare(root: Path) -> None:
+        snapshots.update(_seed_retained_current_deployment(root))
+        config_dir = root / "etc/xferry"
+        if unsupported == "schema1":
+            path = config_dir / "deployment.json"
+            document = json.loads(path.read_bytes())
+            document["schema"] = 1
+            path.write_text(json.dumps(document, indent=2) + "\n")
+        elif unsupported in {"legacy-operator-profile", "legacy-runtime-profile"}:
+            path = config_dir / (
+                "profile.ini" if unsupported == "legacy-operator-profile" else "xferry.ini"
+            )
+            path.write_bytes(b"[server]\nroot_dir = /var/lib/xferry\n")
+        elif unsupported == "marker-v1":
+            path = config_dir / "retained-state"
+            path.write_bytes(b"xferry-retained-v1\n")
+        else:
+            path = config_dir / "retained-state"
+            path.chmod(0o644)
+        metadata = path.stat()
+        snapshots[path] = (
+            path.read_bytes(),
+            stat.S_IMODE(metadata.st_mode),
+            metadata.st_uid,
+            metadata.st_mtime_ns,
+        )
+
+    case = tmp_path / unsupported
+    result = _run_installer(bundle, case, payload, prepare_root=prepare, virtual_root_owner=True)
+    assert result.returncode == 1
+    assert all(clause in result.stderr for clause in UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES)
+    assert not (case / "mktemp-called").exists() and not (case / "curl-called").exists()
+    assert not (case / "root/opt/xferry").exists()
+    assert not (case / "root/usr/local/bin/xferry").exists()
+    _assert_retained_fixture_unchanged(snapshots)

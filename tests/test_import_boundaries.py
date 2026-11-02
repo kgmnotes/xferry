@@ -662,3 +662,17 @@ def test_managed_state_module_exposes_only_the_renamed_contract() -> None:
     )
     assert legacy_module.returncode != 0
     assert "No module named 'xferry.management.legacy'" in legacy_module.stderr
+
+
+@pytest.mark.parametrize("module", ["migration.py", "release_configuration.py"])
+@pytest.mark.parametrize("prefix", ["", "xferry-0.5.0/"])
+def test_archives_cannot_reintroduce_retired_deployment_modules(module, prefix):
+    from tools.verify_python_artifacts import (
+        ArtifactValidationError,
+        validate_public_surface_members,
+    )
+
+    with pytest.raises(ArtifactValidationError, match="retired deployment module"):
+        validate_public_surface_members(
+            [prefix + "xferry/management/" + module], artifact_label="candidate"
+        )

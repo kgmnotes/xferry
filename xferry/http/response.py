@@ -101,7 +101,7 @@ class HTTPResponse:
         cors_origin: str | None = None,
         cors_allow_methods: str | None = None,
         keep_alive: bool = False,
-        keep_alive_timeout: int = 15,
+        keep_alive_timeout: float = 5.0,
         keep_alive_max: int = 100,
     ) -> bytes:
         """Build only the HTTP header portion (for streaming)."""
@@ -127,7 +127,7 @@ class HTTPResponse:
         cors_origin: str | None = None,
         cors_allow_methods: str | None = None,
         keep_alive: bool = False,
-        keep_alive_timeout: int = 15,
+        keep_alive_timeout: float = 5.0,
         keep_alive_max: int = 100,
     ) -> bytes:
         """Build the full HTTP response as bytes."""
@@ -147,7 +147,7 @@ class HTTPResponse:
         cors_origin: str | None = None,
         cors_allow_methods: str | None = None,
         keep_alive: bool = False,
-        keep_alive_timeout: int = 15,
+        keep_alive_timeout: float = 5.0,
         keep_alive_max: int = 100,
     ) -> None:
         """Add standard headers (Server, Date, Connection, CORS)."""
@@ -159,7 +159,7 @@ class HTTPResponse:
 
         if keep_alive:
             self.set_header("Connection", "keep-alive")
-            self.set_header("Keep-Alive", f"timeout={keep_alive_timeout}, max={keep_alive_max}")
+            self.set_header("Keep-Alive", f"timeout={keep_alive_timeout:g}, max={keep_alive_max}")
         else:
             self.set_header("Connection", "close")
 

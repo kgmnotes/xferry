@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,12 +17,12 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.9"
+PLAYWRIGHT_CLI_PACKAGE = "@playwright/cli@0.1.23"
 MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS = 65536
 BROWSER_NAMES = ("chromium", "firefox", "webkit")
 CROSS_BROWSER_MODES = frozenset(
@@ -196,13 +198,151 @@ def _run_playwright(
     )
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "unknown playwright error"
-        raise RuntimeError(message)
+        raise RuntimeError(_sanitize_browser_diagnostic(message))
     outputs = [stream.strip() for stream in (completed.stdout, completed.stderr) if stream.strip()]
     return "\n".join(outputs)
 
 
+def _configured_browser_proxy() -> dict[str, str] | None:
+    """Translate configured proxy userinfo into protected Playwright options."""
+    raw = (
+        os.environ.get("PLAYWRIGHT_MCP_PROXY_SERVER")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        if parsed.scheme not in {"http", "https", "socks5"} or not parsed.hostname:
+            raise ValueError
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ValueError
+        host = parsed.hostname
+        host = f"[{host}]" if ":" in host else host
+        port = parsed.port
+        server = f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+        options = {"server": server}
+        if parsed.username is not None:
+            options["username"] = unquote(parsed.username)
+        if parsed.password is not None:
+            options["password"] = unquote(parsed.password)
+        bypass = (
+            os.environ.get("PLAYWRIGHT_MCP_PROXY_BYPASS")
+            or os.environ.get("NO_PROXY")
+            or os.environ.get("no_proxy")
+        )
+        if bypass:
+            options["bypass"] = bypass
+        if any(
+            any(ord(char) < 32 or ord(char) == 127 for char in value) for value in options.values()
+        ):
+            raise ValueError
+        return options
+    except (ValueError, UnicodeError):
+        raise ValueError("configured browser proxy URL is invalid") from None
+
+
+def _credential_origin(value: str) -> str:
+    parsed = urlsplit(normalize_target_url(value))
+    assert parsed.hostname is not None
+    host = parsed.hostname.encode("idna").decode("ascii")
+    host = f"[{host}]" if ":" in host else host
+    port = parsed.port
+    suffix = f":{port}" if port and port != {"https": 443, "http": 80}[parsed.scheme] else ""
+    return f"{parsed.scheme}://{host}{suffix}"
+
+
+def _sanitize_browser_diagnostic(value: str) -> str:
+    secrets: set[str] = set()
+    for key in (
+        "PLAYWRIGHT_MCP_PROXY_SERVER",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        raw = os.environ.get(key)
+        if not raw:
+            continue
+        try:
+            parsed = urlsplit(raw)
+            if parsed.username is not None or parsed.password is not None:
+                secrets.add(raw)
+            for part in (parsed.username, parsed.password):
+                if part:
+                    secrets.update((part, unquote(part)))
+        except ValueError:
+            continue
+    auth_path = os.environ.get("XFERRY_BROWSER_AUTH_FILE")
+    if auth_path:
+        try:
+            credentials = _read_browser_credentials(Path(auth_path))
+            pair = credentials["username"] + ":" + credentials["password"]
+            secrets.update(
+                (pair, credentials["password"], base64.b64encode(pair.encode()).decode())
+            )
+        except (OSError, ValueError):
+            pass
+    for secret in tuple(secrets):
+        secrets.add(json.dumps(secret, ensure_ascii=True)[1:-1])
+        secrets.add(json.dumps(secret, ensure_ascii=False)[1:-1])
+    for secret in sorted(secrets, key=len, reverse=True):
+        value = value.replace(secret, "[redacted]")
+    return value
+
+
+def _read_browser_credentials(path: Path) -> dict[str, str]:
+    """Read one protected user:password line without following a file link."""
+    original = path.lstat()
+    if not stat.S_ISREG(original.st_mode):
+        raise ValueError("browser auth file must be a regular file without links")
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != (original.st_dev, original.st_ino)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) not in {0o400, 0o600}
+            or metadata.st_uid != getattr(os, "getuid", lambda: metadata.st_uid)()
+            or metadata.st_size > 4096
+        ):
+            raise ValueError(
+                "browser auth file must be owned, private (0400 or 0600), regular and unlinked"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            value = stream.read(4097)
+    finally:
+        os.close(descriptor)
+    try:
+        line = value.decode("utf-8")
+    except UnicodeError:
+        raise ValueError("browser auth file must contain one UTF-8 user:password line") from None
+    line = line.removesuffix("\n").removesuffix("\r")
+    username, delimiter, password = line.partition(":")
+    if (
+        len(value) > 4096
+        or not delimiter
+        or not username
+        or not password
+        or any(ord(character) < 32 or ord(character) == 127 for character in line)
+    ):
+        raise ValueError("browser auth file must contain one user:password line")
+    return {"username": username, "password": password}
+
+
 def _write_cli_config(
-    config_path: Path, *, browser: str = "chromium", local_target: bool = False
+    config_path: Path,
+    *,
+    browser: str = "chromium",
+    local_target: bool = False,
+    auth_file: Path | None = None,
+    auth_origin: str | None = None,
 ) -> None:
     """Write a minimal headless Playwright CLI config."""
     launch_options: dict[str, object] = {"headless": True}
@@ -210,14 +350,28 @@ def _write_cli_config(
         launch_options["channel"] = "chromium"
     elif browser == "firefox" and local_target:
         launch_options["firefoxUserPrefs"] = {"network.proxy.type": 0}
+    if not local_target:
+        proxy = _configured_browser_proxy()
+        if proxy is not None:
+            launch_options["proxy"] = proxy
+    context_options: dict[str, object] = {"viewport": {"width": 1440, "height": 1024}}
+    if auth_file is not None:
+        if local_target or not auth_origin:
+            raise ValueError("browser authentication requires an explicit external origin")
+        credentials = _read_browser_credentials(auth_file)
+        context_options["httpCredentials"] = {
+            **credentials,
+            "origin": _credential_origin(auth_origin),
+        }
     config = {
         "browser": {
             "browserName": browser,
             "launchOptions": launch_options,
-            "contextOptions": {"viewport": {"width": 1440, "height": 1024}},
+            "contextOptions": context_options,
         }
     }
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    config_path.chmod(0o600)
 
 
 def _parse_playwright_json(output: str) -> dict[str, object]:
@@ -354,7 +508,14 @@ def _run_single_journey(
         opsec_upload_fixture = work_dir / "browser-smoke-opsec-auto-switch-small.bin"
         opsec_upload_boundary_fixture = work_dir / "browser-smoke-opsec-no-switch-boundary.bin"
         opsec_upload_large_fixture = work_dir / "browser-smoke-opsec-auto-switch-large.bin"
-        _write_cli_config(config_path, browser=browser, local_target=not external_target)
+        browser_auth = os.environ.get("XFERRY_BROWSER_AUTH_FILE") if external_target else None
+        _write_cli_config(
+            config_path,
+            browser=browser,
+            local_target=not external_target,
+            auth_file=Path(browser_auth) if browser_auth else None,
+            auth_origin=normalized_target.rstrip("/") if normalized_target else None,
+        )
         upload_fixture.write_text("browser smoke upload\n", encoding="utf-8")
         unicode_upload_fixture.write_bytes(b"custom FETCH filename regression\n")
         opsec_upload_url_boundary_fixture.write_bytes(b"U" * 1125)
@@ -432,15 +593,21 @@ def _run_single_journey(
                     )
             except Exception as exc:
                 failure_path = resolved_artifacts_dir / f"{smoke_mode}-failure.log"
+                safe_error = _sanitize_browser_diagnostic(str(exc))[
+                    :MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS
+                ]
                 failure_path.write_text(
-                    f"[{smoke_mode}] {str(exc)[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS]}\n",
+                    f"[{smoke_mode}] {safe_error}\n",
                     encoding="utf-8",
                 )
                 if raw_output:
                     (resolved_artifacts_dir / f"{smoke_mode}-cli-output.log").write_text(
-                        raw_output[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS], encoding="utf-8"
+                        _sanitize_browser_diagnostic(raw_output)[:MAX_PLAYWRIGHT_DIAGNOSTIC_CHARS],
+                        encoding="utf-8",
                     )
-                raise RuntimeError(f"[{browser}][{smoke_mode}] {exc}") from exc
+                raise RuntimeError(
+                    f"[{browser}][{smoke_mode}] {_sanitize_browser_diagnostic(str(exc))}"
+                ) from None
             result["serverModulePath"] = (
                 str(server_module_path) if server_module_path is not None else None
             )

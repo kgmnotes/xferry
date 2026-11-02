@@ -47,13 +47,14 @@ precedence or defaults.
 ### Handling a request
 
 1. `ServerLifecycle` in `xferry/lifecycle.py` accepts a connection, reserves
-   capacity and submits work to the connection worker pool.
+   a connection slot and starts its bounded owner thread.
 2. `XFerryServer` in `xferry/server.py` handles TLS when enabled and delegates
    bounded request reception to `xferry/http/io.py`.
 3. `RequestPipeline.process` in `xferry/request_pipeline.py` constructs an
-   `HTTPRequest`, attaches the direct peer and applies the policy from
-   `xferry/request_admission.py`. Authentication and route-specific checks run
-   before handler dispatch; WebSocket upgrades take their own runtime path.
+   `HTTPRequest`, attaches the direct peer and applies policy from
+   `xferry/request_admission.py`. Header/Host/auth and route admission run before
+   body allocation. Short computation and transfer permits have separate lifetimes;
+   WebSocket upgrades and messages use short permits only while computing.
 4. `HandlerMixin._dispatch_handler` in `xferry/handlers/__init__.py` resolves
    control routes, Advanced Sessions and registered methods. Built-in method
    metadata comes from `xferry/features.py`; handlers use scoped services from
@@ -133,10 +134,26 @@ python tools/browser_smoke.py --mode ui-contracts
 python tools/browser_smoke.py --mode files
 ```
 
+For a dedicated external test deployment protected by Basic Auth, set
+`XFERRY_BROWSER_AUTH_FILE` to a private local file containing one `user:password`
+line. It must belong to the current user, have mode `0400` or `0600`, and have no
+symbolic or hard links. Credentials enter only the temporary browser context
+configuration; the helper does not put them in URLs, arguments or result receipts.
+Certificate verification stays enabled. Delete the temporary auth file after use:
+
+```bash
+XFERRY_BROWSER_AUTH_FILE=/private/path/xferry.auth python tools/browser_smoke.py --target-url https://files.example.com/ --mode first-run
+```
+
+Use a dedicated deployment: external browser journeys upload, download and delete
+files, and some journeys exercise destructive file-management controls.
+
 ### Installation and updates
 
-Start with `planning.py`, `setup.py`, `service.py`, `releases.py`,
-`release_contract.py` and `release_trust.py` under `xferry/management/`.
+Start with `application.py`, then `native_backend.py`, `compose_backend.py`,
+`deployment.py` and `compiler.py` under `xferry/management/`. Runtime installation
+and signature verification live in `setup.py`, `releases.py`, `release_contract.py`
+and `release_trust.py`.
 Check behavior against [managed lifecycle](operations.md#managed-linux-lifecycle).
 
 ```bash
@@ -164,7 +181,7 @@ Follow the [release runbook](release-runbook.md) for publication procedures.
   the application itself has no frontend build step. Install the CI browser with:
 
   ```bash
-  npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser chromium --with-deps
+  npx --yes --package @playwright/cli@0.1.23 playwright-cli install-browser chromium --with-deps
   ```
 
 - `python tools/browser_smoke.py --help` lists current journeys. Without an
@@ -178,7 +195,7 @@ Follow the [release runbook](release-runbook.md) for publication procedures.
   run a second engine with:
 
   ```bash
-  npx --yes --package @playwright/cli@0.1.9 playwright-cli install-browser firefox --with-deps
+  npx --yes --package @playwright/cli@0.1.23 playwright-cli install-browser firefox --with-deps
   python tools/browser_smoke.py --browser firefox --mode request-matrix
   python tools/browser_smoke.py --browser firefox --mode encrypted-compatibility
   ```

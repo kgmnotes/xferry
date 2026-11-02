@@ -10,28 +10,26 @@ import socket
 import ssl
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
 
 from tools import check_stale_docs
-from xferry.config import __version__
 from xferry.settings import load_settings_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("document", ["docs/operations.md"])
-def test_documented_public_compose_commands_set_required_health_host(
+def test_documented_public_compose_commands_use_the_generated_bundle(
     tmp_path: Path, document: str
 ) -> None:
-    """Catches copied up/down commands failing Compose's required host interpolation."""
+    """Catches commands acting on a different deployment than the generated bundle."""
     text = (REPO_ROOT / document).read_text(encoding="utf-8")
     blocks = [
         block
         for block in re.findall(r"```(?:console|bash)\n([\s\S]*?)```", text)
-        if "docker-compose.public-direct.yml" in block
+        if "/srv/xferry/deployment/compose.yaml" in block
     ]
     assert blocks, "public Compose commands must be copyable"
     fake_bin = tmp_path / "bin"
@@ -40,10 +38,6 @@ def test_documented_public_compose_commands_set_required_health_host(
     docker = fake_bin / "docker"
     docker.write_text(
         "#!/bin/sh\n"
-        'if [ "$XFERRY_HEALTH_HOST" != files.example.com ]; then\n'
-        "  printf '%s\\n' 'missing or wrong XFERRY_HEALTH_HOST' >&2\n"
-        "  exit 1\n"
-        "fi\n"
         'printf \'%s\\t\' "$@" >> "$XFERRY_TEST_CAPTURE"\n'
         "printf '\\n' >> \"$XFERRY_TEST_CAPTURE\"\n",
         encoding="utf-8",
@@ -60,7 +54,7 @@ def test_documented_public_compose_commands_set_required_health_host(
         )
         assert result.returncode == 0, result.stderr
 
-    prefix = ["compose", "-f", "deploy/docker/docker-compose.public-direct.yml"]
+    prefix = ["compose", "-f", "/srv/xferry/deployment/compose.yaml"]
     expected = [prefix + ["up", "-d"]]
     if document == "docs/operations.md":
         expected += [prefix + ["down"]]
@@ -71,12 +65,19 @@ def _run_public_direct_healthcheck(
     monkeypatch: pytest.MonkeyPatch, response: bytes | tuple[bytes, ...]
 ) -> int:
     """Execute the rendered Compose healthcheck against a bounded fake TLS response."""
-    compose = (REPO_ROOT / "deploy/docker/docker-compose.public-direct.yml").read_text(
-        encoding="utf-8"
+    from xferry.management.docker_deploy import _compose
+
+    document = json.loads(
+        _compose(
+            "xferry-health",
+            Path("/bundle"),
+            Path("/files"),
+            False,
+            "health.example",
+            image="ghcr.io/kgmnotes/xferry@sha256:" + "a" * 64,
+        )
     )
-    start = compose.index("          import base64")
-    end = compose.index("      interval:", start)
-    script = textwrap.dedent(compose[start:end])
+    script = document["services"]["xferry"]["healthcheck"]["test"][-1]
 
     class FakeSocket:
         def __init__(self) -> None:
@@ -236,7 +237,6 @@ def test_systemd_public_direct_config_and_unit_are_valid() -> None:
     settings.validate()
 
     assert settings.access == "public"
-    assert settings.public_direct is True
     assert settings.auth_file == "/etc/xferry/auth"
     assert settings.body_memory_budget_mb is not None
     assert settings.upload_storage_limit_mb == 4096
@@ -258,6 +258,7 @@ def test_systemd_public_direct_config_and_unit_are_valid() -> None:
     assert "ProtectHome=true" in service
     assert "Environment=HOME=/var/lib/xferry" in service
     assert "ReadWritePaths=/var/lib/xferry" in service
+    assert "StateDirectoryMode=0750" in service
     assert "/home/xferry/.xferry" not in service
     assert "PrivateTmp=true" in service
     assert "UMask=0077" in service
@@ -370,67 +371,54 @@ def test_systemd_install_script_fails_clearly_when_the_managed_scie_is_missing(
     assert result.stderr.strip() == f"installed XFerry executable is missing: {missing}"
 
 
-def test_docker_public_direct_compose_uses_an_immutable_registry_image_and_config() -> None:
-    compose_path = REPO_ROOT / "deploy/docker/docker-compose.public-direct.yml"
-    config_path = REPO_ROOT / "deploy/docker/xferry.ini.example"
+def test_docker_public_direct_generated_bundle_records_pinned_image_and_project() -> None:
+    from xferry.management.docker_deploy import _compose
 
-    settings = load_settings_file(config_path)
-    settings.validate()
+    assert not (REPO_ROOT / "deploy/docker/docker-compose.public-direct.yml").exists()
 
-    assert settings.access == "public"
-    assert settings.public_direct is True
-    assert settings.host == "0.0.0.0"
-    assert settings.port == 8443
-    assert settings.acme_http_port == 8080
-    assert settings.auth_file == "/run/secrets/xferry_auth"
-    assert settings.allowed_hosts == ()
-    assert settings.upload_storage_limit_mb == 4096
-    assert settings.upload_file_limit == 4096
-    assert settings.upload_reserve_free_mb == 1024
-    assert settings.upload_quota_externally_managed is False
-
-    compose = compose_path.read_text(encoding="utf-8")
-    assert "name: xferry-public-direct" in compose
-    assert "    build:" not in compose
-    # Published install examples follow the documented release, not an unpublished source bump.
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    published = re.findall(
-        r"https://github\.com/kgmnotes/xferry/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)",
-        readme,
+    settings = load_settings_file(REPO_ROOT / "deploy/docker/xferry.ini.example")
+    assert settings.access == "public" and settings.port == 443
+    assert settings.files_dir == "/srv/xferry/files"
+    assert settings.auth_file == "/srv/xferry/auth"
+    assert settings.acme_http_port == 80
+    image = "ghcr.io/kgmnotes/xferry@sha256:" + "a" * 64
+    bundle = Path("/srv/xferry/deployment")
+    document = json.loads(
+        _compose(
+            "xferry-public-direct",
+            bundle,
+            Path(settings.files_dir),
+            False,
+            "files.example.com",
+            image=image,
+        )
     )
-    assert len(published) == 1
-    pinned_images = re.findall(
-        r"^    image: ghcr\.io/kgmnotes/xferry:(v[0-9]+\.[0-9]+\.[0-9]+)$",
-        compose,
-        re.MULTILINE,
-    )
-    assert pinned_images == published
-    published_version = tuple(int(part) for part in published[0][1:].split("."))
-    source_version = tuple(int(part) for part in __version__.split("."))
-    assert (0, 3, 2) <= published_version <= source_version
-    operations = (REPO_ROOT / "docs/operations.md").read_text(encoding="utf-8")
-    assert f"pins the compatible `{published[0]}` image" in operations
-    assert "ghcr.io/kgmnotes/xferry:latest" not in compose
-    assert "container_name:" not in compose
-    assert "    command:\n      - run\n      - --config" in compose
-    assert "--config" in compose
-    assert "./xferry.ini:/etc/xferry/xferry.ini:ro" in compose
-    assert "./xferry.ini.example:/etc/xferry/xferry.ini" not in compose
-    assert "xferry_auth:" in compose
-    assert "80:8080" in compose
-    assert "443:8443" in compose
-    assert "mem_limit: 768m" in compose
-    assert "cpus: 1.0" in compose
-    assert "pids_limit: 256" in compose
-    assert "disable: true" not in compose
-    assert 'os.environ["XFERRY_HEALTH_HOST"]' in compose
-    assert 'Path("/run/secrets/xferry_auth")' in compose
-    assert "server_hostname=host" in compose
-    assert 'f"Authorization: Basic {token}' in compose
-    assert 'f"PING / HTTP/1.1' in compose
-    assert "json.loads(body)" in compose
-    assert 'payload.get("health") == "ready"' in compose
-    assert 'b"x-ping-response"' not in compose
+    assert document["name"] == "xferry-public-direct"
+    service = document["services"]["xferry"]
+    assert service["image"] == image
+    assert service["ports"] == ["80:8080", "443:8443"]
+    assert service["command"] == ["run", "--config", "/etc/xferry/xferry.ini"]
+    mounts = service["volumes"]
+    assert {
+        "type": "bind",
+        "source": str(bundle / "runtime.ini"),
+        "target": "/etc/xferry/xferry.ini",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    } in mounts
+    assert {
+        "type": "bind",
+        "source": settings.files_dir,
+        "target": "/data/files",
+        "bind": {"create_host_path": False},
+    } in mounts
+    assert "xferry-secrets:/run/secrets:ro" in mounts
+    assert service["read_only"] is True and service["cap_drop"] == ["ALL"]
+    assert service["mem_limit"] == "768m" and service["pids_limit"] == 256
+    health = service["healthcheck"]["test"][-1]
+    assert "authenticated_ping" in health and "files.example.com" in health
+    assert "Path('/run/secrets/xferry_auth')" in health
+    assert "ghcr.io/kgmnotes/xferry:latest" not in json.dumps(document)
 
 
 def test_docker_public_direct_runtime_files_are_ignored() -> None:
@@ -452,14 +440,18 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
 
     for document in (readme, quick_start):
         assert "pipx install xferry" in document
-        assert "archive/0.2.0-installation.md" in document
+        assert "migration.md" in document
+        assert "xferry setup --backend native" in document
+        assert "xferry setup --backend docker" in document
         assert "ghcr.io/kgmnotes/xferry:latest" not in document
         assert "curl | sudo sh" not in document
 
     assert "git clone https://github.com/kgmnotes/xferry.git" not in quick_start
     assert "xferry run --open" in quick_start
-    assert quick_start.index("## Portable") < quick_start.index("## Managed Linux")
-    assert quick_start.index("## Managed Linux") < quick_start.index("## Container")
+    assert quick_start.index("## Run once") < quick_start.index("## Persistent Linux service")
+    assert quick_start.index("## Persistent Linux service") < quick_start.index(
+        "## Container through setup"
+    )
 
     assert "xferry update --to VERSION" in operations
     assert "xferry rollback" in operations
@@ -602,7 +594,7 @@ def test_candidate_runtime_matches_source_image_with_writable_private_state() ->
     base = next(words[0] for instruction, words in candidate if instruction == "FROM")
     assert re.fullmatch(r"python:\S+@sha256:[0-9a-f]{64}", base)
     assert any(
-        words[:3] == ("mkdir", "-p", "/data/uploads")
+        words[:3] == ("mkdir", "-p", "/data/files")
         and "chown" in words
         and "${APP_USER}:${APP_USER}" in words
         and "/data" in words
@@ -712,7 +704,7 @@ def test_public_direct_docs_cover_source_secrets_and_external_probe() -> None:
     security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
     for required in (
-        "archive/0.2.0-installation.md",
+        "migration.md",
         "ghcr.io/kgmnotes/xferry@sha256:",
         "protected file-backed authentication",
         "xferry config check",
@@ -947,7 +939,7 @@ def test_scie_smokes_check_explicit_temporary_configs(workflow_name: str) -> Non
         checks = [line for line in step.splitlines() if " config check" in line]
         assert len(checks) == 1
         assert " --config " in checks[0]
-        assert "[server]\\naccess = private\\nfiles_dir = " in step
+        assert "[server]\\nconfig_version = 1\\naccess = private\\nfiles_dir = " in step
         assert "/release/xferry.ini" not in step
         assert "$bundle/xferry.ini" not in step
 

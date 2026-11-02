@@ -433,11 +433,11 @@ class TestLiveRequestHandling:
                 assert "advanced_upload" not in ping2
                 assert "capabilities" not in ping2
 
-    def test_request_admission_rejects_when_single_worker_is_occupied(
+    def test_connection_admission_rejects_when_connection_capacity_is_occupied(
         self,
         temp_dir: Path,
     ) -> None:
-        with _LiveServer(temp_dir, max_workers=1) as live:
+        with _LiveServer(temp_dir, max_workers=1, max_connections=1) as live:
             first = socket.create_connection(("127.0.0.1", live.port), timeout=2.0)
             try:
                 first.settimeout(2.0)

@@ -459,9 +459,7 @@ def test_anonymous_run_command_has_exact_hardening_and_loopback_publish() -> Non
         "--port",
         "8080",
         "--files-dir",
-        "/data/uploads",
-        "--body-memory-budget",
-        "512",
+        "/data/files",
     ]
     assert "prune" not in command
 
@@ -490,7 +488,7 @@ def test_dockerfile_effective_default_argv_starts_with_canonical_run_command(pat
         "--port",
         "8080",
         "--files-dir",
-        "/data/uploads",
+        "/data/files",
     ]
 
 
@@ -597,8 +595,8 @@ def test_inspect_validator_rejects_entrypoint_drift() -> None:
         (("Config", "User"), "root", "non-root user"),
         (
             ("Config", "Cmd"),
-            ["--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/uploads"],
-            "body-memory-budget",
+            ["--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/files"],
+            "Config.Cmd",
         ),
     ],
 )

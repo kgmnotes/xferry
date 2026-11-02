@@ -30,9 +30,7 @@ RUNTIME_COMMAND = (
     "--port",
     str(CONTAINER_PORT),
     "--files-dir",
-    "/data/uploads",
-    "--body-memory-budget",
-    "512",
+    "/data/files",
 )
 TMPFS_OPTIONS = frozenset({"rw", "nosuid", "nodev", "noexec", "mode=1777"})
 _FORBIDDEN_LEGACY_TOP_LEVEL_FIELDS = frozenset({"ok", "success", "status"})

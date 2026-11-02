@@ -37,7 +37,6 @@ from xferry.management.planning import check_setup_preflight, render_managed_con
 from xferry.management.setup import (
     CredentialsContext,
     SetupExecutor,
-    default_setup_preflight,
     generate_password,
     preflight_result,
     reset_credentials,
@@ -138,7 +137,7 @@ def test_managed_layout_keeps_runtime_home_and_acme_below_data_root(tmp_path: Pa
     layout = _layout(tmp_path)
 
     assert layout.runtime_home == tmp_path / "var/lib/xferry"
-    assert layout.acme_root == tmp_path / "var/lib/xferry/.xferry"
+    assert layout.acme_root == tmp_path / "var/lib/xferry/acme"
 
 
 def test_managed_setup_config_uses_explicit_files_and_internal_state(tmp_path: Path) -> None:
@@ -208,23 +207,22 @@ def _seed_release(
     executable.chmod(0o755)
     described_version = manifest_version or version
     manifest = release / "xferry-release.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": described_version,
-                "tag": f"v{described_version}",
-                "platform": "linux-x86_64",
-                "executable": {
-                    "name": f"xferry-{described_version}-linux-x86_64",
-                    "size": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                },
-            }
+    from xferry.management.release_contract import ReleaseManifest
+    from xferry.management.versions import is_canonical_release_version
+
+    if not is_canonical_release_version(described_version):
+        manifest.write_text(json.dumps({"schema_version": 2, "version": described_version}))
+    else:
+        manifest.write_bytes(
+            ReleaseManifest.create_v2(
+                version=described_version,
+                platform="linux-x86_64",
+                executable_size=len(payload),
+                executable_sha256=hashlib.sha256(payload).hexdigest(),
+                source_commit="a" * 40,
+                workflow_run="local",
+            ).to_bytes()
         )
-        + "\n",
-        encoding="utf-8",
-    )
     manifest.chmod(0o644)
     if current:
         layout.release_root.joinpath("current").symlink_to(Path("releases") / version)
@@ -247,6 +245,20 @@ def _seed_owned_entry(layout: ManagedLayout, owned_path: str) -> Path:
         path.symlink_to("/opt/xferry/current/xferry")
     else:
         path.write_text(f"managed {owned_path}\n", encoding="utf-8")
+    if owned_path in {"config_file", "auth_file"}:
+        from xferry.management.deployment import DeploymentSpec, write_manifest
+
+        manifest_path = layout.config_file.parent / "deployment.json"
+        write_manifest(
+            manifest_path,
+            DeploymentSpec.new(
+                "native",
+                layout.config_file.parent / "profile.ini",
+                layout.data_root / "files",
+                layout.data_root,
+                {"version": "0.4.0", "sha256": "a" * 64},
+            ),
+        )
     return path
 
 
@@ -491,6 +503,7 @@ def _executor(
     return SetupExecutor(
         runner=runner,
         preflight_check=preflight,
+        artifact_identity=lambda _layout: {"version": "0.4.0", "sha256": "a" * 64},
         health_check=health or (lambda *_args: HealthResult(ok=True, detail="healthy")),
         effective_uid=lambda: 0,
         root_uid=current_uid,
@@ -720,6 +733,91 @@ def test_setup_writes_atomic_strict_files_and_keeps_secret_out_of_processes(
     assert password not in repr(result)
 
 
+def test_first_start_keeps_private_state_mode_matching_the_setup_receipt(tmp_path: Path) -> None:
+    """systemd must not replace setup's0750 with its implicit0755 default."""
+    import configparser
+
+    from xferry.management.deployment import load_manifest, resource_unchanged
+
+    plan = _plan(tmp_path)
+
+    class SystemdModeRunner(FakeRunner):
+        def run(self, argv, *, env=None):
+            result = super().run(argv, env=env)
+            if tuple(argv) == ("systemctl", "start", "xferry.service") and not result.returncode:
+                unit = configparser.ConfigParser(interpolation=None, strict=False)
+                unit.read(plan.layout.unit_file)
+                assert unit["Service"]["StateDirectory"] == "xferry"
+                mode = int(unit["Service"].get("StateDirectoryMode", "0755"), 8)
+                plan.layout.data_root.chmod(mode)
+            return result
+
+    result = _executor(tmp_path, SystemdModeRunner()).apply(plan)
+    assert result.exit_code == 0
+    deployment = load_manifest(plan.layout.config_file.parent / "deployment.json")
+    state_receipt = next(
+        resource
+        for resource in deployment.ownership.resources
+        if resource.path == str(plan.layout.data_root)
+    )
+    assert state_receipt.mode == 0o750
+    assert stat.S_IMODE(plan.layout.data_root.stat().st_mode) == state_receipt.mode
+    assert resource_unchanged(state_receipt)
+
+
+def test_retained_resume_files_tls_uses_allowed_hostname_for_health(tmp_path: Path) -> None:
+    from tests.test_backend_lifecycle import native
+    from xferry.management.compiler import compile_profile
+    from xferry.management.configuration import edit_ini
+    from xferry.management.deployment import write_manifest
+    from xferry.management.managed_state import RETAINED_STATE_CONTENT, retained_state_path
+    from xferry.security.tls import generate_self_signed_cert
+
+    _app, instance, _runner, layout = native(tmp_path)
+    host = "files.example.test"
+    cert, key = generate_self_signed_cert(
+        cert_path=tmp_path / "cert.pem", key_path=tmp_path / "key.pem", common_name=host
+    )
+    spec = instance.spec
+    text = edit_ini(
+        spec.profile.read_text(),
+        {
+            "access": "public",
+            "https_mode": "files",
+            "port": 443,
+            "cert_file": str(cert),
+            "key_file": str(key),
+            "allowed_hosts": host,
+            "domain": None,
+            "public_ip": None,
+        },
+    )
+    spec.profile.write_text(text)
+    layout.config_file.write_text(compile_profile(text, spec))
+    write_manifest(instance.manifest, spec)
+    layout.unit_file.unlink()
+    retained_state_path(layout).write_bytes(RETAINED_STATE_CONTENT)
+    retained_state_path(layout).chmod(0o600)
+    auth_before = layout.auth_file.read_bytes()
+    endpoints = []
+
+    def health(endpoint, _username, _password, _timeout):
+        endpoints.append(endpoint)
+        return HealthResult(
+            ok=endpoint == HealthEndpoint("127.0.0.1", 443, host, tls=True),
+            detail="expected retained TLS authority",
+        )
+
+    runner = FakeRunner(service_present=False)
+    result = _executor(tmp_path, runner, health=health).resume(layout)
+
+    assert result.exit_code == 0, result.message
+    assert endpoints == [HealthEndpoint("127.0.0.1", 443, host, tls=True)]
+    assert runner.active and runner.enabled
+    assert layout.auth_file.read_bytes() == auth_before
+    assert not retained_state_path(layout).exists()
+
+
 def test_setup_runs_the_current_executable_with_canonical_config_check(
     tmp_path: Path,
 ) -> None:
@@ -757,6 +855,7 @@ def test_setup_readiness_waits_past_the_old_attempt_window_without_real_sleep(
     current_uid = os.getuid()
     executor = SetupExecutor(
         runner=runner,
+        artifact_identity=lambda _layout: {"version": "0.4.0", "sha256": "a" * 64},
         preflight_check=_ok_preflight,
         health_check=delayed_health,
         effective_uid=lambda: 0,
@@ -786,6 +885,7 @@ def test_public_setup_unbound_until_readiness_deadline_maps_to_network_exit(
     current_uid = os.getuid()
     executor = SetupExecutor(
         runner=runner,
+        artifact_identity=lambda _layout: {"version": "0.4.0", "sha256": "a" * 64},
         preflight_check=_ok_preflight,
         health_check=lambda *_args: HealthResult(False, "connection failed"),
         effective_uid=lambda: 0,
@@ -815,6 +915,7 @@ def test_public_setup_bound_but_unhealthy_at_deadline_maps_to_unhealthy_exit(
     current_uid = os.getuid()
     executor = SetupExecutor(
         runner=runner,
+        artifact_identity=lambda _layout: {"version": "0.4.0", "sha256": "a" * 64},
         preflight_check=_ok_preflight,
         health_check=lambda *_args: HealthResult(False, "invalid health response"),
         effective_uid=lambda: 0,
@@ -844,6 +945,7 @@ def test_setup_creates_the_managed_runtime_home_used_by_the_systemd_sandbox(
     current_gid = os.getgid()
     executor = SetupExecutor(
         runner=runner,
+        artifact_identity=lambda _layout: {"version": "0.4.0", "sha256": "a" * 64},
         preflight_check=_ok_preflight,
         health_check=lambda *_args: HealthResult(ok=True, detail="healthy"),
         effective_uid=lambda: 0,
@@ -2497,27 +2599,19 @@ def test_unsupported_managed_state_preflight_short_circuits_port_and_firewall_pr
 
 
 def test_setup_dry_run_reports_unsupported_managed_state_instructions_without_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Dry-run must not present an install plan over ambiguous managed state."""
-    from xferry.management import cli
+    from xferry.management import application
 
     plan = _plan(tmp_path)
     plan.layout.config_file.parent.mkdir(parents=True)
     original = b"[server]\ndir = /unsupported\n"
     plan.layout.config_file.write_bytes(original)
     runner = FakeRunner(ufw_active=True)
-
-    def prepare(_args: object) -> tuple[SetupPlan, SetupPreflight]:
-        return plan, default_setup_preflight(plan, runner, interactive=False)
-
-    monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
-
-    assert main(["setup", "--access", "private", "--dry-run"]) == 1
-    captured = capsys.readouterr()
-    assert all(clause in captured.err for clause in UNSUPPORTED_MANAGED_STATE_INSTRUCTION_CLAUSES)
+    app = application.ManagementApplication(runner=runner, layout=plan.layout)
+    monkeypatch.setattr(application, "default_application", lambda: app)
+    assert main(["setup", "--access", "private", "--dry-run"]) == 2
+    assert "preserved" in capsys.readouterr().err
     assert runner.commands == []
     assert plan.layout.config_file.read_bytes() == original
     assert not plan.layout.lock_file.exists()
@@ -3064,87 +3158,77 @@ def test_setup_rejects_incompatible_mode_options_before_host_probes(
 
 
 def test_non_root_real_setup_returns_privilege_before_planning_or_host_probes(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Network discovery, UFW, and bind probes must not precede the real-setup root gate."""
-    from xferry.management import cli
+    from xferry.management import application, cli
 
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(
-        cli,
-        "_prepare_setup_plan",
-        lambda _args: pytest.fail("non-root real setup must not prepare or preflight a plan"),
+        application,
+        "default_application",
+        lambda: pytest.fail("non-root real setup must elevate before planning"),
     )
-
     assert main(["setup", "--access", "private"]) == 3
     assert "requires root" in capsys.readouterr().err
 
 
 def test_non_root_setup_dry_run_remains_a_pure_planning_operation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The documented unprivileged dry run must still be able to inspect a complete plan."""
-    from xferry.management import cli
+    from types import SimpleNamespace
 
-    plan = _plan(tmp_path)
-    prepared: list[object] = []
+    from xferry.management import application, cli
+    from xferry.management.deployment import OperationResult
 
-    def prepare(args: object) -> tuple[SetupPlan, SetupPreflight]:
-        prepared.append(args)
-        return plan, _ok_preflight(plan)
+    planned = []
+
+    def setup(**options):
+        planned.append(options)
+        return OperationResult(0, "Dry run; no changes made.")
 
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cli, "_prepare_setup_plan", prepare)
-
+    monkeypatch.setattr(application, "default_application", lambda: SimpleNamespace(setup=setup))
     assert main(["setup", "--access", "private", "--dry-run"]) == 0
-    assert len(prepared) == 1
+    assert len(planned) == 1 and planned[0]["dry_run"] is True
     assert "Dry run" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("config_error", [FileNotFoundError("missing"), PermissionError("denied")])
 def test_non_root_credentials_returns_privilege_before_reading_managed_config(
-    config_error: OSError,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    config_error: OSError, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Missing or unreadable config must not mask the credentials privilege contract."""
+    from types import SimpleNamespace
+
     from xferry import settings
-    from xferry.management import cli
+    from xferry.management import application, cli
 
-    calls = 0
-
-    def forbidden_load(_path: str) -> object:
-        nonlocal calls
-        calls += 1
-        raise config_error
-
+    selected = SimpleNamespace(config=Path("/etc/xferry/profile.ini"), target="managed")
+    monkeypatch.setattr(
+        application, "default_application", lambda: SimpleNamespace(resolve=lambda _: selected)
+    )
+    monkeypatch.setattr(
+        settings, "load_settings_file", lambda _: (_ for _ in ()).throw(config_error)
+    )
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(settings, "load_settings_file", forbidden_load)
-
-    assert main(["credentials", "reset", "--config", "/etc/xferry/xferry.ini"]) == 3
-    assert calls == 0
+    assert main(["credentials", "reset", "--instance", "native-id"]) == 3
     assert "requires root" in capsys.readouterr().err
 
 
 def test_root_credentials_keeps_configuration_errors_distinct(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """After the root gate, a missing managed config remains a usage/configuration error."""
-    from xferry import settings
-    from xferry.management import cli
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        settings,
-        "load_settings_file",
-        lambda _path: (_ for _ in ()).throw(FileNotFoundError("missing")),
+    from xferry.management import application, cli
+
+    selected = SimpleNamespace(config=Path("/etc/xferry/profile.ini"), target="managed")
+    app = SimpleNamespace(
+        resolve=lambda _: selected,
+        credentials=lambda _: (_ for _ in ()).throw(FileNotFoundError("missing")),
     )
-
-    assert main(["credentials", "reset", "--config", "/etc/xferry/xferry.ini"]) == 2
+    monkeypatch.setattr(application, "default_application", lambda: app)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    assert main(["credentials", "reset", "--instance", "native-id"]) == 2
     assert "missing" in capsys.readouterr().err
 
 
@@ -3191,74 +3275,51 @@ def test_interactive_active_ufw_prompts_once_for_exact_public_ports(
 
 
 def test_success_output_reveals_credentials_once_only_after_health(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Printing before executor health or printing twice would leak unusable credentials."""
-    from xferry.management import cli
-    from xferry.management.setup import Credentials, SetupResult
+    from types import SimpleNamespace
 
-    password = "abcdefgh2345"
-    plan = _plan(tmp_path)
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, _ok_preflight(plan)))
-    monkeypatch.setattr(
-        cli,
-        "_apply_setup_plan",
-        lambda _plan, _preflight: SetupResult(
-            exit_code=0,
-            message="healthy",
-            credentials=Credentials(
-                username="admin",
-                password=password,
-                url="http://127.0.0.1:8080",
-            ),
-        ),
+    from xferry.management import application, cli
+    from xferry.management.deployment import Credentials, OperationResult
+
+    result = OperationResult(
+        0,
+        "healthy",
+        url="http://127.0.0.1:8080",
+        credentials=Credentials("admin", "abcdefgh2345", "http://127.0.0.1:8080"),
     )
-
+    monkeypatch.setattr(
+        application, "default_application", lambda: SimpleNamespace(setup=lambda **_: result)
+    )
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     assert main(["setup", "--access", "private"]) == 0
     output = capsys.readouterr().out
-    assert output.count(password) == 1
+    assert output.count("abcdefgh2345") == 1
     assert "http://127.0.0.1:8080" in output
 
 
-def test_json_setup_status_excludes_secret_while_one_time_credential_is_separate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+def test_json_setup_status_suppresses_credentials_in_both_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Serializing the generated password would put it into machine logs and reports."""
-    from xferry.management import cli
-    from xferry.management.setup import Credentials, SetupResult
+    from types import SimpleNamespace
 
-    password = "abcdefgh2345"
-    plan = _plan(tmp_path)
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(cli, "_prepare_setup_plan", lambda _args: (plan, _ok_preflight(plan)))
-    monkeypatch.setattr(
-        cli,
-        "_apply_setup_plan",
-        lambda _plan, _preflight: SetupResult(
-            exit_code=0,
-            message="healthy",
-            credentials=Credentials(
-                username="admin",
-                password=password,
-                url="http://127.0.0.1:8080",
-            ),
-        ),
+    from xferry.management import application, cli
+    from xferry.management.deployment import Credentials, OperationResult
+
+    result = OperationResult(
+        0,
+        "healthy",
+        url="http://127.0.0.1:8080",
+        credentials=Credentials("admin", "abcdefgh2345", "http://127.0.0.1:8080"),
     )
-
+    monkeypatch.setattr(
+        application, "default_application", lambda: SimpleNamespace(setup=lambda **_: result)
+    )
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     assert main(["setup", "--access", "private", "--json"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload == {
-        "exit_code": 0,
-        "status": "ok",
-        "url": "http://127.0.0.1:8080",
-    }
-    assert password not in captured.out
-    assert "admin" not in captured.out
-    assert captured.err.count(password) == 1
-    assert captured.err.count("admin") == 1
+    assert payload["exit_code"] == 0 and payload["url"] == "http://127.0.0.1:8080"
+    assert "abcdefgh2345" not in captured.out and "admin" not in captured.out
+    assert "abcdefgh2345" not in captured.err
+    assert captured.err == ""

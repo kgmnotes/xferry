@@ -12,6 +12,21 @@ import pytest
 from tools import browser_smoke
 
 
+@pytest.fixture(autouse=True)
+def isolated_browser_proxy_environment(monkeypatch):
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "PLAYWRIGHT_MCP_PROXY_SERVER",
+        "PLAYWRIGHT_MCP_PROXY_BYPASS",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.mark.parametrize("engine", browser_smoke.BROWSER_NAMES)
 @pytest.mark.parametrize("target_url", [None, "http://127.0.0.1:9876/"])
 def test_engine_selection_reaches_cli_and_receipt(
@@ -118,7 +133,11 @@ def test_loopback_bypass_preserves_package_proxies_and_external_configuration(
     browser_smoke._write_cli_config(config_path, browser="webkit", local_target=local_target)
     serialized = config_path.read_text("utf-8")
     assert "package-proxy" not in serialized
-    assert "browser-proxy" not in serialized
+    if local_target:
+        assert "browser-proxy" not in serialized
+    else:
+        proxy = json.loads(serialized)["browser"]["launchOptions"]["proxy"]
+        assert proxy["server"] == "http://browser-proxy.invalid:8080"
     assert '"env"' not in serialized
 
 
@@ -191,3 +210,113 @@ def test_browser_matrix_is_required_for_reusable_release_ci() -> None:
     assert "--browser" in matrix
     for mode in browser_smoke.CROSS_BROWSER_MODES:
         assert mode in matrix
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o600])
+def test_external_basic_auth_is_private_and_bound_to_requested_origin(tmp_path, mode):
+    auth = tmp_path / "operator.auth"
+    auth.write_text("admin:keyboard2345\n")
+    auth.chmod(mode)
+    config = tmp_path / "cli.config.json"
+    browser_smoke._write_cli_config(
+        config, auth_file=auth, auth_origin="https://files.example.test"
+    )
+    document = json.loads(config.read_text())
+    context = document["browser"]["contextOptions"]
+    assert context["httpCredentials"] == {
+        "username": "admin",
+        "password": "keyboard2345",
+        "origin": "https://files.example.test",
+    }
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert "ignoreHTTPSErrors" not in context
+
+
+@pytest.mark.parametrize(
+    "value", ["admin:secret\nextra", "admin:secret\n\n", "admin:", ":secret", "admin:bad\x00value"]
+)
+def test_browser_auth_rejects_malformed_lines_without_echo(tmp_path, value):
+    auth = tmp_path / "operator.auth"
+    auth.write_text(value)
+    auth.chmod(0o600)
+    with pytest.raises(ValueError) as error:
+        browser_smoke._read_browser_credentials(auth)
+    assert "secret" not in str(error.value)
+    assert "bad" not in str(error.value)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "public"])
+def test_browser_auth_rejects_linked_or_public_secret(tmp_path, kind):
+    secret = tmp_path / "secret"
+    secret.write_text("admin:keyboard2345\n")
+    secret.chmod(0o600)
+    auth = tmp_path / "auth"
+    if kind == "symlink":
+        auth.symlink_to(secret)
+    elif kind == "hardlink":
+        auth.hardlink_to(secret)
+    else:
+        secret.chmod(0o644)
+        auth = secret
+    with pytest.raises((OSError, ValueError)):
+        browser_smoke._read_browser_credentials(auth)
+
+
+@pytest.mark.parametrize("local,origin", [(True, "https://files.example.test"), (False, None)])
+def test_browser_auth_requires_explicit_external_origin(tmp_path, local, origin):
+    auth = tmp_path / "operator.auth"
+    auth.write_text("admin:keyboard2345\n")
+    auth.chmod(0o600)
+    with pytest.raises(ValueError, match="external origin"):
+        browser_smoke._write_cli_config(
+            tmp_path / "cli.json", local_target=local, auth_file=auth, auth_origin=origin
+        )
+
+
+@pytest.mark.parametrize(
+    "target,origin",
+    [
+        ("http://files.example.test:80/", "http://files.example.test"),
+        ("https://files.example.test:443/", "https://files.example.test"),
+        ("https://FILES.example.test:8443/", "https://files.example.test:8443"),
+        ("https://[::1]:443/", "https://[::1]"),
+    ],
+)
+def test_http_auth_origin_matches_browser_default_port_normalization(target, origin):
+    assert browser_smoke._credential_origin(target) == origin
+
+
+def test_external_browser_proxy_uses_decoded_credentials_in_private_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://actor%40proxy:p%40ss%3Aword@proxy.example:9691")
+    config = tmp_path / "cli.json"
+    browser_smoke._write_cli_config(config)
+    document = json.loads(config.read_text())
+    proxy = document["browser"]["launchOptions"]["proxy"]
+    assert proxy == {
+        "server": "http://proxy.example:9691",
+        "username": "actor@proxy",
+        "password": "p@ss:word",
+    }
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert "ignoreHTTPSErrors" not in document["browser"]["contextOptions"]
+    assert "actor%40proxy" not in proxy["server"] and "p%40ss" not in proxy["server"]
+
+
+def test_browser_proxy_errors_and_diagnostics_do_not_disclose_userinfo(monkeypatch):
+    raw = "http://actor%40proxy:p%40ss%3Aword@proxy.example:9691"
+    monkeypatch.setenv("HTTPS_PROXY", raw)
+    message = browser_smoke._sanitize_browser_diagnostic(
+        raw + " actor@proxy p@ss:word p%40ss%3Aword"
+    )
+    assert "actor" not in message and "word" not in message
+    monkeypatch.setenv("HTTPS_PROXY", "http://actor:secret@proxy.example:not-a-port")
+    with pytest.raises(ValueError) as error:
+        browser_smoke._configured_browser_proxy()
+    assert "secret" not in str(error.value) and "actor" not in str(error.value)
+
+
+def test_browser_diagnostics_redact_json_escaped_proxy_password(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://actor:private%5Cproxy%22value@proxy.example:9691")
+    rendered = json.dumps({"password": 'private\\proxy"value'})
+    safe = browser_smoke._sanitize_browser_diagnostic(rendered)
+    assert "private" not in safe and "proxy\\\\" not in safe

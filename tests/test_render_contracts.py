@@ -169,7 +169,7 @@ def test_cli_reference_captures_real_english_root_and_per_command_help() -> None
         "uninstall",
     ):
         assert f"## `xferry {command} --help`" in rendered
-    assert "Signed release version to install." in rendered
+    assert "Signed release version to install (default:" in rendered
     assert "Управляем" not in rendered
 
 

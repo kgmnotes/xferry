@@ -501,7 +501,9 @@ def obtain_letsencrypt_cert(
 
     domain = normalize_domain(domain)
     if config_dir is None:
-        config_dir = Path.home() / ".xferry" / "acme"
+        from xferry.paths import StateLayout, automatic_state_dir
+
+        config_dir = StateLayout(automatic_state_dir()).acme
     config_root = Path(config_dir)
     with acme_cache_lock(config_root, stop_event):
         cert, key = _certificate_paths(config_root, domain)

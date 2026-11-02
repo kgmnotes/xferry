@@ -45,6 +45,13 @@ def _resolve_note_request_id(
     return values[0], False
 
 
+def correlate_early_response(request: HTTPRequest, response: HTTPResponse) -> None:
+    """Preserve NOTE correlation for responses emitted before body reception."""
+    if _is_note_transport_request(request):
+        request_id, _invalid = _resolve_note_request_id(request, secrets.token_hex(4))
+        response.set_header(_REQUEST_ID_HEADER, request_id)
+
+
 def _request_log_path(request: HTTPRequest) -> str:
     """Redact data embedded in an authorized Advanced path carrier."""
     dispatch = request.advanced_session_dispatch
@@ -64,7 +71,7 @@ class ResponseBuildArgs(TypedDict, total=False):
     cors_origin: str | None
     cors_allow_methods: str | None
     keep_alive: bool
-    keep_alive_timeout: int
+    keep_alive_timeout: float
     keep_alive_max: int
 
 
@@ -72,7 +79,8 @@ class RequestPipelineServer(Protocol):
     """The subset of server behavior the request pipeline orchestrates."""
 
     cors_origin: str | None
-    KEEP_ALIVE_TIMEOUT: int
+    KEEP_ALIVE_TIMEOUT: float
+    admission_wait_timeout: float
     _ecdh_manager: Any
     request_admission_policy: RequestAdmissionPolicy
 
@@ -164,6 +172,9 @@ class RequestPipeline:
         client_socket: socket.socket,
         client_address: tuple[str, int],
         request_num: int,
+        *,
+        prepared_request: HTTPRequest | None = None,
+        transfer_admitted: bool = False,
     ) -> bool:
         """Process one request and return ``True`` when the connection should stay open."""
         start_time = time.monotonic()
@@ -172,7 +183,9 @@ class RequestPipeline:
         build_args: ResponseBuildArgs = {"cors_origin": None}
 
         try:
-            request = HTTPRequest(data)
+            request = prepared_request if prepared_request is not None else HTTPRequest(data)
+            if prepared_request is not None:
+                request.body = data.partition(b"\r\n\r\n")[2]
             request.attach_direct_peer(client_address)
             if not request.is_valid:
                 logger.warning(
@@ -188,7 +201,11 @@ class RequestPipeline:
                 )
                 self._send_direct_response(response, client_socket, build_args)
                 return False
-            admitted = self._server.request_admission_policy.admit(request)
+            admitted = (
+                request.admission_context
+                if prepared_request is not None
+                else self._server.request_admission_policy.admit(request)
+            )
             if isinstance(admitted, AdmissionFailure):
                 response = self._server._build_error_response(
                     admitted.status,
@@ -229,7 +246,11 @@ class RequestPipeline:
                 build_args["keep_alive_timeout"] = self._server.KEEP_ALIVE_TIMEOUT
                 build_args["keep_alive_max"] = remaining
 
-            auth_error = self._server._authenticate_request(request, client_address)
+            auth_error = (
+                None
+                if prepared_request is not None
+                else self._server._authenticate_request(request, client_address)
+            )
             if auth_error is not None:
                 if is_session_control_route:
                     auth_error.set_header("Cache-Control", "no-store")
@@ -266,7 +287,7 @@ class RequestPipeline:
                         self._send_direct_response(control_error, client_socket, build_args)
                         return False
 
-                response = self._server._dispatch_handler(request)
+                response = self._compute_response(request, transfer_admitted=transfer_admitted)
                 self._send_direct_response(response, client_socket, build_args)
                 return False
 
@@ -276,7 +297,7 @@ class RequestPipeline:
                     "_prepare_advanced_session_dispatch",
                     None,
                 )
-                if callable(session_admission):
+                if callable(session_admission) and not request.advanced_session_admission_prepared:
                     admission_error = session_admission(request)
                     if admission_error is not None:
                         self._send_direct_response(
@@ -344,8 +365,9 @@ class RequestPipeline:
                 )
                 return False
 
-            response = self._server._dispatch_handler(request)
-            self._server._post_process_response(request, response, request_id)
+            response = self._compute_response(
+                request, request_id=request_id, transfer_admitted=transfer_admitted
+            )
 
             bytes_sent = self._server._send_response(response, client_socket, build_args)
             self._server._record_metric(
@@ -391,6 +413,29 @@ class RequestPipeline:
             return False
         finally:
             self._server._record_request_latency((time.monotonic() - start_time) * 1000)
+
+    def _compute_response(
+        self,
+        request: HTTPRequest,
+        *,
+        request_id: str | None = None,
+        transfer_admitted: bool = False,
+    ) -> HTTPResponse:
+        """Release application capacity before any response socket write."""
+        gate = getattr(self._server, "_dispatch_capacity", None)
+        lease = None
+        if gate is not None and not transfer_admitted:
+            lease = gate.acquire(self._server.admission_wait_timeout)
+            if lease is None:
+                return self._server._build_error_response(503, "Server busy", code="server_busy")
+        try:
+            response = self._server._dispatch_handler(request)
+            if request_id is not None:
+                self._server._post_process_response(request, response, request_id)
+            return response
+        finally:
+            if lease is not None:
+                lease.release()
 
     def _send_direct_response(
         self,

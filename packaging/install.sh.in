@@ -194,12 +194,6 @@ valid_supported_release() {
         size = declared_size(lines[8])
         sha256 = declared_sha256(lines[9])
 
-        if (lines[2] == "  \"schema_version\": 1,") {
-          if (required_schema == "2") invalid()
-          if (NR != 11 || lines[10] != "  }" || lines[11] != "}") invalid()
-          print size ":" sha256 ":0"
-          exit 0
-        }
         if (lines[2] != "  \"schema_version\": 2,") invalid()
         if (lines[10] != "  }," || lines[11] != "  \"source\": {") invalid()
 
@@ -367,8 +361,38 @@ valid_retained_receipt() {
     [ "$receipt_parent" != / ] || break
     receipt_parent="$(dirname "$receipt_parent")"
   done
-  printf 'xferry-retained-v1\n' | cmp -s - "$retained_receipt"
+  printf 'xferry-retained-v2\n' | cmp -s - "$retained_receipt"
 }
+
+# Existing operator state must already use the current explicit contracts.
+# Bootstrap never converts profiles or deployment metadata.
+profile_file="$destdir/etc/xferry/profile.ini"
+deployment_file="$destdir/etc/xferry/deployment.json"
+valid_current_profile() {
+  regular_file "$1" || return 1
+  [ "$(stat -c '%u' "$1")" = 0 ] || return 1
+  [ "$(wc -c < "$1")" -le 1048576 ] || return 1
+  awk '
+    /^[[:space:]]*[#;]/ { next }
+    /^[[:space:]]*\[/ { section=tolower($0); gsub(/[[:space:]]/, "", section); next }
+    /^[[:space:]]*config_version[[:space:]]*=/ {
+      if (section != "[server]") exit 1
+      value=$0; sub(/^[^=]*=/, "", value); gsub(/[[:space:]]/, "", value)
+      if (value != "1") exit 1
+      versions++
+    }
+    END { if (versions != 1) exit 1 }
+  ' "$1"
+}
+if path_present "$config_file" || path_present "$auth_file" || path_present "$profile_file" || path_present "$deployment_file"; then
+  valid_current_profile "$config_file" || block_unsupported_managed_state
+  valid_current_profile "$profile_file" || block_unsupported_managed_state
+  regular_file "$deployment_file" || block_unsupported_managed_state
+  [ "$(stat -c '%u' "$deployment_file")" = 0 ] || block_unsupported_managed_state
+  [ "$(wc -c < "$deployment_file")" -le 1048576 ] || block_unsupported_managed_state
+  [ "$(grep -Ec '\"schema\"[[:space:]]*:[[:space:]]*2([[:space:]]*[,}]|[[:space:]]*$)' "$deployment_file")" = 1 ] \
+    || block_unsupported_managed_state
+fi
 
 retained_state=false
 if path_present "$retained_receipt"; then

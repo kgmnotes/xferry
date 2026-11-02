@@ -208,6 +208,7 @@ def render_managed_config(plan: SetupPlan) -> str:
         if plan.mode is SetupMode.PRIVATE
         else ("domain" if plan.mode is SetupMode.DOMAIN else "auto"),
         "log_format": "json",
+        "state_dir": str(plan.layout.data_root),
         "host": plan.bind_host,
         "port": plan.port,
         "workers": plan.resources.workers,

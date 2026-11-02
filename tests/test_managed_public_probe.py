@@ -81,14 +81,12 @@ def test_public_guard_failure_prevents_installer_and_emits_only_fixed_code(
 
 
 @pytest.mark.parametrize("lose_auth", [False, True])
-@pytest.mark.parametrize("conversion", [False, True])
 def test_public_engine_drives_distinct_versions_and_checks_preservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lose_auth: bool,
-    conversion: bool,
 ) -> None:
-    """Mocked lifecycle orchestration; never evidence that public releases ran."""
+    """Mocked orchestration of the current schema; not public release evidence."""
     options = public.PublicProbeOptions(
         plan=tmp_path / "plan.json",
         assets_root=tmp_path,
@@ -108,46 +106,19 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
     )
     paths.data_root.mkdir()
     paths.config_root.mkdir()
-    canonical = (
-        f"[server]\naccess = private\nhost = 127.0.0.1\nport = 8080\n"
-        f"files_dir = {paths.data_root / 'uploads'}\nlog_level = info\nlog_format = json\n"
-        f"[security]\nauth_file = {paths.auth}\n[tls]\nhttps_mode = off\n"
-    ).encode()
-    legacy = (
-        f"[server]\npreset = local\nhost = 127.0.0.1\nport = 8080\n"
-        f"root_dir = {paths.data_root}\njson_log = true\n"
-        f"[security]\nauth_file = {paths.auth}\n[tls]\ntls = false\n"
-    ).encode()
-    baseline_config = legacy if conversion else canonical
-    old_unit = (
-        f"[Service]\nUser=xferry\nGroup=xferry\nProtectHome=true\n"
-        f"ExecStartPre={paths.release_root}/current/xferry run --config "
-        f"{paths.config} --check-config\n"
-        f"ExecStart={paths.release_root}/current/xferry run --config {paths.config}\n"
-    ).encode()
-    new_unit = (
-        old_unit.replace(
-            f"run --config {paths.config} --check-config".encode(),
-            f"config check --config {paths.config}".encode(),
-        )
-        + f"Environment=XFERRY_STATE_HOME={paths.data_root}\n".encode()
-    )
-    baseline_unit = old_unit if conversion else new_unit
-    paths.config.write_bytes(baseline_config)
-    paths.unit.write_bytes(baseline_unit)
+    paths.unit.write_bytes(b"verified current native unit")
     controller = tmp_path / "verified-target-controller"
     monkeypatch.setattr(public, "_maintenance_cli", lambda *_args: nullcontext(controller))
-    monkeypatch.setattr(
-        public,
-        "_cli_contract",
-        lambda executable, _version: (
-            "legacy" if conversion and executable == paths.cli else "canonical"
-        ),
-    )
+    monkeypatch.setattr(public, "_cli_contract", lambda *_args: "canonical")
     plan = {
-        "previousTag": "v0.1.0",
-        "releases": {"previous": {"version": "0.1.0"}, "target": {"version": "0.2.0"}},
+        "previousTag": "v0.5.0",
+        "releases": {"previous": {"version": "0.5.0"}, "target": {"version": "0.6.0"}},
     }
+    identity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    identities = []
+    monkeypatch.setattr(
+        public.common, "_deployment_identity", lambda p, v, i: identities.append((p, v, i))
+    )
     commands: list[tuple[tuple[str, ...], dict[str, Any]]] = []
     health: list[str] = []
     monkeypatch.setattr(public.common, "guard_host", lambda **_kwargs: {"unit": "mock host only"})
@@ -174,6 +145,7 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
         preserve_calls.append(True)
         return {
             "config": True,
+            "profile": True,
             "auth": not (lose_auth and len(preserve_calls) == 2),
             "sentinel": True,
         }
@@ -186,80 +158,110 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
 
     monkeypatch.setattr(public.common, "_command", command)
 
+    def operation(details, *, state=None, url=None):
+        return {
+            "exit_code": 0,
+            "message": "unit outcome",
+            "details": details,
+            "url": url,
+            "plan": None,
+            "state": state,
+        }
+
+    def observed(retained=False):
+        return {
+            "state": "retained" if retained else "running",
+            "instance_id": identity,
+            "backend": "native",
+            "health": "not_checked",
+            "detail": "unit state",
+            "running": not retained,
+            "config": "valid",
+            "enabled": "unknown" if retained else "enabled",
+        }
+
     def json_command(argv: tuple[str, ...], **kwargs: Any) -> dict[str, Any]:
         commands.append((tuple(argv), kwargs))
         phase = argv[1]
         if phase == "setup":
-            result = {"exit_code": 0, "status": "ok", "url": "http://127.0.0.1:8080"}
-            if not conversion:
-                result["files_dir"] = str(paths.data_root / "files")
-            return result
-        if phase == "doctor":
-            statuses = {
-                "platform": "supported",
-                "installation": "installed",
-                "configuration": "valid",
-                "service": "active",
-                "network": "reachable",
-                "health": "healthy",
-            }
-            if not conversion:
-                statuses["files"] = "available"
-            result = dict.fromkeys(public.common._DOCTOR_FIELDS)
-            result.update(
-                code="doctor-ok",
-                checks={key: {"status": value} for key, value in statuses.items()},
+            return operation(
+                {"instance_id": identity, "files_dir": str(paths.data_root / "files")},
+                url="http://127.0.0.1:8080",
             )
-            return result
-        result = dict.fromkeys(public.common._RELEASE_FIELDS)
-        result.update(dry_run=False, rollback="not_attempted", code=f"{phase}_complete")
+        if phase == "doctor":
+            state = observed()
+            state["health"] = "healthy"
+            checks = {
+                name: {"status": status, "detail": "unit check"}
+                for name, status in {
+                    "manifest": "valid",
+                    "configuration": "valid",
+                    "runtime": "running",
+                    "files": "available",
+                    "health": "healthy",
+                }.items()
+            }
+            return operation({"checks": checks}, state=state)
+        if phase == "uninstall":
+            paths.unit.unlink()
+            return operation(
+                {
+                    "retained": [
+                        str(paths.profile),
+                        str(paths.data_root),
+                        str(paths.data_root / "files"),
+                    ]
+                },
+                state=observed(True),
+            )
+        details = {
+            "version": "0.5.0" if phase == "rollback" else "0.6.0",
+            "dry_run": False,
+            "code": "rollback_complete",
+            "detail": "unit release",
+            "before": None,
+            "target": None,
+            "active": None,
+            "rollback": "not_attempted",
+            "next_actions": [],
+        }
         if phase == "update":
             dry_run = "--dry-run" in argv
-            result.update(
-                version="0.2.0",
-                before="0.1.0",
-                target="0.2.0",
+            details.update(
                 dry_run=dry_run,
-                active="0.1.0" if dry_run else "0.2.0",
-                rollback="not_needed",
                 code="update_dry_run" if dry_run else "update_complete",
+                before="0.5.0",
+                target="0.6.0",
+                active="0.5.0" if dry_run else "0.6.0",
+                rollback="not_needed",
             )
-            if not dry_run and conversion:
-                paths.config.write_bytes(canonical)
-                paths.unit.write_bytes(new_unit)
-        elif phase == "rollback":
-            result["version"] = "0.1.0"
-            paths.config.write_bytes(baseline_config)
-            paths.unit.write_bytes(baseline_unit)
-        elif phase == "uninstall":
-            paths.unit.unlink()
-        return result
+        return operation(details, state=observed())
 
     monkeypatch.setattr(public.common, "_json_command", json_command)
     result = public.run_public_probe(options, paths)
-    assert result["status"] == ("failed" if lose_auth else "passed")
-    assert commands[0][0] == ("sh", str(tmp_path / "v0.1.0" / "install-linux-x86_64.sh"))
+    assert result["status"] == ("failed" if lose_auth else "passed"), result
+    assert commands[0][0] == ("sh", str(tmp_path / "v0.5.0" / "install-linux-x86_64.sh"))
     assert all(set(kwargs["environment"]) == set(public._environment()) for _, kwargs in commands)
+    assert (str(paths.cli), "setup", "--backend", "native", "--access", "private", "--json") in [
+        argv for argv, _ in commands
+    ]
     update_commands = [argv for argv, _ in commands if len(argv) > 1 and argv[1] == "update"]
     assert update_commands == [
-        (
-            str(controller),
-            "update",
-            "--to",
-            "0.2.0",
-            "--dry-run",
-            "--config",
-            str(paths.config),
-            "--json",
-        ),
-        (str(controller), "update", "--to", "0.2.0", "--config", str(paths.config), "--json"),
+        (str(controller), "update", "--to", "0.6.0", "--dry-run", "--instance", identity, "--json"),
+        (str(controller), "update", "--to", "0.6.0", "--instance", identity, "--json"),
     ]
     if lose_auth:
         assert result["failure"] == {"phase": "update", "code": "state_preservation_failed"}
         assert not any(argv[1] == "rollback" for argv, _ in commands)
     else:
         doctor_stage = next(stage for stage in result["stages"] if stage["phase"] == "doctor")
-        assert ("files" in doctor_stage["checks"]) is (not conversion)
+        assert set(doctor_stage["checks"]) == {
+            "manifest",
+            "configuration",
+            "runtime",
+            "files",
+            "health",
+        }
         assert [stage["phase"] for stage in result["stages"]] == [
             "guard",
             "install",
@@ -270,23 +272,18 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
             "rollback",
             "uninstall",
         ]
-        assert health == ["0.1.0", "0.1.0", "0.1.0", "0.2.0", "0.1.0"]
-        assert (
-            str(controller),
-            "rollback",
-            "--to",
-            "0.1.0",
-            "--config",
-            str(paths.config),
-            "--json",
-        ) in [argv for argv, _ in commands]
+        assert health == ["0.5.0", "0.5.0", "0.5.0", "0.6.0", "0.5.0"]
+        assert identities == [(paths, v, identity) for v in ("0.5.0", "0.5.0", "0.6.0", "0.5.0")]
+        assert (str(controller), "rollback", "--to", "0.5.0", "--instance", identity, "--json") in [
+            argv for argv, _ in commands
+        ]
     assert "not-exported-unit-hash" not in options.evidence.read_text()
 
 
 @pytest.mark.parametrize(
     ("help_text", "expected"),
     [
-        (b"usage: xferry setup [--private]\n", "legacy"),
+        (b"usage: xferry setup [--private]\n", None),
         (b"usage: xferry setup [--access {private,public}]\n", "canonical"),
         (b"usage: setup [--private] [--access {private,public}]\n", None),
         (b"use --accessibility and --private-data\n", None),
@@ -301,15 +298,15 @@ def test_cli_contract_uses_exact_authenticated_help_without_fallback(
     def command(argv, **kwargs):
         calls.append(tuple(argv))
         assert kwargs["environment"] == public._environment()
-        return b"xferry 0.3.0\n" if argv[-1] == "--version" else help_text
+        return b"xferry 0.6.0\n" if argv[-1] == "--version" else help_text
 
     monkeypatch.setattr(public.common, "_command", command)
     executable = Path("/verified/target")
     if expected is None:
         with pytest.raises(public.common.ProbeFailure, match="command_output_invalid"):
-            public._cli_contract(executable, "0.3.0")
+            public._cli_contract(executable, "0.6.0")
     else:
-        assert public._cli_contract(executable, "0.3.0") == expected
+        assert public._cli_contract(executable, "0.6.0") == expected
     assert calls == [(str(executable), "--version"), (str(executable), "setup", "--help")]
 
 
@@ -318,11 +315,11 @@ def test_cli_contract_refuses_wrong_version_before_help(monkeypatch: pytest.Monk
 
     def command(argv, **_kwargs):
         calls.append(tuple(argv))
-        return b"xferry 0.2.1\n"
+        return b"xferry 0.5.1\n"
 
     monkeypatch.setattr(public.common, "_command", command)
     with pytest.raises(public.common.ProbeFailure, match="cli_version_mismatch"):
-        public._cli_contract(Path("/verified/target"), "0.3.0")
+        public._cli_contract(Path("/verified/target"), "0.6.0")
     assert len(calls) == 1
 
 
@@ -332,9 +329,9 @@ def test_maintenance_controller_copy_is_exact_private_executable_and_temporary(
     """The controller must survive changing installed current, without executing fixtures."""
     import stat
 
-    directory = tmp_path / "v0.3.0"
+    directory = tmp_path / "v0.6.0"
     directory.mkdir()
-    name = "xferry-0.3.0-linux-x86_64"
+    name = "xferry-0.6.0-linux-x86_64"
     source = directory / name
     payload = b"not executable: synthetic verified fixture"
     source.write_bytes(payload)
@@ -343,8 +340,8 @@ def test_maintenance_controller_copy_is_exact_private_executable_and_temporary(
     plan = {
         "releases": {
             "target": {
-                "version": "0.3.0",
-                "tag": "v0.3.0",
+                "version": "0.6.0",
+                "tag": "v0.6.0",
                 "platforms": {"linux-x86_64": {"assets": {name: record}}},
             }
         }
@@ -368,86 +365,3 @@ def test_maintenance_controller_copy_is_exact_private_executable_and_temporary(
         assert controller.parent.parent == Path("/var/tmp")
     assert not controller.exists()
     assert not controller.parent.exists()
-
-
-@pytest.fixture
-def converted_private_baseline(tmp_path: Path):
-    paths = public.common.SystemPaths(
-        release_root=tmp_path / "releases",
-        config_root=tmp_path / "config",
-        data_root=tmp_path / "state",
-        unit=tmp_path / "unit",
-        cli=tmp_path / "cli",
-    )
-    paths.config_root.mkdir()
-    before = (
-        f"[server]\npreset = local\nhost = 127.0.0.1\nport = 8080\n"
-        f"root_dir = {paths.data_root}\njson_log = true\n"
-        f"[security]\nauth_file = {paths.auth}\n"
-        "[limits]\nmax_size_mb = 123\n"
-    ).encode()
-    after = (
-        f"[server]\naccess = private\nhost = 127.0.0.1\nport = 8080\n"
-        f"files_dir = {paths.data_root / 'uploads'}\nlog_level = info\nlog_format = json\n"
-        f"[security]\nauth_file = {paths.auth}\n"
-        "[limits]\nmax_size_mb = 123\n[tls]\nhttps_mode = off\n"
-    ).encode()
-    unit = (
-        f"[Service]\nUser=xferry\nGroup=xferry\nProtectHome=true\n"
-        f"ExecStartPre={paths.release_root}/current/xferry run --config "
-        f"{paths.config} --check-config\n"
-        f"ExecStart={paths.release_root}/current/xferry run --config {paths.config}\n"
-    ).encode()
-    canonical_unit = (
-        unit.replace(
-            f"run --config {paths.config} --check-config".encode(),
-            f"config check --config {paths.config}".encode(),
-        )
-        + f"Environment=XFERRY_STATE_HOME={paths.data_root}\n".encode()
-    )
-    paths.config.write_bytes(after)
-    paths.unit.write_bytes(canonical_unit)
-    return paths, before, unit
-
-
-def test_cross_schema_config_proof_distinguishes_conversion_from_unchanged_bytes(
-    converted_private_baseline,
-) -> None:
-    paths, before, unit = converted_private_baseline
-    assert paths.config.read_bytes() != before
-    proof = public._configuration_transition(paths, before, unit)
-    assert proof == {
-        "transition": "legacy-to-canonical",
-        "values_preserved": True,
-        "files_path_preserved": True,
-        "state_path_preserved": True,
-        "unit_updated": True,
-    }
-    assert str(paths.data_root) not in json.dumps(proof)
-    assert "sha256" not in json.dumps(proof)
-
-
-@pytest.mark.parametrize("change", ["quota", "files", "auth", "state", "sandbox", "old-unit"])
-def test_cross_schema_config_proof_rejects_changed_values_paths_or_unit(
-    converted_private_baseline, change: str
-) -> None:
-    paths, before, unit = converted_private_baseline
-    if change in {"quota", "files", "auth"}:
-        original, replacement = {
-            "quota": ("max_size_mb = 123", "max_size_mb = 0"),
-            "files": (str(paths.data_root / "uploads"), str(paths.data_root / "empty")),
-            "auth": (str(paths.auth), str(paths.config_root / "different-auth")),
-        }[change]
-        paths.config.write_text(paths.config.read_text().replace(original, replacement))
-    elif change == "state":
-        paths.unit.write_text(
-            paths.unit.read_text().replace(
-                f"XFERRY_STATE_HOME={paths.data_root}", "XFERRY_STATE_HOME=/unrelated"
-            )
-        )
-    elif change == "sandbox":
-        paths.unit.write_text(paths.unit.read_text().replace("ProtectHome=true\n", ""))
-    else:
-        paths.unit.write_bytes(unit)
-    with pytest.raises(public.common.ProbeFailure, match="state_preservation_failed"):
-        public._configuration_transition(paths, before, unit)

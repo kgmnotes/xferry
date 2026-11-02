@@ -12,7 +12,6 @@ import os
 import re
 import stat
 import tempfile
-import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,7 +34,7 @@ _BASIC = frozenset(
     }
 )
 _SECTION = re.compile(r"^\s*\[([^]]+)\]\s*(?:[#;].*)?$")
-_ENTRY = re.compile(r"^(\s*)([^\s#;][^=:]*?)(\s*[=:]\s*)(.*?)(\r?\n)?$")
+_ENTRY = re.compile(r"^([ \t]*)([^\s#;][^=:\r\n]*?)([ \t]*[=:][ \t]*)(.*?)(\r?\n)?$")
 
 
 @dataclass(frozen=True)
@@ -68,20 +67,21 @@ def default_files_dir(*, managed: bool = False) -> Path:
 
 
 def resolve_config_path(config: str | Path | None, target: str | None = None) -> tuple[Path, str]:
-    from .instances import resolve_instance
+    from .instances import foreground_config
 
-    instance = resolve_instance(config, prefer_portable=target == "portable")
-    return instance.config, target or instance.target
+    return Path(
+        config
+    ).expanduser().absolute() if config is not None else foreground_config(), target or "portable"
 
 
 def state_for_config(path: Path, target: str) -> Path | None:
     if target == "managed":
         return Path("/var/lib/xferry")
     if target == "docker":
-        return Path("/data")
-    from xferry.paths import state_for_config as migrated_state
+        return path.parent / "state"
+    from xferry.paths import automatic_state_dir
 
-    return migrated_state(path)
+    return automatic_state_dir(config_path=path)
 
 
 def _public_value(value: object) -> object:
@@ -104,7 +104,7 @@ def resolve_with_origins(
 ) -> tuple[ServerSettings, dict[str, str]]:
     """Use the runtime resolver's layer provenance."""
     settings = resolve_settings(
-        file_settings=load_settings_text(text, validate=False),
+        file_settings=load_settings_text(text or "[server]\nconfig_version = 1\n", validate=False),
         env=dict(env or {}),
         cli_values=dict(cli_values or {}),
         state_dir=state_dir,
@@ -183,8 +183,8 @@ def describe_settings(
             default_value = {
                 "https_mode": "off for private/lab; auto for public",
                 "files_dir": str(default_files_dir()),
-                "body_memory_budget_mb": "automatic from request size and worker count",
-                "max_websocket_connections": "automatic: half of the worker count",
+                "body_memory_budget_mb": "automatic from available RAM/cgroup memory: 32–128 MiB",
+                "max_websocket_connections": "default: 8 connections, independent of worker count",
             }.get(spec.name, "not set")
         rows.append(
             {
@@ -233,6 +233,8 @@ def edit_ini(text: str, changes: Mapping[str, object]) -> str:
     option would create an invalid runtime path. The editor removes such an
     option instead; raw runtime flag validation remains unchanged.
     """
+    if not text.strip():
+        text = "[server]\nconfig_version = 1\n"
     load_settings_text(text, validate=False)
     pending = dict(changes)
     if set(pending) - set(SETTING_SPEC_BY_NAME):
@@ -384,7 +386,7 @@ def reset_portable_password(
             "remove authentication environment overrides before rotating credentials"
         )
     with _portable_lock(path):
-        before = _read_config(path)
+        before = _read_config(path) or "[server]\nconfig_version = 1\n"
         settings = load_settings_text(
             before,
             config_path=path,
@@ -499,44 +501,20 @@ def change_configuration(
     dry_run: bool = False,
     confirm: Callable[[str], bool] | None = None,
 ) -> ConfigurationResult:
+    if target != "portable":
+        raise SettingsError(
+            "persistent configuration uses the management application and --instance"
+        )
     before = _read_config(path)
     changes = dict(changes)
-    if target == "managed":
-        protected = {"auth_file"} & set(changes)
-        if protected:
-            raise SettingsError(
-                "managed state/auth paths are installation-owned; "
-                "use credentials reset for the password"
-            )
-    candidate_changes = dict(changes)
-    if "files_dir" in candidate_changes:
-        candidate_changes["files_dir"] = str(
-            Path(candidate_changes["files_dir"]).expanduser().resolve()
-            if candidate_changes["files_dir"]
-            else default_files_dir(managed=target == "managed")
+    if "files_dir" in changes:
+        changes["files_dir"] = (
+            str(Path(changes["files_dir"]).expanduser().absolute())
+            if changes["files_dir"]
+            else str(default_files_dir())
         )
-    if "files_dir" in changes and not changes["files_dir"]:
-        changes["files_dir"] = candidate_changes["files_dir"]
-    if target == "managed" and "files_dir" in candidate_changes:
-        from .managed_files import managed_files_path
-        from .model import ManagedLayout
-
-        layout = ManagedLayout()
-        host_folder = Path(candidate_changes["files_dir"])
-        if managed_files_path(layout).resolve() == host_folder:
-            changes.pop("files_dir", None)
-            candidate_changes.pop("files_dir", None)
-        else:
-            for private in (
-                layout.config_file.parent,
-                layout.data_root / "notes",
-                layout.acme_root,
-            ):
-                if private.resolve().is_relative_to(host_folder):
-                    raise SettingsError("files folder would expose private XFerry state")
-            candidate_changes["files_dir"] = str(layout.data_root / "files")
-    candidate = edit_ini(before, candidate_changes)
-    environment = dict(os.environ) if target == "portable" else {}
+    candidate = edit_ini(before, changes)
+    environment = dict(os.environ)
     resolved = resolve_settings(
         file_settings=load_settings_text(candidate, validate=False),
         env=environment,
@@ -545,21 +523,15 @@ def change_configuration(
     )
     resolved.to_server_config()
     files_folder = Path(resolved.files_dir or default_files_dir()).resolve()
-    if target == "portable" and path.resolve().is_relative_to(files_folder):
+    if path.resolve().is_relative_to(files_folder):
         raise SettingsError("configuration file must be outside the public files folder")
     diff = configuration_diff(before, candidate)
-    # Folder mappings may change even when the runtime destination is unchanged.
-    mapping_change = target == "managed" and "files_dir" in changes
-    if mapping_change:
-        diff += f"Host files folder: {Path(changes['files_dir']).expanduser().resolve()}\n"
-    if candidate == before and not mapping_change:
+    if candidate == before:
         return ConfigurationResult(0, "Configuration is unchanged.")
     if dry_run:
         return ConfigurationResult(0, "Configuration is valid; no changes made.", diff=diff)
     if confirm is not None and not confirm(diff):
         return ConfigurationResult(0, "Cancelled; no changes made.")
-    if target == "managed":
-        return _change_managed(path, before, candidate, changes, apply=apply, diff=diff)
     with _portable_lock(path):
         if _read_config(path) != before:
             raise SettingsError("configuration changed during editing; retry")
@@ -568,140 +540,6 @@ def change_configuration(
     if any(spec.env_name in environment for spec in SETTING_SPECS if spec.name in changes):
         message += ". Environment overrides still take precedence."
     return ConfigurationResult(0, message, changed=True, diff=diff)
-
-
-def _change_managed(
-    path: Path,
-    before: str,
-    candidate: str,
-    changes: Mapping[str, str],
-    *,
-    apply: bool,
-    diff: str,
-) -> ConfigurationResult:
-    if os.geteuid() != 0:
-        return ConfigurationResult(3, "managed configuration changes require root")
-    from .health import authenticated_ping
-    from .model import ManagedLayout
-    from .service import _credentials, _endpoint
-    from .setup import _wait_for_health
-    from .system import CommandRunner, FilesystemTransaction, managed_mutation
-
-    layout = ManagedLayout()
-    runner = CommandRunner()
-    with managed_mutation(layout.lock_file):
-        if path != layout.config_file or _read_config(path) != before:
-            raise SettingsError("managed configuration changed during editing; retry")
-        old_settings = load_settings_text(before, state_dir=layout.data_root, config_path=path)
-        new_settings = load_settings_text(candidate, state_dir=layout.data_root, config_path=path)
-        if "files_dir" in changes:
-            root = Path(old_settings.root_dir)
-            if any((root / ".xferry" / "encrypted-uploads").glob("*.json")):
-                raise SettingsError(
-                    "move encrypted payloads and their state together "
-                    "before changing the files folder"
-                )
-        metadata = path.stat()
-        active = runner.run(("systemctl", "is-active", "--quiet", "xferry.service")).returncode == 0
-        if active and not apply:
-            return ConfigurationResult(
-                2, "running service changes must be applied; use --dry-run to preview", diff=diff
-            )
-        from .managed_files import managed_files_path
-
-        host_folder = (
-            Path(changes["files_dir"]).expanduser().resolve()
-            if "files_dir" in changes
-            else managed_files_path(layout)
-        )
-        private_files = tuple(
-            Path(value).expanduser().resolve()
-            for value in (new_settings.cert_file, new_settings.key_file, new_settings.auth_file)
-            if value is not None
-        )
-        if any(private.is_relative_to(host_folder) for private in private_files):
-            raise SettingsError("files folder would expose a certificate, private key or auth file")
-        transaction = FilesystemTransaction()
-        try:
-            mapping = "files_dir" in changes
-            if mapping:
-                import pwd
-
-                from .managed_files import stage_managed_files_folder
-
-                account = pwd.getpwnam("xferry")
-                stage_managed_files_folder(
-                    layout,
-                    Path(changes["files_dir"]).expanduser().resolve(),
-                    transaction,
-                    account.pw_uid,
-                    account.pw_gid,
-                    private_files=private_files,
-                )
-            transaction.atomic_write(
-                path,
-                candidate.encode(),
-                mode=stat.S_IMODE(metadata.st_mode),
-                uid=metadata.st_uid,
-                gid=metadata.st_gid,
-            )
-            result = runner.run(
-                (str(layout.current_executable), "config", "check", "--config", str(path))
-            )
-            if result.returncode:
-                raise SettingsError("installed runtime rejected the configuration")
-            if mapping and runner.run(("systemctl", "daemon-reload")).returncode:
-                raise SettingsError("could not reload the service folder mapping")
-            if apply and active:
-                if runner.run(("systemctl", "restart", "xferry.service")).returncode:
-                    raise SettingsError("service restart failed")
-                endpoint = _endpoint(new_settings)
-                credentials = _credentials(layout.auth_file)
-                if endpoint is None or credentials is None:
-                    raise SettingsError("cannot verify service health")
-                readiness = _wait_for_health(
-                    authenticated_ping,
-                    endpoint,
-                    *credentials,
-                    readiness_timeout=120,
-                    timeout=2,
-                    monotonic=time.monotonic,
-                    sleep=time.sleep,
-                )
-                if not readiness.health.ok:
-                    raise SettingsError("service health check failed")
-            transaction.commit()
-        except Exception as error:
-            transaction.rollback()
-            runner.run(("systemctl", "daemon-reload"))
-            rollback_ok = True
-            if apply and active:
-                rollback_ok = runner.run(("systemctl", "restart", "xferry.service")).returncode == 0
-                old_endpoint = _endpoint(old_settings)
-                old_credentials = _credentials(layout.auth_file)
-                if rollback_ok and old_endpoint is not None and old_credentials is not None:
-                    rollback_ok = _wait_for_health(
-                        authenticated_ping,
-                        old_endpoint,
-                        *old_credentials,
-                        readiness_timeout=120,
-                        timeout=2,
-                        monotonic=time.monotonic,
-                        sleep=time.sleep,
-                    ).health.ok
-            message = "Configuration failed and was restored."
-            if isinstance(error, ValueError):
-                message += f" {error}"
-            if not rollback_ok:
-                message += " The previous service needs attention; run xferry doctor."
-            return ConfigurationResult(1, message, diff=diff)
-    applied = apply and active
-    message = "Configuration applied and service is healthy." if applied else "Configuration saved."
-    if not active:
-        message += " The service remains stopped."
-    elif not apply:
-        message += " Run sudo xferry restart to apply it."
-    return ConfigurationResult(0, message, changed=True, applied=applied, diff=diff)
 
 
 def render_rows(rows: Sequence[Mapping[str, object]], *, json_output: bool = False) -> None:

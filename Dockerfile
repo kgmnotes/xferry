@@ -49,15 +49,14 @@ RUN PIP_CONSTRAINT=/tmp/constraints/ci.txt pip install --upgrade pip && \
     PIP_CONSTRAINT=/tmp/constraints/ci.txt pip install "$(ls /tmp/*.whl)" && \
     rm -rf /tmp/*.whl /tmp/constraints
 
-# Prepare writable data and ACME state mount points. The ACME directory is
-# empty by default, but lets a named volume inherit non-root ownership.
-RUN mkdir -p /data/uploads /home/${APP_USER}/.xferry && \
-    chown -R ${APP_USER}:${APP_USER} /data /home/${APP_USER}/.xferry
+# Prepare one private runtime root; named volumes inherit non-root ownership.
+RUN mkdir -p /data/files /data/notes /data/acme /data/.xferry && \
+    chown -R ${APP_USER}:${APP_USER} /data
 
 USER ${APP_USER}
 WORKDIR /data
 
-EXPOSE 8080
+EXPOSE 8080 8443
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request as u, sys; \
@@ -65,4 +64,4 @@ r = u.Request('http://127.0.0.1:8080/', method='PING'); \
 sys.exit(0 if u.urlopen(r, timeout=2).status == 200 else 1)"
 
 ENTRYPOINT ["xferry"]
-CMD ["run", "--access", "lab", "--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/uploads"]
+CMD ["run", "--access", "lab", "--host", "0.0.0.0", "--port", "8080", "--files-dir", "/data/files"]

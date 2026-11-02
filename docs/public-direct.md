@@ -1,15 +1,13 @@
 # Public deployment
 
-Run `xferry setup` on the server host, select **Public**, then choose a domain or
-an automatic address. Use `xferry setup --docker` for a generated Docker
-deployment. Setup generates a 12-character Basic Auth password, configures HTTPS,
-starts the server and prints the URL. Later changes use `xferry config`.
-
-These commands require **xferry 0.3.2 or newer**. Existing `0.2.x` installations
-use [migration](migration.md); the [v0.2.0 guide](archive/0.2.0-installation.md)
-remains archived. Review the
-[external exposure baseline](security.md#external-exposure-baseline) before
-allowing untrusted clients.
+Run `xferry setup --backend native` on the server host, or
+`xferry setup --backend docker` for a container. Select Public, then an automatic
+address or your domain. Both backends publish trusted HTTPS on host port 443,
+prepare a 12-character Basic Auth password and print the URL. Later changes use
+`xferry config --instance ID`. Read the [quick start](quick-start.md) for the
+complete journey and [upgrade notes](migration.md) for existing state. The
+[external exposure baseline](security.md#external-exposure-baseline) defines the
+security and proxy requirements for public services.
 
 ## HTTPS requirements
 
@@ -29,7 +27,7 @@ browsers do not trust. `self-signed` is suitable for lab/private use.
 A scripted domain setup:
 
 ```console
-xferry setup --access public --domain files.example.com --files-dir /srv/share
+xferry setup --backend native --access public --domain files.example.com --files-dir /srv/share
 ```
 
 ## Review configuration

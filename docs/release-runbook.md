@@ -114,7 +114,7 @@ lifecycle or Pages gates pass. See [First public release bootstrap](#first-publi
 
 After the reviewed implementation is merged into protected `main`, dispatch
 `Native Systemd Fixture Matrix` (`managed-systemd-matrix.yml`) on `main`.
-It builds signed, nonproduction 0.1.1 and 0.1.2 fixtures separately on native
+It builds signed, nonproduction 0.5.0 and 0.5.1 fixtures separately on native
 x86_64 and aarch64 runners. Each runner exercises Ubuntu 22.04, 24.04 and
 26.04 plus Debian 12 and 13 with actual systemd as PID 1, a private cgroup
 namespace and no host runtime mounts or external container network.
@@ -126,8 +126,11 @@ the app probe; signature, TLS, checksum and size checks remain mandatory.
 
 Every pair must pass install, private setup, deep doctor, dry-run update,
 version-changing update, authenticated exact-version health, rollback and
-conservative uninstall. Configuration, authentication and sentinel data must
-be preserved. The final job requires both architectures and all ten passing
+conservative uninstall. Runtime configuration, the operator profile,
+authentication and sentinel data must be preserved. The schema-2 deployment
+identity must stay unchanged and record the exact active version and executable
+SHA256. Dry-run update verifies signed target metadata without activating it.
+The final job requires both architectures and all ten passing
 receipts, bound to source commit, run, attempt and the checked-out verifier
 hashes; a missing, failed or duplicate pair fails the matrix.
 
@@ -168,6 +171,14 @@ Before any publication, record whether a valid public predecessor exists and
 include it with the exact version/tag/source in the single release authorization.
 Neither an earlier staging approval nor successful local code/tests authorizes
 a production release.
+
+A predecessor must belong to the controller's compatible deployment line:
+`MIN_DEPLOYMENT_RELEASE` is currently 0.5.0. Selection and signed-plan validation
+both reject earlier versions. Published 0.4.x artifacts remain valid historical
+releases, but cannot establish upgrade or rollback acceptance for the new schema 2
+deployment model. Therefore 0.5.0 is the first public version of this compatible
+line, even though earlier XFerry releases exist. Its release authorization must
+explicitly record this missing compatible predecessor.
 
 If the authorized first public version has no valid earlier public
 managed version, the public plan fails closed with `public_baseline_required`.

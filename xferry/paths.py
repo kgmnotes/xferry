@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -37,36 +36,6 @@ def runtime_state_dir() -> Path | None:
     return Path(runtime_home).expanduser().resolve() if runtime_home else None
 
 
-def state_for_config(config_path: str | Path) -> Path | None:
-    """Read the bounded private context produced by one-off config migration."""
-    config = Path(config_path).expanduser().resolve()
-    sidecar = config.with_name(f".{config.name}.state.json")
-    try:
-        metadata = sidecar.lstat()
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16384:
-        raise ValueError(f"invalid migrated state context: {sidecar}")
-    try:
-        with sidecar.open(encoding="utf-8") as context_file:
-            text = context_file.read(16385)
-        if len(text.encode("utf-8")) > 16384:
-            raise ValueError("context exceeds size limit")
-        value = json.loads(text)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError(f"invalid migrated state context: {sidecar}") from exc
-    if (
-        not isinstance(value, dict)
-        or value.get("schema") != 1
-        or not isinstance(value.get("state_dir"), str)
-        or not isinstance(value.get("files_dir"), str)
-        or not Path(value["state_dir"]).is_absolute()
-        or not Path(value["files_dir"]).is_absolute()
-    ):
-        raise ValueError(f"invalid migrated state context: {sidecar}")
-    return Path(value["state_dir"]).resolve()
-
-
 def automatic_state_dir(
     files_dir: str | Path | None = None,
     config_path: str | Path | None = None,
@@ -83,3 +52,31 @@ def automatic_state_dir(
     identity = str(selected_config)
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return default_user_data_dir() / "state" / key
+
+
+@dataclass(frozen=True)
+class StateLayout:
+    """All private runtime storage belongs to one explicit deployment root."""
+
+    root: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "root", Path(self.root).expanduser().resolve())
+
+    @property
+    def notes(self) -> Path:
+        return self.root / "notes"
+
+    @property
+    def acme(self) -> Path:
+        return self.root / "acme"
+
+    @property
+    def transfer(self) -> Path:
+        return self.root / ".xferry"
+
+    def ensure_private(self) -> None:
+        for path in (self.root, self.notes, self.acme, self.transfer):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if path.is_symlink() or not path.is_dir():
+                raise ValueError(f"private state must be a directory: {path}")

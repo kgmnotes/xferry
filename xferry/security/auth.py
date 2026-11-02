@@ -244,31 +244,27 @@ class AuthAdmissionController:
     def __init__(
         self,
         *,
-        workers: int = 10,
         max_failures: int = 5,
         cooldown: float = 30.0,
         max_peers: int = 4096,
         prune_interval: float = 5.0,
-        wait_timeout: float = 2.0,
-        max_pending: int | None = None,
-        max_active: int | None = None,
+        wait_timeout: float = 5.0,
+        max_pending: int = 16,
+        max_active: int = 2,
         per_peer_pending: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if workers < 1:
-            raise ValueError("workers must be at least 1")
-        derived_max_pending = min(6, max(1, workers - 2))
         self.max_failures = _positive_int(max_failures, "max_failures")
         self.cooldown = _positive_float(cooldown, "cooldown")
         self.max_peers = _positive_int(max_peers, "max_peers")
         self.prune_interval = _non_negative_float(prune_interval, "prune_interval")
         self.wait_timeout = _non_negative_float(wait_timeout, "wait_timeout")
         self.max_pending = _positive_int(
-            derived_max_pending if max_pending is None else max_pending,
+            max_pending,
             "max_pending",
         )
         self.max_active = _positive_int(
-            min(2, self.max_pending) if max_active is None else max_active,
+            max_active,
             "max_active",
         )
         self.per_peer_pending = _positive_int(
@@ -287,6 +283,16 @@ class AuthAdmissionController:
         self._active = 0
         self._outstanding = 0
         self._last_prune = clock()
+        self._closed = False
+
+    def close(self) -> None:
+        """Cancel queued attempts and wake waiters during server shutdown."""
+        with self._condition:
+            self._closed = True
+            for waiter in tuple(self._waiters):
+                waiter.denied = self._deny("capacity", retry_after=1)
+                self._remove_waiter_locked(waiter)
+            self._condition.notify_all()
 
     def acquire(self, peer: str) -> AuthAttemptLease | AuthAdmissionDenied:
         """Reserve an auth verification slot or return a bounded denial."""
@@ -294,6 +300,8 @@ class AuthAdmissionController:
             raise ValueError("peer must be a non-empty string")
         now = self._clock()
         with self._condition:
+            if self._closed:
+                return self._deny("capacity", retry_after=1)
             self._prune_if_needed_locked(now, force=False)
             state = self._peers.get(peer)
             if state is None:

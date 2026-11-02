@@ -2,7 +2,7 @@
 
 Containers have private namespaces, no network, no host runtime mounts, and only
 one disposable evidence directory writable. Public release readiness is never
-implied by these ephemeral 0.1.1 -> 0.1.2 fixtures.
+implied by these ephemeral 0.5.0 -> 0.5.1 fixtures.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from xferry.management.release_contract import (  # noqa: E402
     require_workflow_run,
 )
 
-VERSIONS = ("0.1.1", "0.1.2")
+VERSIONS = ("0.5.0", "0.5.1")
 RELEASE_BASE_URL = "https://127.0.0.1:44443/releases"
 REHEARSAL_KEY_ID = "xferry-rehearsal-2026-10"
 PAIRS = tuple(
@@ -626,8 +626,8 @@ def validate_probe(
                 "receipt_invalid",
             )
         if "version" in fields:
-            expected_version = "0.1.2" if phase == "update" else "0.1.1"
-            retained = list(VERSIONS) if phase in {"update", "rollback"} else ["0.1.1"]
+            expected_version = "0.5.1" if phase == "update" else "0.5.0"
+            retained = list(VERSIONS) if phase in {"update", "rollback"} else ["0.5.0"]
             _require(
                 stage["version"] == expected_version
                 and stage["current_link"] == f"releases/{expected_version}"
@@ -638,13 +638,13 @@ def validate_probe(
             _require(stage["health"] is True, "receipt_invalid")
         if "preserved" in fields:
             preserved = _object(
-                stage["preserved"], {"config", "auth", "sentinel"}, "receipt_invalid"
+                stage["preserved"], {"config", "auth", "profile", "sentinel"}, "receipt_invalid"
             )
             _require(all(value is True for value in preserved.values()), "receipt_invalid")
         if "checks" in fields:
             checks = _object(
                 stage["checks"],
-                set(_doctor_statuses(canonical=True)),
+                set(_doctor_statuses()),
                 "receipt_invalid",
             )
             _require(all(value is True for value in checks.values()), "receipt_invalid")

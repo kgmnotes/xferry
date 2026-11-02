@@ -37,6 +37,7 @@ ReceiveRejectionReason = Literal[
     "unsupported_transfer_encoding",
     "invalid_content_length",
     "body_memory_budget_exceeded",
+    "request_admission_rejected",
 ]
 ReceiveRejectCallback = Callable[[ReceiveRejectionReason], None]
 BodyLimitResolver = Callable[[str], int | None]
@@ -214,6 +215,7 @@ def receive_request_result(
     on_reject: ReceiveRejectCallback | None = None,
     body_memory_budget: BodyMemoryBudget | None = None,
     body_limit_resolver: BodyLimitResolver | None = None,
+    admit_headers: Callable[[bytes], bool] | None = None,
 ) -> RequestReceiveResult:
     """Read one complete HTTP request and hold any body-memory reservation.
 
@@ -381,6 +383,10 @@ def receive_request_result(
                                 effective_body_limit,
                             )
                             return reject("body_too_large")
+                        if admit_headers is not None and not admit_headers(
+                            data[: header_end_pos + len(HEADER_TERMINATOR)]
+                        ):
+                            return reject("request_admission_rejected")
                         if content_length > 0 and body_memory_budget is not None:
                             body_reservation = body_memory_budget.try_reserve(content_length)
                             if body_reservation is None:

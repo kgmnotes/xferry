@@ -33,8 +33,8 @@ from xferry.management.release_contract import (  # noqa: E402
 )
 
 REHEARSAL_KEY_ID = "xferry-rehearsal-2026-10"
-SOURCE_VERSION = "0.1.1"
-TARGET_VERSION = "0.1.2"
+SOURCE_VERSION = "0.5.0"
+TARGET_VERSION = "0.5.1"
 REHEARSAL_VERSIONS = (SOURCE_VERSION, TARGET_VERSION)
 _PRODUCTION_RELEASE_URL = "https://github.com/kgmnotes/xferry/releases"
 _TRUST_START = "EMBEDDED_RELEASE_KEYS: tuple[TrustedReleaseKey, ...] = ("
@@ -42,6 +42,7 @@ _TRUST_END = "\nDEFAULT_RELEASE_KEY_RING = ReleaseKeyRing(EMBEDDED_RELEASE_KEYS)
 _STATE_PATHS: Mapping[str, Path] = {
     "config": Path("/etc/xferry/xferry.ini"),
     "auth": Path("/etc/xferry/auth"),
+    "profile": Path("/etc/xferry/profile.ini"),
     "data": Path("/var/lib/xferry/rehearsal-sentinel"),
 }
 
@@ -417,6 +418,34 @@ def verify_health(expected_version: str, evidence: Path) -> None:
     )
 
 
+def verify_outcome(phase: str, result_path: Path, setup_path: Path) -> None:
+    """Replay the same installed CLI and deployment contracts as the native matrix."""
+    from tools import managed_systemd_probe as probe
+
+    result = json.loads(result_path.read_bytes(), object_pairs_hook=probe._json_object)
+    setup = json.loads(setup_path.read_bytes(), object_pairs_hook=probe._json_object)
+    identity = probe._setup_outcome(setup, files_dir=Path("/var/lib/xferry/files"))
+    probe._operation_outcome(result)
+    if phase == "setup":
+        probe._deployment_identity(probe.SYSTEM_PATHS, SOURCE_VERSION, identity)
+    elif phase == "doctor":
+        probe._doctor_outcome(result, identity=identity)
+    else:
+        probe._release_outcome(
+            result,
+            phase=phase,
+            identity=identity,
+            source=SOURCE_VERSION,
+            target=TARGET_VERSION,
+        )
+        if phase != "uninstall":
+            probe._deployment_identity(
+                probe.SYSTEM_PATHS,
+                TARGET_VERSION if phase == "update" else SOURCE_VERSION,
+                identity,
+            )
+
+
 def capture_state(output: Path) -> None:
     """Capture root-only hashes used solely for later equality checks."""
     snapshot: dict[str, str] = {}
@@ -468,6 +497,15 @@ def _parser() -> argparse.ArgumentParser:
     health.add_argument("--expected-version", choices=REHEARSAL_VERSIONS, required=True)
     health.add_argument("--evidence", type=Path, required=True)
 
+    outcome = commands.add_parser("verify-outcome")
+    outcome.add_argument(
+        "--phase",
+        choices=("setup", "doctor", "dry_run", "update", "rollback", "uninstall"),
+        required=True,
+    )
+    outcome.add_argument("--result", type=Path, required=True)
+    outcome.add_argument("--setup-result", type=Path, required=True)
+
     capture = commands.add_parser("capture-state")
     capture.add_argument("--output", type=Path, required=True)
 
@@ -501,6 +539,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     elif arguments.command == "verify-health":
         verify_health(arguments.expected_version, arguments.evidence.resolve())
+    elif arguments.command == "verify-outcome":
+        verify_outcome(
+            arguments.phase, arguments.result.resolve(), arguments.setup_result.resolve()
+        )
     elif arguments.command == "capture-state":
         capture_state(arguments.output.resolve())
     else:

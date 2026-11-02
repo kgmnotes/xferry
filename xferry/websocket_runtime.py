@@ -49,12 +49,10 @@ class WebSocketRuntime:
         self._handle_message = handle_message
         self._record_timeout = record_timeout
         self._slots = threading.BoundedSemaphore(max_connections)
-        self._legacy_leases: list[AdmissionLease] = []
-        self._legacy_lock = threading.Lock()
 
     def upgrade(self, sock: socket.socket, request: HTTPRequest) -> bool:
         """Admit and run a WebSocket session; return false when capacity is full."""
-        lease = self._acquire()
+        lease = self.acquire_session()
         if lease is None:
             return False
         try:
@@ -174,23 +172,7 @@ class WebSocketRuntime:
         """Refresh the facade callback used by compatibility delegates."""
         self._handle_message = callback
 
-    def try_acquire_legacy_slot(self) -> bool:
-        """Compatibility delegate for focused facade admission tests."""
-        lease = self._acquire()
-        if lease is None:
-            return False
-        with self._legacy_lock:
-            self._legacy_leases.append(lease)
-        return True
-
-    def release_legacy_slot(self) -> None:
-        """Release a compatibility admission lease once."""
-        with self._legacy_lock:
-            lease = self._legacy_leases.pop() if self._legacy_leases else None
-        if lease is not None:
-            lease.release()
-
-    def _acquire(self) -> AdmissionLease | None:
+    def acquire_session(self) -> AdmissionLease | None:
         if not self._slots.acquire(blocking=False):
             self._metrics.record_websocket_rejected()
             logger.warning(

@@ -154,6 +154,35 @@
                     <section id="upload-tab" class="tab-content active workspace-view tool-pane" role="tabpanel" aria-labelledby="tab-upload">
                     <div class="tool-stack tool-stack--upload">
                         <div class="tool-card tool-card--workflow">
+                            <div class="upload-picker-actions" id="uploadPickerActions" data-testid="send-primary-action">
+                                <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
+                                    <label class="upload-label" for="fileInput">
+                                        <div class="upload-icon" aria-hidden="true">[+]</div>
+                                        <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
+                                        <div class="sr-only" id="uploadMethodHint">POST</div>
+                                    </label>
+                                    <input type="file" id="fileInput" multiple tabindex="-1">
+                                </div>
+                                <button
+                                    class="btn-info"
+                                    id="uploadBtn"
+                                    disabled
+                                    title="Отправить"
+                                    aria-label="Отправить"
+                                    data-i18n="uploadAllBtn"
+                                    data-i18n-title="uploadAllBtn"
+                                    data-i18n-aria-label="uploadAllBtn"
+                                    data-testid="upload-btn"
+                                >Отправить</button>
+                            </div>
+
+                            <div class="sr-only" id="uploadSelectionState" role="status" aria-live="polite" aria-atomic="true" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
+
+                            <div class="file-list queue-list" id="fileList" data-testid="file-list"></div>
+
+                            <details class="upload-advanced" id="uploadAdvancedControls">
+                                <summary data-i18n="uploadAdvancedControls">Расширенные параметры</summary>
+                                <div class="upload-advanced__body">
                             <section class="upload-method-section" aria-labelledby="uploadMethodTitle">
                                 <h3 id="uploadMethodTitle" data-i18n="uploadHelpMethodsTitle">Метод</h3>
                                 <div class="upload-method-group" role="radiogroup" aria-label="Метод обычной загрузки" data-i18n-aria-label="uploadMethodLabel">
@@ -215,33 +244,7 @@
                                 </div>
                             </section>
 
-                            <div class="upload-picker-actions" id="uploadPickerActions" data-testid="send-primary-action">
-                                <div class="upload-section dropzone" id="dropZone" tabindex="0" role="button" aria-controls="fileInput" aria-describedby="uploadMethodHint uploadSelectionState" aria-label="Выбрать файлы для обычной загрузки" data-i18n-aria-label="uploadDropZoneLabel" data-primary-action="choose-upload-files">
-                                    <label class="upload-label" for="fileInput">
-                                        <div class="upload-icon" aria-hidden="true">[+]</div>
-                                        <div class="upload-text" data-i18n="dropFilesHere">Выберите файлы или перетащите сюда</div>
-                                        <div class="sr-only" id="uploadMethodHint">POST</div>
-                                    </label>
-                                    <input type="file" id="fileInput" multiple tabindex="-1">
-                                </div>
-                                <button
-                                    class="btn-info"
-                                    id="uploadBtn"
-                                    disabled
-                                    title="Отправить"
-                                    aria-label="Отправить"
-                                    data-i18n="uploadAllBtn"
-                                    data-i18n-title="uploadAllBtn"
-                                    data-i18n-aria-label="uploadAllBtn"
-                                    data-testid="upload-btn"
-                                >Отправить</button>
-                            </div>
-
-                            <div class="sr-only" id="uploadSelectionState" role="status" aria-live="polite" aria-atomic="true" data-i18n="uploadSelectionIdle">Файлы не выбраны</div>
-
-                            <div class="file-list queue-list" id="fileList" data-testid="file-list"></div>
-
-                            <details class="upload-request-summary" id="uploadRequestSummary" open aria-labelledby="uploadRequestSummaryTitle">
+                            <details class="upload-request-summary" id="uploadRequestSummary" aria-labelledby="uploadRequestSummaryTitle">
                                 <summary id="uploadRequestSummaryTitle" data-i18n="uploadRequestSummaryTitle">Запрос перед отправкой</summary>
                                 <dl class="upload-request-summary__grid">
                                     <div>
@@ -261,6 +264,9 @@
                                         <dd data-upload-summary="filename-source">часть multipart</dd>
                                     </div>
                                 </dl>
+                            </details>
+
+                                </div>
                             </details>
 
                             <div class="sr-only" id="uploadResponseAreaLive" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1061,7 +1067,7 @@
         <div class="sr-only" id="appNotificationAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
         <footer class="site-footer">
-            <p id="appVersion" data-app-version="0.4.0">v0.4.0</p>
+            <p id="appVersion" data-app-version="0.5.0">v0.5.0</p>
             <a href="https://t.me/kgmnotes" target="_blank" rel="noopener" id="telegramLink" class="telegram-link">@kgmnotes</a>
         </footer>
     </div>

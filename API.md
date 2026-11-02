@@ -132,7 +132,15 @@ alias, or wider runtime authority.
 
 ## Request Framing and Caps
 
-The receive layer enforces protocol framing before handler dispatch:
+The receive layer enforces protocol framing before handler dispatch. Header
+validation, Host admission and Basic Auth run before body allocation and reading.
+
+TCP connections (32), TLS handshakes (2), short computations (4), transfers (4)
+and WebSockets (8) have independent admission limits. Idle keep-alive and
+WebSocket sessions reserve no short-operation permit. Auth admits 16 checks in
+total, including 2 active password verifications; its queue deadline is 5 seconds.
+TLS queue plus handshake has a 5-second deadline; request/transfer queues wait
+up to 2 seconds. Idle HTTP keep-alive expires after 5 seconds.
 
 - Request headers are capped by `--max-header-size KB` (`64` KiB by default)
   before the terminating blank line.
@@ -140,11 +148,12 @@ The receive layer enforces protocol framing before handler dispatch:
   using the declared `Content-Length` and the bytes actually read. Enabled
   encrypted-transfer routes use their exact route-specific caps instead.
 - Concurrent in-flight request bodies are reserved against
-  `--body-memory-budget MB`. The default budget is `--workers * --max-size`.
+  `--body-memory-budget MB`. The automatic budget is one eighth of effective host/container RAM, bounded
+  to 32–128 MiB and independent of processing/connection counts.
   Aggregate budget exhaustion returns `503` before the remaining body bytes are
   read.
 - Active WebSocket upgrades are capped by `--max-websocket-connections N`.
-  The default is `--workers // 2`; `0` rejects all WebSocket admissions with
+  The default is `8`; `0` rejects all WebSocket admissions with
   `503`.
 - Incomplete WebSocket frames are capped by
   `--websocket-frame-idle-timeout SECONDS` (`5` seconds by default). Timeout
@@ -530,7 +539,7 @@ PING / HTTP/1.1
 ```json
 {
   "health": "ready",
-  "server": "XFerry/0.4.0",
+  "server": "XFerry/0.5.0",
   "timestamp": "2026-08-14T00:00:00+00:00",
   "supported_methods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "FETCH", "INFO", "PING", "NONE", "NOTE", "SMUGGLE"],
   "method_groups": {
@@ -1630,7 +1639,7 @@ Upgrade validation requires `GET`, `Host`, `Upgrade: websocket`,
 `Connection: Upgrade`, a valid base64 16-byte `Sec-WebSocket-Key`, and
 `Sec-WebSocket-Version: 13`. The connection uses a 60-second idle timeout; the
 server sends ping frames while idle. Active connections are limited by
-`--max-websocket-connections` (`--workers // 2` by default), and incomplete
+`--max-websocket-connections` (`8` by default), and incomplete
 frames must finish within `--websocket-frame-idle-timeout` (`5` seconds by
 default). Missing crypto rejects admission with `501 feature_unavailable`.
 

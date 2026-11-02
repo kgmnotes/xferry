@@ -26,6 +26,7 @@ ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/xferry
 StateDirectory=xferry
+StateDirectoryMode=0750
 RuntimeDirectory=xferry
 UMask=0077
 
