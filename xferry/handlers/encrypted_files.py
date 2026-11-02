@@ -94,6 +94,21 @@ def is_encrypted_transfer_target(request: HTTPRequest) -> bool:
     return _is_reserved_path(request.path)
 
 
+def is_encrypted_bulk_target(request: HTTPRequest) -> bool:
+    """Classify the data routes using the same canonical patterns as dispatch."""
+    if request.raw_target != request.raw_path or request.raw_path != request.path:
+        return False
+    path = request.raw_path
+    return bool(
+        (request.method == "PUT" and _UPLOAD_CHUNK_RE.fullmatch(path))
+        or (
+            request.method == "GET"
+            and (_FILE_DATA_RE.fullmatch(path) or _FILE_CHUNK_RE.fullmatch(path))
+        )
+        or (request.method == "POST" and _FILE_DECRYPT_RE.fullmatch(path))
+    )
+
+
 def encrypted_request_body_limit(headers_part: str) -> int | None:
     """Return the pre-allocation body cap for one reserved request line."""
     request_line = headers_part.split("\r\n", 1)[0]

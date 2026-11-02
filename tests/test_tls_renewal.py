@@ -19,6 +19,11 @@ from xferry.security.tls import check_cert_needs_renewal
 from xferry.security.tls_manager import TLSManager
 
 
+@pytest.fixture(autouse=True)
+def isolated_private_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("xferry.security.tls_manager.automatic_state_dir", lambda: tmp_path)
+
+
 def pair(
     root: Path,
     *,

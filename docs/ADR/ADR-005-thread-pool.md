@@ -1,6 +1,6 @@
 # ADR-005: Thread pool concurrency
 
-- **Status:** accepted
+- **Status:** superseded by ADR-013
 
 ## Context
 

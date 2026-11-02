@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import stat
 import struct
 from collections.abc import Callable
 from typing import Any
@@ -140,7 +141,7 @@ def _lifecycle_factory(
     return ServerLifecycle(
         host="127.0.0.1",
         port=8080,
-        max_workers=1,
+        max_connections=1,
         tls_manager=tls,
         metrics=metrics or MetricsCollector(),
         handle_client=lambda _sock, _address: None,
@@ -156,6 +157,26 @@ def test_runtime_components_are_real_importable_boundaries() -> None:
     """Removing either extracted component must break the boundary contract."""
     assert importlib.util.find_spec("xferry.lifecycle") is not None
     assert importlib.util.find_spec("xferry.websocket_runtime") is not None
+
+
+@pytest.mark.parametrize("existing_root", [False, True])
+def test_runtime_state_is_private_without_changing_existing_user_directories(
+    tmp_path, existing_root: bool
+) -> None:
+    from tests.server_factory import make_server
+
+    root = tmp_path / "private-state"
+    files = tmp_path / "shared-files"
+    files.mkdir(mode=0o755)
+    files.chmod(0o755)
+    if existing_root:
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
+    server = make_server(root_dir=root, files_dir=files, quiet=True)
+    assert stat.S_IMODE(root.stat().st_mode) == (0o755 if existing_root else 0o700)
+    assert stat.S_IMODE(files.stat().st_mode) == 0o755
+    for directory in (server.state.notes, server.state.acme, server.state.transfer):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
 
 
 @pytest.mark.parametrize("failure_point", ["tls", "bind", "listen"])

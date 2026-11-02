@@ -58,7 +58,7 @@ class ServiceStatus:
     config: str
     enabled: str
     service: str
-    health: str = "unknown"
+    health: str = "not_checked"
     files_dir: str | None = None
 
     def to_json(self) -> dict[str, object]:
@@ -238,11 +238,11 @@ def run_doctor(options: DoctorOptions, context: ServiceContext) -> DoctorReport:
 
     endpoint = _endpoint(settings)
     if options.skip_network:
-        checks["network"] = DoctorCheck("skipped", "network checks skipped")
-        checks["health"] = DoctorCheck("skipped", "authenticated health check skipped")
+        checks["network"] = DoctorCheck("not_checked", "network checks not requested")
+        checks["health"] = DoctorCheck("not_checked", "authenticated health check not requested")
     elif endpoint is None:
         checks["network"] = DoctorCheck("unavailable", "endpoint unavailable")
-        checks["health"] = DoctorCheck("skipped", "authenticated health check skipped")
+        checks["health"] = DoctorCheck("not_checked", "authenticated health check not requested")
     else:
         reachable = _reachable(context, endpoint)
         checks["network"] = DoctorCheck(
@@ -261,7 +261,9 @@ def run_doctor(options: DoctorOptions, context: ServiceContext) -> DoctorReport:
                     "authenticated health check passed" if health.ok else _health_detail(health),
                 )
         else:
-            checks["health"] = DoctorCheck("skipped", "authenticated health check skipped")
+            checks["health"] = DoctorCheck(
+                "not_checked", "authenticated health check not requested"
+            )
 
     exit_code = _doctor_exit(checks)
     code, message, detail, next_actions = _doctor_diagnostic(exit_code, checks, facts)
@@ -331,7 +333,7 @@ def _endpoint(settings: ServerSettings | None) -> HealthEndpoint | None:
         return None
     tls = settings.effective_tls_enabled()
     host = settings.domain
-    if host is None and settings.sslip and settings.public_ip:
+    if host is None and settings.https_mode == "auto" and settings.public_ip:
         host = sslip_domain_for_ip(settings.public_ip)
     if host is None and tls and settings.allowed_hosts:
         host = next(

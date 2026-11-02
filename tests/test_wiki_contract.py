@@ -17,7 +17,6 @@ ACTIVE_TEXT_PATHS = (
     Path("mkdocs.yml"),
     Path("packaging/install.sh.in"),
     Path("deploy/systemd/xferry.service"),
-    Path("deploy/docker/docker-compose.public-direct.yml"),
     Path("xferry/management/data/xferry.service"),
     Path("xferry/management/releases.py"),
     Path(".github/workflows/release.yml"),

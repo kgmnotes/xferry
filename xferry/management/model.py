@@ -81,7 +81,7 @@ class ManagedLayout:
     @property
     def acme_root(self) -> Path:
         """Return the private state root used by the TLS/ACME implementation."""
-        return self.runtime_home / ".xferry"
+        return self.runtime_home / "acme"
 
 
 @dataclass(frozen=True)

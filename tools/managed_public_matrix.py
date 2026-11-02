@@ -36,6 +36,7 @@ from xferry.management.release_trust import (  # noqa: E402
     verify_detached_signature,
     verify_signed_manifest,
 )
+from xferry.management.versions import MIN_DEPLOYMENT_RELEASE  # noqa: E402
 
 SCHEMA = 2
 REPOSITORY = "kgmnotes/xferry"
@@ -290,7 +291,12 @@ def validate_public_plan(
         and result["repository"] == REPOSITORY
     )
     _arguments(result["sourceCommit"], result["workflowRun"], result["workflowAttempt"])
-    _require(_tag(result["previousTag"]) < _tag(result["targetTag"]), "public_baseline_required")
+    _require(
+        _tag("v" + MIN_DEPLOYMENT_RELEASE)
+        <= _tag(result["previousTag"])
+        < _tag(result["targetTag"]),
+        "public_baseline_required",
+    )
     helpers = _object(
         result["helpers"], {"matrixSha", "probeSha", "commonProbeSha", "containerHelperSha"}
     )
@@ -401,7 +407,7 @@ def prepare_public_plan(
     fetch: Fetch = fetch_public,
     key_ring: ReleaseKeyRing | None = None,
 ) -> dict[str, Any]:
-    """Select highest lower signed stable public release, never a latest alias."""
+    """Select a compatible lower signed stable public release, never a latest alias."""
     _arguments(source_commit, workflow_run, workflow_attempt)
     target_version = _tag(target_tag)
     ring = DEFAULT_RELEASE_KEY_RING if key_ring is None else key_ring
@@ -419,7 +425,7 @@ def prepare_public_plan(
             if (
                 isinstance(tag, str)
                 and _STABLE.fullmatch(tag)
-                and _tag(tag) < target_version
+                and _tag("v" + MIN_DEPLOYMENT_RELEASE) <= _tag(tag) < target_version
                 and item.get("draft") is False
                 and item.get("prerelease") is False
             ):
@@ -522,14 +528,7 @@ def validate_public_probe(
     _require(isinstance(result["stages"], list) and len(result["stages"]) == len(fixture._PHASES))
     previous = plan["releases"]["previous"]["version"]
     target = plan["releases"]["target"]["version"]
-    contracts = _object(result["cliContracts"], {"previous", "target"})
-    _require(
-        isinstance(contracts["previous"], str)
-        and isinstance(contracts["target"], str)
-        and (contracts["previous"], contracts["target"])
-        in {("legacy", "legacy"), ("legacy", "canonical"), ("canonical", "canonical")}
-    )
-    conversion = contracts == {"previous": "legacy", "target": "canonical"}
+    _require(result["cliContracts"] == {"previous": "canonical", "target": "canonical"})
     for raw, phase in zip(result["stages"], fixture._PHASES, strict=True):
         fields = {"phase", "status"}
         if phase != "guard":
@@ -542,8 +541,6 @@ def validate_public_probe(
             fields.add("preserved")
         if phase == "doctor":
             fields.add("checks")
-        if phase == "update" and conversion:
-            fields.add("configuration")
         if phase == "uninstall":
             fields.add("removed")
         stage = _object(raw, fields)
@@ -573,29 +570,14 @@ def validate_public_probe(
             )
         if "health" in fields:
             _require(stage["health"] is True)
-        preserved_fields = {"auth", "sentinel"}
-        if phase != "update" or not conversion:
-            preserved_fields.add("config")
+        preserved_fields = {"config", "auth", "profile", "sentinel"}
         if phase in {"dry_run", "rollback"}:
             preserved_fields.add("unit")
-        if phase == "update" and conversion:
-            configuration = _object(
-                stage["configuration"],
-                {
-                    "transition",
-                    "values_preserved",
-                    "files_path_preserved",
-                    "state_path_preserved",
-                    "unit_updated",
-                },
-            )
-            _require(configuration.pop("transition") == "legacy-to-canonical")
-            _require(all(value is True for value in configuration.values()))
         for key, expected in (
             ("preserved", preserved_fields),
             (
                 "checks",
-                set(fixture._doctor_statuses(canonical=contracts["previous"] == "canonical")),
+                set(fixture._doctor_statuses()),
             ),
         ):
             if key in fields:

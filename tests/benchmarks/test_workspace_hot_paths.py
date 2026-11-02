@@ -283,16 +283,17 @@ def test_websocket_slot_saturation(benchmark, tmp_path: Path) -> None:
     )
 
     def saturate_slots() -> tuple[int, bool]:
-        acquired = 0
+        leases = []
         try:
             for _index in range(WEBSOCKET_SLOT_COUNT):
-                if server._try_acquire_websocket_slot():
-                    acquired += 1
-            extra_slot = server._try_acquire_websocket_slot()
-            return acquired, extra_slot
+                lease = server._websocket_runtime.acquire_session()
+                if lease is not None:
+                    leases.append(lease)
+            extra_slot = server._websocket_runtime.acquire_session()
+            return len(leases), extra_slot is not None
         finally:
-            for _index in range(acquired):
-                server._release_websocket_slot()
+            for lease in leases:
+                lease.release()
 
     result = benchmark.pedantic(saturate_slots, rounds=BENCHMARK_ROUNDS, iterations=1)
     assert result == (WEBSOCKET_SLOT_COUNT, False)

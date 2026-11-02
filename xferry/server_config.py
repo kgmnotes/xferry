@@ -11,6 +11,7 @@ from .encrypted_transfer import EUF_CHUNK_SIZE, EUF_GCM_TAG_SIZE, EUF_MAX_FILE_S
 from .extensions import PluginSpec
 from .features import registry_methods
 from .request_admission import is_unspecified_host, normalize_allowed_hosts, parse_http_origin
+from .resource_policy import default_body_memory_budget
 from .runtime_posture import RuntimePosture
 
 DEFAULT_STREAM_SEND_IDLE_TIMEOUT = 5.0
@@ -44,14 +45,23 @@ class ServerLimits:
     body_min_rate: float = 0.0
     stream_send_idle_timeout: float = DEFAULT_STREAM_SEND_IDLE_TIMEOUT
     stream_send_timeout: float | None = DEFAULT_STREAM_SEND_TIMEOUT
-    max_workers: int = 10
+    max_connections: int = 32
+    max_workers: int = 4
+    max_tls_handshakes: int = 2
+    max_transfers: int = 4
+    auth_max_active: int = 2
+    auth_max_pending: int = 16
+    auth_wait_timeout: float = 5.0
+    tls_handshake_timeout: float = 5.0
+    admission_wait_timeout: float = 2.0
+    keep_alive_timeout: float = 5.0
 
 
 @dataclass(frozen=True, slots=True)
 class WebSocketConfig:
     """WebSocket admission and frame-read limits."""
 
-    max_connections: int | None = None
+    max_connections: int | None = 8
     frame_idle_timeout: float = DEFAULT_WEBSOCKET_FRAME_IDLE_TIMEOUT
 
 
@@ -166,12 +176,25 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
     )
     _require_optional_number("stream_send_timeout", limits.stream_send_timeout, minimum_exclusive=0)
     _require_int("max_workers", limits.max_workers, minimum=1)
+    for name in (
+        "max_connections",
+        "max_tls_handshakes",
+        "max_transfers",
+        "auth_max_active",
+        "auth_max_pending",
+    ):
+        _require_int(name, getattr(limits, name), minimum=1)
+    if limits.auth_max_active > limits.auth_max_pending:
+        raise ValueError("auth_max_active must not exceed auth_max_pending")
+    for name in (
+        "auth_wait_timeout",
+        "tls_handshake_timeout",
+        "admission_wait_timeout",
+        "keep_alive_timeout",
+    ):
+        _require_number(name, getattr(limits, name), minimum_exclusive=0)
     body_memory_budget = limits.body_memory_budget
-    if config.public_direct and body_memory_budget is None:
-        raise ValueError("public_direct requires body_memory_budget")
     if config.encrypted_uploads:
-        if limits.max_workers < 2:
-            raise ValueError("encrypted_uploads requires at least 2 workers")
         if (
             body_memory_budget is not None
             and body_memory_budget < _ENCRYPTED_UPLOAD_BODY_BUDGET_FLOOR
@@ -181,7 +204,7 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
                 "encrypted_uploads is enabled"
             )
     if body_memory_budget is None:
-        body_memory_budget = limits.max_upload_size * limits.max_workers
+        body_memory_budget = default_body_memory_budget()
         if config.encrypted_uploads:
             body_memory_budget = max(
                 body_memory_budget,
@@ -207,7 +230,7 @@ def resolve_server_config(config: ServerConfig) -> ServerConfig:
     )
     max_connections = websocket.max_connections
     if max_connections is None:
-        max_connections = max(0, limits.max_workers // 2)
+        max_connections = 8
     websocket = replace(websocket, max_connections=max_connections)
 
     auth = config.auth
@@ -292,7 +315,7 @@ def _validate_files_directory(
         if private_file is not None and Path(private_file).is_relative_to(files_dir):
             raise ValueError("files_dir must not contain authentication or TLS files")
     if tls.letsencrypt or tls.sslip:
-        acme_dir = (Path.home() / ".xferry").resolve()
+        acme_dir = (root_dir / "acme").resolve()
         if acme_dir.is_relative_to(files_dir) or files_dir.is_relative_to(acme_dir):
             raise ValueError("files_dir must be separate from private ACME state")
 

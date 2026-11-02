@@ -16,9 +16,13 @@ entry points and source locations behind the request path below.
 5. The handler uses scoped storage and metrics services.
 6. The pipeline records metrics and writes the response.
 
-The server runs accepted connections in a `ThreadPoolExecutor`. A keep-alive
-connection occupies its worker while active, and each WebSocket occupies one
-worker until it closes. See [ADR-005](ADR/ADR-005-thread-pool.md).
+Each admitted connection has one owner thread, bounded by the TCP limit. TLS,
+authentication, short application operations, transfers and WebSocket sessions
+use independent bounded gates. Authentication and route admission precede body
+allocation; short permits are released before response/socket writes. Idle
+keep-alive and WebSocket sockets hold no processing worker. Shutdown closes
+registered sockets, wakes waiters and releases leases exactly once. See
+[ADR-013](ADR/ADR-013-unified-deployment-and-capacity.md).
 
 ## Method policy
 
@@ -28,8 +32,8 @@ Handler registration, browser mutation checks, CORS, `PING`, and UI grouping
 derive from that registry.
 
 `PING.supported_methods` is the availability contract. `method_groups` is
-presentation metadata. Launch presets select configuration defaults and
-validation posture; they do not enable or disable methods.
+presentation metadata. Access modes select exposure defaults and validation
+posture; they do not enable or disable methods.
 
 ## Storage boundaries
 
@@ -75,10 +79,15 @@ the server. The server does not store durable client recovery material.
 
 ## Configuration and extensions
 
-`ServerSettings` resolves built-in defaults, preset defaults, INI values,
-`XFERRY_*` environment variables, and CLI flags. Explicit values override
-presets. `RuntimePosture` produces the redacted configuration and validates
-public-direct requirements.
+`ServerSettings` resolves defaults, version1 INI profiles, `XFERRY_*`
+environment variables and explicit foreground flags. `RuntimePosture` describes
+the redacted effective exposure and resource limits. A shared management
+application selects a checked schema2 deployment manifest; native and Compose
+adapters compile host-facing paths and ports into isolated runtime settings.
+Running/stopped state comes from the process supervisor. `StateLayout` locates
+private notes, transfer journals and ACME under one explicit runtime root. Docker
+maps this root to its deployment-owned data volume; status and doctor report its
+actual name. Unsupported old schemas are refused without conversion.
 
 Plugins are loaded only when explicitly configured. Core methods are reserved
 unless the operator enables core override, and public-direct rejects plugins

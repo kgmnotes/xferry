@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
@@ -44,6 +45,64 @@ class AdmissionLease:
         self._release()
         return True
 
+    def __enter__(self) -> AdmissionLease:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.release()
+
+
+class CapacityGate:
+    """A bounded, cancellable capacity pool without a work-item queue."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._condition = threading.Condition()
+        self._active = 0
+        self._peak = 0
+        self._waiting = 0
+        self._rejected = 0
+        self._closed = False
+
+    def acquire(self, timeout: float = 0.0) -> AdmissionLease | None:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            self._waiting += 1
+            try:
+                while self._active >= self.limit and not self._closed:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
+                if self._closed or self._active >= self.limit:
+                    self._rejected += 1
+                    return None
+                self._active += 1
+                self._peak = max(self._peak, self._active)
+                return AdmissionLease(self._release)
+            finally:
+                self._waiting -= 1
+
+    def _release(self) -> None:
+        with self._condition:
+            self._active -= 1
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+    def snapshot(self) -> dict[str, int]:
+        with self._condition:
+            return {
+                "limit": self.limit,
+                "active": self._active,
+                "waiting": self._waiting,
+                "peak": self._peak,
+                "rejected": self._rejected,
+            }
+
 
 class ServerLifecycle:
     """Own server startup, listener admission, workers, and idempotent cleanup."""
@@ -56,13 +115,14 @@ class ServerLifecycle:
         *,
         host: str,
         port: int,
-        max_workers: int,
+        max_connections: int,
         tls_manager: TLSLifecycle,
         metrics: MetricsCollector,
         handle_client: Callable[[Any, tuple[str, int]], None],
         reject_overloaded: Callable[[Any], None],
         on_started: Callable[[], None],
         on_shutdown: Callable[[], None],
+        on_stopping: Callable[[], None] | None = None,
         on_interrupted: Callable[[], None] | None = None,
         setup_tls: Callable[[], None] | None = None,
         cleanup_tls: Callable[[], None] | None = None,
@@ -71,13 +131,14 @@ class ServerLifecycle:
     ) -> None:
         self.host = host
         self.port = port
-        self.max_workers = max_workers
+        self.max_connections = max_connections
         self.tls_manager = tls_manager
         self._metrics = metrics
         self._handle_client_callback = handle_client
         self._reject_overloaded = reject_overloaded
         self._on_started = on_started
         self._on_shutdown = on_shutdown
+        self._on_stopping = on_stopping or (lambda: None)
         self._on_interrupted = on_interrupted or (lambda: None)
         self._setup_tls = setup_tls or tls_manager.setup
         self._cleanup_tls = cleanup_tls or tls_manager.cleanup
@@ -87,14 +148,15 @@ class ServerLifecycle:
         self._executor_factory = executor_factory or (
             lambda workers: ThreadPoolExecutor(max_workers=workers)
         )
-        self._request_slots = threading.BoundedSemaphore(max_workers)
+        self._connections = CapacityGate(self.max_connections)
+        self._sockets_lock = threading.Lock()
+        self._sockets: dict[int, Any] = {}
+        self._accepted_at: dict[int, float] = {}
         self._listener: Any | None = None
         self._executor: Any | None = None
         self._running = False
         self._cleanup_lock = threading.Lock()
         self._cleaned = False
-        self._legacy_leases: list[AdmissionLease] = []
-        self._legacy_lock = threading.Lock()
 
     @property
     def listener(self) -> Any | None:
@@ -123,7 +185,7 @@ class ServerLifecycle:
                 start_renewal()
             self._metrics.mark_started()
             self._on_started()
-            self._executor = self._executor_factory(self.max_workers)
+            self._executor = self._executor_factory(self.max_connections)
             self._accept_loop(listener, self._executor)
         except KeyboardInterrupt:
             self._on_interrupted()
@@ -133,6 +195,13 @@ class ServerLifecycle:
     def stop(self) -> None:
         """Request loop termination; cleanup remains safe when called repeatedly."""
         self._running = False
+        self._connections.close()
+        self._on_stopping()
+        self._close_sockets()
+        with self._cleanup_lock:
+            listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.close()
         stop_renewal = getattr(self.tls_manager, "stop_renewal", None)
         if callable(stop_renewal):
             stop_renewal()
@@ -147,6 +216,12 @@ class ServerLifecycle:
             executor, self._executor = self._executor, None
             listener, self._listener = self._listener, None
 
+        self._connections.close()
+        self._on_stopping()
+        if listener is not None:
+            listener.close()
+        self._close_sockets()
+
         stop_renewal = getattr(self.tls_manager, "stop_renewal", None)
         if callable(stop_renewal):
             stop_renewal()
@@ -155,85 +230,59 @@ class ServerLifecycle:
                 executor.shutdown(wait=True, cancel_futures=True)
         finally:
             try:
-                if listener is not None:
-                    listener.close()
+                self._cleanup_tls()
             finally:
-                try:
-                    self._cleanup_tls()
-                finally:
-                    self._on_shutdown()
+                self._on_shutdown()
 
-    def acquire_request_admission(
+    def acquire_connection(
         self,
         *,
         wait_timeout: float = 0.0,
     ) -> AdmissionLease | None:
-        """Acquire one worker slot and return its release-once lease."""
-        if wait_timeout > 0:
-            acquired = self._request_slots.acquire(timeout=wait_timeout)
-        else:
-            acquired = self._request_slots.acquire(blocking=False)
-        if not acquired:
+        """Acquire one connection slot before submitting a connection thread."""
+        lease = self._connections.acquire(wait_timeout)
+        if lease is None:
             self._metrics.record_request_admission_rejected()
             logger.warning(
-                "Request admission rejected: active worker budget exhausted (max=%d)",
-                self.max_workers,
+                "Connection admission rejected: connection capacity exhausted (max=%d)",
+                self.max_connections,
             )
             return None
         self._metrics.record_request_admission_accepted()
-        return AdmissionLease(self._release_request_admission)
 
-    def acquire_legacy_admission(self, *, wait_timeout: float = 0.0) -> bool:
-        """Compatibility delegate for focused facade tests."""
-        lease = self.acquire_request_admission(wait_timeout=wait_timeout)
-        if lease is None:
-            return False
-        with self._legacy_lock:
-            self._legacy_leases.append(lease)
-        return True
-
-    def release_legacy_admission(self) -> None:
-        """Release the most recently acquired compatibility lease."""
-        lease = self._pop_legacy_lease()
-        if lease is not None:
+        def release() -> None:
             lease.release()
+            self._metrics.record_request_admission_released()
 
-    def handle_legacy_admitted_client(
-        self,
-        client_socket: Any,
-        client_address: tuple[str, int],
-        handle_client: Callable[[Any, tuple[str, int]], None] | None = None,
-    ) -> None:
-        """Run a facade-test client using its previously acquired lease."""
-        lease = self._pop_legacy_lease()
-        if lease is None:
-            raise RuntimeError("request admission lease is missing")
-        self._handle_admitted_client(
-            client_socket,
-            client_address,
-            lease,
-            handle_client=handle_client,
-        )
+        return AdmissionLease(release)
 
-    def release_legacy_cancelled(self, future: object, client_socket: Any) -> None:
-        """Apply cancellation cleanup to a facade-test lease."""
-        cancelled = getattr(future, "cancelled", None)
-        if not callable(cancelled) or not cancelled():
-            return
-        lease = self._pop_legacy_lease()
-        if lease is None:
-            return
-        self._release_cancelled_admission(client_socket, lease)
+    def accepted_at(self, sock: Any) -> float:
+        with self._sockets_lock:
+            return self._accepted_at.get(id(sock), time.monotonic())
 
-    def finalize_legacy_future(
-        self,
-        future: object,
-        client_socket: Any,
-        client_address: tuple[str, int],
-    ) -> None:
-        """Observe a facade-test future and use a lease only when one exists."""
-        lease = self._pop_legacy_lease_if_cancelled(future)
-        self._finalize_worker_future(future, client_socket, client_address, lease)
+    def replace_socket(self, original: Any, wrapped: Any) -> None:
+        """Keep shutdown ownership after TLS detaches the original descriptor."""
+        with self._sockets_lock:
+            if id(original) in self._sockets:
+                self._sockets[id(original)] = wrapped
+            if not self._running:
+                wrapped.close()
+
+    def _close_sockets(self) -> None:
+        with self._sockets_lock:
+            sockets = tuple(self._sockets.values())
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except (AttributeError, OSError):
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def connection_snapshot(self) -> dict[str, int]:
+        return self._connections.snapshot()
 
     def _accept_loop(self, listener: Any, executor: Any) -> None:
         def submit_admitted(
@@ -250,12 +299,14 @@ class ServerLifecycle:
             try:
                 listener.settimeout(self.ACCEPT_TIMEOUT)
                 client_socket, client_address = listener.accept()
-                lease = self.acquire_request_admission(
-                    wait_timeout=self.REQUEST_ADMISSION_WAIT_TIMEOUT
-                )
+                accepted_at = time.monotonic()
+                lease = self.acquire_connection(wait_timeout=self.REQUEST_ADMISSION_WAIT_TIMEOUT)
                 if lease is None:
                     self._reject_overloaded(client_socket)
                     continue
+                with self._sockets_lock:
+                    self._sockets[id(client_socket)] = client_socket
+                    self._accepted_at[id(client_socket)] = accepted_at
                 try:
                     future = submit_admitted(client_socket, client_address, lease)
                     add_done_callback = getattr(future, "add_done_callback", None)
@@ -266,12 +317,17 @@ class ServerLifecycle:
                             )
                         )
                 except Exception as exc:
+                    self._untrack_socket(client_socket)
                     lease.release()
                     client_socket.close()
                     self._metrics.record_worker_exception("worker_submit", exc)
                     logger.exception("Failed to submit accepted client to worker pool")
             except TimeoutError:
                 continue
+            except OSError:
+                if self._running:
+                    raise
+                break
 
     def _handle_admitted_client(
         self,
@@ -285,6 +341,7 @@ class ServerLifecycle:
         try:
             (handle_client or self._handle_client_callback)(client_socket, client_address)
         finally:
+            self._untrack_socket(client_socket)
             self._metrics.record_connection_closed()
             lease.release()
 
@@ -296,6 +353,12 @@ class ServerLifecycle:
         if not lease.release():
             return
         client_socket.close()
+        self._untrack_socket(client_socket)
+
+    def _untrack_socket(self, sock: Any) -> None:
+        with self._sockets_lock:
+            self._sockets.pop(id(sock), None)
+            self._accepted_at.pop(id(sock), None)
 
     def _finalize_worker_future(
         self,
@@ -329,19 +392,5 @@ class ServerLifecycle:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
 
-    def _release_request_admission(self) -> None:
-        self._request_slots.release()
-        self._metrics.record_request_admission_released()
 
-    def _pop_legacy_lease(self) -> AdmissionLease | None:
-        with self._legacy_lock:
-            return self._legacy_leases.pop() if self._legacy_leases else None
-
-    def _pop_legacy_lease_if_cancelled(self, future: object) -> AdmissionLease | None:
-        cancelled = getattr(future, "cancelled", None)
-        if callable(cancelled) and cancelled():
-            return self._pop_legacy_lease()
-        return None
-
-
-__all__ = ["AdmissionLease", "ServerLifecycle", "TLSLifecycle"]
+__all__ = ["AdmissionLease", "CapacityGate", "ServerLifecycle", "TLSLifecycle"]

@@ -1380,15 +1380,15 @@ class TestServerHelpers:
 
         assert not (temp_dir / ".opsec_config.json").exists()
 
-    def test_single_worker_default_websocket_budget_preserves_worker_pool(self, temp_dir):
+    def test_single_worker_has_independent_default_websocket_budget(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
 
-        assert server.max_websocket_connections == 0
-        assert server._try_acquire_websocket_slot() is False
-        ws_metrics = server.get_metrics()["websocket"]
-        assert ws_metrics["active"] == 0
-        assert ws_metrics["rejected_admissions"] == 1
+        assert server.max_websocket_connections == 8
+        lease = server._websocket_runtime.acquire_session()
+        assert lease is not None
+        assert server.get_metrics()["websocket"]["active"] == 1
+        lease.release()
 
     def test_explicit_single_websocket_budget_can_admit_connection(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
@@ -1399,11 +1399,12 @@ class TestServerHelpers:
             max_websocket_connections=1,
         )
 
-        assert server._try_acquire_websocket_slot() is True
+        lease = server._websocket_runtime.acquire_session()
+        assert lease is not None
         ws_metrics = server.get_metrics()["websocket"]
         assert ws_metrics["active"] == 1
         assert ws_metrics["rejected_admissions"] == 0
-        server._release_websocket_slot()
+        lease.release()
         ws_metrics = server.get_metrics()["websocket"]
         assert ws_metrics["active"] == 0
         assert ws_metrics["rejected_admissions"] == 0
@@ -1411,17 +1412,18 @@ class TestServerHelpers:
 
     def test_request_admission_rejects_when_worker_budget_is_full(self, temp_dir):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
 
-        assert server._try_acquire_request_admission() is True
-        assert server._try_acquire_request_admission() is False
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
+        assert server._lifecycle.acquire_connection() is None
 
         assert server.get_metrics()["request_admission"] == {
             "active": 1,
             "accepted": 1,
             "rejected": 1,
         }
-        server._release_request_admission()
+        lease.release()
         assert server.get_metrics()["request_admission"] == {
             "active": 0,
             "accepted": 1,
@@ -1438,10 +1440,13 @@ class TestServerHelpers:
         sock = _SendSocketStub()
         calls: list[tuple[object, tuple[str, int]]] = []
 
-        assert server._try_acquire_request_admission() is True
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
         monkeypatch.setattr(server, "_handle_client", lambda *args: calls.append(args))
 
-        server._handle_admitted_client(sock, ("127.0.0.1", 43210))
+        server._lifecycle._handle_admitted_client(
+            sock, ("127.0.0.1", 43210), lease, handle_client=server._handle_client
+        )
 
         assert calls == [(sock, ("127.0.0.1", 43210))]
         assert server.get_metrics()["request_admission"] == {
@@ -1467,11 +1472,14 @@ class TestServerHelpers:
         def fail_handle(*_args):
             raise RuntimeError("boom")
 
-        assert server._try_acquire_request_admission() is True
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
         monkeypatch.setattr(server, "_handle_client", fail_handle)
 
         with pytest.raises(RuntimeError, match="boom"):
-            server._handle_admitted_client(sock, ("127.0.0.1", 43210))
+            server._lifecycle._handle_admitted_client(
+                sock, ("127.0.0.1", 43210), lease, handle_client=server._handle_client
+            )
 
         assert server.get_metrics()["request_admission"] == {
             "active": 0,
@@ -1521,21 +1529,24 @@ class TestServerHelpers:
         sock = _SendSocketStub()
 
         class _FailingSSLContext:
-            def wrap_socket(self, _client_socket, server_side):
+            def wrap_socket(self, _client_socket, server_side, do_handshake_on_connect=False):
                 assert server_side is True
                 raise ssl.SSLError("bad handshake")
 
         server.running = True
         server._tls.enabled = True
         server._tls.ssl_context = _FailingSSLContext()  # type: ignore[assignment]
-        assert server._try_acquire_request_admission() is True
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
         monkeypatch.setattr(
             server,
             "_receive_request",
             lambda *_args, **_kwargs: pytest.fail("handshake failure should return first"),
         )
 
-        server._handle_admitted_client(sock, ("127.0.0.1", 43210))
+        server._lifecycle._handle_admitted_client(
+            sock, ("127.0.0.1", 43210), lease, handle_client=server._handle_client
+        )
 
         assert sock.closed is True
         assert server.get_metrics()["request_admission"] == {
@@ -1553,9 +1564,10 @@ class TestServerHelpers:
             def cancelled(self) -> bool:
                 return True
 
-        assert server._try_acquire_request_admission() is True
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
 
-        server._release_cancelled_admission(_CancelledFuture(), sock)
+        server._lifecycle._release_cancelled_admission(sock, lease)
 
         assert sock.closed is True
         assert server.get_metrics()["request_admission"] == {
@@ -1582,7 +1594,7 @@ class TestServerHelpers:
 
         caplog.set_level(logging.ERROR, logger="xferry")
 
-        server._finalize_worker_future(_FailedFuture(), sock, ("127.0.0.1", 43210))
+        server._lifecycle._finalize_worker_future(_FailedFuture(), sock, ("127.0.0.1", 43210), None)
 
         assert sock.closed is False
         assert server.get_metrics()["worker"] == {
@@ -1758,14 +1770,14 @@ class TestServerHelpers:
         reservation = server._body_memory_budget.try_reserve(4)
         assert reservation is not None
 
-        def fake_receive(_sock, idle_timeout=None):
+        def fake_receive(_sock, idle_timeout=None, **_kwargs):
             return RequestReceiveResult(b"body", reservation)
 
         def fail_process(*_args, **_kwargs):
             raise RuntimeError("process failed")
 
         monkeypatch.setattr(server, "_receive_request_result", fake_receive)
-        monkeypatch.setattr(server, "_process_request", fail_process)
+        monkeypatch.setattr(server._request_pipeline, "process", fail_process)
         server.running = True
 
         server._handle_client(sock, ("127.0.0.1", 43210))
@@ -2749,7 +2761,7 @@ class TestServerHelpers:
         sock = _SendSocketStub()
 
         class _FailingSSLContext:
-            def wrap_socket(self, _client_socket, server_side):
+            def wrap_socket(self, _client_socket, server_side, do_handshake_on_connect=False):
                 assert server_side is True
                 raise ssl.SSLError("bad handshake")
 
@@ -2764,7 +2776,7 @@ class TestServerHelpers:
 
         server._handle_client(sock, ("127.0.0.1", 43210))
 
-        assert sock.timeouts == [5.0]
+        assert sock.timeouts == []
         assert sock.closed is True
 
     def test_handle_client_processes_keep_alive_requests_until_handler_stops(
@@ -2779,16 +2791,16 @@ class TestServerHelpers:
         processed: list[tuple[bytes, int]] = []
         payloads = iter([b"first", b"second"])
 
-        def fake_receive(_sock, idle_timeout=None):
+        def fake_receive(_sock, idle_timeout=None, **_kwargs):
             idle_timeouts.append(idle_timeout)
             return RequestReceiveResult(next(payloads, b""))
 
-        def fake_process(data, _sock, _addr, request_num):
+        def fake_process(data, _sock, _addr, request_num, **_kwargs):
             processed.append((data, request_num))
             return request_num == 1
 
         monkeypatch.setattr(server, "_receive_request_result", fake_receive)
-        monkeypatch.setattr(server, "_process_request", fake_process)
+        monkeypatch.setattr(server._request_pipeline, "process", fake_process)
         server.running = True
 
         server._handle_client(sock, ("127.0.0.1", 43210))
@@ -2986,7 +2998,7 @@ class TestServerHelpers:
 
         class _ExecutorStub:
             def __init__(self, max_workers: int) -> None:
-                assert max_workers == server.max_workers
+                assert max_workers == server.max_connections
 
             def submit(self, *_args, **_kwargs) -> None:
                 raise AssertionError("submit() should not run when accept() interrupts immediately")
@@ -3031,7 +3043,7 @@ class TestServerHelpers:
         capsys,
     ):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
         client = _SendSocketStub()
         listening_socket = _ListeningSocketStub([(client, ("127.0.0.1", 43210))])
         submitted: list[tuple[object, tuple[str, int]]] = []
@@ -3085,7 +3097,7 @@ class TestServerHelpers:
         capsys,
     ):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
         client = _SendSocketStub()
         listening_socket = _ListeningSocketStub([(client, ("127.0.0.1", 43210))])
 
@@ -3100,7 +3112,8 @@ class TestServerHelpers:
                 assert wait is True
                 assert cancel_futures is True
 
-        assert server._try_acquire_request_admission() is True
+        lease = server._lifecycle.acquire_connection()
+        assert lease is not None
         monkeypatch.setattr(server, "_setup_tls", lambda: None)
         monkeypatch.setattr(
             "xferry.server.socket.socket", lambda *_args, **_kwargs: listening_socket
@@ -3126,7 +3139,7 @@ class TestServerHelpers:
             "accepted": 1,
             "rejected": 1,
         }
-        server._release_request_admission()
+        lease.release()
 
     def test_start_releases_admission_when_submit_fails(
         self,
@@ -3135,7 +3148,7 @@ class TestServerHelpers:
         capsys,
     ):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
         client = _SendSocketStub()
         listening_socket = _ListeningSocketStub([(client, ("127.0.0.1", 43210))])
 
@@ -3173,7 +3186,7 @@ class TestServerHelpers:
         capsys,
     ):
         (temp_dir / "index.html").write_text("<html>ok</html>")
-        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1)
+        server = make_server(root_dir=str(temp_dir), quiet=True, max_workers=1, max_connections=1)
         client = _SendSocketStub()
         listening_socket = _ListeningSocketStub([(client, ("127.0.0.1", 43210))])
 

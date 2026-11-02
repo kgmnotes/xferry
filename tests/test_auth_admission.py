@@ -66,25 +66,24 @@ def _wait_for_pending(controller: AuthAdmissionController, expected: int) -> Non
 
 
 class TestAuthAdmissionController:
-    def test_worker_derived_defaults_are_bounded(self) -> None:
-        normal = AuthAdmissionController(workers=10)
-        constrained = AuthAdmissionController(workers=3)
+    def test_auth_defaults_are_independent_and_explicit(self) -> None:
+        normal = AuthAdmissionController()
+        constrained = AuthAdmissionController(max_pending=1, max_active=1)
 
         assert normal.max_failures == 5
         assert normal.cooldown == 30.0
         assert normal.max_peers == 4096
         assert normal.prune_interval == 5.0
-        assert normal.wait_timeout == 2.0
-        assert normal.max_pending == 6
+        assert normal.wait_timeout == 5.0
+        assert normal.max_pending == 16
         assert normal.max_active == 2
-        assert normal.per_peer_pending == 6
+        assert normal.per_peer_pending == 16
         assert constrained.max_pending == 1
         assert constrained.max_active == 1
         assert constrained.per_peer_pending == 1
 
     def test_concurrent_precheck_reserves_at_most_five_failure_slots(self) -> None:
         controller = AuthAdmissionController(
-            workers=10,
             max_active=5,
             max_pending=6,
         )
@@ -117,7 +116,7 @@ class TestAuthAdmissionController:
         assert denied[0].reason == "cooldown"
 
     def test_six_valid_attempts_queue_behind_two_active_slots(self) -> None:
-        controller = AuthAdmissionController(workers=10)
+        controller = AuthAdmissionController()
         release = threading.Event()
         two_started = threading.Event()
         lock = threading.Lock()
@@ -150,7 +149,6 @@ class TestAuthAdmissionController:
 
     def test_global_and_per_peer_pending_limits_are_distinct(self) -> None:
         controller = AuthAdmissionController(
-            workers=10,
             max_active=2,
             max_pending=2,
             per_peer_pending=1,
@@ -170,7 +168,6 @@ class TestAuthAdmissionController:
 
     def test_waiter_timeout_releases_pending_capacity(self) -> None:
         controller = AuthAdmissionController(
-            workers=10,
             max_active=1,
             max_pending=2,
             wait_timeout=0.0,
@@ -188,7 +185,6 @@ class TestAuthAdmissionController:
     def test_waiter_timeout_has_real_deadline_when_fake_clock_is_frozen(self) -> None:
         clock = _FakeClock()
         controller = AuthAdmissionController(
-            workers=10,
             max_active=1,
             max_pending=2,
             wait_timeout=0.01,
@@ -212,7 +208,6 @@ class TestAuthAdmissionController:
     def test_real_deadline_also_applies_when_promoting_waiters(self) -> None:
         clock = _FakeClock()
         controller = AuthAdmissionController(
-            workers=10,
             max_active=1,
             max_pending=2,
             wait_timeout=0.01,
@@ -237,7 +232,6 @@ class TestAuthAdmissionController:
 
     def test_temporarily_blocked_fifo_head_does_not_block_another_peer(self) -> None:
         controller = AuthAdmissionController(
-            workers=10,
             max_failures=1,
             max_active=2,
             max_pending=4,
@@ -292,7 +286,6 @@ class TestAuthAdmissionController:
     def test_peer_table_is_bounded_and_stale_failures_are_pruned(self) -> None:
         clock = _FakeClock()
         controller = AuthAdmissionController(
-            workers=10,
             max_peers=2,
             max_active=2,
             max_pending=2,
@@ -315,7 +308,6 @@ class TestAuthAdmissionController:
     def test_cooldown_uses_integer_retry_after_and_opens_at_exact_boundary(self) -> None:
         clock = _FakeClock()
         controller = AuthAdmissionController(
-            workers=10,
             max_failures=1,
             cooldown=30.0,
             clock=clock,
@@ -340,7 +332,6 @@ class TestAuthAdmissionController:
 
     def test_finish_is_idempotent_and_lease_repr_hides_peer(self) -> None:
         controller = AuthAdmissionController(
-            workers=10,
             max_failures=2,
             max_active=1,
             max_pending=1,

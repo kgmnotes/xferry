@@ -19,6 +19,7 @@ import ssl
 import stat
 import subprocess
 import threading
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,40 +29,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-SOURCE_VERSION = "0.1.1"
-TARGET_VERSION = "0.1.2"
+SOURCE_VERSION = "0.5.0"
+TARGET_VERSION = "0.5.1"
 RELEASE_BASE_URL = "https://127.0.0.1:44443/releases"
 MAX_HEALTH_BYTES = 64 * 1024
-_RELEASE_FIELDS = {
-    "active",
-    "before",
-    "code",
-    "detail",
-    "dry_run",
-    "exit_code",
-    "message",
-    "next_actions",
-    "rollback",
-    "status",
-    "target",
-}
-_DOCTOR_FIELDS = {
-    "checks",
-    "code",
-    "detail",
-    "detected",
-    "exit_code",
-    "message",
-    "next_actions",
-    "status",
-    "supported_matrix",
-}
+_OPERATION_FIELDS = {"exit_code", "message", "details", "url", "plan", "state"}
 _DOCTOR_STATUSES = {
-    "platform": "supported",
-    "installation": "installed",
+    "manifest": "valid",
     "configuration": "valid",
-    "service": "active",
-    "network": "reachable",
+    "runtime": "running",
+    "files": "available",
     "health": "healthy",
 }
 _FAILURE_CODES = frozenset(
@@ -143,6 +120,14 @@ class SystemPaths:
     @property
     def config(self) -> Path:
         return self.config_root / "xferry.ini"
+
+    @property
+    def profile(self) -> Path:
+        return self.config_root / "profile.ini"
+
+    @property
+    def manifest(self) -> Path:
+        return self.config_root / "deployment.json"
 
     @property
     def auth(self) -> Path:
@@ -282,6 +267,7 @@ def _state_hashes(paths: SystemPaths) -> dict[str, str]:
         for label, path in {
             "config": paths.config,
             "auth": paths.auth,
+            "profile": paths.profile,
             "sentinel": paths.sentinel,
         }.items()
     }
@@ -292,6 +278,7 @@ def _preservation(baseline: Mapping[str, str], paths: SystemPaths) -> dict[str, 
     for label, path in {
         "config": paths.config,
         "auth": paths.auth,
+        "profile": paths.profile,
         "sentinel": paths.sentinel,
     }.items():
         try:
@@ -448,6 +435,21 @@ def serve_fixtures(options: ProbeOptions) -> Iterator[None]:
         server.server_close()
 
 
+def _operation_outcome(result: Mapping[str, Any], *, code: str = "command_outcome_invalid") -> None:
+    """Require the current secret-free OperationResult envelope, never legacy JSON."""
+    _require(
+        set(result) == _OPERATION_FIELDS
+        and type(result.get("exit_code")) is int
+        and result["exit_code"] == 0
+        and isinstance(result["message"], str)
+        and isinstance(result["details"], dict)
+        and (result["url"] is None or isinstance(result["url"], str))
+        and (result["plan"] is None or isinstance(result["plan"], dict))
+        and (result["state"] is None or isinstance(result["state"], dict)),
+        code,
+    )
+
+
 def _json_command(argv: Sequence[str], **kwargs: Any) -> dict[str, Any]:
     try:
         result = json.loads(_command(argv, **kwargs), object_pairs_hook=_json_object)
@@ -456,53 +458,191 @@ def _json_command(argv: Sequence[str], **kwargs: Any) -> dict[str, Any]:
     except Exception:
         raise ProbeFailure("command_json_invalid") from None
     _require(isinstance(result, dict), "command_json_invalid")
-    _require(
-        result.get("status") == "ok"
-        and type(result.get("exit_code")) is int
-        and result["exit_code"] == 0,
-        "command_outcome_invalid",
-    )
+    _operation_outcome(result)
     return dict(result)
 
 
-def _setup_outcome(result: Mapping[str, Any], *, files_dir: Path | None = None) -> None:
-    """Require the exact setup JSON shape for the declared installed CLI contract."""
-    fields = {"exit_code", "status", "url"}
-    if files_dir is not None:
-        fields.add("files_dir")
+def _setup_outcome(result: Mapping[str, Any], *, files_dir: Path) -> str:
+    """Validate the new native deployment setup contract and return its identity."""
+    _operation_outcome(result, code="setup_outcome_invalid")
+    details = result["details"]
+    identity = details.get("instance_id")
     _require(
-        set(result) == fields
-        and result["status"] == "ok"
-        and type(result["exit_code"]) is int
-        and result["exit_code"] == 0
+        set(details) == {"instance_id", "files_dir"}
+        and isinstance(identity, str)
+        and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", identity) is not None
+        and str(uuid.UUID(identity)) == identity
+        and details["files_dir"] == str(files_dir)
         and result["url"] == "http://127.0.0.1:8080"
-        and (files_dir is None or result["files_dir"] == str(files_dir)),
+        and result["plan"] is None
+        and result["state"] is None,
         "setup_outcome_invalid",
+    )
+    return identity
+
+
+def _doctor_statuses() -> dict[str, str]:
+    return dict(_DOCTOR_STATUSES)
+
+
+def _observed_outcome(result: Mapping[str, Any], *, identity: str, retained: bool = False) -> None:
+    state = result.get("state")
+    _require(
+        isinstance(state, dict)
+        and set(state)
+        == {"state", "instance_id", "backend", "health", "detail", "running", "config", "enabled"}
+        and state["instance_id"] == identity
+        and state["backend"] == "native"
+        and state["state"] == ("retained" if retained else "running")
+        and state["running"] is (not retained)
+        and state["config"] == "valid"
+        and state["health"] in {"not_checked", "healthy"}
+        and isinstance(state["detail"], str)
+        and state["enabled"] == ("unknown" if retained else "enabled"),
+        "command_outcome_invalid",
     )
 
 
-def _doctor_statuses(*, canonical: bool) -> dict[str, str]:
-    """Return the exact checks required by the authenticated installed CLI contract."""
-    return _DOCTOR_STATUSES | ({"files": "available"} if canonical else {})
-
-
-def _doctor_outcome(result: Mapping[str, Any], *, canonical: bool) -> dict[str, bool]:
-    """Validate the declared CLI's exact diagnostic contract without exporting details."""
-    expected = _doctor_statuses(canonical=canonical)
+def _doctor_outcome(result: Mapping[str, Any], *, identity: str) -> dict[str, bool]:
+    """Validate actual deployment diagnostics while exporting booleans only."""
+    _operation_outcome(result, code="doctor_outcome_invalid")
+    _observed_outcome(result, identity=identity)
+    expected = _doctor_statuses()
+    details = result["details"]
     _require(
-        set(result) == _DOCTOR_FIELDS
-        and result["code"] == "doctor-ok"
-        and isinstance(result["checks"], dict)
-        and set(result["checks"]) == set(expected),
+        set(details) == {"checks"}
+        and isinstance(details["checks"], dict)
+        and set(details["checks"]) == set(expected)
+        and result["state"]["health"] == "healthy",
         "doctor_outcome_invalid",
     )
     checks = {
-        name: isinstance(result["checks"][name], dict)
-        and result["checks"][name].get("status") == status
+        name: isinstance(details["checks"][name], dict)
+        and set(details["checks"][name]) == {"status", "detail"}
+        and details["checks"][name]["status"] == status
+        and isinstance(details["checks"][name]["detail"], str)
         for name, status in expected.items()
     }
     _require(all(checks.values()), "doctor_outcome_invalid")
     return checks
+
+
+def _release_outcome(
+    result: Mapping[str, Any],
+    *,
+    phase: str,
+    identity: str,
+    source: str,
+    target: str,
+    paths: SystemPaths = SYSTEM_PATHS,
+) -> None:
+    _operation_outcome(result)
+    _observed_outcome(result, identity=identity, retained=phase == "uninstall")
+    _require(result["url"] is None and result["plan"] is None, "release_outcome_invalid")
+    details = result["details"]
+    if phase == "uninstall":
+        _require(
+            details
+            == {
+                "retained": [
+                    str(paths.profile),
+                    str(paths.data_root),
+                    str(paths.data_root / "files"),
+                ]
+            },
+            "release_outcome_invalid",
+        )
+        return
+    _require(
+        set(details)
+        == {
+            "version",
+            "dry_run",
+            "code",
+            "detail",
+            "before",
+            "target",
+            "active",
+            "rollback",
+            "next_actions",
+        }
+        and isinstance(details["detail"], str)
+        and isinstance(details["next_actions"], list)
+        and all(isinstance(action, str) for action in details["next_actions"])
+        and details["dry_run"] is (phase == "dry_run")
+        and details["version"] == (source if phase == "rollback" else target),
+        "release_outcome_invalid",
+    )
+    if phase in {"dry_run", "update"}:
+        _require(
+            details["code"] == ("update_dry_run" if phase == "dry_run" else "update_complete")
+            and details["before"] == source
+            and details["target"] == target
+            and details["active"] == (source if phase == "dry_run" else target)
+            and details["rollback"] == "not_needed",
+            "update_outcome_invalid",
+        )
+    else:
+        _require(
+            details["code"] == "rollback_complete"
+            and details["before"] is None
+            and details["target"] is None
+            and details["active"] is None
+            and details["rollback"] == "not_attempted",
+            "rollback_outcome_invalid",
+        )
+
+
+def _deployment_identity(paths: SystemPaths, version: str, identity: str) -> None:
+    """Bind the retained profile to the exact installed artifact, without exporting hashes."""
+    try:
+        manifest = json.loads(
+            _regular_bytes(paths.manifest, 1024 * 1024), object_pairs_hook=_json_object
+        )
+        _require(
+            isinstance(manifest, dict)
+            and set(manifest)
+            == {
+                "schema",
+                "instance_id",
+                "backend",
+                "profile",
+                "files_dir",
+                "state_dir",
+                "artifact",
+                "ownership",
+                "backend_options",
+            }
+            and manifest["schema"] == 2
+            and type(manifest["schema"]) is int
+            and manifest["instance_id"] == identity
+            and manifest["backend"] == "native"
+            and manifest["profile"] == str(paths.profile)
+            and manifest["files_dir"] == str(paths.data_root / "files")
+            and manifest["state_dir"] == str(paths.data_root)
+            and manifest["artifact"]
+            == {
+                "version": version,
+                "sha256": hashlib.sha256(
+                    _regular_bytes(
+                        paths.release_root / "releases" / version / "xferry", 256 * 1024 * 1024
+                    )
+                ).hexdigest(),
+            },
+            "release_state_invalid",
+        )
+        profile = configparser.ConfigParser(interpolation=None)
+        profile.read_string(_regular_bytes(paths.profile, MAX_HEALTH_BYTES).decode("utf-8"))
+        _require(
+            profile.get("server", "config_version") == "1"
+            and profile.get("server", "access") == "private"
+            and profile.get("server", "files_dir") == str(paths.data_root / "files"),
+            "release_state_invalid",
+        )
+    except ProbeFailure:
+        raise
+    except Exception:
+        raise ProbeFailure("release_state_invalid") from None
 
 
 def _version(paths: SystemPaths, expected: str) -> None:
@@ -660,7 +800,8 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
             setup = _json_command(
                 (str(paths.cli), "setup", "--access", "private", "--json"), discard_stderr=True
             )
-            _setup_outcome(setup, files_dir=paths.data_root / "files")
+            identity = _setup_outcome(setup, files_dir=paths.data_root / "files")
+            _deployment_identity(paths, SOURCE_VERSION, identity)
             _version(paths, SOURCE_VERSION)
             verify_health(SOURCE_VERSION, paths)
             descriptor = os.open(
@@ -676,7 +817,7 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
             stage = {"phase": phase, "status": "started"}
             evidence["stages"].append(stage)
             doctor = _json_command((str(paths.cli), "doctor", "--deep", "--json"))
-            checks = _doctor_outcome(doctor, canonical=True)
+            checks = _doctor_outcome(doctor, identity=identity)
             stage["checks"] = checks
             _version(paths, SOURCE_VERSION)
             verify_health(SOURCE_VERSION, paths)
@@ -699,38 +840,22 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
                         | ({"TMPDIR": "/var/tmp"} if phase == "update" else {}),
                     )
                     version = SOURCE_VERSION if phase == "dry_run" else TARGET_VERSION
-                    _require(
-                        set(result) == _RELEASE_FIELDS | {"version"}
-                        and result["code"]
-                        == ("update_dry_run" if phase == "dry_run" else "update_complete")
-                        and result["dry_run"] is (phase == "dry_run")
-                        and result["before"] == SOURCE_VERSION
-                        and result["target"] == result["version"] == TARGET_VERSION
-                        and result["active"] == version
-                        and result["rollback"] == "not_needed",
-                        "update_outcome_invalid",
-                    )
                 else:
                     argv = [str(paths.cli), phase]
                     if phase == "rollback":
                         argv.extend(("--to", SOURCE_VERSION))
                     result = _json_command((*argv, "--json"))
-                    expected_fields = _RELEASE_FIELDS | (
-                        {"version"} if phase == "rollback" else set()
-                    )
-                    _require(
-                        set(result) == expected_fields
-                        and result["code"] == f"{phase}_complete"
-                        and result["dry_run"] is False
-                        and result["active"] is None
-                        and result["before"] is None
-                        and result["target"] is None
-                        and result["rollback"] == "not_attempted",
-                        "release_outcome_invalid",
-                    )
                     version = SOURCE_VERSION
-                    if phase == "rollback":
-                        _require(result["version"] == version, "rollback_outcome_invalid")
+                _release_outcome(
+                    result,
+                    phase=phase,
+                    identity=identity,
+                    source=SOURCE_VERSION,
+                    target=TARGET_VERSION,
+                    paths=paths,
+                )
+                if phase != "uninstall":
+                    _deployment_identity(paths, version, identity)
                 preserved = _preservation(baseline, paths)
                 stage["preserved"] = preserved
                 _require(all(preserved.values()), "state_preservation_failed")

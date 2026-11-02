@@ -37,12 +37,12 @@ def _lifecycle(distro: str, version: str, platform: str) -> dict[str, Any]:
                 "listener_gone": not active,
             }
         if phase not in {"guard", "uninstall"}:
-            release = "0.1.2" if phase == "update" else "0.1.1"
+            release = "0.5.1" if phase == "update" else "0.5.0"
             stage.update(
                 version=release,
                 current_link=f"releases/{release}",
                 retained_versions=(
-                    ["0.1.1", "0.1.2"] if phase in {"update", "rollback"} else ["0.1.1"]
+                    ["0.5.0", "0.5.1"] if phase in {"update", "rollback"} else ["0.5.0"]
                 ),
             )
         if phase not in {"guard", "install", "uninstall"}:
@@ -50,18 +50,16 @@ def _lifecycle(distro: str, version: str, platform: str) -> dict[str, Any]:
         if phase == "doctor":
             stage["checks"] = dict.fromkeys(
                 (
-                    "platform",
-                    "installation",
+                    "manifest",
                     "configuration",
+                    "runtime",
                     "files",
-                    "service",
-                    "network",
                     "health",
                 ),
                 True,
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
-            stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
+            stage["preserved"] = dict.fromkeys(("config", "auth", "profile", "sentinel"), True)
         if phase == "uninstall":
             stage["removed"] = True
         stages.append(stage)
@@ -255,7 +253,12 @@ def fixtures(
             return (entry[field] if field else BASE_TREE).encode() + b"\n"
         if arguments[0] == "diff":
             if "--name-only" in arguments:
-                return ("\n".join(matrix._PATCH_FILES) + "\n").encode()
+                changed = [
+                    name
+                    for name in matrix._PATCH_FILES
+                    if (source / name).read_bytes() != originals[name]
+                ]
+                return ("\n".join(changed) + "\n").encode()
             return f"raw patch {version}\n".encode()
         raise AssertionError("unexpected injected validation command")
 
@@ -267,7 +270,7 @@ def test_fixture_validation_binds_all_sources_assets_and_four_signatures(fixture
     options, metadata, calls, _ = fixtures
     result = matrix.validate_fixtures(options)
     assert result["fixturesSha"] == matrix._sha(options.fixture_evidence)
-    assert set(result["fixtureSources"]) == {"0.1.1", "0.1.2"}
+    assert set(result["fixtureSources"]) == {"0.5.0", "0.5.1"}
     assert set(result["helpers"]) == {"matrixSha", "probeSha"}
     signature_calls = [argv for argv in calls if argv[0] == sys.executable]
     assert len(signature_calls) == 4
@@ -279,6 +282,77 @@ def test_fixture_validation_binds_all_sources_assets_and_four_signatures(fixture
             result["fixtureSources"][version]["commit"]
             == metadata["versions"][version]["fixture_commit"]
         )
+
+
+@pytest.mark.parametrize(
+    ("base_version", "fixture_version", "version_changes"),
+    [("0.5.0", "0.5.0", False), ("0.5.1", "0.5.1", False), ("0.5.0", "0.5.1", True)],
+)
+def test_exact_fixture_transform_matches_real_git_diff_when_version_is_unchanged(
+    tmp_path: Path,
+    base_version: str,
+    fixture_version: str,
+    version_changes: bool,
+) -> None:
+    """Use real Git so a mock cannot invent a version change absent from the patch."""
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in matrix._PATCH_FILES:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = (matrix.REPO_ROOT / name).read_text()
+        if name == "xferry/config.py":
+            version_line = next(
+                line for line in text.splitlines() if line.startswith("__version__ = ")
+            )
+            text = text.replace(version_line, f'__version__ = "{base_version}"', 1)
+        path.write_text(text)
+    subprocess.run(("git", "init", "--quiet"), cwd=source, check=True)
+    subprocess.run(("git", "config", "user.name", "XFerry Fixture Test"), cwd=source, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@invalid.example"), cwd=source, check=True
+    )
+    for label in ("base", "fixture"):
+        if label == "fixture":
+            patch_fixture_source(
+                source,
+                version=fixture_version,
+                public_key_hex=PUBLIC.hex(),
+                release_base_url=matrix.RELEASE_BASE_URL,
+            )
+        subprocess.run(("git", "add", "--all"), cwd=source, check=True)
+        subprocess.run(
+            ("git", "commit", "--quiet", "--no-gpg-sign", "-m", label),
+            cwd=source,
+            check=True,
+        )
+    expected = set(matrix._PATCH_FILES) - ({"xferry/config.py"} if not version_changes else set())
+    assert matrix._verify_patch(source, fixture_version, PUBLIC) == expected
+    actual = subprocess.check_output(
+        ("git", "diff", "--name-only", "HEAD^", "HEAD"),
+        cwd=source,
+        text=True,
+    )
+    assert set(actual.splitlines()) == expected
+
+
+@pytest.mark.parametrize("mutation", ["unexpected-file", "missing-version-transform"])
+def test_fixture_validation_still_requires_exact_changed_paths(fixtures, monkeypatch, mutation):
+    options, _, calls, command = fixtures
+
+    def changed_names(argv, **kwargs):
+        result = command(argv, **kwargs)
+        if "--name-only" in argv:
+            if mutation == "unexpected-file":
+                return result + b"xferry/cli.py\n"
+            if kwargs["cwd"].name == "0.5.1":
+                return result.replace(b"xferry/config.py\n", b"")
+        return result
+
+    monkeypatch.setattr(matrix, "_command", changed_names)
+    with pytest.raises(matrix.MatrixFailure, match="source_invalid"):
+        matrix.validate_fixtures(options)
+    assert not any(argv[0] == "docker" for argv in calls)
 
 
 @pytest.mark.parametrize(
@@ -312,10 +386,10 @@ def test_fixture_validation_rejects_malformed_or_unbound_inventory(
     invalid: str,
 ) -> None:
     options, metadata, calls, command = fixtures
-    version = "0.1.1"
+    version = "0.5.0"
     entry = metadata["versions"][version]
-    hosted = options.fixtures_root / "releases" / "download" / "v0.1.1"
-    executable = hosted / "xferry-0.1.1-linux-x86_64"
+    hosted = options.fixtures_root / "releases" / "download" / "v0.5.0"
+    executable = hosted / "xferry-0.5.0-linux-x86_64"
     if invalid in {"base", "run", "platform", "release_url"}:
         key = {
             "base": "base_commit",
@@ -413,9 +487,9 @@ def test_probe_receipt_validator_rejects_fabricated_or_sensitive_fields(invalid:
     else:
         stage = receipt["stages"][5]
         if invalid == "version":
-            stage["version"] = "0.1.1"
+            stage["version"] = "0.5.0"
         elif invalid == "retained":
-            stage["retained_versions"] = ["0.1.2"]
+            stage["retained_versions"] = ["0.5.1"]
         elif invalid == "health":
             stage["health"] = 1
         elif invalid == "preserved":
@@ -433,7 +507,7 @@ def test_probe_receipt_validator_rejects_fabricated_or_sensitive_fields(invalid:
 @pytest.mark.parametrize(
     "mutation", [None, "missing-files", "false-files", "numeric-files", "missing-health", "extra"]
 )
-def test_native_fixture_doctor_requires_all_seven_successful_checks(mutation: str | None) -> None:
+def test_native_fixture_doctor_requires_all_five_deployment_checks(mutation: str | None) -> None:
     receipt = _lifecycle("ubuntu", "24.04", "linux-x86_64")
     checks = receipt["stages"][3]["checks"]
     if mutation == "missing-files":

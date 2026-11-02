@@ -21,8 +21,8 @@ def _read(relative_path: Path) -> str:
 def test_quick_start_routes_portable_managed_and_container_users_first() -> None:
     text = _read(QUICK_START)
 
-    assert text.index("## Portable") < text.index("## Managed Linux")
-    assert text.index("## Managed Linux") < text.index("## Container")
+    assert text.index("## Run once") < text.index("## Persistent Linux service")
+    assert text.index("## Persistent Linux service") < text.index("## Container through setup")
     assert "pipx install xferry" in text
     assert "xferry run --open" in text
     assert "py -m pip install --user pipx" in text
@@ -30,7 +30,11 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert "brew install pipx" in text
     assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
-    assert "archive/0.2.0-installation.md" in text
+    assert "migration.md" in text
+    assert "xferry setup --backend native" in text
+    assert "xferry setup --backend docker" in text
+    assert "--instance ID" in text
+    assert "--purge --dry-run" in text
     assert "git clone https://github.com/kgmnotes/xferry.git" not in text
     assert "releases/latest" not in text
     assert "ghcr.io/kgmnotes/xferry:latest" not in text

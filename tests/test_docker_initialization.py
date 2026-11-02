@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import os
 import stat
 import struct
@@ -11,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from xferry.management import docker_init
+from xferry.management import docker_init, ownership
 
 
 def _secret_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -41,11 +40,6 @@ def test_initialize_publishes_a_private_secret_without_changing_accessible_host_
     source, target, files = _secret_paths(tmp_path)
     before = files.stat()
     ownership = _simulate_container_ownership(monkeypatch)
-    monkeypatch.setattr(
-        docker_init,
-        "_grant_directory_acl",
-        lambda *_: pytest.fail("existing folder access is enough"),
-    )
     docker_init.initialize(source, target, files, host_uid=os.getuid())
     assert target.read_bytes() == source.read_bytes()
     assert stat.S_IMODE(target.stat().st_mode) == 0o400
@@ -121,10 +115,10 @@ def test_initializer_uses_the_runtime_identity_permission_class(
 
     monkeypatch.setattr(Path, "stat", container_stat)
     _simulate_container_ownership(monkeypatch)
-    grants = []
-    monkeypatch.setattr(docker_init, "_grant_directory_acl", lambda *args: grants.append(args))
+    monkeypatch.setattr(
+        os, "setxattr", lambda *_: pytest.fail("initializer must not modify host ACLs")
+    )
     docker_init.initialize(source, target, files, host_uid=88)
-    assert grants == ([(files, 10001, 88)] if requires_acl else [])
     assert target.read_bytes() == source.read_bytes()
 
 
@@ -177,67 +171,35 @@ def test_malformed_existing_acl_is_preserved_instead_of_replaced(
 ) -> None:
     monkeypatch.setattr(os, "getxattr", lambda *_: raw)
     monkeypatch.setattr(os, "setxattr", lambda *_: pytest.fail("malformed ACL was overwritten"))
-    with pytest.raises(ValueError, match="unsupported directory ACL"):
-        docker_init._grant_directory_acl(tmp_path, 10001, 88)
+    with pytest.raises(ValueError, match="unsupported POSIX ACL"):
+        ownership._grant(raw, 0o750, 10001)
 
 
-def test_acl_creation_keeps_unrelated_permissions_and_grants_future_host_access(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tmp_path.chmod(0o750)
-
-    def missing_attribute(*_args):
-        raise OSError(errno.ENODATA, "no ACL")
-
-    writes = {}
-    monkeypatch.setattr(os, "getxattr", missing_attribute)
-    monkeypatch.setattr(os, "setxattr", lambda path, name, value: writes.__setitem__(name, value))
-    before = tmp_path.stat()
-    docker_init._grant_directory_acl(tmp_path, 10001, 88)
-    access, default = (
-        _acl_entries(writes[key]) for key in ("system.posix_acl_access", "system.posix_acl_default")
-    )
-    assert (2, 7, 10001) in access
-    assert (2, 7, 88) not in access and (2, 7, 88) in default
-    assert (2, 7, 10001) in default
-    for entries in (access, default):
-        assert (4, 5, 0xFFFFFFFF) in entries and (32, 0, 0xFFFFFFFF) in entries
-    assert tmp_path.stat().st_mode == before.st_mode
+def test_acl_creation_keeps_unrelated_permissions() -> None:
+    entries = _acl_entries(ownership._grant(None, 0o750, 10001))
+    assert (2, 7, 10001) in entries
+    assert (4, 5, 0xFFFFFFFF) in entries and (32, 0, 0xFFFFFFFF) in entries
 
 
-def test_runtime_owned_folder_updates_owner_permission_without_duplicate_access_grant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_owned_folder_updates_owner_permission_without_duplicate_access_grant() -> None:
     runtime_uid = os.getuid()
-    tmp_path.chmod(0o500)
-    monkeypatch.setattr(os, "getxattr", lambda *_: b"")
-    writes = {}
-    monkeypatch.setattr(os, "setxattr", lambda path, name, value: writes.__setitem__(name, value))
-    docker_init._grant_directory_acl(tmp_path, runtime_uid, runtime_uid + 1)
-    access = _acl_entries(writes["system.posix_acl_access"])
+    access = _acl_entries(ownership._grant(None, 0o500, runtime_uid, owner_uid=runtime_uid))
     assert (1, 7, 0xFFFFFFFF) in access
     assert not any(tag == 2 and identity == runtime_uid for tag, _, identity in access)
     assert (32, 0, 0xFFFFFFFF) in access
 
 
-def test_acl_failure_leaves_previous_secret_and_host_data_in_place(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_initializer_does_not_change_host_access_even_when_it_is_restricted(tmp_path, monkeypatch):
     source, target, files = _secret_paths(tmp_path)
     files.chmod(0o700)
-    target.parent.mkdir()
-    target.write_text("admin:previous-secret\n")
-    monkeypatch.setattr(os, "getxattr", lambda *_: b"")
-
-    def unsupported_acl(*_args):
-        raise OSError(errno.EOPNOTSUPP, "filesystem does not support ACLs")
-
-    monkeypatch.setattr(os, "setxattr", unsupported_acl)
-    with pytest.raises(OSError):
-        docker_init.initialize(source, target, files, host_uid=88)
-    assert target.read_text() == "admin:previous-secret\n"
-    assert (files / "keep.txt").read_text() == "operator-owned content"
-    assert stat.S_IMODE(files.stat().st_mode) == 0o700
+    _simulate_container_ownership(monkeypatch)
+    before = files.stat()
+    monkeypatch.setattr(
+        os, "setxattr", lambda *_: pytest.fail("host ACL must be managed with a receipt")
+    )
+    docker_init.initialize(source, target, files, host_uid=88)
+    assert files.stat() == before
+    assert target.read_bytes() == source.read_bytes()
 
 
 def test_init_cli_success_passes_only_the_fixed_mounts_and_host_identity(

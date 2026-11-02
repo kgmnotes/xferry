@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .advanced_sessions import AdvancedSessionPrincipal, AdvancedSessionStore
 from .config import HIDDEN_FILES, __version__
@@ -39,16 +39,17 @@ from .features import (
 )
 from .handlers import HandlerMixin
 from .handlers.context import HandlerRuntimeContext, SmuggleTempCoordinator
-from .handlers.encrypted_files import encrypted_request_body_limit
+from .handlers.encrypted_files import encrypted_request_body_limit, is_encrypted_bulk_target
 from .handlers.registry import Handler
 from .http import HTTPRequest, HTTPResponse, error_response
 from .http.io import BodyMemoryBudget, RequestReceiveResult
 from .http.io import receive_request_result as _receive_request_result_io
-from .lifecycle import ServerLifecycle
+from .lifecycle import AdmissionLease, CapacityGate, ServerLifecycle
 from .metrics import MetricsCollector
 from .notepad_service import DEFAULT_MAX_NOTES, NoteStoragePolicy
-from .request_admission import RequestAdmissionConfig, RequestAdmissionPolicy
-from .request_pipeline import RequestPipeline, ResponseBuildArgs
+from .paths import StateLayout
+from .request_admission import AdmissionFailure, RequestAdmissionConfig, RequestAdmissionPolicy
+from .request_pipeline import RequestPipeline, ResponseBuildArgs, correlate_early_response
 from .security.auth import (
     AuthAdmissionController,
     AuthAdmissionDenied,
@@ -131,6 +132,7 @@ class XFerryServer(HandlerMixin):
         self.host = config.host
         self.port = config.port
         self.root_dir = Path(config.root_dir)
+        self.state = StateLayout(self.root_dir)
         self.encrypted_uploads = config.encrypted_uploads
         self.max_upload_size = limits.max_upload_size
         self.encrypted_upload_max_size = limits.encrypted_upload_max_size
@@ -152,6 +154,19 @@ class XFerryServer(HandlerMixin):
         )
         self.max_header_size = limits.max_header_size
         self.max_workers = limits.max_workers
+        self.max_connections = limits.max_connections
+        self.max_transfers = limits.max_transfers
+        self._dispatch_capacity = CapacityGate(limits.max_workers)
+        self._transfer_capacity = CapacityGate(limits.max_transfers)
+        self._tls_capacity = CapacityGate(limits.max_tls_handshakes)
+        self._auth_limits = (
+            limits.auth_max_active,
+            limits.auth_max_pending,
+            limits.auth_wait_timeout,
+        )
+        self.admission_wait_timeout = limits.admission_wait_timeout
+        self.tls_handshake_timeout = limits.tls_handshake_timeout
+        self.KEEP_ALIVE_TIMEOUT = limits.keep_alive_timeout
         assert limits.body_memory_budget is not None
         self.body_memory_budget = limits.body_memory_budget
         self._body_memory_budget = BodyMemoryBudget(self.body_memory_budget)
@@ -175,6 +190,7 @@ class XFerryServer(HandlerMixin):
         # TLS settings (delegated to TLSManager; these fields stay as read-only
         # views used by status printing and request handling).
         self._tls = TLSManager(
+            state_dir=self.root_dir,
             enabled=tls_config.enabled,
             cert_file=str(tls_config.cert_file) if tls_config.cert_file else None,
             key_file=str(tls_config.key_file) if tls_config.key_file else None,
@@ -233,13 +249,14 @@ class XFerryServer(HandlerMixin):
         self._lifecycle = ServerLifecycle(
             host=self.host,
             port=self.port,
-            max_workers=self.max_workers,
+            max_connections=self.max_connections,
             tls_manager=self._tls,
             metrics=self._metrics,
-            handle_client=self._handle_client,
+            handle_client=lambda sock, address: self._handle_client(sock, address),
             reject_overloaded=self._reject_overloaded_connection,
             on_started=self._on_runtime_started,
             on_shutdown=self._on_runtime_shutdown,
+            on_stopping=self._stop_admission,
             on_interrupted=lambda: print("\nShutting down..."),
             setup_tls=lambda: self._setup_tls(),
             cleanup_tls=lambda: self._cleanup_temp_files(),
@@ -255,7 +272,7 @@ class XFerryServer(HandlerMixin):
             idle_timeout=self.WEBSOCKET_IDLE_TIMEOUT,
             metrics=self._metrics,
             is_running=lambda: self.running,
-            handle_message=self._handle_ws_message,
+            handle_message=self._handle_bounded_ws_message,
             record_timeout=self._record_timeout,
         )
 
@@ -273,7 +290,7 @@ class XFerryServer(HandlerMixin):
         # Logging setup
         self._setup_logging(logging_config.quiet)
 
-        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.state.ensure_private()
 
         # Directory for uploaded files
         self.upload_dir = (
@@ -291,7 +308,6 @@ class XFerryServer(HandlerMixin):
                 self.upload_storage,
                 max_plaintext_size=self.encrypted_upload_max_size,
                 incomplete_ttl=self.encrypted_upload_incomplete_ttl,
-                allow_legacy_adoption=config.files_dir is None,
             )
             if self.encrypted_uploads
             else None
@@ -308,8 +324,7 @@ class XFerryServer(HandlerMixin):
         )
 
         # Directory for encrypted notepad blobs, kept separate from uploads/.
-        self.notes_dir = self.root_dir / "notes"
-        self.notes_dir.mkdir(exist_ok=True)
+        self.notes_dir = self.state.notes
         self._notepad_service = None
 
         # Clean up stale SMUGGLE files from previous sessions
@@ -399,12 +414,21 @@ class XFerryServer(HandlerMixin):
     def set_authenticator(self, authenticator: BasicAuthenticator | None) -> None:
         """Install one atomically paired authenticator/admission runtime."""
         controller = (
-            AuthAdmissionController(workers=self.max_workers) if authenticator is not None else None
+            AuthAdmissionController(
+                max_active=self._auth_limits[0],
+                max_pending=self._auth_limits[1],
+                wait_timeout=self._auth_limits[2],
+            )
+            if authenticator is not None
+            else None
         )
         runtime = _AuthRuntime(authenticator, controller)
         with self._auth_runtime_lock:
+            previous_controller = self._auth_runtime.controller
             previous_mode_has_authenticator = self._auth_runtime.authenticator is not None
             self._auth_runtime = runtime
+        if previous_controller is not None:
+            previous_controller.close()
         if previous_mode_has_authenticator != (authenticator is not None):
             self.advanced_session_store.invalidate_all()
 
@@ -594,15 +618,13 @@ class XFerryServer(HandlerMixin):
 
         metrics = self._metrics.snapshot()
         metrics["body_memory"] = self._body_memory_budget.snapshot()
+        metrics["capacity"] = {
+            "connections": self._lifecycle.connection_snapshot(),
+            "dispatch": self._dispatch_capacity.snapshot(),
+            "transfers": self._transfer_capacity.snapshot(),
+            "tls_handshakes": self._tls_capacity.snapshot(),
+        }
         return metrics
-
-    def _try_acquire_request_admission(self, *, wait_timeout: float = 0.0) -> bool:
-        """Compatibility delegate to lifecycle-owned request admission."""
-        return self._lifecycle.acquire_legacy_admission(wait_timeout=wait_timeout)
-
-    def _release_request_admission(self) -> None:
-        """Release a previously acquired request admission slot."""
-        self._lifecycle.release_legacy_admission()
 
     def _reject_overloaded_connection(self, client_socket: Any) -> None:
         """Reject a connection when no worker admission slot is available."""
@@ -617,47 +639,6 @@ class XFerryServer(HandlerMixin):
             pass
         finally:
             client_socket.close()
-
-    def _handle_admitted_client(
-        self,
-        client_socket: Any,
-        client_address: tuple[str, int],
-    ) -> None:
-        """Handle a client and always release its request admission slot."""
-        self._lifecycle.handle_legacy_admitted_client(
-            client_socket,
-            client_address,
-            self._handle_client,
-        )
-
-    def _release_cancelled_admission(
-        self,
-        future: object,
-        client_socket: Any,
-    ) -> None:
-        """Release admission for work canceled before the worker wrapper starts."""
-        self._lifecycle.release_legacy_cancelled(future, client_socket)
-
-    def _finalize_worker_future(
-        self,
-        future: object,
-        client_socket: Any,
-        client_address: tuple[str, int],
-    ) -> None:
-        """Observe worker completion so cancellations and exceptions are visible."""
-        self._lifecycle.finalize_legacy_future(
-            future,
-            client_socket,
-            client_address,
-        )
-
-    def _try_acquire_websocket_slot(self) -> bool:
-        """Return True if a WebSocket connection can enter the active set."""
-        return self._websocket_runtime.try_acquire_legacy_slot()
-
-    def _release_websocket_slot(self) -> None:
-        """Release a previously acquired WebSocket connection slot."""
-        self._websocket_runtime.release_legacy_slot()
 
     # Content types eligible for gzip compression
     _COMPRESSIBLE_TYPES = (
@@ -763,6 +744,14 @@ class XFerryServer(HandlerMixin):
         """Delegate termination to the lifecycle owner."""
         self._lifecycle.stop()
 
+    def _stop_admission(self) -> None:
+        self._dispatch_capacity.close()
+        self._transfer_capacity.close()
+        self._tls_capacity.close()
+        runtime = self._current_auth_runtime()
+        if runtime.controller is not None:
+            runtime.controller.close()
+
     @property
     def socket(self) -> Any | None:
         """Compatibility view of the lifecycle-owned listener."""
@@ -778,7 +767,7 @@ class XFerryServer(HandlerMixin):
         self._lifecycle.running = value
 
     # Keep-alive settings
-    KEEP_ALIVE_TIMEOUT: int = 15  # seconds idle between requests
+    KEEP_ALIVE_TIMEOUT: float = 5.0  # seconds idle between requests
     KEEP_ALIVE_MAX: int = 100  # max requests per connection
     WEBSOCKET_IDLE_TIMEOUT: float = 60.0  # seconds idle before a keepalive ping
     REQUEST_ADMISSION_WAIT_TIMEOUT: float = 0.05  # seconds to reuse just-freed capacity
@@ -804,13 +793,26 @@ class XFerryServer(HandlerMixin):
             # TLS handshake in worker thread (not blocking accept loop)
             context = self.ssl_context
             if self.tls_enabled and context:
-                try:
-                    client_socket.settimeout(5.0)
-                    client_socket = context.wrap_socket(client_socket, server_side=True)
-                except ssl.SSLError as e:
-                    logger.debug(f"SSL handshake failed: {e}")
-                    client_socket.close()
+                deadline = self._lifecycle.accepted_at(client_socket) + self.tls_handshake_timeout
+                tls_lease = self._tls_capacity.acquire(max(0.0, deadline - time.monotonic()))
+                if tls_lease is None:
                     return
+                try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    original_socket = client_socket
+                    client_socket = context.wrap_socket(
+                        client_socket, server_side=True, do_handshake_on_connect=False
+                    )
+                    self._lifecycle.replace_socket(original_socket, client_socket)
+                    client_socket.settimeout(remaining)
+                    client_socket.do_handshake()
+                except (ssl.SSLError, TimeoutError, OSError) as e:
+                    logger.debug(f"SSL handshake failed: {e}")
+                    return
+                finally:
+                    tls_lease.release()
 
             requests_on_conn = 0
 
@@ -818,40 +820,66 @@ class XFerryServer(HandlerMixin):
                 # For subsequent requests, use keep-alive idle timeout
                 idle_timeout = self.KEEP_ALIVE_TIMEOUT if requests_on_conn > 0 else None
 
-                received = self._receive_request_result(client_socket, idle_timeout=idle_timeout)
-                if not received.data:
-                    if received.rejection_reason == "body_too_large":
-                        max_mb = self.max_upload_size // (1024 * 1024)
-                        self._send_receive_rejection_response(
-                            client_socket,
-                            413,
-                            f"Payload too large. Max size: {max_mb} MB",
-                        )
-                    elif received.rejection_reason == "body_memory_budget_exceeded":
-                        self._send_receive_rejection_response(
-                            client_socket,
-                            503,
-                            "Request body memory budget exceeded",
-                        )
-                    break
+                prepared_request: HTTPRequest | None = None
+                transfer_lease: AdmissionLease | None = None
 
+                def admit_headers(headers: bytes) -> bool:
+                    nonlocal prepared_request, transfer_lease
+                    prepared_request, error = self._prepare_request_headers(headers, client_address)
+                    if error is None and self._is_bulk_request(prepared_request):
+                        transfer_lease = self._transfer_capacity.acquire(
+                            self.admission_wait_timeout
+                        )
+                        if transfer_lease is None:
+                            error = self._build_error_response(
+                                503, "Transfer capacity exhausted", code="server_busy"
+                            )
+                    if error is not None:
+                        correlate_early_response(prepared_request, error)
+                        self._send_response(error, client_socket, {"keep_alive": False})
+                        return False
+                    return True
+
+                received: RequestReceiveResult | None = None
                 try:
+                    received = self._receive_request_result(
+                        client_socket, idle_timeout=idle_timeout, admit_headers=admit_headers
+                    )
+                    if not received.data:
+                        if received.rejection_reason == "body_too_large":
+                            max_mb = self.max_upload_size // (1024 * 1024)
+                            self._send_receive_rejection_response(
+                                client_socket, 413, f"Payload too large. Max size: {max_mb} MB"
+                            )
+                        elif received.rejection_reason == "body_memory_budget_exceeded":
+                            self._send_receive_rejection_response(
+                                client_socket, 503, "Request body memory budget exceeded"
+                            )
+                        break
                     self._record_bytes_received(len(received.data))
 
                     requests_on_conn += 1
-                    keep_alive = self._process_request(
+                    keep_alive = self._request_pipeline.process(
                         received.data,
                         client_socket,
                         client_address,
                         requests_on_conn,
+                        prepared_request=prepared_request,
+                        transfer_admitted=transfer_lease is not None,
                     )
                 finally:
-                    received.release_body_reservation()
+                    if received is not None:
+                        received.release_body_reservation()
+                    if transfer_lease is not None:
+                        transfer_lease.release()
                 if not keep_alive:
                     break
         except Exception as exc:
-            self._record_worker_exception("handle_client", exc)
-            logger.exception("Client worker failed for %s:%d", client_address[0], client_address[1])
+            if self.running:
+                self._record_worker_exception("handle_client", exc)
+                logger.exception(
+                    "Client worker failed for %s:%d", client_address[0], client_address[1]
+                )
         finally:
             client_socket.close()
 
@@ -900,6 +928,78 @@ class XFerryServer(HandlerMixin):
         self._metrics.record_authentication_finished("succeeded")
         request.set_verified_principal(verified_principal)
         return None
+
+    def _prepare_request_headers(
+        self, data: bytes, address: tuple[str, int]
+    ) -> tuple[HTTPRequest, HTTPResponse | None]:
+        """Authorize bounded headers before reserving or receiving a body."""
+        request = HTTPRequest(data)
+        request.attach_direct_peer(address)
+        if not request.is_valid:
+            return request, self._build_error_response(400, "Bad Request", code="malformed_request")
+        admitted = self.request_admission_policy.admit(request)
+        if isinstance(admitted, AdmissionFailure):
+            return request, self._build_error_response(
+                admitted.status,
+                admitted.message,
+                code=admitted.code,
+                field=admitted.field,
+                no_store=True,
+            )
+        request.set_admission_context(admitted)
+        error = self._authenticate_request(request, address)
+        if error is not None:
+            return request, error
+        if self._is_encrypted_transfer_route(request):
+            return request, self._authorize_encrypted_transfer_request(request, address)
+        if self._is_advanced_session_control_route(request):
+            return request, self._authorize_advanced_session_control(request, address)
+        error = self._prepare_advanced_session_dispatch(request)
+        return request, error
+
+    def _is_bulk_request(self, request: HTTPRequest) -> bool:
+        """Use the actual resolved routes; packaged UI assets remain control work."""
+        if self._is_encrypted_transfer_route(request):
+            return is_encrypted_bulk_target(request)
+        if self._is_advanced_session_control_route(request):
+            return False
+        if request.advanced_session_dispatch is not None:
+            return True
+        spec = core_method_spec(request.method)
+        if spec is not None and spec.ui_group == "upload":
+            return True
+        if request.method in {"GET", "FETCH"}:
+            resolved = (
+                self._resolve_get_path(request)
+                if request.method == "GET"
+                else self._get_file_path(request.path, for_sandbox=True)
+            )
+            return resolved is not None and self._is_upload_descendant(resolved)
+        return False
+
+    def _handle_bounded_ws_message(self, sock: Any, payload: bytes) -> None:
+        """Compute a NOTE reply under dispatch capacity, then write without it."""
+        lease = self._dispatch_capacity.acquire(self.admission_wait_timeout)
+        if lease is None:
+            from .websocket import build_ws_close_frame
+
+            sock.sendall(build_ws_close_frame(1013, "Server busy"))
+            return
+
+        class ReplyBuffer:
+            def __init__(self) -> None:
+                self.frames: list[bytes] = []
+
+            def sendall(self, data: bytes) -> None:
+                self.frames.append(data)
+
+        reply = ReplyBuffer()
+        try:
+            self._handle_ws_message(cast(socket.socket, reply), payload)
+        finally:
+            lease.release()
+        for frame in reply.frames:
+            sock.sendall(frame)
 
     def _log_authentication_event(self) -> None:
         """Emit one fixed aggregate warning per interval without identity data."""
@@ -1463,6 +1563,7 @@ class XFerryServer(HandlerMixin):
         self,
         client_socket: Any,
         idle_timeout: float | None = None,
+        admit_headers: Any = None,
     ) -> RequestReceiveResult:
         """Receive a request and retain any body-memory reservation."""
         return _receive_request_result_io(
@@ -1476,6 +1577,7 @@ class XFerryServer(HandlerMixin):
             on_reject=self._record_receive_rejection,
             body_memory_budget=self._body_memory_budget,
             body_limit_resolver=(encrypted_request_body_limit if self.encrypted_uploads else None),
+            admit_headers=admit_headers,
         )
 
     def _handle_notepad_ws(
@@ -1484,10 +1586,10 @@ class XFerryServer(HandlerMixin):
         request: HTTPRequest,
     ) -> None:
         """Compatibility delegate to the WebSocket runtime frame loop."""
-        self._websocket_runtime.set_handle_message(self._handle_ws_message)
+        self._websocket_runtime.set_handle_message(self._handle_bounded_ws_message)
         self._websocket_runtime.handle_session(sock, request)
 
     def _upgrade_websocket(self, sock: Any, request: HTTPRequest) -> bool:
         """Delegate admission and session cleanup to the WebSocket runtime."""
-        self._websocket_runtime.set_handle_message(self._handle_ws_message)
+        self._websocket_runtime.set_handle_message(self._handle_bounded_ws_message)
         return self._websocket_runtime.upgrade(sock, request)

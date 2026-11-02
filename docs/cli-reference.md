@@ -19,7 +19,7 @@ Run xferry for a short menu, setup to install, or run to start once.
   start         Start the installed server.
   stop          Stop the installed server.
   restart       Restart the installed server.
-  doctor        Check the managed installation.
+  doctor        Check the selected service or container deployment.
   credentials   Manage service credentials.
   uninstall     Remove the managed installation safely.
   update        Update the installed server to an exact release version.
@@ -29,7 +29,7 @@ Root options: --help, --version, --lang LANG.
 
 Examples:
   xferry run --files-dir ~/Shared
-  xferry setup
+  xferry setup --backend native
   xferry status
   xferry config explain files_dir
 ```
@@ -37,11 +37,9 @@ Examples:
 ## `xferry run --help`
 
 ```text
-usage: xferry run [-h] [-V] [--help-all] [--config FILE] [--open]
-                  [--access {private,public,lab}] [-H HOST] [-p PORT]
-                  [--files-dir DIR]
-                  [--https {off,auto,domain,files,self-signed}]
-                  [--auth-file FILE] [--allowed-host HOST]
+usage: xferry run [-h] [-V] [--help-all] [--config FILE] [--open] [--access {private,public,lab}]
+       [-H HOST] [-p PORT] [--files-dir DIR] [--https {off,auto,domain,files,self-signed}]
+       [--auth-file FILE] [--allowed-host HOST]
 
 Run the file server on this host.
 
@@ -92,17 +90,19 @@ command options. Use xferry config show --all to see effective values and source
 ## `xferry setup --help`
 
 ```text
-usage: xferry setup [-h] [--help-all] [--config FILE] [--docker] [--access {private,public}]
-                    [--domain DOMAIN] [--files-dir DIR] [--public-ip IP] [--email EMAIL]
-                    [--firewall {allow,deny}] [--to VERSION] [--dry-run] [--json]
+usage: xferry setup [-h] [--help-all] [--instance ID] [--backend {native,docker}] [--access
+       {private,public}] [--domain DOMAIN] [--files-dir DIR] [--public-ip IP] [--email EMAIL]
+       [--firewall {allow,deny}] [--to VERSION | --image REPOSITORY@sha256:DIGEST] [--dry-run]
+       [--json]
 
 Install and configure a Linux service or Docker server on this host.
 
 options:
   -h, --help            Show this help and exit.
   --help-all            Show all command options.
-  --config FILE         Select a server by its configuration file.
-  --docker              Use Docker Compose instead of a Linux service.
+  --instance ID         Select a persistent deployment by ID.
+  --backend {native,docker}
+                        Install a Linux service or Docker Compose deployment (default: native).
   --access {private,public}
                         Private access or public HTTPS (default: public).
   --domain DOMAIN       Use your domain for public HTTPS.
@@ -111,19 +111,20 @@ options:
   --email EMAIL         Optional certificate contact address.
   --firewall {allow,deny}
                         Allow or decline required UFW rules.
-  --to VERSION          Signed release version to install.
+  --to VERSION          Signed release version to install (default: 0.5.0).
+  --image REPOSITORY@sha256:DIGEST
+                        Use an explicit immutable Docker image instead of a release version.
   --dry-run             Validate and preview changes.
   --json                Print machine-readable results.
 
-Example: xferry setup
+Example: xferry setup --backend native
 ```
 
 ## `xferry config --help`
 
 ```text
-usage: xferry config [-h] [--help-all] [--config FILE] [--all] [--group GROUP] [--search TEXT]
-                     [--dry-run] [--json]
-                     [{show,explain,check,set}] [KEY[=VALUE] ...]
+usage: xferry config [-h] [--help-all] [--instance ID | --config FILE] [--all] [--group GROUP]
+       [--search TEXT] [--dry-run] [--json] [{show,explain,check,set}] [KEY[=VALUE] ...]
 
 Open settings, or show/explain/check/set a setting.
 
@@ -135,7 +136,8 @@ positional arguments:
 options:
   -h, --help            Show this help and exit.
   --help-all            Show all command options.
-  --config FILE         Select a server by its configuration file.
+  --instance ID         Select a persistent deployment by ID.
+  --config FILE         Edit an explicit foreground configuration profile.
   --all                 Show every setting.
   --group GROUP         Show one settings group.
   --search TEXT         Find settings by name or description.
@@ -148,14 +150,14 @@ Example: xferry config explain files_dir
 ## `xferry status --help`
 
 ```text
-usage: xferry status [-h] [--help-all] [--config FILE] [--json]
+usage: xferry status [-h] [--help-all] [--instance ID] [--json]
 
 Show the installed server status.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
   --json         Print machine-readable results.
 
 Example: xferry status
@@ -164,14 +166,14 @@ Example: xferry status
 ## `xferry logs --help`
 
 ```text
-usage: xferry logs [-h] [--help-all] [--config FILE] [--lines COUNT] [--since WHEN] [--follow]
+usage: xferry logs [-h] [--help-all] [--instance ID] [--lines COUNT] [--since WHEN] [--follow]
 
 Show installed server logs.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
   --lines COUNT  Number of recent log lines (default: 100).
   --since WHEN   Show logs since this time.
   --follow       Stream new log lines.
@@ -182,14 +184,15 @@ Example: xferry logs --follow
 ## `xferry start --help`
 
 ```text
-usage: xferry start [-h] [--help-all] [--config FILE]
+usage: xferry start [-h] [--help-all] [--instance ID] [--json]
 
 Start the installed server.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
+  --json         Print machine-readable results.
 
 Example: xferry start
 ```
@@ -197,14 +200,15 @@ Example: xferry start
 ## `xferry stop --help`
 
 ```text
-usage: xferry stop [-h] [--help-all] [--config FILE]
+usage: xferry stop [-h] [--help-all] [--instance ID] [--json]
 
 Stop the installed server.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
+  --json         Print machine-readable results.
 
 Example: xferry stop
 ```
@@ -212,14 +216,15 @@ Example: xferry stop
 ## `xferry restart --help`
 
 ```text
-usage: xferry restart [-h] [--help-all] [--config FILE]
+usage: xferry restart [-h] [--help-all] [--instance ID] [--json]
 
 Restart the installed server.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
+  --json         Print machine-readable results.
 
 Example: xferry restart
 ```
@@ -227,14 +232,14 @@ Example: xferry restart
 ## `xferry doctor --help`
 
 ```text
-usage: xferry doctor [-h] [--help-all] [--config FILE] [--deep] [--skip-network] [--json]
+usage: xferry doctor [-h] [--help-all] [--instance ID] [--deep] [--skip-network] [--json]
 
-Check the managed installation.
+Check the selected service or container deployment.
 
 options:
   -h, --help      Show this help and exit.
   --help-all      Show all command options.
-  --config FILE   Select a server by its configuration file.
+  --instance ID   Select a persistent deployment by ID.
   --deep          Include external connectivity checks.
   --skip-network  Check local state only.
   --json          Print machine-readable results.
@@ -245,7 +250,7 @@ Example: xferry doctor
 ## `xferry credentials --help`
 
 ```text
-usage: xferry credentials [-h] [--help-all] [--config FILE] [--json] {reset}
+usage: xferry credentials [-h] [--help-all] [--instance ID | --config FILE] [--json] {reset}
 
 Manage service credentials.
 
@@ -255,7 +260,8 @@ positional arguments:
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
+  --config FILE  Edit an explicit foreground configuration profile.
   --json         Print machine-readable results.
 
 Example: xferry credentials reset
@@ -264,32 +270,32 @@ Example: xferry credentials reset
 ## `xferry update --help`
 
 ```text
-usage: xferry update [-h] [--help-all] [--config FILE] --to VERSION [--dry-run] [--json]
+usage: xferry update [-h] [--help-all] [--instance ID] --to VERSION [--dry-run] [--json]
 
 Update the installed server to an exact release version.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
   --to VERSION   Exact release version.
   --dry-run      Validate and preview changes.
   --json         Print machine-readable results.
 
-Example: xferry update --to 0.4.0
+Example: xferry update --to 0.5.0
 ```
 
 ## `xferry rollback --help`
 
 ```text
-usage: xferry rollback [-h] [--help-all] [--config FILE] [--to VERSION] [--dry-run] [--json]
+usage: xferry rollback [-h] [--help-all] [--instance ID] [--to VERSION] [--dry-run] [--json]
 
 Restore a verified release on a long-lived installation.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
+  --instance ID  Select a persistent deployment by ID.
   --to VERSION   Exact release version.
   --dry-run      Validate and preview changes.
   --json         Print machine-readable results.
@@ -300,16 +306,15 @@ Example: xferry rollback
 ## `xferry uninstall --help`
 
 ```text
-usage: xferry uninstall [-h] [--help-all] [--config FILE] [--purge-data] [--yes] [--dry-run]
-                        [--json]
+usage: xferry uninstall [-h] [--help-all] [--instance ID] [--purge] [--yes] [--dry-run] [--json]
 
 Remove the managed installation safely.
 
 options:
   -h, --help     Show this help and exit.
   --help-all     Show all command options.
-  --config FILE  Select a server by its configuration file.
-  --purge-data   Also delete configuration, credentials and stored data.
+  --instance ID  Select a persistent deployment by ID.
+  --purge        Delete owned configuration, credentials and private state; keep external files.
   --yes          Confirm deletion without a prompt.
   --dry-run      Validate and preview changes.
   --json         Print machine-readable results.

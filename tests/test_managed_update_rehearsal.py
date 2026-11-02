@@ -14,6 +14,17 @@ RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
 REHEARSAL_TOOL = REPO_ROOT / "tools/managed_update_rehearsal.py"
 
 
+def test_native_fixture_pair_matches_the_deployment_compatibility_floor() -> None:
+    from tools import managed_systemd_matrix, managed_systemd_probe, managed_update_rehearsal
+    from xferry.management.versions import MIN_DEPLOYMENT_RELEASE, compare_release_versions
+
+    versions = managed_update_rehearsal.REHEARSAL_VERSIONS
+    assert versions == (managed_systemd_probe.SOURCE_VERSION, managed_systemd_probe.TARGET_VERSION)
+    assert versions == managed_systemd_matrix.VERSIONS
+    assert compare_release_versions(versions[0], MIN_DEPLOYMENT_RELEASE) >= 0
+    assert compare_release_versions(versions[1], versions[0]) > 0
+
+
 def test_fixture_patch_changes_only_the_ephemeral_source_contract(tmp_path: Path) -> None:
     """A rehearsal copy must use its own version, URL, and public trust root."""
     assert REHEARSAL_TOOL.is_file()
@@ -31,12 +42,12 @@ def test_fixture_patch_changes_only_the_ephemeral_source_contract(tmp_path: Path
 
     patch_fixture_source(
         source,
-        version="0.1.1",
+        version="0.5.0",
         public_key_hex="ab" * 32,
         release_base_url="https://127.0.0.1:44443/releases",
     )
 
-    assert '__version__ = "0.1.1"' in source.joinpath("xferry/config.py").read_text()
+    assert '__version__ = "0.5.0"' in source.joinpath("xferry/config.py").read_text()
     trust = source.joinpath("xferry/management/release_trust.py").read_text()
     assert f'key_id="{REHEARSAL_KEY_ID}"' in trust
     assert 'public_key=bytes.fromhex("' + "ab" * 32 + '")' in trust
@@ -86,7 +97,7 @@ def test_managed_update_rehearsal_policy_is_registered_and_clean() -> None:
             "    permissions:\n      contents: read",
             "    environment: production-release\n    permissions:\n      contents: read",
         ),
-        ("rehearsal", 'TARGET_VERSION: "0.1.2"', 'TARGET_VERSION: "0.1.3"'),
+        ("rehearsal", 'TARGET_VERSION: "0.5.1"', 'TARGET_VERSION: "0.1.3"'),
         (
             "rehearsal",
             "MANAGED_XFERRY: /usr/local/bin/xferry",
@@ -94,8 +105,8 @@ def test_managed_update_rehearsal_policy_is_registered_and_clean() -> None:
         ),
         (
             "rehearsal",
-            'test "$("$MANAGED_XFERRY" --version)" = "xferry 0.1.1"',
-            'test "$(xferry --version)" = "xferry 0.1.1"',
+            'test "$("$MANAGED_XFERRY" --version)" = "xferry 0.5.0"',
+            'test "$(xferry --version)" = "xferry 0.5.0"',
         ),
         (
             "rehearsal",
@@ -149,8 +160,8 @@ def test_managed_update_rehearsal_policy_requires_protected_parents_on_disposabl
 """
     if normalization not in rehearsal:
         rehearsal = rehearsal.replace(
-            "      - name: Install signed 0.1.1\n",
-            normalization + "      - name: Install signed 0.1.1\n",
+            "      - name: Install signed 0.5.0\n",
+            normalization + "      - name: Install signed 0.5.0\n",
         )
 
     assert managed_update_rehearsal_policy_findings(rehearsal, release) == []
@@ -183,12 +194,12 @@ def test_managed_update_rehearsal_policy_requires_protected_parents_on_disposabl
 def test_managed_update_rehearsal_runs_the_complete_lifecycle_in_order() -> None:
     workflow = REHEARSAL_WORKFLOW.read_text(encoding="utf-8")
     steps = (
-        "Install signed 0.1.1",
+        "Install signed 0.5.0",
         "Setup private managed service",
-        "Dry-run signed update to 0.1.2",
-        "Apply signed update to 0.1.2",
-        "Verify exact 0.1.2 health",
-        "Rollback to retained 0.1.1",
+        "Dry-run signed update to 0.5.1",
+        "Apply signed update to 0.5.1",
+        "Verify exact 0.5.1 health",
+        "Rollback to retained 0.5.0",
         "Conservative uninstall",
     )
 
@@ -196,7 +207,7 @@ def test_managed_update_rehearsal_runs_the_complete_lifecycle_in_order() -> None
     assert positions == sorted(positions)
     assert "--purge-data" not in workflow
     assert '"$MANAGED_XFERRY" uninstall --json' in workflow
-    assert 'result["code"] == "uninstall_complete"' in workflow
+    assert '--phase uninstall --result "$result"' in workflow
 
 
 def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields() -> None:
@@ -205,11 +216,11 @@ def test_managed_update_rehearsal_reports_only_allowlisted_setup_failure_fields(
 
     assert "setup_exit=0" in workflow
     assert 'setup_exit="$?"' in workflow
+    assert 'expected = {"exit_code", "message", "details", "url", "plan", "state"}' in workflow
     assert (
-        'allowed = {"code", "detail", "exit_code", "message", "next_actions", "status"}' in workflow
+        'print(json.dumps({"phase": "setup", "exit_code": result["exit_code"]}), file=sys.stderr)'
+        in workflow
     )
-    assert "unexpected = set(result) - allowed" in workflow
-    assert "print(json.dumps(result, sort_keys=True), file=sys.stderr)" in workflow
     assert '"release_state": release_state.value' in workflow
     assert '"owned_state_safe": owned_state_safe' in workflow
     assert '"manifest_valid": manifest_valid' in workflow
@@ -230,7 +241,7 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
 
     root = tmp_path / "host"
     release_root = root / "opt/xferry"
-    release = release_root / "releases/0.1.1"
+    release = release_root / "releases/0.5.0"
     release.mkdir(parents=True)
     for directory in (
         root,
@@ -246,7 +257,7 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
     executable.chmod(0o755)
     release.joinpath("xferry-release.json").write_bytes(
         ReleaseManifest.create_v2(
-            version="0.1.1",
+            version="0.5.0",
             platform=current_platform_id(),
             executable_size=len(executable_payload),
             executable_sha256=hashlib.sha256(executable_payload).hexdigest(),
@@ -254,7 +265,7 @@ def test_managed_update_release_diagnostic_executes_with_fixed_boolean_schema(
             workflow_run="123456",
         ).to_bytes()
     )
-    release_root.joinpath("current").symlink_to("releases/0.1.1")
+    release_root.joinpath("current").symlink_to("releases/0.5.0")
     layout = ManagedLayout(
         release_root=release_root,
         config_file=root / "etc/xferry/xferry.ini",
@@ -323,18 +334,12 @@ def test_managed_update_apply_failure_diagnostic_is_sanitized_and_executable(
     result_path.write_text(
         json.dumps(
             {
-                "active": "0.1.1",
-                "before": "0.1.1",
-                "code": "candidate_unhealthy",
-                "detail": sensitive,
-                "dry_run": False,
                 "exit_code": 6,
                 "message": sensitive,
-                "next_actions": [sensitive],
-                "rollback": "restored",
-                "status": "error",
-                "target": "0.1.2",
-                "version": "0.1.2",
+                "details": {"code": "candidate_unhealthy", "detail": sensitive},
+                "url": None,
+                "plan": None,
+                "state": {"detail": sensitive},
             }
         ),
         encoding="utf-8",
@@ -352,17 +357,7 @@ def test_managed_update_apply_failure_diagnostic_is_sanitized_and_executable(
 
     output = capsys.readouterr().out
     assert sensitive not in output
-    assert json.loads(output) == {
-        "active": "0.1.1",
-        "before": "0.1.1",
-        "code": "candidate_unhealthy",
-        "dry_run": False,
-        "exit_code": 6,
-        "rollback": "restored",
-        "status": "error",
-        "target": "0.1.2",
-        "version": "0.1.2",
-    }
+    assert json.loads(output) == {"phase": "update", "exit_code": 6}
 
 
 def test_repository_guard_includes_managed_update_rehearsal() -> None:

@@ -18,7 +18,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from hypothesis import given
 from hypothesis import strategies as st
 
-from xferry.management import cli
 from xferry.management import releases as release_module
 from xferry.management.health import HealthEndpoint, HealthResult
 from xferry.management.model import HostFacts, ManagedLayout
@@ -52,13 +51,6 @@ from xferry.settings import (
 @pytest.fixture(autouse=True)
 def isolated_instance_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
-    from xferry.management import cli
-
-    def no_sudo(_argv, _context):
-        print("managed operation requires root", file=cli.sys.stderr)
-        return 3
-
-    monkeypatch.setattr(cli, "_privileged", no_sudo)
 
 
 def _layout(tmp_path: Path) -> ManagedLayout:
@@ -79,7 +71,7 @@ def test_release_lifecycle_derives_managed_acme_state_from_the_data_root(tmp_pat
 
     manager = ReleaseManager(layout=layout)
 
-    assert manager.acme_root == tmp_path / "var/lib/xferry/.xferry"
+    assert manager.acme_root == tmp_path / "var/lib/xferry/acme"
 
 
 _TEST_SOURCE_COMMIT = "a" * 40
@@ -289,7 +281,7 @@ class FakeClock:
 def _seed_config(layout: ManagedLayout, password: str = "known-password") -> None:
     layout.config_file.parent.mkdir(parents=True, exist_ok=True)
     _protect_managed_directory(layout, layout.config_file.parent)
-    layout.config_file.write_text("[server]\nport = 8080\n", encoding="utf-8")
+    layout.config_file.write_text("[server]\nconfig_version=1\nport = 8080\n", encoding="utf-8")
     layout.auth_file.write_text(f"admin:{password}\n", encoding="utf-8")
     layout.config_file.chmod(0o644)
     layout.auth_file.chmod(0o600)
@@ -318,8 +310,21 @@ def _seed_release(
     executable.chmod(0o755)
     if verified:
         metadata = release / "xferry-release.json"
-        metadata.write_bytes(_v1_manifest(version, payload, platform=platform))
+        metadata.write_bytes(_v2_manifest(version, payload, platform=platform))
         metadata.chmod(0o644)
+    from xferry.management.deployment import DeploymentSpec, write_manifest
+
+    if layout.config_file.exists():
+        write_manifest(
+            layout.config_file.parent / "deployment.json",
+            DeploymentSpec.new(
+                "native",
+                layout.config_file.parent / "profile.ini",
+                layout.data_root / "files",
+                layout.data_root,
+                {"version": version, "sha256": hashlib.sha256(payload).hexdigest()},
+            ),
+        )
     return release
 
 
@@ -333,13 +338,13 @@ def _set_current(layout: ManagedLayout, version: str) -> None:
 def _installed_layout(tmp_path: Path, platform: str = "linux-x86_64") -> ManagedLayout:
     layout = _layout(tmp_path)
     _seed_config(layout)
-    _seed_release(layout, "0.1.0", b"release-one", platform=platform)
-    _set_current(layout, "0.1.0")
+    _seed_release(layout, "0.5.0", b"release-one", platform=platform)
+    _set_current(layout, "0.5.0")
     return layout
 
 
 def _installed_layout_at(
-    tmp_path: Path, version: str = "0.1.0", payload: bytes = b"release-current"
+    tmp_path: Path, version: str = "0.5.0", payload: bytes = b"release-current"
 ) -> ManagedLayout:
     layout = _layout(tmp_path)
     _seed_config(layout)
@@ -449,14 +454,15 @@ def _update_result(
     *,
     active: str | None,
     rollback: str,
-    before: str = "0.1.0",
+    before: str = "0.5.0",
+    target: str = "0.5.1",
 ) -> ReleaseResult:
     return ReleaseResult(
         exit_code,
         message,
-        version="0.2.0",
+        version=target,
         before=before,
-        target="0.2.0",
+        target=target,
         active=active,
         rollback=rollback,
     )
@@ -510,7 +516,7 @@ def test_remote_update_rejects_truthy_non_boolean_enable_values(
         remote_updates_enabled=enable_value,  # type: ignore[arg-type]
     )
 
-    assert manager.update("0.2.0", True) == ReleaseResult(
+    assert manager.update("0.5.1", True) == ReleaseResult(
         2,
         "remote_updates_disabled",
         dry_run=True,
@@ -534,7 +540,7 @@ def test_default_disabled_update_does_not_disable_local_release_operations(
     """Source-only admission must preserve verified rollback and conservative uninstall."""
     layout = _layout(tmp_path)
     unit, cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
-    _seed_release(layout, "0.1.1", b"release-prior")
+    _seed_release(layout, "0.5.1", b"release-prior")
     runner = FakeRunner()
     manager = ReleaseManager(
         layout=layout,
@@ -553,12 +559,12 @@ def test_default_disabled_update_does_not_disable_local_release_operations(
         staging_parent=tmp_path / "staging",
     )
 
-    assert manager.rollback("0.1.1", False) == ReleaseResult(
+    assert manager.rollback("0.5.1", False) == ReleaseResult(
         0,
         "rollback_complete",
-        version="0.1.1",
+        version="0.5.1",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.1")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
 
     assert manager.uninstall(False, False, False) == ReleaseResult(0, "uninstall_complete")
     assert not unit.exists()
@@ -590,7 +596,7 @@ def test_explicit_update_rejects_unsupported_candidate_before_release_boundaries
     )
     assert downloader.requests == []
     assert not layout.lock_file.exists()
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.commands == []
 
 
@@ -609,7 +615,7 @@ def test_explicit_update_rejects_noncanonical_versions_before_release_boundaries
     assert result == ReleaseResult(2, "invalid_release_version")
     assert downloader.requests == []
     assert not layout.lock_file.exists()
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.commands == []
 
 
@@ -636,7 +642,7 @@ def test_update_admits_the_exact_ten_managed_host_pairs_before_metadata_read(
     layout = _installed_layout(tmp_path, platform)
     base_url = "https://releases.example.test/xferry/releases"
     downloader = FakeDownloader(
-        _remote_assets(base_url, "0.2.0", b"release-two", platform=platform)
+        _remote_assets(base_url, "0.5.1", b"release-two", platform=platform)
     )
 
     result = _manager(
@@ -645,7 +651,7 @@ def test_update_admits_the_exact_ten_managed_host_pairs_before_metadata_read(
         downloader,
         platform=platform,
         facts=_host_facts(os_id=os_id, os_version=os_version, machine=machine),
-    ).update("0.2.0", True)
+    ).update("0.5.1", True)
 
     assert result.exit_code == 0
     assert len(downloader.read_requests) == 2
@@ -670,12 +676,12 @@ def test_update_rejects_unsupported_managed_hosts_before_remote_access(
     layout = _installed_layout(tmp_path)
     downloader = FakeDownloader({})
 
-    result = _manager(tmp_path, layout, downloader, facts=facts).update("0.2.0", True)
+    result = _manager(tmp_path, layout, downloader, facts=facts).update("0.5.1", True)
 
     assert result.exit_code == 4
     assert result.message == "managed_host_unsupported"
     assert "Supported matrix:" in result.detail
-    assert result.target == "0.2.0"
+    assert result.target == "0.5.1"
     assert "pipx upgrade xferry" in " ".join(result.next_actions)
     assert downloader.requests == []
     assert not (tmp_path / "staging").exists()
@@ -689,15 +695,15 @@ def test_update_portable_admission_returns_only_pipx_action_without_remote_acces
     layout = _layout(tmp_path)
     downloader = FakeDownloader({})
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", True)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", True)
 
     assert result == ReleaseResult(
         4,
         "portable_installation",
-        version="0.2.0",
+        version="0.5.1",
         detail="No supported XFerry managed installation was found; no changes were made.",
         dry_run=True,
-        target="0.2.0",
+        target="0.5.1",
         next_actions=("Run `pipx upgrade xferry` for a portable installation.",),
     )
     assert downloader.requests == []
@@ -737,14 +743,14 @@ def test_update_requires_root_before_host_inspection_or_remote_access(
             boundary.setattr(Path, method, forbidden_boundary)
         boundary.setattr(release_module, "managed_mutation", forbidden_boundary)
         boundary.setattr(release_module, "has_unsupported_managed_state", forbidden_boundary)
-        result = manager.update("0.2.0", dry_run)
+        result = manager.update("0.5.1", dry_run)
 
     assert result == ReleaseResult(
         3,
         "release_requires_root",
-        version="0.2.0",
+        version="0.5.1",
         dry_run=dry_run,
-        target="0.2.0",
+        target="0.5.1",
         next_actions=(
             "For a managed installation, rerun this update as root with `sudo`.",
             "For a portable installation, run `pipx upgrade xferry`.",
@@ -770,7 +776,7 @@ def test_update_requires_explicit_version_before_candidate_download_or_lock(
     assert result == ReleaseResult(2, "invalid_release_version")
     assert downloader.requests == []
     assert not layout.lock_file.exists()
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert not (layout.release_root / "releases/2.9.0").exists()
     assert runner.commands == []
 
@@ -788,7 +794,7 @@ def test_explicit_rollback_rejects_unsupported_target_before_lock_restart_or_swi
 
     assert result == ReleaseResult(2, "unsupported_release_major", version=version)
     assert not layout.lock_file.exists()
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.commands == []
 
 
@@ -807,18 +813,18 @@ def test_unsupported_managed_state_inventory_blocks_every_release_entrypoint_bef
     tmp_path: Path,
     operation: str,
 ) -> None:
-    layout = _installed_layout_at(tmp_path, "0.1.0", b"release-zero-one")
+    layout = _installed_layout_at(tmp_path, "0.5.0", b"release-zero-one")
     _seed_release(layout, "99.0.0", b"unsupported-release")
     downloader = FakeDownloader({})
     runner = FakeRunner()
     manager = _manager(tmp_path, layout, downloader, runner=runner)
 
     if operation == "update":
-        result = manager.update("0.2.0", False)
+        result = manager.update("0.5.1", False)
     elif operation == "rollback":
         result = manager.rollback(None, False)
     elif operation == "update-dry-run":
-        result = manager.update("0.2.0", True)
+        result = manager.update("0.5.1", True)
     elif operation == "rollback-dry-run":
         result = manager.rollback(None, True)
     elif operation == "uninstall":
@@ -830,17 +836,17 @@ def test_unsupported_managed_state_inventory_blocks_every_release_entrypoint_bef
     assert downloader.requests == []
     assert not layout.lock_file.exists()
     assert runner.commands == []
-    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.1.0")
+    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.5.0")
     assert layout.release_root.joinpath("releases/99.0.0").is_dir()
 
 
 def _invoke_release_entrypoint(manager: ReleaseManager, operation: str) -> ReleaseResult:
     if operation == "update":
-        return manager.update("0.2.0", False)
+        return manager.update("0.5.1", False)
     if operation == "rollback":
         return manager.rollback(None, False)
     if operation == "update-dry-run":
-        return manager.update("0.2.0", True)
+        return manager.update("0.5.1", True)
     if operation == "rollback-dry-run":
         return manager.rollback(None, True)
     if operation == "uninstall":
@@ -876,7 +882,7 @@ def test_ambiguous_release_inventory_blocks_every_entrypoint_before_effects(
     operation: str,
     ambiguity: str,
 ) -> None:
-    layout = _installed_layout_at(tmp_path, "0.1.0", b"release-zero-one")
+    layout = _installed_layout_at(tmp_path, "0.5.0", b"release-zero-one")
     releases = layout.release_root / "releases"
     ambiguous_path: Path
     if ambiguity == "unsupported-release-a":
@@ -888,20 +894,20 @@ def test_ambiguous_release_inventory_blocks_every_entrypoint_before_effects(
         ambiguous_path.mkdir()
         ambiguous_path.chmod(0o755)
     elif ambiguity == "missing-metadata":
-        ambiguous_path = _seed_release(layout, "0.1.1", b"missing", verified=False)
+        ambiguous_path = _seed_release(layout, "0.5.1", b"missing", verified=False)
     elif ambiguity == "version-mismatch":
-        ambiguous_path = _seed_release(layout, "0.1.1", b"mismatch")
+        ambiguous_path = _seed_release(layout, "0.5.1", b"mismatch")
         ambiguous_path.joinpath("xferry-release.json").write_bytes(
-            _v1_manifest("0.1.2", b"mismatch")
+            _v1_manifest("0.5.2", b"mismatch")
         )
     elif ambiguity == "tag-mismatch":
-        ambiguous_path = _seed_release(layout, "0.1.1", b"bad-tag")
+        ambiguous_path = _seed_release(layout, "0.5.1", b"bad-tag")
         manifest_path = ambiguous_path / "xferry-release.json"
         document = json.loads(manifest_path.read_bytes())
-        document["tag"] = "v0.1.2"
+        document["tag"] = "v0.5.2"
         manifest_path.write_text(json.dumps(document), encoding="utf-8")
     else:
-        ambiguous_path = _seed_release(layout, "0.1.1", b"original")
+        ambiguous_path = _seed_release(layout, "0.5.1", b"original")
         executable = ambiguous_path / "xferry"
         payload = executable.read_bytes()
         executable.write_bytes(bytes([payload[0] ^ 1]) + payload[1:])
@@ -918,7 +924,7 @@ def test_ambiguous_release_inventory_blocks_every_entrypoint_before_effects(
     assert downloader.requests == []
     assert not layout.lock_file.exists()
     assert runner.commands == []
-    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.1.0")
+    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.5.0")
     assert ambiguous_path.exists()
 
 
@@ -975,7 +981,7 @@ def test_update_rechecks_unsupported_managed_state_inventory_under_lock_before_c
 ) -> None:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner()
     checks = iter((False, True))
     monkeypatch.setattr(
@@ -985,18 +991,18 @@ def test_update_rechecks_unsupported_managed_state_inventory_under_lock_before_c
         raising=False,
     )
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "unsupported_managed_state",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert len(downloader.requests) == 3
     assert runner.commands == []
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_rollback_rechecks_unsupported_managed_state_inventory_under_lock_before_target_selection(
@@ -1004,7 +1010,7 @@ def test_rollback_rechecks_unsupported_managed_state_inventory_under_lock_before
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.1.1", b"release-prior")
+    _seed_release(layout, "0.5.1", b"release-prior")
     runner = FakeRunner()
     checks = iter((False, True))
     monkeypatch.setattr(
@@ -1018,7 +1024,7 @@ def test_rollback_rechecks_unsupported_managed_state_inventory_under_lock_before
 
     assert result == ReleaseResult(1, "unsupported_managed_state")
     assert runner.commands == []
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_uninstall_rechecks_unsupported_managed_state_inventory_under_lock_before_any_mutation(
@@ -1098,13 +1104,9 @@ def test_manifest_parser_accepts_the_exact_release_bundle_contract() -> None:
     assert parsed.signing_scheme == "unsigned"
 
 
-def test_manifest_parser_preserves_exact_v1_read_compatibility() -> None:
-    """Existing installed v1 metadata remains readable during migration and rollback."""
-    parsed = ReleaseManifest.parse(_v1_manifest("0.1.0", b"release-one"))
-
-    assert parsed.schema_version == 1
-    assert parsed.version == "0.1.0"
-    assert ReleaseManifest.parse(parsed.to_bytes()) == parsed
+def test_manifest_parser_refuses_v1_without_conversion() -> None:
+    with pytest.raises(ValueError, match="invalid release manifest"):
+        ReleaseManifest.parse(_v1_manifest("0.1.0", b"release-one"))
 
 
 def test_new_release_parser_rejects_v1_as_a_schema_downgrade() -> None:
@@ -1347,7 +1349,7 @@ def test_v2_manifest_bounds_the_complete_artifact_digest_set() -> None:
 )
 def test_manifest_parser_accepts_canonical_versions_for_archive_inspection(version: str) -> None:
     """Archive inspection recognizes canonical versions independent of update-major support."""
-    parsed = ReleaseManifest.parse(_v1_manifest(version, b"release-two"))
+    parsed = ReleaseManifest.parse(_v2_manifest(version, b"release-two"))
 
     assert parsed.version == version
 
@@ -1364,20 +1366,20 @@ def test_update_rejects_unsigned_remote_manifest_before_signature_or_candidate_d
 ) -> None:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    downloader = FakeDownloader({manifest_url: _v2_manifest("0.2.0", b"release-two")})
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    downloader = FakeDownloader({manifest_url: _v2_manifest("0.5.1", b"release-two")})
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "release_manifest_unsigned",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert [request[0] for request in downloader.requests] == [manifest_url]
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_update_rejects_noncanonical_signed_manifest_before_signature_download(
@@ -1385,21 +1387,21 @@ def test_update_rejects_noncanonical_signed_manifest_before_signature_download(
 ) -> None:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    canonical = _v2_manifest("0.2.0", b"release-two", signed=True)
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    canonical = _v2_manifest("0.5.1", b"release-two", signed=True)
     noncanonical = canonical.replace(b"{\n", b"{ \n", 1)
     downloader = FakeDownloader({manifest_url: noncanonical})
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "release_manifest_noncanonical",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert [request[0] for request in downloader.requests] == [manifest_url]
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 @pytest.mark.parametrize(
@@ -1442,8 +1444,8 @@ def test_update_rejects_untrusted_signatures_before_candidate_download_or_mutati
 ) -> None:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    manifest = _v2_manifest("0.2.0", b"release-two", signed=True)
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    manifest = _v2_manifest("0.5.1", b"release-two", signed=True)
     downloader = FakeDownloader(
         {
             manifest_url: manifest,
@@ -1458,12 +1460,12 @@ def test_update_rejects_untrusted_signatures_before_candidate_download_or_mutati
         downloader,
         runner=runner,
         key_ring=key_ring,
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         expected_message,
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert [request[0] for request in downloader.requests] == [
@@ -1471,8 +1473,8 @@ def test_update_rejects_untrusted_signatures_before_candidate_download_or_mutati
         f"{manifest_url}.sig",
     ]
     assert runner.commands == []
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_update_rejects_signed_metadata_mutation_before_candidate_download(
@@ -1480,8 +1482,8 @@ def test_update_rejects_signed_metadata_mutation_before_candidate_download(
 ) -> None:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    original = _v2_manifest("0.2.0", b"release-two", signed=True)
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    original = _v2_manifest("0.5.1", b"release-two", signed=True)
     mutated = original.replace(b'"commit": "aaaaaaaa', b'"commit": "baaaaaaa', 1)
     downloader = FakeDownloader(
         {
@@ -1490,26 +1492,26 @@ def test_update_rejects_signed_metadata_mutation_before_candidate_download(
         }
     )
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "release_signature_invalid",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert [request[0] for request in downloader.requests] == [
         manifest_url,
         f"{manifest_url}.sig",
     ]
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 @pytest.mark.parametrize(
     ("current_version", "candidate_version"),
     [
-        ("0.2.0", "0.1.0"),
-        ("0.2.0+new", "0.2.0+old"),
+        ("0.5.1", "0.5.0"),
+        ("0.5.1+new", "0.5.1+old"),
     ],
     ids=("older-precedence", "equal-precedence-different-identity"),
 )
@@ -1548,28 +1550,28 @@ def test_update_rechecks_downgrade_under_lock_before_candidate_execution(
     runner = FakeRunner()
 
     def advance_current(url: str, _destination: Path) -> None:
-        if url.endswith("/xferry-0.2.0-linux-x86_64"):
-            _seed_release(layout, "0.3.0", b"release-three")
-            _set_current(layout, "0.3.0")
+        if url.endswith("/xferry-0.5.1-linux-x86_64"):
+            _seed_release(layout, "0.5.2", b"release-three")
+            _set_current(layout, "0.5.2")
 
     downloader = FakeDownloader(
-        _remote_assets(base_url, "0.2.0", b"release-two"),
+        _remote_assets(base_url, "0.5.1", b"release-two"),
         before_write=advance_current,
     )
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == ReleaseResult(
         1,
         "release_downgrade_blocked",
-        version="0.2.0",
-        before="0.1.0",
-        target="0.2.0",
-        active="0.3.0",
+        version="0.5.1",
+        before="0.5.0",
+        target="0.5.1",
+        active="0.5.2",
     )
     assert runner.commands == []
-    assert (layout.release_root / "current").readlink() == Path("releases/0.3.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.2")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 @pytest.mark.parametrize(
@@ -1584,21 +1586,21 @@ def test_update_rejects_size_or_hash_corruption_without_opt_mutation(
     """A corrupt executable must never create or switch an installed release."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    assets = _remote_assets(base_url, "0.2.0", remote_payload)
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
+    assets = _remote_assets(base_url, "0.5.1", remote_payload)
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
     signed_manifest = _v2_manifest(
-        "0.2.0",
+        "0.5.1",
         manifest_payload,
         signed=True,
     )
     assets[manifest_url] = signed_manifest
     assets[f"{manifest_url}.sig"] = _manifest_signature(signed_manifest)
 
-    result = _manager(tmp_path, layout, FakeDownloader(assets)).update("0.2.0", False)
+    result = _manager(tmp_path, layout, FakeDownloader(assets)).update("0.5.1", False)
 
     assert result.exit_code == 1
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_update_rejects_platform_mismatch_before_asset_download(tmp_path: Path) -> None:
@@ -1606,12 +1608,12 @@ def test_update_rejects_platform_mismatch_before_asset_download(tmp_path: Path) 
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
     manifest = _v2_manifest(
-        "0.2.0",
+        "0.5.1",
         b"arm",
         platform="linux-aarch64",
         signed=True,
     )
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
     downloader = FakeDownloader(
         {
             manifest_url: manifest,
@@ -1619,14 +1621,14 @@ def test_update_rejects_platform_mismatch_before_asset_download(tmp_path: Path) 
         }
     )
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result.exit_code == 4
     assert [request[0] for request in downloader.requests] == [
         manifest_url,
         f"{manifest_url}.sig",
     ]
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_update_rejects_a_remote_v1_schema_downgrade_before_asset_download(
@@ -1635,27 +1637,27 @@ def test_update_rejects_a_remote_v1_schema_downgrade_before_asset_download(
     """Legacy manifests remain readable on disk but cannot authorize a new download."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    downloader = FakeDownloader({manifest_url: _v1_manifest("0.2.0", b"release-two")})
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    downloader = FakeDownloader({manifest_url: _v1_manifest("0.5.1", b"release-two")})
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "release_manifest_invalid",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert [request[0] for request in downloader.requests] == [manifest_url]
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_exact_update_rejects_a_manifest_for_another_requested_version(tmp_path: Path) -> None:
     """Trusting the download location instead of manifest version would install the wrong tag."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    manifest = _v2_manifest("0.1.0", b"release-three", signed=True)
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
+    manifest = _v2_manifest("0.5.0", b"release-three", signed=True)
     downloader = FakeDownloader(
         {
             manifest_url: manifest,
@@ -1663,7 +1665,7 @@ def test_exact_update_rejects_a_manifest_for_another_requested_version(tmp_path:
         }
     )
 
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result.exit_code == 1
     assert len(downloader.requests) == 2
@@ -1676,21 +1678,21 @@ def test_exact_update_pins_asset_to_the_manifest_tag_and_stages_outside_opt(
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
     payload = b"release-two"
-    assets = _remote_assets(base_url, "0.2.0", payload)
+    assets = _remote_assets(base_url, "0.5.1", payload)
 
     def before_download(_url: str, destination: Path) -> None:
         assert not destination.resolve().is_relative_to(layout.release_root.resolve())
-        assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-        assert not (layout.release_root / "releases/0.2.0").exists()
+        assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+        assert not (layout.release_root / "releases/0.5.1").exists()
 
     downloader = FakeDownloader(assets, before_write=before_download)
-    result = _manager(tmp_path, layout, downloader).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader).update("0.5.1", False)
 
     assert result.exit_code == 0
     assert [request[0] for request in downloader.requests] == [
-        f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json",
-        f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json.sig",
-        f"{base_url}/download/v0.2.0/xferry-0.2.0-linux-x86_64",
+        f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json",
+        f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json.sig",
+        f"{base_url}/download/v0.5.1/xferry-0.5.1-linux-x86_64",
     ]
 
 
@@ -1701,13 +1703,13 @@ def test_update_rejects_non_https_release_origin_before_network(tmp_path: Path) 
     manager = _manager(tmp_path, layout, downloader)
     manager.release_base_url = "http://releases.example.test/xferry/releases"
 
-    result = manager.update("0.2.0", False)
+    result = manager.update("0.5.1", False)
 
     assert result == ReleaseResult(
         5,
         "release_url_unsafe",
-        version="0.2.0",
-        target="0.2.0",
+        version="0.5.1",
+        target="0.5.1",
     )
     assert downloader.requests == []
 
@@ -1875,10 +1877,10 @@ def test_candidate_config_failure_prevents_install_and_service_restart(tmp_path:
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
     payload = b"release-two"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", payload))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", payload))
     runner = FakeRunner(config_ok=False)
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result.exit_code == 2
     assert runner.commands[0][0].startswith(str(tmp_path / "staging"))
@@ -1889,8 +1891,8 @@ def test_candidate_config_failure_prevents_install_and_service_restart(tmp_path:
         str(layout.config_file),
     )
     assert not any(command[:2] == ("systemctl", "restart") for command in runner.commands)
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_successful_update_atomically_switches_records_verification_and_prunes(
@@ -1898,11 +1900,11 @@ def test_successful_update_atomically_switches_records_verification_and_prunes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A non-atomic link write, absent metadata, or unbounded releases breaks rollback safety."""
-    layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.1.1", b"release-zero")
+    layout = _installed_layout_at(tmp_path, "0.5.1", b"release-one")
+    _seed_release(layout, "0.5.0", b"release-zero")
     base_url = "https://releases.example.test/xferry/releases"
     payload = b"release-two"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", payload))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.2", payload))
     replace_destinations: list[Path] = []
     real_replace = os.replace
 
@@ -1913,21 +1915,23 @@ def test_successful_update_atomically_switches_records_verification_and_prunes(
     monkeypatch.setattr("xferry.management.releases.os.replace", observed_replace)
     runner = FakeRunner(
         on_restart=lambda: (
-            (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+            (layout.release_root / "current").readlink() == Path("releases/0.5.2")
             or pytest.fail("service restarted before current pointed at the candidate")
         )
     )
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.2", False)
 
-    installed = layout.release_root / "releases/0.2.0"
+    installed = layout.release_root / "releases/0.5.2"
     assert result == _update_result(
         0,
         "update_complete",
-        active="0.2.0",
+        active="0.5.2",
         rollback="not_needed",
+        before="0.5.1",
+        target="0.5.2",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.2")
     assert installed.joinpath("xferry").read_bytes() == payload
     assert stat.S_IMODE(installed.stat().st_mode) == 0o755
     assert installed.stat().st_uid == os.getuid()
@@ -1938,12 +1942,12 @@ def test_successful_update_atomically_switches_records_verification_and_prunes(
         installed.joinpath("xferry-release.json").read_bytes()
     )
     assert installed_manifest.schema_version == 2
-    assert installed_manifest.version == "0.2.0"
+    assert installed_manifest.version == "0.5.2"
     assert installed_manifest.signing_scheme == "ed25519"
     assert layout.release_root / "current" in replace_destinations
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
-        "0.1.0",
-        "0.2.0",
+        "0.5.1",
+        "0.5.2",
     ]
     assert runner.commands[-2:] == [
         ("systemctl", "restart", "xferry.service"),
@@ -1966,7 +1970,7 @@ def test_update_uses_platform_remote_metadata_and_canonical_local_names(
     layout = _installed_layout(tmp_path, platform)
     base_url = "https://releases.example.test/xferry/releases"
     payload = f"release-two-{platform}".encode()
-    assets = _remote_assets(base_url, "0.2.0", payload, platform=platform)
+    assets = _remote_assets(base_url, "0.5.1", payload, platform=platform)
     downloader = FakeDownloader(assets)
 
     result = _manager(
@@ -1974,16 +1978,16 @@ def test_update_uses_platform_remote_metadata_and_canonical_local_names(
         layout,
         downloader,
         platform=platform,
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result.exit_code == 0
     remote_manifest = f"xferry-release-{platform}.json"
     assert [request[0] for request in downloader.requests] == [
-        f"{base_url}/download/v0.2.0/{remote_manifest}",
-        f"{base_url}/download/v0.2.0/{remote_manifest}.sig",
-        f"{base_url}/download/v0.2.0/xferry-0.2.0-{platform}",
+        f"{base_url}/download/v0.5.1/{remote_manifest}",
+        f"{base_url}/download/v0.5.1/{remote_manifest}.sig",
+        f"{base_url}/download/v0.5.1/xferry-0.5.1-{platform}",
     ]
-    installed = layout.release_root / "releases/0.2.0"
+    installed = layout.release_root / "releases/0.5.1"
     assert sorted(path.name for path in installed.iterdir()) == [
         "xferry",
         "xferry-release.json",
@@ -1991,11 +1995,11 @@ def test_update_uses_platform_remote_metadata_and_canonical_local_names(
     ]
     assert (
         installed.joinpath("xferry-release.json").read_bytes()
-        == assets[f"{base_url}/download/v0.2.0/{remote_manifest}"]
+        == assets[f"{base_url}/download/v0.5.1/{remote_manifest}"]
     )
     assert (
         installed.joinpath("xferry-release.json.sig").read_bytes()
-        == assets[f"{base_url}/download/v0.2.0/{remote_manifest}.sig"]
+        == assets[f"{base_url}/download/v0.5.1/{remote_manifest}.sig"]
     )
 
 
@@ -2003,7 +2007,7 @@ def test_install_persists_the_exact_authenticated_manifest_bytes(tmp_path: Path)
     """Future serializer drift must not replace the exact bytes authorized by the signature."""
     layout = _installed_layout(tmp_path)
     payload = b"release-two"
-    manifest_payload = _v2_manifest("0.2.0", payload, signed=True)
+    manifest_payload = _v2_manifest("0.5.1", payload, signed=True)
     signature_payload = _manifest_signature(manifest_payload)
     parsed = ReleaseManifest.parse_new(manifest_payload)
 
@@ -2025,7 +2029,7 @@ def test_install_persists_the_exact_authenticated_manifest_bytes(tmp_path: Path)
 
     assert manager._install_verified_release(verified, candidate) is True
 
-    installed = layout.release_root / "releases/0.2.0"
+    installed = layout.release_root / "releases/0.5.1"
     assert installed.joinpath("xferry-release.json").read_bytes() == manifest_payload
     assert installed.joinpath("xferry-release.json.sig").read_bytes() == signature_payload
     assert (
@@ -2042,18 +2046,18 @@ def test_successful_update_restores_a_confirmed_prior_inactive_service(tmp_path:
     """A healthy candidate must not turn an intentionally stopped installation back on."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(active=False)
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         0,
         "update_complete",
-        active="0.2.0",
+        active="0.5.1",
         rollback="not_needed",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
     assert runner.active is False
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
@@ -2061,8 +2065,8 @@ def test_successful_update_restores_a_confirmed_prior_inactive_service(tmp_path:
 def test_successful_rollback_restores_a_confirmed_prior_inactive_service(tmp_path: Path) -> None:
     """Rollback must preserve the same stopped/running state contract as update."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _set_current(layout, "0.2.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _set_current(layout, "0.5.1")
     runner = FakeRunner(active=False)
 
     result = _manager(
@@ -2070,10 +2074,10 @@ def test_successful_rollback_restores_a_confirmed_prior_inactive_service(tmp_pat
         layout,
         FakeDownloader({}),
         runner=runner,
-    ).rollback("0.1.0", False)
+    ).rollback("0.5.0", False)
 
-    assert result == ReleaseResult(0, "rollback_complete", version="0.1.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert result == ReleaseResult(0, "rollback_complete", version="0.5.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
@@ -2084,18 +2088,18 @@ def test_successful_candidate_with_failed_final_stop_restores_previous_inactive_
     """A failed final stop must surface while restoring the old link and stopped state safely."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(active=False, stop_failures=1)
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         6,
         "candidate_state_restore_failed",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
 
 
@@ -2105,7 +2109,7 @@ def test_successful_candidate_with_failed_final_probe_restores_previous_inactive
     """An unprovable final inactive state must fail closed and restore the previous release."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(
         active=False,
         state_query_results=[
@@ -2116,34 +2120,34 @@ def test_successful_candidate_with_failed_final_probe_restores_previous_inactive
         ],
     )
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         6,
         "candidate_state_restore_failed",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
 
 
 def test_same_version_update_blocks_a_tampered_inventory_before_download(tmp_path: Path) -> None:
     """A matching label cannot make tampered installed bytes safe for maintenance."""
     layout = _installed_layout(tmp_path)
-    installed = layout.release_root / "releases/0.1.0/xferry"
+    installed = layout.release_root / "releases/0.5.0/xferry"
     installed.write_bytes(b"tampered-release")
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.1.0", b"release-one"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.0", b"release-one"))
     runner = FakeRunner()
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.1.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.0", False)
 
     assert result == ReleaseResult(
         1,
         "unsupported_managed_state",
-        version="0.1.0",
-        target="0.1.0",
+        version="0.5.0",
+        target="0.5.0",
     )
     assert downloader.requests == []
     assert not layout.lock_file.exists()
@@ -2155,7 +2159,7 @@ def test_same_version_update_is_a_metadata_verified_noop(tmp_path: Path) -> None
     """An exact installed release must not be downloaded, executed, restarted, or pruned again."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    assets = _remote_assets(base_url, "0.2.0", b"release-two")
+    assets = _remote_assets(base_url, "0.5.1", b"release-two")
     first_downloader = FakeDownloader(assets)
     first_runner = FakeRunner()
     first = _manager(
@@ -2163,26 +2167,26 @@ def test_same_version_update_is_a_metadata_verified_noop(tmp_path: Path) -> None
         layout,
         first_downloader,
         runner=first_runner,
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
     assert first.exit_code == 0
 
     downloader = FakeDownloader(assets)
     runner = FakeRunner()
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         0,
         "update_noop",
-        active="0.2.0",
+        active="0.5.1",
         rollback="not_needed",
-        before="0.2.0",
+        before="0.5.1",
     )
     assert len(downloader.read_requests) == 2
     assert downloader.download_requests == []
     assert runner.commands == []
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
-        "0.1.0",
-        "0.2.0",
+        "0.5.0",
+        "0.5.1",
     ]
 
 
@@ -2194,10 +2198,10 @@ def test_update_rejects_an_unverifiable_current_rollback_candidate_before_networ
     """A new update must not prune the last usable rollback in favor of an untrusted current."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     manager = _manager(tmp_path, layout, downloader)
-    assert manager.update("0.2.0", False).exit_code == 0
-    current = layout.release_root / "releases/0.2.0"
+    assert manager.update("0.5.1", False).exit_code == 0
+    current = layout.release_root / "releases/0.5.1"
     signature = current / "xferry-release.json.sig"
     if tamper == "missing":
         signature.unlink()
@@ -2206,7 +2210,7 @@ def test_update_rejects_an_unverifiable_current_rollback_candidate_before_networ
     else:
         unknown_key = Ed25519PrivateKey.generate()
         manifest = _v2_manifest(
-            "0.2.0",
+            "0.5.1",
             b"release-two",
             signed=True,
             key_id="unknown-release-key",
@@ -2220,16 +2224,16 @@ def test_update_rejects_an_unverifiable_current_rollback_candidate_before_networ
             )
         )
     requests_before = list(downloader.requests)
-    downloader.assets.update(_remote_assets(base_url, "0.3.0", b"release-three"))
+    downloader.assets.update(_remote_assets(base_url, "0.5.2", b"release-three"))
 
-    result = manager.update("0.3.0", False)
+    result = manager.update("0.5.2", False)
 
     assert result.message == "unsupported_managed_state"
     assert downloader.requests == requests_before
-    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.2.0")
+    assert layout.release_root.joinpath("current").readlink() == Path("releases/0.5.1")
     assert sorted(path.name for path in layout.release_root.joinpath("releases").iterdir()) == [
-        "0.1.0",
-        "0.2.0",
+        "0.5.0",
+        "0.5.1",
     ]
 
 
@@ -2239,21 +2243,21 @@ def test_update_aborts_before_release_mutation_when_initial_service_state_probe_
     """An unavailable systemd state must not be guessed inactive before an update."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(
         state_query_results=[(1, "")],
     )
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "release_operation_failed",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
-    assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == ["0.1.0"]
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
+    assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == ["0.5.0"]
     assert runner.restart_count == 0
 
 
@@ -2262,8 +2266,8 @@ def test_rollback_aborts_before_link_mutation_when_initial_service_state_probe_f
 ) -> None:
     """An unavailable systemd state must not be guessed inactive before rollback."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _set_current(layout, "0.2.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _set_current(layout, "0.5.1")
     runner = FakeRunner(
         state_query_results=[(0, "")],
     )
@@ -2273,13 +2277,13 @@ def test_rollback_aborts_before_link_mutation_when_initial_service_state_probe_f
         layout,
         FakeDownloader({}),
         runner=runner,
-    ).rollback("0.1.0", False)
+    ).rollback("0.5.0", False)
 
-    assert result == ReleaseResult(1, "release_operation_failed", version="0.1.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert result == ReleaseResult(1, "release_operation_failed", version="0.5.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
-        "0.1.0",
-        "0.2.0",
+        "0.5.0",
+        "0.5.1",
     ]
     assert runner.restart_count == 0
 
@@ -2290,7 +2294,7 @@ def test_restart_failure_restores_link_service_health_and_removes_new_release(
     """Leaving the failed candidate current after restart failure defeats transactional update."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(restart_failures=1)
     health_versions: list[str] = []
 
@@ -2300,42 +2304,42 @@ def test_restart_failure_restores_link_service_health_and_removes_new_release(
         return HealthResult(True, "healthy", version)
 
     result = _manager(tmp_path, layout, downloader, runner=runner, health=health).update(
-        "0.2.0", False
+        "0.5.1", False
     )
 
     assert result.exit_code == 6
     assert result.message == "candidate_restart_failed"
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is True
     assert runner.restart_count == 2
-    assert health_versions == ["0.1.0"]
-    assert not (layout.release_root / "releases/0.2.0").exists()
+    assert health_versions == ["0.5.0"]
+    assert not (layout.release_root / "releases/0.5.1").exists()
 
 
 def test_update_waits_for_eventual_exact_target_health_after_restart(tmp_path: Path) -> None:
     """A transient first PING must not roll back a candidate that becomes ready."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     attempts: dict[str, int] = {}
 
     def health(*_args: object) -> HealthResult:
         version = (layout.release_root / "current").readlink().name
         attempts[version] = attempts.get(version, 0) + 1
-        if version == "0.2.0" and attempts[version] == 1:
+        if version == "0.5.1" and attempts[version] == 1:
             return HealthResult(False, "connection failed")
         return HealthResult(True, "healthy", version)
 
-    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.5.1", False)
 
     assert result == _update_result(
         0,
         "update_complete",
-        active="0.2.0",
+        active="0.5.1",
         rollback="not_needed",
     )
-    assert attempts == {"0.2.0": 2}
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert attempts == {"0.5.1": 2}
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
 
 
 def test_restore_waits_for_eventual_exact_previous_health_after_restart(
@@ -2344,7 +2348,7 @@ def test_restore_waits_for_eventual_exact_previous_health_after_restart(
     """A transient first PING must not hide a successfully restored prior release."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(restart_failures=1)
     attempts = 0
 
@@ -2362,16 +2366,16 @@ def test_restore_waits_for_eventual_exact_previous_health_after_restart(
         downloader,
         runner=runner,
         health=health,
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result == _update_result(
         6,
         "candidate_restart_failed",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
     assert attempts == 2
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_update_readiness_deadline_never_uses_a_non_positive_health_timeout(
@@ -2380,7 +2384,7 @@ def test_update_readiness_deadline_never_uses_a_non_positive_health_timeout(
     """An expired readiness budget must stop before an invalid zero-timeout probe."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     timeouts: list[float] = []
 
     def health(
@@ -2391,16 +2395,16 @@ def test_update_readiness_deadline_never_uses_a_non_positive_health_timeout(
     ) -> HealthResult:
         version = (layout.release_root / "current").readlink().name
         timeouts.append(timeout)
-        if version == "0.2.0":
+        if version == "0.5.1":
             return HealthResult(False, "connection failed")
         return HealthResult(True, "healthy", version)
 
-    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.5.1", False)
 
     assert result == _update_result(
         6,
         "candidate_unhealthy",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
     assert timeouts == [2.0, 1.75, 1.25, 0.25, 2.0]
@@ -2411,33 +2415,33 @@ def test_unhealthy_candidate_restores_and_verifies_previous_release(tmp_path: Pa
     """A health failure must restore both link and a demonstrably healthy previous service."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     observed: list[str] = []
 
     def health(*_args: object) -> HealthResult:
         version = (layout.release_root / "current").readlink().name
         observed.append(version)
         return HealthResult(
-            version == "0.1.0",
-            "healthy" if version == "0.1.0" else "bad",
+            version == "0.5.0",
+            "healthy" if version == "0.5.0" else "bad",
             version,
         )
 
     runner = FakeRunner()
     result = _manager(tmp_path, layout, downloader, runner=runner, health=health).update(
-        "0.2.0", False
+        "0.5.1", False
     )
 
     assert result == _update_result(
         6,
         "candidate_unhealthy",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
-    assert observed == ["0.2.0", "0.1.0"]
+    assert observed == ["0.5.1", "0.5.0"]
     assert runner.restart_count == 2
     assert runner.active is True
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_ready_old_process_is_rejected_and_previous_exact_version_is_restored(
@@ -2446,30 +2450,30 @@ def test_ready_old_process_is_rejected_and_previous_exact_version_is_restored(
     """Readiness from the old process must not authorize activation of a new symlink target."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     observed: list[str] = []
 
     def health(*_args: object) -> HealthResult:
         observed.append((layout.release_root / "current").readlink().name)
-        return HealthResult(True, "healthy", "0.1.0")
+        return HealthResult(True, "healthy", "0.5.0")
 
-    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.5.1", False)
 
     assert result.message == "candidate_unhealthy"
     assert result.rollback == "restored"
-    assert result.active == "0.1.0"
-    assert observed == ["0.2.0", "0.1.0"]
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert result.active == "0.5.0"
+    assert observed == ["0.5.1", "0.5.0"]
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_restore_rejects_ready_response_for_the_wrong_previous_version(tmp_path: Path) -> None:
     """A restored link is insufficient when another ready XFerry process answers the probe."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     responses = iter(
         (
-            HealthResult(False, "candidate unhealthy", "0.2.0"),
+            HealthResult(False, "candidate unhealthy", "0.5.1"),
             HealthResult(True, "healthy", "0.0.9"),
         )
     )
@@ -2479,11 +2483,11 @@ def test_restore_rejects_ready_response_for_the_wrong_previous_version(tmp_path:
         layout,
         downloader,
         health=lambda *_args: next(responses),
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result.message == "restore_incomplete"
     assert result.rollback == "incomplete"
-    assert result.active == "0.1.0"
+    assert result.active == "0.5.0"
 
 
 def test_update_blocks_a_current_release_with_missing_metadata_before_download(
@@ -2492,24 +2496,24 @@ def test_update_blocks_a_current_release_with_missing_metadata_before_download(
     """Missing metadata makes current state ambiguous before any remote release is read."""
     layout = _layout(tmp_path)
     _seed_config(layout)
-    _seed_release(layout, "0.1.0", b"release-one", verified=False)
-    _set_current(layout, "0.1.0")
+    _seed_release(layout, "0.5.0", b"release-one", verified=False)
+    _set_current(layout, "0.5.0")
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner()
 
-    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     assert result == ReleaseResult(
         1,
         "unsupported_managed_state",
-        version="0.2.0",
-        target="0.2.0",
+        version="0.5.1",
+        target="0.5.1",
     )
     assert downloader.requests == []
     assert not layout.lock_file.exists()
     assert runner.commands == []
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
 
 
 def test_failed_update_restores_a_previously_inactive_service_without_ping(
@@ -2518,7 +2522,7 @@ def test_failed_update_restores_a_previously_inactive_service_without_ping(
     """A stopped service before update must remain stopped after candidate failure."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(active=False)
     health_versions: list[str] = []
 
@@ -2527,18 +2531,18 @@ def test_failed_update_restores_a_previously_inactive_service_without_ping(
         return HealthResult(False, "candidate unhealthy")
 
     result = _manager(tmp_path, layout, downloader, runner=runner, health=health).update(
-        "0.2.0", False
+        "0.5.1", False
     )
 
     assert result == _update_result(
         6,
         "candidate_unhealthy",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
-    assert health_versions == ["0.2.0"]
+    assert health_versions == ["0.5.1"]
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
 
@@ -2548,7 +2552,7 @@ def test_update_reports_incomplete_restore_when_post_stop_state_probe_fails(
     """A successful stop is insufficient when inactive state cannot be confirmed."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(
         state_query_results=[(0, "inactive\n"), (0, "active\n"), (1, "")],
     )
@@ -2559,15 +2563,15 @@ def test_update_reports_incomplete_restore_when_post_stop_state_probe_fails(
         downloader,
         runner=runner,
         health=lambda *_args: HealthResult(False, "candidate unhealthy"),
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "restore_incomplete",
-        active="0.1.0",
+        active="0.5.0",
         rollback="incomplete",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
 
@@ -2576,8 +2580,8 @@ def test_rollback_reports_incomplete_restore_when_post_stop_state_probe_fails(
 ) -> None:
     """Rollback must not accept a stopped service whose final state probe failed."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _set_current(layout, "0.2.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _set_current(layout, "0.5.1")
     runner = FakeRunner(
         state_query_results=[(0, "inactive\n"), (0, "active\n"), (1, "")],
     )
@@ -2588,10 +2592,10 @@ def test_rollback_reports_incomplete_restore_when_post_stop_state_probe_fails(
         FakeDownloader({}),
         runner=runner,
         health=lambda *_args: HealthResult(False, "candidate unhealthy"),
-    ).rollback("0.1.0", False)
+    ).rollback("0.5.0", False)
 
-    assert result == ReleaseResult(1, "restore_incomplete", version="0.1.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert result == ReleaseResult(1, "restore_incomplete", version="0.5.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
 
@@ -2601,7 +2605,7 @@ def test_documented_inactive_state_is_restored_without_old_release_ping(
     """A successful ActiveState=inactive query is confirmed inactive, not an error."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(
         state_query_results=[
             (0, "inactive\n"),
@@ -2622,17 +2626,17 @@ def test_documented_inactive_state_is_restored_without_old_release_ping(
         downloader,
         runner=runner,
         health=health,
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result == _update_result(
         6,
         "candidate_unhealthy",
-        active="0.1.0",
+        active="0.5.0",
         rollback="restored",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
-    assert health_versions == ["0.2.0"]
+    assert health_versions == ["0.5.1"]
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
 
@@ -2640,7 +2644,7 @@ def test_failed_restoration_is_reported_as_incomplete_operation(tmp_path: Path) 
     """Returning only the candidate error would conceal a broken rollback service state."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(restore_restart_failure=True)
 
     result = _manager(
@@ -2649,11 +2653,11 @@ def test_failed_restoration_is_reported_as_incomplete_operation(tmp_path: Path) 
         downloader,
         runner=runner,
         health=lambda *_args: HealthResult(False, "bad"),
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     assert result.exit_code == 1
     assert result.message == "restore_incomplete"
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is False
 
 
@@ -2664,7 +2668,7 @@ def test_incomplete_link_restoration_never_leaves_current_dangling(
     """Cleanup after a failed restore must retain whichever release current still targets."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     real_replace = os.replace
     current_switches = 0
 
@@ -2682,16 +2686,16 @@ def test_incomplete_link_restoration_never_leaves_current_dangling(
         layout,
         downloader,
         health=lambda *_args: HealthResult(False, "bad"),
-    ).update("0.2.0", False)
+    ).update("0.5.1", False)
 
     current = layout.release_root / "current"
     assert result == _update_result(
         1,
         "restore_incomplete",
-        active="0.2.0",
+        active="0.5.1",
         rollback="incomplete",
     )
-    assert current.readlink() == Path("releases/0.2.0")
+    assert current.readlink() == Path("releases/0.5.1")
     assert current.joinpath("xferry").is_file()
 
 
@@ -2700,8 +2704,8 @@ def test_failed_rollback_restores_a_previously_inactive_service_without_ping(
 ) -> None:
     """Rollback candidate failure must restore the old link and stopped service state."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _set_current(layout, "0.2.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _set_current(layout, "0.5.1")
     runner = FakeRunner(active=False)
     health_versions: list[str] = []
 
@@ -2715,12 +2719,12 @@ def test_failed_rollback_restores_a_previously_inactive_service_without_ping(
         FakeDownloader({}),
         runner=runner,
         health=health,
-    ).rollback("0.1.0", False)
+    ).rollback("0.5.0", False)
 
-    assert result == ReleaseResult(6, "candidate_unhealthy", version="0.1.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
+    assert result == ReleaseResult(6, "candidate_unhealthy", version="0.5.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
     assert runner.active is False
-    assert health_versions == ["0.1.0"]
+    assert health_versions == ["0.5.0"]
     assert ("systemctl", "stop", "xferry.service") in runner.commands
 
 
@@ -2730,24 +2734,24 @@ def test_inactive_service_restoration_reports_a_failed_stop_as_incomplete(
     """A failed stop must not be reported as a complete restoration of inactive state."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner(active=False, stop_failure=True)
 
     def health(*_args: object) -> HealthResult:
         version = (layout.release_root / "current").readlink().name
-        return HealthResult(version == "0.1.0", "sanitized", version)
+        return HealthResult(version == "0.5.0", "sanitized", version)
 
     result = _manager(tmp_path, layout, downloader, runner=runner, health=health).update(
-        "0.2.0", False
+        "0.5.1", False
     )
 
     assert result == _update_result(
         1,
         "restore_incomplete",
-        active="0.1.0",
+        active="0.5.0",
         rollback="incomplete",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.active is True
 
 
@@ -2756,20 +2760,20 @@ def test_default_rollback_selects_previous_verified_release_and_keeps_old_curren
 ) -> None:
     """Default rollback must select the prior verified release, not an arbitrary directory."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _seed_release(layout, "0.3.0", b"release-three")
-    _set_current(layout, "0.3.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _seed_release(layout, "0.5.2", b"release-three")
+    _set_current(layout, "0.5.2")
     releases = layout.release_root / "releases"
-    os.utime(releases / "0.1.0", ns=(1, 1))
-    os.utime(releases / "0.2.0", ns=(2, 2))
-    os.utime(releases / "0.3.0", ns=(3, 3))
+    os.utime(releases / "0.5.0", ns=(1, 1))
+    os.utime(releases / "0.5.1", ns=(2, 2))
+    os.utime(releases / "0.5.2", ns=(3, 3))
     runner = FakeRunner()
 
     result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).rollback(None, False)
 
-    assert result == ReleaseResult(0, "rollback_complete", version="0.2.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.2.0")
-    assert sorted(path.name for path in releases.iterdir()) == ["0.2.0", "0.3.0"]
+    assert result == ReleaseResult(0, "rollback_complete", version="0.5.1")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.1")
+    assert sorted(path.name for path in releases.iterdir()) == ["0.5.1", "0.5.2"]
     assert runner.restart_count == 1
 
 
@@ -2779,18 +2783,18 @@ def test_release_preflight_uses_the_managers_platform_source(
 ) -> None:
     """An injected platform must govern both inventory validation and rollback."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
+    _seed_release(layout, "0.5.1", b"release-two")
     monkeypatch.setattr(
         "xferry.management.managed_state.current_platform_id",
         lambda: "linux-aarch64",
     )
 
-    result = _manager(tmp_path, layout, FakeDownloader({})).rollback("0.2.0", True)
+    result = _manager(tmp_path, layout, FakeDownloader({})).rollback("0.5.1", True)
 
     assert result == ReleaseResult(
         0,
         "rollback_dry_run",
-        version="0.2.0",
+        version="0.5.1",
         dry_run=True,
     )
 
@@ -2798,24 +2802,24 @@ def test_release_preflight_uses_the_managers_platform_source(
 def test_exact_rollback_uses_only_a_verified_installed_target(tmp_path: Path) -> None:
     """Exact rollback must use only the requested verified installed version."""
     layout = _installed_layout(tmp_path)
-    _seed_release(layout, "0.2.0", b"release-two")
-    _seed_release(layout, "0.3.0", b"release-three")
-    _set_current(layout, "0.3.0")
+    _seed_release(layout, "0.5.1", b"release-two")
+    _seed_release(layout, "0.5.2", b"release-three")
+    _set_current(layout, "0.5.2")
     runner = FakeRunner()
 
-    result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).rollback("0.1.0", False)
+    result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).rollback("0.5.0", False)
 
-    assert result == ReleaseResult(0, "rollback_complete", version="0.1.0")
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert result == ReleaseResult(0, "rollback_complete", version="0.5.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
-        "0.1.0",
-        "0.3.0",
+        "0.5.0",
+        "0.5.2",
     ]
 
 
 @pytest.mark.parametrize(
     ("target", "message"),
-    [("0.9.9", "rollback_target_unverified"), ("0.2.0", "unsupported_managed_state")],
+    [("0.9.9", "rollback_target_unverified"), ("0.5.1", "unsupported_managed_state")],
 )
 def test_rollback_rejects_missing_or_unverified_target(
     tmp_path: Path,
@@ -2824,7 +2828,7 @@ def test_rollback_rejects_missing_or_unverified_target(
 ) -> None:
     """Presence alone cannot authorize rollback to an executable without matching metadata."""
     layout = _installed_layout(tmp_path)
-    if target == "0.2.0":
+    if target == "0.5.1":
         _seed_release(layout, target, b"release-two", verified=False)
     runner = FakeRunner()
 
@@ -2832,7 +2836,7 @@ def test_rollback_rejects_missing_or_unverified_target(
 
     assert result.exit_code == 1
     assert result.message == message
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert runner.restart_count == 0
 
 
@@ -2845,19 +2849,19 @@ def test_release_failures_never_expose_credentials_in_urls_argv_logs_or_results(
     layout = _installed_layout(tmp_path)
     _seed_config(layout, secret)
     base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
+    manifest_url = f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json"
     downloader = FakeDownloader({manifest_url: OSError(f"failed with {secret}")})
     runner = FakeRunner()
 
     with caplog.at_level(logging.DEBUG, logger="xferry"):
-        result = _manager(tmp_path, layout, downloader, runner=runner).update("0.2.0", False)
+        result = _manager(tmp_path, layout, downloader, runner=runner).update("0.5.1", False)
 
     combined_urls = " ".join(request[0] for request in downloader.requests)
     combined_argv = " ".join(" ".join(command) for command in runner.commands)
     assert result == _update_result(
         5,
         "release_download_failed",
-        active="0.1.0",
+        active="0.5.0",
         rollback="not_attempted",
     )
     assert secret not in combined_urls
@@ -2875,7 +2879,7 @@ def test_health_exception_text_never_exposes_credentials_during_restoration(
     layout = _installed_layout(tmp_path)
     _seed_config(layout, secret)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner()
 
     def failed_health(*_args: object) -> HealthResult:
@@ -2888,15 +2892,15 @@ def test_health_exception_text_never_exposes_credentials_during_restoration(
             downloader,
             runner=runner,
             health=failed_health,
-        ).update("0.2.0", False)
+        ).update("0.5.1", False)
 
     assert result == _update_result(
         1,
         "restore_incomplete",
-        active="0.1.0",
+        active="0.5.0",
         rollback="incomplete",
     )
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert secret not in repr(result)
     assert secret not in " ".join(" ".join(command) for command in runner.commands)
     assert secret not in caplog.text
@@ -2908,14 +2912,14 @@ def test_real_update_requires_root_before_network_or_filesystem_effects(tmp_path
     downloader = FakeDownloader({})
 
     result = _manager(tmp_path, layout, downloader, effective_uid=lambda: 1000).update(
-        "0.2.0", False
+        "0.5.1", False
     )
 
     assert result == ReleaseResult(
         3,
         "release_requires_root",
-        version="0.2.0",
-        target="0.2.0",
+        version="0.5.1",
+        target="0.5.1",
         next_actions=(
             "For a managed installation, rerun this update as root with `sudo`.",
             "For a portable installation, run `pipx upgrade xferry`.",
@@ -2929,7 +2933,7 @@ def test_update_holds_shared_lock_through_authenticated_health(tmp_path: Path) -
     """Releasing the shared lock before health would let another mutation corrupt rollback state."""
     layout = _installed_layout(tmp_path)
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     lock_observed: list[bool] = []
 
     def health(*_args: object) -> HealthResult:
@@ -2944,7 +2948,7 @@ def test_update_holds_shared_lock_through_authenticated_health(tmp_path: Path) -
         version = (layout.release_root / "current").readlink().name
         return HealthResult(True, "healthy", version)
 
-    result = _manager(tmp_path, layout, downloader, health=health).update("0.2.0", False)
+    result = _manager(tmp_path, layout, downloader, health=health).update("0.5.1", False)
 
     assert result.exit_code == 0
     assert lock_observed == [True]
@@ -2952,8 +2956,8 @@ def test_update_holds_shared_lock_through_authenticated_health(tmp_path: Path) -
 
 def _seed_uninstall_state(tmp_path: Path, layout: ManagedLayout) -> tuple[Path, Path, Path, Path]:
     _seed_config(layout)
-    _seed_release(layout, "0.1.0", b"release-one")
-    _set_current(layout, "0.1.0")
+    _seed_release(layout, "0.5.0", b"release-one")
+    _set_current(layout, "0.5.0")
     unit = layout.unit_file
     unit.parent.mkdir(parents=True, exist_ok=True)
     _protect_managed_directory(layout, unit.parent)
@@ -2999,93 +3003,44 @@ def test_default_uninstall_removes_only_managed_runtime_and_preserves_state(
     ]
 
 
-def test_purge_requires_explicit_flag_and_confirmation_before_any_mutation(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("probe_code", "probe_output", "removes_runtime"),
+    [
+        (0, "LoadState=not-found\nActiveState=inactive\n", True),
+        (0, "LoadState=not-found\nActiveState=active\n", False),
+        (0, "LoadState=loaded\nActiveState=inactive\n", False),
+        (1, "LoadState=not-found\nActiveState=inactive\n", False),
+        (0, "", False),
+    ],
+)
+def test_uninstall_after_failed_setup_requires_confirmed_inactive_missing_unit(
+    tmp_path: Path, probe_code: int, probe_output: str, removes_runtime: bool
 ) -> None:
-    """A purge flag without confirmation must leave every managed and preserved path intact."""
     layout = _layout(tmp_path)
-    unit, cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
-    runner = FakeRunner()
+    unit, _, _, _ = _seed_uninstall_state(tmp_path, layout)
+    unit.unlink()
 
+    class MissingUnitRunner(FakeRunner):
+        def run(self, argv: Sequence[str]) -> CommandResult:
+            command = tuple(str(item) for item in argv)
+            if command == ("systemctl", "disable", "--now", "xferry.service"):
+                self.commands.append(command)
+                return CommandResult(command, 5)
+            if command[:2] == ("systemctl", "show"):
+                self.commands.append(command)
+                return CommandResult(command, probe_code, stdout=probe_output)
+            return super().run(argv)
+
+    runner = MissingUnitRunner()
     result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).uninstall(
-        True, False, False
+        False, False, False
     )
-
-    assert result == ReleaseResult(2, "purge_confirmation_required")
-    assert unit.is_file()
-    assert cli_link.is_symlink()
-    assert layout.release_root.is_dir()
-    assert config_root.is_dir()
-    assert layout.data_root.is_dir()
-    assert acme.is_dir()
-    assert runner.commands == []
-
-
-def test_confirmed_purge_removes_preserved_config_data_and_acme(tmp_path: Path) -> None:
-    """Both purge gates together must remove exactly the documented preserved state."""
-    layout = _layout(tmp_path)
-    _unit, _cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
-
-    result = _manager(tmp_path, layout, FakeDownloader({})).uninstall(True, True, False)
-
-    assert result == ReleaseResult(0, "purge_complete")
-    assert not config_root.exists()
-    assert not layout.data_root.exists()
-    assert not acme.exists()
-
-
-@pytest.mark.parametrize("inside_private_root", [False, True])
-def test_purge_preserves_operator_selected_files_directory(
-    tmp_path: Path,
-    inside_private_root: bool,
-) -> None:
-    layout = _layout(tmp_path)
-    _seed_uninstall_state(tmp_path, layout)
-    folder = layout.data_root / "custom-share" if inside_private_root else tmp_path / "shared"
-    folder.mkdir()
-    (folder / "keep.txt").write_text("operator file")
-    (layout.config_file.parent / "deployment.json").write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "kind": "managed",
-                "files_dir": str(folder),
-            }
-        )
-    )
-    result = _manager(tmp_path, layout, FakeDownloader({})).uninstall(True, True, False)
-    assert result.exit_code == 0
-    assert (folder / "keep.txt").read_text() == "operator file"
-
-
-def test_purge_rejects_broadened_custom_roots_before_disabling_or_deleting(
-    tmp_path: Path,
-) -> None:
-    """A misconfigured config path must never broaden purge from /etc/xferry to its parent."""
-    shared_etc = tmp_path / "shared/etc"
-    shared_etc.mkdir(parents=True)
-    # Make the ambiguous parent explicit so this unsupported managed-state contract is
-    # independent of umask.
-    shared_etc.chmod(0o775)
-    sentinel = shared_etc / "unrelated.conf"
-    sentinel.write_text("preserve", encoding="utf-8")
-    layout = ManagedLayout(
-        release_root=tmp_path / "opt/xferry",
-        config_file=shared_etc / "xferry.ini",
-        auth_file=shared_etc / "auth",
-        data_root=tmp_path / "var/lib/xferry",
-        lock_file=tmp_path / "run/lock/xferry-ops.lock",
-    )
-    runner = FakeRunner()
-
-    result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).uninstall(
-        True, True, False
-    )
-
-    assert result == ReleaseResult(1, "unsupported_managed_state")
-    assert sentinel.read_text(encoding="utf-8") == "preserve"
-    assert runner.commands == []
-    assert not layout.lock_file.exists()
+    assert result.exit_code == (0 if removes_runtime else 1)
+    assert layout.release_root.exists() is not removes_runtime
+    assert layout.config_file.exists() and layout.auth_file.exists()
+    if not removes_runtime:
+        assert result.message == "uninstall_service_failed"
+        assert ("systemctl", "daemon-reload") not in runner.commands
 
 
 @pytest.mark.parametrize("lookalike", ["srv/xferry", "backup/xferry"])
@@ -3110,34 +3065,6 @@ def test_uninstall_rejects_lookalike_release_roots_before_service_mutation(
 
     result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).uninstall(
         False, False, False
-    )
-
-    assert result == ReleaseResult(1, "unsupported_managed_state")
-    assert sentinel.read_text(encoding="utf-8") == "preserve"
-    assert runner.commands == []
-    assert not layout.lock_file.exists()
-
-
-def test_purge_rejects_a_backup_lookalike_data_root_before_service_mutation(
-    tmp_path: Path,
-) -> None:
-    """A backup/xferry data lookalike must not satisfy the canonical var/lib suffix."""
-    layout = _layout(tmp_path)
-    lookalike_data = tmp_path / "backup/xferry"
-    lookalike_data.mkdir(parents=True)
-    sentinel = lookalike_data / "unrelated.db"
-    sentinel.write_text("preserve", encoding="utf-8")
-    layout = ManagedLayout(
-        release_root=layout.release_root,
-        config_file=layout.config_file,
-        auth_file=layout.auth_file,
-        data_root=lookalike_data,
-        lock_file=layout.lock_file,
-    )
-    runner = FakeRunner()
-
-    result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).uninstall(
-        True, True, False
     )
 
     assert result == ReleaseResult(1, "unsupported_managed_state")
@@ -3175,75 +3102,42 @@ def test_uninstall_rejects_an_ancestor_symlink_before_service_mutation(tmp_path:
     assert not layout.lock_file.exists()
 
 
-def test_purge_revalidates_all_roots_after_service_disable_before_deletion(
-    tmp_path: Path,
-) -> None:
-    """An ancestor swap during systemctl must be caught before any managed path deletion."""
-    layout = _layout(tmp_path)
-    unit, cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
-    original_etc = tmp_path / "etc-original"
-    victim_parent = tmp_path / "victim"
-    victim_config = victim_parent / "xferry"
-    victim_config.mkdir(parents=True)
-    victim = victim_config / "unrelated.conf"
-    victim.write_text("preserve", encoding="utf-8")
-
-    def swap_ancestor() -> None:
-        (tmp_path / "etc").rename(original_etc)
-        (tmp_path / "etc").symlink_to(victim_parent, target_is_directory=True)
-
-    runner = FakeRunner(on_disable=swap_ancestor)
-    result = _manager(tmp_path, layout, FakeDownloader({}), runner=runner).uninstall(
-        True, True, False
-    )
-
-    assert result == ReleaseResult(1, "uninstall_path_unsafe")
-    assert victim.read_text(encoding="utf-8") == "preserve"
-    assert original_etc.joinpath("xferry/xferry.ini").is_file()
-    assert original_etc.joinpath("systemd/system/xferry.service").is_file()
-    assert layout.release_root.is_dir()
-    assert unit.relative_to(tmp_path / "etc").as_posix() == "systemd/system/xferry.service"
-    assert cli_link.is_symlink()
-    assert acme.is_dir()
-    assert config_root == tmp_path / "etc/xferry"
-
-
 def test_all_dry_runs_leave_files_processes_and_lock_unchanged(tmp_path: Path) -> None:
     """Dry-run must not switch links, restart/disable systemd, prune, delete, or create a lock."""
     layout = _layout(tmp_path)
     unit, cli_link, acme, config_root = _seed_uninstall_state(tmp_path, layout)
-    _seed_release(layout, "0.1.1", b"release-zero")
+    _seed_release(layout, "0.5.1", b"release-zero")
     base_url = "https://releases.example.test/xferry/releases"
-    downloader = FakeDownloader(_remote_assets(base_url, "0.2.0", b"release-two"))
+    downloader = FakeDownloader(_remote_assets(base_url, "0.5.1", b"release-two"))
     runner = FakeRunner()
     manager = _manager(tmp_path, layout, downloader, runner=runner)
 
-    update = manager.update("0.2.0", True)
-    rollback = manager.rollback("0.1.1", True)
+    update = manager.update("0.5.1", True)
+    rollback = manager.rollback("0.5.1", True)
     uninstall = manager.uninstall(False, False, True)
 
     assert update == ReleaseResult(
         0,
         "update_dry_run",
-        version="0.2.0",
+        version="0.5.1",
         dry_run=True,
         detail=(
             "Signed metadata verified. Apply will download and verify the executable, "
             "validate the managed configuration, restart the service, require exact-version "
-            "health, and retain 0.1.0 for rollback."
+            "health, and retain 0.5.0 for rollback."
         ),
-        before="0.1.0",
-        target="0.2.0",
-        active="0.1.0",
+        before="0.5.0",
+        target="0.5.1",
+        active="0.5.0",
         rollback="not_needed",
-        next_actions=("Run `sudo xferry update --to 0.2.0` to apply.",),
+        next_actions=("Run `sudo xferry update --to 0.5.1` to apply.",),
     )
-    assert rollback == ReleaseResult(0, "rollback_dry_run", version="0.1.1", dry_run=True)
+    assert rollback == ReleaseResult(0, "rollback_dry_run", version="0.5.1", dry_run=True)
     assert uninstall == ReleaseResult(0, "uninstall_dry_run", dry_run=True)
-    assert (layout.release_root / "current").readlink() == Path("releases/0.1.0")
+    assert (layout.release_root / "current").readlink() == Path("releases/0.5.0")
     assert sorted(path.name for path in (layout.release_root / "releases").iterdir()) == [
-        "0.1.0",
-        "0.1.1",
+        "0.5.0",
+        "0.5.1",
     ]
     assert unit.is_file() and cli_link.is_symlink()
     assert config_root.is_dir() and layout.data_root.is_dir() and acme.is_dir()
@@ -3252,11 +3146,11 @@ def test_all_dry_runs_leave_files_processes_and_lock_unchanged(tmp_path: Path) -
     assert not (tmp_path / "staging").exists()
     assert downloader.read_requests == [
         (
-            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json",
+            f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json",
             release_module._MAX_MANIFEST_BYTES,
         ),
         (
-            f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json.sig",
+            f"{base_url}/download/v0.5.1/xferry-release-linux-x86_64.json.sig",
             release_module._MAX_SIGNATURE_BYTES,
         ),
     ]
@@ -3298,149 +3192,13 @@ class FakeReleaseManager:
         return ReleaseResult(0, "purge_complete" if purge_data else "uninstall_complete")
 
 
-def test_cli_dispatches_release_options_and_double_gates_noninteractive_purge(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Dropping a CLI option or treating noninteractive purge as confirmed changes safety."""
-    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
-    fake = FakeReleaseManager([])
-    monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
-    monkeypatch.setattr("xferry.management.releases.default_release_manager", lambda: fake)
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-
-    assert (
-        cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run"])
-        == 0
-    )
-    assert (
-        cli.main(["rollback", "--config", "/etc/xferry/xferry.ini", "--to", "0.1.0", "--dry-run"])
-        == 0
-    )
-    assert cli.main(["uninstall", "--config", "/etc/xferry/xferry.ini", "--purge-data"]) == 0
-    assert fake.calls == [
-        ("update", "0.2.0", True),
-        ("rollback", "0.1.0", True),
-        ("uninstall", True, False, False),
-    ]
-    assert "not implemented" not in (capsys.readouterr().out + capsys.readouterr().err).lower()
-
-
-def test_cli_update_json_schema_is_complete_and_language_independent(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Changing locale or omitting recovery fields must not destabilize automation output."""
-    fake = FakeReleaseManager([])
-    monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
-
-    assert (
-        cli.main(
-            [
-                "--lang",
-                "ru",
-                "update",
-                "--config",
-                "/etc/xferry/xferry.ini",
-                "--to",
-                "0.2.0",
-                "--dry-run",
-                "--json",
-            ]
-        )
-        == 0
-    )
-
-    assert json.loads(capsys.readouterr().out) == {
-        "active": "0.1.0",
-        "before": "0.1.0",
-        "code": "update_dry_run",
-        "detail": (
-            "Signed metadata verified; apply will verify the artifact and configuration, "
-            "restart the service, and require exact-version health."
-        ),
-        "dry_run": True,
-        "exit_code": 0,
-        "message": "XFerry 0.2.0 passed update verification; no managed state changed.",
-        "next_actions": ["Run `sudo xferry update --to 0.2.0` to apply."],
-        "rollback": "not_needed",
-        "status": "ok",
-        "target": "0.2.0",
-        "version": "0.2.0",
-    }
-    assert fake.calls == [("update", "0.2.0", True)]
-
-
-def test_cli_update_text_renders_dry_run_plan_and_next_action(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Plain-text operators need the verified plan and the exact apply command."""
-    fake = FakeReleaseManager([])
-    monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
-
-    assert (
-        cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run"])
-        == 0
-    )
-
-    output = capsys.readouterr().out
-    assert "Signed metadata verified" in output
-    assert "sudo xferry update --to 0.2.0" in output
-
-
-def test_cli_update_text_renders_portable_pipx_action(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr("xferry.management.cli.os.geteuid", lambda: 0)
-    """Portable users must see the lifecycle command instead of only a generic rejection."""
-    fake = FakeReleaseManager([])
-    fake.update = lambda to_version, dry_run: ReleaseResult(  # type: ignore[method-assign]
-        4,
-        "portable_installation",
-        version=to_version,
-        dry_run=dry_run,
-        detail="No supported XFerry managed installation was found; no changes were made.",
-        target=to_version,
-        next_actions=("Run `pipx upgrade xferry` for a portable installation.",),
-    )
-    monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: fake)
-
-    assert cli.main(["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0"]) == 4
-
-    output = capsys.readouterr().err
-    assert "No supported XFerry managed installation was found" in output
-    assert "pipx upgrade xferry" in output
-
-
-def test_cli_update_json_failure_preserves_dry_run_and_known_release_identities(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Automation must not mistake a failed dry-run for apply or lose known state."""
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_release_manager_cannot_bypass_shared_purge_receipts(tmp_path, confirmed):
     layout = _installed_layout(tmp_path)
-    base_url = "https://releases.example.test/xferry/releases"
-    manifest_url = f"{base_url}/download/v0.2.0/xferry-release-linux-x86_64.json"
-    manager = _manager(
-        tmp_path,
-        layout,
-        FakeDownloader({manifest_url: OSError("transport details must stay secret")}),
-    )
-    monkeypatch.setattr("xferry.management.releases.default_update_manager", lambda: manager)
-
-    assert (
-        cli.main(
-            ["update", "--config", "/etc/xferry/xferry.ini", "--to", "0.2.0", "--dry-run", "--json"]
-        )
-        == 5
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["code"] == "release_download_failed"
-    assert payload["dry_run"] is True
-    assert payload["before"] == "0.1.0"
-    assert payload["target"] == "0.2.0"
-    assert payload["active"] == "0.1.0"
-    assert "transport details" not in json.dumps(payload)
+    runner = FakeRunner()
+    manager = _manager(tmp_path, layout, FakeDownloader({}), runner=runner)
+    result = manager.uninstall(True, confirmed, False)
+    assert result.exit_code == 2
+    assert result.message == "purge_requires_management_application"
+    assert layout.config_file.exists() and layout.auth_file.exists()
+    assert runner.commands == []

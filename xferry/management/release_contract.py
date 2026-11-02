@@ -221,8 +221,8 @@ class ReleaseManifest:
 
     @classmethod
     def parse(cls, payload: bytes) -> ReleaseManifest:
-        """Read a strict installed v1 or v2 manifest."""
-        return cls._parse_payload(payload, require_v2=False)
+        """Read a current-format manifest; obsolete installed formats are refused."""
+        return cls._parse_payload(payload, require_v2=True)
 
     @classmethod
     def parse_new(cls, payload: bytes) -> ReleaseManifest:
@@ -253,30 +253,9 @@ class ReleaseManifest:
         if not isinstance(document, dict):
             raise ValueError
         schema_version = document.get("schema_version")
-        if isinstance(schema_version, bool) or schema_version not in {1, 2}:
+        if type(schema_version) is not int or schema_version != 2:
             raise ValueError
-        if require_v2 and schema_version != 2:
-            raise ValueError
-        if schema_version == 1:
-            return cls._parse_v1(document)
         return cls._parse_v2(document)
-
-    @classmethod
-    def _parse_v1(cls, document: dict[object, object]) -> ReleaseManifest:
-        if set(document) != {
-            "schema_version",
-            "version",
-            "tag",
-            "platform",
-            "executable",
-        }:
-            raise ValueError
-        common = cls._parse_common(document)
-        return cls(
-            schema_version=1,
-            **common,
-            artifact_digests=((common["executable_name"], common["executable_sha256"]),),
-        )
 
     @classmethod
     def _parse_v2(cls, document: dict[object, object]) -> ReleaseManifest:

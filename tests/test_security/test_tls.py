@@ -316,16 +316,14 @@ class TestGetCertInfo:
 
 class TestObtainLetsEncryptCert:
     def test_uses_default_acme_config_dir_when_not_provided(self, tmp_path, monkeypatch):
-        fake_home = tmp_path / "home"
-        monkeypatch.setattr("xferry.security.tls.Path.home", lambda: fake_home)
+        state = tmp_path / "state"
+        monkeypatch.setattr("xferry.paths.automatic_state_dir", lambda: state)
         self._patch_acme_success(monkeypatch)
 
         result_cert, result_key = obtain_letsencrypt_cert(domain="Example.COM")
 
-        assert (
-            result_cert == fake_home / ".xferry" / "acme" / "live" / "example.com" / "fullchain.pem"
-        )
-        assert result_key == fake_home / ".xferry" / "acme" / "live" / "example.com" / "privkey.pem"
+        assert result_cert == state / "acme" / "live" / "example.com" / "fullchain.pem"
+        assert result_key == state / "acme" / "live" / "example.com" / "privkey.pem"
         assert result_cert.read_text(encoding="utf-8") == "FULLCHAIN"
         assert result_key.exists()
 

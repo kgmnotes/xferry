@@ -22,6 +22,8 @@ def is_canonical_release_version(value: object) -> TypeGuard[str]:
 if not is_canonical_release_version(__version__):
     raise RuntimeError("xferry.config.__version__ is not a canonical release version")
 
+MIN_DEPLOYMENT_RELEASE = "0.5.0"
+
 SUPPORTED_RELEASE_MAJOR: str = __version__.split(".", 1)[0]
 
 

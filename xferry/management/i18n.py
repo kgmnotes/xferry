@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .versions import SUPPORTED_RELEASE_MAJOR
+from .versions import MIN_DEPLOYMENT_RELEASE, SUPPORTED_RELEASE_MAJOR
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "examples_heading": "Examples:",
         "root_examples": (
             "  xferry run --files-dir ~/Shared\n"
-            "  xferry setup\n"
+            "  xferry setup --backend native\n"
             "  xferry status\n"
             "  xferry config explain files_dir"
         ),
@@ -42,11 +42,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_start": "Start the installed server.",
         "command_stop": "Stop the installed server.",
         "command_restart": "Restart the installed server.",
-        "command_doctor": "Check the managed installation.",
+        "command_doctor": "Check the selected service or container deployment.",
         "command_credentials": "Manage service credentials.",
         "command_update": "Update the installed server to an exact release version.",
         "command_rollback": "Restore a verified release on a long-lived installation.",
         "command_uninstall": "Remove the managed installation safely.",
+        "deployment_state_text": (
+            "Instance: {instance}; backend: {backend}; state: {state}; health: {health}"
+        ),
+        "retained_text": "Retained: {path}",
         "service_status_text": (
             "Installation: {installation}; configuration: {config}; enabled: {enabled}; "
             "service: {service}; health: {health}"
@@ -57,7 +61,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "next_action_text": "Next action: {action}",
         "operation_failure": "Management operation failed.",
         "purge_prompt": (
-            "Permanently delete XFerry config, data, credentials, and ACME state? [y/N] "
+            "Permanently delete the displayed XFerry-owned resources? External files remain."
         ),
         "usage_error": "usage error",
     },
@@ -70,7 +74,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "examples_heading": "Примеры:",
         "root_examples": (
             "  xferry run --files-dir ~/Shared\n"
-            "  xferry setup\n"
+            "  xferry setup --backend native\n"
             "  xferry status\n"
             "  xferry config explain files_dir"
         ),
@@ -86,11 +90,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "command_start": "Запустить установленный сервер.",
         "command_stop": "Остановить установленный сервер.",
         "command_restart": "Перезапустить установленный сервер.",
-        "command_doctor": "Проверить управляемую установку.",
+        "command_doctor": "Проверить выбранную службу или контейнер.",
         "command_credentials": "Управлять учётными данными службы.",
         "command_update": ("Обновить установленный сервер до точной версии выпуска."),
         "command_rollback": "Восстановить проверенный выпуск долгоживущей установки.",
         "command_uninstall": "Безопасно удалить управляемую установку.",
+        "deployment_state_text": (
+            "Установка: {instance}; способ: {backend}; состояние: {state}; здоровье: {health}"
+        ),
+        "retained_text": "Сохранено: {path}",
         "service_status_text": (
             "Установка: {installation}; конфигурация: {config}; включена: {enabled}; "
             "служба: {service}; здоровье: {health}"
@@ -101,7 +109,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "next_action_text": "Следующее действие: {action}",
         "operation_failure": "Операция управления не выполнена.",
         "purge_prompt": (
-            "Безвозвратно удалить настройки, данные, учётные данные и состояние ACME XFerry? [y/N] "
+            "Безвозвратно удалить перечисленные ресурсы XFerry? Внешние файлы сохранятся."
         ),
         "usage_error": "ошибка использования",
     },
@@ -258,6 +266,12 @@ _RELEASE_TEXT: dict[str, dict[str, str]] = {
 
 _MANAGED_TEXT: dict[str, dict[str, dict[str, str]]] = {
     "en": {
+        "message": {
+            "unsupported_deployment_release": (
+                f"Managed deployments require XFerry {MIN_DEPLOYMENT_RELEASE} or newer; "
+                "older releases use an incompatible deployment format. No changes were made."
+            ),
+        },
         "action": {"start": "start", "stop": "stop", "restart": "restart"},
         "check": {
             "privilege": "Privilege",
@@ -350,6 +364,59 @@ _MANAGED_TEXT: dict[str, dict[str, dict[str, str]]] = {
         },
     },
 }
+
+
+_MANAGED_TEXT["ru"]["check"].update(
+    {
+        "manifest": "Манифест",
+        "runtime": "Сервер",
+        "files": "Файлы",
+        "files_dir": "Папка файлов",
+        "instance_id": "Идентификатор установки",
+        "state_dir": "Приватное состояние",
+        "diff": "Изменения",
+        "retained": "Сохранено",
+    }
+)
+_MANAGED_TEXT["ru"]["status"].update(
+    {
+        "absent": "отсутствует",
+        "incomplete": "установка не завершена",
+        "stopped": "остановлен",
+        "running": "работает",
+        "retained": "данные сохранены",
+        "broken": "требует восстановления",
+        "not_checked": "не проверено",
+        "available": "доступно",
+    }
+)
+_MANAGED_TEXT["ru"]["message"] = {
+    "unsupported_deployment_release": (
+        f"Для управляемой установки нужен XFerry {MIN_DEPLOYMENT_RELEASE} или новее; "
+        "старые выпуски используют несовместимый формат установки. Изменения не внесены."
+    ),
+    "No persistent deployment is installed.": "Постоянная установка отсутствует.",
+    "Configuration is valid; no changes made.": "Конфигурация корректна; изменений нет.",
+    "Configuration applied.": "Настройки применены.",
+    "Configuration applied and service is healthy.": "Настройки применены; сервер исправен.",
+    "Configuration saved; server remains stopped.": (
+        "Настройки сохранены; сервер остаётся остановленным."
+    ),
+    "Credentials changed.": "Учётные данные изменены.",
+    "Docker server is healthy.": "Контейнер работает; проверка здоровья пройдена.",
+}
+for _backend, _label in (("Native", "Служба"), ("Docker", "Контейнер")):
+    _MANAGED_TEXT["ru"]["message"][f"{_backend} diagnostics completed."] = (
+        f"{_label}: диагностика завершена."
+    )
+    for _state in ("absent", "incomplete", "stopped", "running", "retained", "broken"):
+        _MANAGED_TEXT["ru"]["message"][f"{_backend} server is {_state}."] = (
+            f"{_label}: {_MANAGED_TEXT['ru']['status'][_state]}."
+        )
+    for _action, _translated in _MANAGED_TEXT["ru"]["action"].items():
+        _MANAGED_TEXT["ru"]["message"][f"{_backend} {_action} completed."] = (
+            f"{_label}: {_translated} выполнен."
+        )
 
 
 def _language_code(value: str) -> str:

@@ -1,22 +1,37 @@
-"""Discover installations without making users select a deployment backend."""
+"""Discovery indexes validated manifests; INI files do not imply deployments."""
 
 from __future__ import annotations
 
 import json
-import os
-import stat
-import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
-Target = Literal["managed", "portable", "docker"]
+from .deployment import Backend, DeploymentSpec, load_manifest, read_document
 
 
 @dataclass(frozen=True)
 class Instance:
+    id: str
+    backend: Backend
     config: Path
-    target: Target
+    manifest: Path
+
+    @property
+    def target(self) -> str:
+        return "managed" if self.backend == "native" else "docker"
+
+    @property
+    def spec(self) -> DeploymentSpec:
+        spec = load_manifest(self.manifest)
+        if (
+            spec.instance_id != self.id
+            or spec.backend != self.backend
+            or spec.profile != self.config
+        ):
+            raise ValueError("deployment identity changed; select the instance again")
+        return spec
 
 
 def user_data_dir() -> Path:
@@ -31,104 +46,169 @@ def foreground_config() -> Path:
     return default_config_path()
 
 
-def target_for_config(path: Path) -> Target:
-    path = path.expanduser().absolute()
-    if path == Path("/etc/xferry/xferry.ini"):
-        return "managed"
-    if (path.parent / ".xferry-deployment.json").is_file():
-        return "docker"
-    return "portable"
+def _registry_paths() -> list[Path]:
+    try:
+        document = read_document(user_data_dir() / "instances.json", maximum=65536)
+        if document.get("schema") != 2:
+            return []
+        values = document.get("manifests", [])
+        if not isinstance(values, list):
+            return []
+        return [
+            Path(value) for value in values if isinstance(value, str) and Path(value).is_absolute()
+        ]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _instance(path: Path) -> Instance:
+    spec = load_manifest(path)
+    return Instance(spec.instance_id, spec.backend, spec.profile, path)
 
 
 def discover_instances() -> tuple[Instance, ...]:
-    candidates: list[Path] = []
-    registry = user_data_dir() / "instances.json"
-    try:
-        metadata = registry.lstat()
-        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 65536:
-            document = json.loads(registry.read_text(encoding="utf-8"))
-            if isinstance(document, dict) and document.get("schema") == 1:
-                candidates.extend(
-                    Path(value) for value in document.get("configs", []) if isinstance(value, str)
-                )
-    except (OSError, ValueError):
-        pass
-    candidates.extend((Path("/etc/xferry/xferry.ini"), user_data_dir() / "deployment/xferry.ini"))
-    found: dict[Path, Instance] = {}
-    for candidate in candidates:
+    candidates = [
+        *_registry_paths(),
+        Path("/etc/xferry/deployment.json"),
+        user_data_dir() / "deployment/.xferry-deployment.json",
+    ]
+    found: dict[str, Instance] = {}
+    for path in candidates:
         try:
-            path = candidate.expanduser().absolute()
-            # A retained installation can be resumed after its runtime is removed.
-            retained = path.parent / "retained-state"
-            if (
-                path.is_file()
-                or retained.is_file()
-                or (
-                    path == Path("/etc/xferry/xferry.ini")
-                    and Path("/opt/xferry/current/xferry").is_file()
-                )
-            ):
-                found[path] = Instance(path, target_for_config(path))
-        except OSError:
+            item = _instance(path)
+            found[item.id] = item
+        except (OSError, ValueError, TypeError):
             continue
     return tuple(found.values())
 
 
-def resolve_instance(
-    config: str | Path | None = None, *, prefer_portable: bool = False
-) -> Instance:
-    if config is not None:
-        path = Path(config).expanduser().absolute()
-        return Instance(path, target_for_config(path))
-    if prefer_portable:
-        return Instance(foreground_config(), "portable")
+def resolve_instance(instance: str | Path | Instance | None = None) -> Instance:
+    if isinstance(instance, Instance):
+        _ = instance.spec
+        return instance
     found = discover_instances()
+    if instance is not None:
+        selected = str(instance)
+        matches = [item for item in found if item.id == selected or str(item.manifest) == selected]
+        if matches:
+            return matches[0]
+        path = Path(selected).expanduser()
+        if path.is_absolute():
+            return _instance(path)
+        raise ValueError("unknown instance; use its ID or absolute deployment manifest path")
     if len(found) > 1:
-        raise ValueError("more than one server was found; choose it with --config FILE")
+        raise ValueError("more than one server was found; choose it with --instance ID")
     if found:
         return found[0]
-    return Instance(foreground_config(), "portable")
+    raise ValueError("no persistent deployment found; run xferry setup or xferry run --config FILE")
 
 
 def select_instance(
-    config: str | Path | None = None, *, interactive: bool = False, language: str = "en"
+    instance: str | Path | None = None, *, interactive: bool = False, language: str = "en"
 ) -> Instance:
-    if config is not None:
-        return resolve_instance(config)
     found = discover_instances()
-    if len(found) <= 1 or not interactive:
-        return resolve_instance()
+    if instance is not None or len(found) <= 1 or not interactive:
+        return resolve_instance(instance)
     print("Выберите сервер:" if language == "ru" else "Choose a server:")
-    for index, instance in enumerate(found, 1):
-        print(f"  {index}. {instance.config} ({instance.target})")
-    answer = input("Номер: " if language == "ru" else "Number: ").strip()
+    for index, item in enumerate(found, 1):
+        print(f"  {index}. {item.id} ({item.backend}, {item.config})")
     try:
-        index = int(answer) - 1
-        if not 0 <= index < len(found):
+        selection = int(input("Номер: " if language == "ru" else "Number: ")) - 1
+        if not 0 <= selection < len(found):
             raise ValueError
     except ValueError:
         raise ValueError("choose one of the listed server numbers") from None
-    return found[index]
+    return found[selection]
 
 
-def register_instance(path: Path, target: str) -> None:
-    if target == "portable":
-        return
+def register_instance(path: Path, target: str | None = None) -> None:
     path = path.expanduser().absolute()
+    _instance(path)
+    from .configuration import _portable_lock
+    from .docker_deploy import _atomic_write
+
     root = user_data_dir()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     registry = root / "instances.json"
-    configs = [str(instance.config) for instance in discover_instances()]
-    if str(path) not in configs:
-        configs.append(str(path))
-    descriptor, name = tempfile.mkstemp(prefix=".instances-", dir=root)
-    temporary = Path(name)
+    with _portable_lock(registry):
+        paths = list(dict.fromkeys([*_registry_paths(), path]))
+        _atomic_write(
+            registry,
+            (
+                json.dumps({"schema": 2, "manifests": [str(p) for p in paths]}, indent=2) + "\n"
+            ).encode(),
+            0o600,
+        )
+
+
+def unregister_instance(path: Path) -> None:
+    from .configuration import _portable_lock
+    from .docker_deploy import _atomic_write
+
+    registry = user_data_dir() / "instances.json"
+    if not registry.exists():
+        return
+    with _portable_lock(registry):
+        paths = [p for p in _registry_paths() if p != path.absolute()]
+        _atomic_write(
+            registry,
+            (
+                json.dumps({"schema": 2, "manifests": [str(p) for p in paths]}, indent=2) + "\n"
+            ).encode(),
+            0o600,
+        )
+
+
+def target_for_config(path: Path) -> str:
+    """Only registered identity can give a profile a persistent backend."""
+    path = path.expanduser().absolute()
+    for instance in discover_instances():
+        if instance.config == path:
+            return instance.target
+    return "portable"
+
+
+def ensure_dedicated_files_folder(folder: Path, *, exclude_id: str | None = None) -> None:
+    """Require a separate public tree for each known persistent deployment."""
+    selected = folder.expanduser().resolve()
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump({"schema": 1, "configs": configs}, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(registry)
-    finally:
-        temporary.unlink(missing_ok=True)
+        metadata = selected.stat()
+        selected_identity = (metadata.st_dev, metadata.st_ino)
+    except FileNotFoundError:
+        selected_identity = None
+    for instance in discover_instances():
+        if instance.id == exclude_id:
+            continue
+        other = instance.spec.files_dir.expanduser().resolve()
+        try:
+            metadata = other.stat()
+            other_identity = (metadata.st_dev, metadata.st_ino)
+        except FileNotFoundError:
+            other_identity = None
+        if (
+            selected == other
+            or selected.is_relative_to(other)
+            or other.is_relative_to(selected)
+            or selected_identity is not None
+            and selected_identity == other_identity
+        ):
+            raise ValueError(
+                f"files folder is reserved by instance {instance.id}; "
+                "choose a separate dedicated folder"
+            )
+
+
+@contextmanager
+def deployment_setup_lock() -> Iterator[None]:
+    """Serialize setup/removal across outputs before publishing an indexed identity."""
+    from .configuration import _portable_lock
+
+    with _portable_lock(user_data_dir() / "deployment-setup"):
+        yield
+
+
+@contextmanager
+def dedicated_files_folder(folder: Path, *, exclude_id: str | None = None) -> Iterator[None]:
+    with deployment_setup_lock():
+        ensure_dedicated_files_folder(folder, exclude_id=exclude_id)
+        yield

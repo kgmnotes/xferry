@@ -77,3 +77,4 @@ nav:
           - Methods and launch presets: ADR/ADR-010-methods-and-presets.md
           - Controlled distribution: ADR/ADR-011-controlled-distribution.md
           - Encrypted streaming transfers: ADR/ADR-012-encrypted-streaming-transfers.md
+          - Unified deployment and capacity: ADR/ADR-013-unified-deployment-and-capacity.md

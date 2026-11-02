@@ -350,14 +350,17 @@ class TestCLIMain:
     def test_saved_user_config_loads_automatically(self, captured_configs):
         path = default_config_path()
         path.parent.mkdir(parents=True)
-        path.write_text("[server]\nport = 9021\nworkers = 4\n")
+        path.write_text("[server]\nconfig_version = 1\nport = 9021\nworkers = 4\n")
         assert cli.run_main([]) == 0
         assert captured_configs[0].port == 9021
         assert captured_configs[0].limits.max_workers == 4
 
     def test_explicit_config_env_and_cli_precedence(self, tmp_path, monkeypatch, captured_configs):
         path = tmp_path / "config.ini"
-        path.write_text("[server]\nport = 9000\nworkers = 4\n[limits]\nupload_file_limit = 9\n")
+        path.write_text(
+            "[server]\nconfig_version = 1\nport = 9000\nworkers = 4\n"
+            "[limits]\nupload_file_limit = 9\n"
+        )
         monkeypatch.setenv("XFERRY_PORT", "9001")
         monkeypatch.setenv("XFERRY_UPLOAD_FILE_LIMIT", "10")
         assert cli.run_main(["--config", str(path), "-p8080", "--upload-file-limit", "0"]) == 0
@@ -375,7 +378,7 @@ class TestCLIMain:
     def test_cli_cannot_expose_saved_config_as_download(self, tmp_path, captured_configs):
         path = default_config_path()
         path.parent.mkdir(parents=True)
-        path.write_text("[server]\nport = 8080\n")
+        path.write_text("[server]\nconfig_version = 1\nport = 8080\n")
         with pytest.raises(SystemExit):
             cli.run_main(["--files-dir", str(path.parent)])
         assert captured_configs == []

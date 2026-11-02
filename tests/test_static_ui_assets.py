@@ -909,7 +909,7 @@ def test_regular_upload_exposes_profiles_without_dead_comparison_controls() -> N
         assert phrase not in core_js
 
 
-def test_upload_composer_exposes_one_visible_method_group_before_file_controls() -> None:
+def test_upload_composer_starts_with_files_and_discloses_protocol_controls() -> None:
     html = (REPO_ROOT / "xferry" / "data" / "index.html").read_text(encoding="utf-8")
     upload_tab = html.split('<section id="upload-tab"', 1)[1].split('<section id="opsec-tab"', 1)[0]
     assert upload_tab.count('class="upload-method-section"') == 1
@@ -932,14 +932,15 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
         assert upload_tab.count(f'id="{element_id}"') == 1
 
     source_order = (
-        'class="upload-method-section"',
-        'id="uploadTargetPathGroup"',
-        'id="uploadProfileGroup"',
         'id="uploadPickerActions"',
         'id="dropZone"',
         'id="uploadBtn"',
         'id="uploadSelectionState"',
         'id="fileList"',
+        'id="uploadAdvancedControls"',
+        'class="upload-method-section"',
+        'id="uploadTargetPathGroup"',
+        'id="uploadProfileGroup"',
         'id="uploadRequestSummary"',
         'data-tool-trace-scope="upload"',
     )
@@ -948,7 +949,16 @@ def test_upload_composer_exposes_one_visible_method_group_before_file_controls()
     assert 'data-tool-summary-scope="upload"' not in upload_tab
     assert "data-tool-trace-phase" not in upload_tab
     assert 'data-tool-trace-scope="upload"' in upload_tab
-    assert upload_tab.index('role="radiogroup"') < upload_tab.index('id="dropZone"')
+    assert upload_tab.index('id="dropZone"') < upload_tab.index('role="radiogroup"')
+    for disclosure in ("uploadAdvancedControls", "uploadRequestSummary", "uploadTechnicalDetails"):
+        tag = re.search(rf'<details\b[^>]*\bid="{disclosure}"[^>]*>', upload_tab)
+        assert tag is not None
+        assert not re.search(r"\bopen(?:\s|=|>)", tag.group(0))
+    advanced = upload_tab.split('id="uploadAdvancedControls"', 1)[1].split(
+        '<div class="sr-only" id="uploadResponseAreaLive"', 1
+    )[0]
+    for control in ("uploadMethodTitle", "uploadProfileGroup", "uploadMimeMode", "responseNoGzip"):
+        assert f'id="{control}"' in advanced
     selection_tag = re.search(r'<div\b[^>]*\bid="uploadSelectionState"[^>]*>', upload_tab)
     assert selection_tag is not None
     assert re.search(r'class="[^"]*\bsr-only\b[^"]*"', selection_tag.group(0))
@@ -1341,8 +1351,8 @@ def test_basic_upload_status_is_inline_and_keeps_global_toasts_for_files() -> No
     assert "uploadNotificationId" not in upload_js
     assert "timeoutMs" not in upload_js
     assert "renderUploadStatus({ announce: false });" in upload_js
-    assert "function maybeAutoOpenUploadTechnicalDetails()" in upload_js
-    assert "technicalDetailsUserToggled" in upload_js
+    assert "function maybeAutoOpenUploadTechnicalDetails()" not in upload_js
+    assert "technicalDetailsAutoOpened" not in upload_js
     assert "singleResult" in upload_js
 
     for files_notification_contract in (

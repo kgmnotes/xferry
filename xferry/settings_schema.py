@@ -44,7 +44,7 @@ CLI_GROUP_ORDER: tuple[CliGroup, ...] = (
     "Authentication",
 )
 NO_CLI_SETTING_NAMES = frozenset(
-    {"plugin_allowlist", "plugins_allow_public_direct", "plugins_override_core"}
+    {"plugin_allowlist", "plugins_allow_public_direct", "plugins_override_core", "config_version"}
 )
 
 
@@ -582,7 +582,7 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
             group="Limits",
             help=(
                 "Admission budget for aggregate in-flight request bodies in MB, not an "
-                "RSS ceiling (default: workers * max size)"
+                "RSS ceiling (default: RAM-aware, 32–128 MiB)"
             ),
             action="store",
             metavar="MB",
@@ -700,8 +700,8 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
             dest="max_websocket_connections",
             group="Limits",
             help=(
-                "Max active WebSocket connections; each occupies a worker and 0 rejects "
-                "all (default: workers // 2)"
+                "Max WebSocket sessions; idle sessions hold no processing worker "
+                "(default: 8; 0 rejects all)"
             ),
             action="store",
             metavar="N",
@@ -741,7 +741,7 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
             option_strings=("-w", "--workers"),
             dest="workers",
             group="Limits",
-            help="Number of worker threads (default: {default})",
+            help="Maximum short application operations executing concurrently (default: {default})",
             action="store",
             metavar="N",
             parser_kind="integer",
@@ -954,6 +954,53 @@ _CLI_ROWS: tuple[tuple[str, CliSpec], ...] = (
 )
 
 
+_NEW_LIMITS: tuple[tuple[str, CliParserKind, str, str], ...] = (
+    (
+        "max_connections",
+        "integer",
+        "32",
+        "Maximum admitted TCP connections, including TLS and WebSocket sessions",
+    ),
+    ("max_tls_handshakes", "integer", "2", "Maximum simultaneous TLS handshakes"),
+    ("max_transfers", "integer", "4", "Maximum simultaneous bulk transfers"),
+    ("auth_max_active", "integer", "2", "Maximum simultaneous password verifications"),
+    (
+        "auth_max_pending",
+        "integer",
+        "16",
+        "Maximum admitted authentication work, including active checks",
+    ),
+    ("auth_wait_timeout", "number", "5", "Total authentication queue deadline in seconds"),
+    ("tls_handshake_timeout", "number", "5", "TLS queue and handshake deadline in seconds"),
+    ("admission_wait_timeout", "number", "2", "Request or transfer admission deadline in seconds"),
+    ("keep_alive_timeout", "number", "5", "Idle HTTP keep-alive timeout in seconds"),
+)
+_CLI_ROWS += tuple(
+    (
+        name,
+        _c(
+            "--" + name.replace("_", "-"),
+            dest=name,
+            group="Limits",
+            help=description,
+            parser_kind=kind,
+            parser_label=name,
+            minimum=1,
+        ),
+    )
+    for name, kind, _, description in _NEW_LIMITS
+) + (
+    (
+        "state_dir",
+        _c(
+            "--state-dir",
+            dest="state_dir",
+            group="Basic",
+            help="Private state root (notes, transfers and ACME)",
+        ),
+    ),
+)
+
 _CLI_SPEC_BY_SETTING: Mapping[str, CliSpec] = MappingProxyType(dict(_CLI_ROWS))
 
 
@@ -987,6 +1034,48 @@ def _s(
 
 
 SETTING_SPECS: tuple[SettingSpec, ...] = (
+    _s(
+        "config_version",
+        "server",
+        "integer",
+        "none",
+        ("active",) * 4,
+        (),
+        "Explicit configuration format version",
+        "1",
+        "Exactly 1",
+        "Older formats are refused without changes",
+        "all",
+    ),
+    _s(
+        "state_dir",
+        "server",
+        "optional_string",
+        "none",
+        ("active", "omitted", "active", "active"),
+        (),
+        "Private state root containing notes, transfer state and ACME",
+        "/var/lib/xferry",
+        "Separate from files_dir",
+        "Empty uses a stable profile-specific directory. Docker uses its owned private volume.",
+        "foreground/native; Docker state volume is reported by status and doctor",
+    ),
+    *(
+        _s(
+            name,
+            "limits",
+            kind,
+            "none",
+            ("active",) * 4,
+            (),
+            description,
+            example,
+            "Positive finite value",
+            "Independent of workers and body memory",
+            "all",
+        )
+        for name, kind, example, description in _NEW_LIMITS
+    ),
     _s(
         "access",
         "server",
@@ -1075,7 +1164,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "8080",
         "Minimum 1; maximum 65535",
         (
-            "Default: 8080 for private/lab, 8443 for public. Open this port in the host "
+            "Default: 8080 for private/lab, 443 for public. Open this port in the host "
             "firewall when sharing."
         ),
         "all",
@@ -1109,10 +1198,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Enable resumable browser-encrypted large-file transfers",
         "true",
         "true or false",
-        (
-            "Encrypted transfers require at least two workers and a body budget for two "
-            "encrypted chunks."
-        ),
+        ("Encrypted transfers require a body budget for two encrypted chunks."),
         "advanced",
     ),
     _s(
@@ -1307,8 +1393,8 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "256",
         "Empty means automatic; otherwise an integer at least 1 MiB",
         (
-            "Automatic is max_size_mb \u00d7 workers, raised for encrypted chunks when needed. "
-            "Public defaults to 512 MiB."
+            "Automatic is one eighth of effective host/container RAM, bounded to 32–128 MiB. "
+            "Independent of TCP and processing limits."
         ),
         "advanced",
     ),
@@ -1384,12 +1470,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "none",
         ("omitted", "omitted", "omitted", "omitted"),
         (),
-        "Max active WebSocket connections; each occupies a worker and 0 rejects all",
+        "Maximum WebSocket sessions; idle sessions reserve no processing worker",
         "5",
         "Empty means automatic; otherwise an integer at least 0",
         (
-            "Automatic reserves half the workers for WebSockets (workers // 2). Each active "
-            "connection occupies one worker; 0 rejects all."
+            "Default is 8, independently of workers. Sessions also count toward max_connections; "
+            "0 rejects all WebSocket upgrades."
         ),
         "advanced",
     ),
@@ -1416,12 +1502,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "none",
         ("active", "active", "active", "active"),
         (),
-        "Number of worker threads",
+        "Maximum concurrently executing short application operations",
         "4",
         "Minimum 1",
         (
-            "Encrypted uploads require at least 2. Automatic memory and WebSocket limits "
-            "depend on this value."
+            "Independent of TCP connections, TLS, authentication, transfers and idle WebSocket "
+            "sessions. The permit is released before writing a response."
         ),
         "advanced",
     ),
@@ -1663,7 +1749,7 @@ _COMMON_PROFILE_VALUES: tuple[tuple[str, SampleScalar], ...] = (
     # public deployment sample.
     ("host", "0.0.0.0"),  # nosec B104
     ("log_format", "json"),
-    ("body_memory_budget_mb", 512),
+    ("body_memory_budget_mb", None),
     ("upload_storage_limit_mb", 4096),
     ("upload_file_limit", 4096),
     ("upload_reserve_free_mb", 1024),
@@ -1676,7 +1762,7 @@ SAMPLE_PROFILES: tuple[SampleProfile, ...] = (
         (
             *_COMMON_PROFILE_VALUES,
             ("files_dir", "/var/lib/xferry/files"),
-            ("port", 8443),
+            ("port", 443),
             ("auth_file", "/etc/xferry/auth"),
         ),
     ),
@@ -1685,10 +1771,10 @@ SAMPLE_PROFILES: tuple[SampleProfile, ...] = (
         "docker",
         (
             *_COMMON_PROFILE_VALUES,
-            ("files_dir", "/data/files"),
-            ("port", 8443),
-            ("auth_file", "/run/secrets/xferry_auth"),
-            ("acme_http_port", 8080),
+            ("files_dir", "/srv/xferry/files"),
+            ("port", 443),
+            ("auth_file", "/srv/xferry/auth"),
+            ("acme_http_port", 80),
         ),
     ),
     SampleProfile(

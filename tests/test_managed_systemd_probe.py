@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -17,6 +18,66 @@ from typing import Any
 import pytest
 
 from tools import managed_systemd_probe as probe
+
+INSTANCE_ID = "12345678-1234-4567-8901-123456789abc"
+
+
+def _observed(*, retained: bool = False, health: str = "not_checked") -> dict[str, Any]:
+    return {
+        "state": "retained" if retained else "running",
+        "instance_id": INSTANCE_ID,
+        "backend": "native",
+        "health": health,
+        "detail": "" if retained else "active",
+        "running": not retained,
+        "config": "valid",
+        "enabled": "unknown" if retained else "enabled",
+    }
+
+
+def _outcome(
+    *,
+    details: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
+    url: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "exit_code": 0,
+        "message": "unemitted diagnostic",
+        "details": details or {},
+        "url": url,
+        "plan": None,
+        "state": state,
+    }
+
+
+def _setup_result(files: Path) -> dict[str, Any]:
+    return _outcome(
+        details={"instance_id": INSTANCE_ID, "files_dir": str(files)}, url="http://127.0.0.1:8080"
+    )
+
+
+def _write_manifest(paths: probe.SystemPaths, version: str) -> None:
+    executable = paths.release_root / "releases" / version / "xferry"
+    executable.write_bytes(b"mock executable " + version.encode())
+    paths.manifest.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "instance_id": INSTANCE_ID,
+                "backend": "native",
+                "profile": str(paths.profile),
+                "files_dir": str(paths.data_root / "files"),
+                "state_dir": str(paths.data_root),
+                "artifact": {
+                    "version": version,
+                    "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                },
+                "ownership": {"resources": [], "accounts": [], "acl": []},
+                "backend_options": {},
+            }
+        )
+    )
 
 
 @pytest.fixture
@@ -68,6 +129,9 @@ def _create_private_state(
         "[server]\nhost = 127.0.0.1\nport = 8080\n[security]\nauth_file = /etc/xferry/auth\n"
     )
     paths.auth.write_text(auth)
+    paths.profile.write_text(
+        f"[server]\nconfig_version = 1\naccess = private\nfiles_dir = {paths.data_root / 'files'}\n"
+    )
 
 
 def _response(body: bytes, headers: bytes = b"", status: bytes = b"200 OK") -> bytes:
@@ -216,19 +280,19 @@ def test_guard_enforces_all_ten_exact_native_pairs(
     assert probe.guard(options, paths)["platform"] == f"linux-{machine}"
 
 
-@pytest.mark.parametrize("server", ["XFerry/0.1.1", "XFerry/0.1.2", "Other/0.1.1", None])
+@pytest.mark.parametrize("server", ["XFerry/0.5.0", "XFerry/0.5.1", "Other/0.5.0", None])
 def test_health_parser_requires_exact_ready_server_version(server: Any) -> None:
     body = json.dumps({"health": "ready", "server": server}).encode()
-    assert probe._parse_health(_response(body), "0.1.1") is (server == "XFerry/0.1.1")
+    assert probe._parse_health(_response(body), "0.5.0") is (server == "XFerry/0.5.0")
 
 
 @pytest.mark.parametrize(
     "response",
     [
         b"not HTTP",
-        _response(b'{"health":"ready","server":"XFerry/0.1.1"}', status=b"401 Nope"),
-        _response(b'{"health":"not-ready","server":"XFerry/0.1.1"}'),
-        _response(b'{"health":"ready","server":"XFerry/0.1.1","server":"XFerry/0.1.2"}'),
+        _response(b'{"health":"ready","server":"XFerry/0.5.0"}', status=b"401 Nope"),
+        _response(b'{"health":"not-ready","server":"XFerry/0.5.0"}'),
+        _response(b'{"health":"ready","server":"XFerry/0.5.0","server":"XFerry/0.5.1"}'),
         _response(b"invalid JSON"),
         _response(b"[]"),
         _response(b"{}", headers=b"Content-Length: 2\r\n"),
@@ -239,7 +303,7 @@ def test_health_parser_requires_exact_ready_server_version(server: Any) -> None:
     ],
 )
 def test_health_parser_rejects_bad_or_overlong_frames(response: bytes) -> None:
-    assert probe._parse_health(response, "0.1.1") is False
+    assert probe._parse_health(response, "0.5.0") is False
 
 
 def test_health_credentials_use_no_interpolation_or_secret_evidence(sandbox: Any) -> None:
@@ -292,7 +356,7 @@ def test_health_socket_failure_does_not_emit_request_or_exception(
 
     monkeypatch.setattr(probe.socket, "create_connection", fail_connection)
     with pytest.raises(probe.ProbeFailure, match="^health_connection_failed$"):
-        probe.verify_health("0.1.1", paths)
+        probe.verify_health("0.5.0", paths)
     assert capsys.readouterr() == ("", "")
 
 
@@ -302,7 +366,7 @@ def test_authenticated_ping_uses_bounded_reads_and_validates_actual_frame(
 ) -> None:
     _, paths = sandbox
     _create_private_state(paths)
-    payload = _response(b'{"health":"ready","server":"XFerry/0.1.1"}')
+    payload = _response(b'{"health":"ready","server":"XFerry/0.5.0"}')
     requests: list[bytes] = []
     sizes: list[int] = []
 
@@ -326,7 +390,7 @@ def test_authenticated_ping_uses_bounded_reads_and_validates_actual_frame(
             return chunk
 
     monkeypatch.setattr(probe.socket, "create_connection", lambda *args, **kwargs: Socket())
-    probe.verify_health("0.1.1", paths)
+    probe.verify_health("0.5.0", paths)
     assert requests[0].startswith(b"PING / HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Basic ")
     assert base64.b64encode(b"admin:unit-test-sensitive%value") in requests[0]
     assert all(0 < size <= 4096 for size in sizes)
@@ -337,9 +401,19 @@ def test_state_hashes_stay_in_memory_and_preservation_is_only_boolean(sandbox: A
     _create_private_state(paths)
     paths.sentinel.write_bytes(b"nonsecret sentinel")
     baseline = probe._state_hashes(paths)
-    assert probe._preservation(baseline, paths) == {"config": True, "auth": True, "sentinel": True}
+    assert probe._preservation(baseline, paths) == {
+        "config": True,
+        "auth": True,
+        "profile": True,
+        "sentinel": True,
+    }
     paths.auth.write_text("admin:changed\n")
-    assert probe._preservation(baseline, paths) == {"config": True, "auth": False, "sentinel": True}
+    assert probe._preservation(baseline, paths) == {
+        "config": True,
+        "auth": False,
+        "profile": True,
+        "sentinel": True,
+    }
     paths.auth.unlink()
     paths.auth.symlink_to(paths.sentinel)
     assert probe._preservation(baseline, paths)["auth"] is False
@@ -454,13 +528,13 @@ def test_active_service_requires_real_loaded_pid_and_enabled_state(
 
 
 @pytest.mark.parametrize(
-    "output", [b"xferry 0.1.2\n", b"prefix xferry 0.1.1\n", b"xferry 0.1.1\nsecret output\n"]
+    "output", [b"xferry 0.5.1\n", b"prefix xferry 0.5.0\n", b"xferry 0.5.0\nsecret output\n"]
 )
 def test_cli_version_rejects_nonexact_output(sandbox: Any, monkeypatch: Any, output: bytes) -> None:
     _, paths = sandbox
     monkeypatch.setattr(probe, "_command", lambda *args, **kwargs: output)
     with pytest.raises(probe.ProbeFailure, match="^cli_version_mismatch$"):
-        probe._version(paths, "0.1.1")
+        probe._version(paths, "0.5.0")
 
 
 def test_bootstrap_uses_only_guarded_exec_staging_without_changing_global_environment(
@@ -480,11 +554,11 @@ def test_bootstrap_uses_only_guarded_exec_staging_without_changing_global_enviro
     argv, kwargs = commands[0]
     assert argv == (
         "sh",
-        str(options.fixtures_root / "releases/download/v0.1.1/install-linux-x86_64.sh"),
+        str(options.fixtures_root / "releases/download/v0.5.0/install-linux-x86_64.sh"),
     )
     assert kwargs["environment"] == os.environ | {
         "TMPDIR": "/var/tmp",
-        "XFERRY_RELEASE_BASE_URL": "https://127.0.0.1:44443/releases/download/v0.1.1",
+        "XFERRY_RELEASE_BASE_URL": "https://127.0.0.1:44443/releases/download/v0.5.0",
         "CURL_CA_BUNDLE": str(options.tls_dir / "server.crt"),
     }
     assert os.environ["TMPDIR"] == "/untrusted/unit-only-temp"
@@ -519,7 +593,7 @@ def test_install_substep_failure_is_specific_and_never_creates_private_setup_sta
         if argv[1] == "--version":
             if substep == "version":
                 raise probe.ProbeFailure("command_failed")
-            return b"xferry 0.1.1\n"
+            return b"xferry 0.5.0\n"
         if argv[:2] == ("systemctl", "show"):
             if substep == "unit_properties":
                 raise probe.ProbeFailure("command_failed")
@@ -555,7 +629,7 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
     tls_events: list[str] = []
     installed = False
     active = False
-    version = "0.1.1"
+    version = "0.5.0"
 
     @contextmanager
     def fixture_server(_: probe.ProbeOptions) -> Iterator[None]:
@@ -591,12 +665,12 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             )
         if argv[0] == "sh":
             installed = True
-            activate("0.1.1")
+            activate("0.5.0")
             paths.cli.parent.mkdir(parents=True)
             paths.cli.write_bytes(b"mock executable")
             assert (
                 kwargs["environment"]["XFERRY_RELEASE_BASE_URL"]
-                == "https://127.0.0.1:44443/releases/download/v0.1.1"
+                == "https://127.0.0.1:44443/releases/download/v0.5.0"
             )
             assert kwargs["environment"]["CURL_CA_BUNDLE"] == str(options.tls_dir / "server.crt")
             assert kwargs["environment"]["TMPDIR"] == "/var/tmp"
@@ -612,28 +686,24 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             paths.unit.parent.mkdir(parents=True)
             paths.unit.write_bytes(b"unmodified mock service")
             active = True
-            return json.dumps(
-                {
-                    "status": "ok",
-                    "exit_code": 0,
-                    "url": "http://127.0.0.1:8080",
-                    "files_dir": str(paths.data_root / "files"),
-                }
-            ).encode()
+            _write_manifest(paths, version)
+            return json.dumps(_setup_result(paths.data_root / "files")).encode()
         if argv[1] == "doctor":
             assert argv[2:] == ("--deep", "--json")
             assert "environment" not in kwargs
-            return json.dumps(_doctor_result(canonical=True)).encode()
-        result = dict.fromkeys(probe._RELEASE_FIELDS)
-        result.update(
-            status="ok",
-            exit_code=0,
-            detail="unemitted sensitive detail",
-            message="unemitted message",
-            next_actions=[],
-            dry_run=False,
-            rollback="not_attempted",
-        )
+            return json.dumps(_doctor_result()).encode()
+        details = {
+            "version": None,
+            "dry_run": False,
+            "code": None,
+            "detail": "unemitted sensitive detail",
+            "before": None,
+            "target": None,
+            "active": None,
+            "rollback": "not_attempted",
+            "next_actions": [],
+        }
+        result = _outcome(details=details, state=_observed())
         if argv[1] == "update":
             dry_run = "--dry-run" in argv
             assert kwargs["environment"]["SSL_CERT_FILE"] == str(options.tls_dir / "server.crt")
@@ -643,21 +713,23 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             if not dry_run and fail_update:
                 raise RuntimeError("Credentials: admin:unit-test-sensitive%value")
             if not dry_run:
-                activate("0.1.2")
-            result.update(
+                activate("0.5.1")
+                _write_manifest(paths, version)
+            details.update(
                 code="update_dry_run" if dry_run else "update_complete",
                 dry_run=dry_run,
-                before="0.1.1",
-                target="0.1.2",
-                version="0.1.2",
+                before="0.5.0",
+                target="0.5.1",
+                version="0.5.1",
                 active=version,
                 rollback="not_needed",
             )
         elif argv[1] == "rollback":
             assert "environment" not in kwargs
-            assert argv[2:] == ("--to", "0.1.1", "--json")
-            activate("0.1.1")
-            result.update(code="rollback_complete", version="0.1.1")
+            assert argv[2:] == ("--to", "0.5.0", "--json")
+            activate("0.5.0")
+            details.update(code="rollback_complete", version="0.5.0")
+            _write_manifest(paths, version)
         elif argv[1] == "uninstall":
             assert "environment" not in kwargs
             assert argv[2:] == ("--json",)
@@ -665,7 +737,14 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             paths.unit.unlink()
             paths.cli.unlink()
             active = False
-            result.update(code="uninstall_complete")
+            result["details"] = {
+                "retained": [
+                    str(paths.profile),
+                    str(paths.data_root),
+                    str(paths.data_root / "files"),
+                ]
+            }
+            result["state"] = _observed(retained=True)
         else:
             raise AssertionError("unexpected command in mocked lifecycle")
         return json.dumps(result).encode()
@@ -694,15 +773,20 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
     assert cli_actions == ["setup", "doctor", "update", "update"] + (
         [] if fail_update else ["rollback", "uninstall"]
     )
-    assert health_versions == ["0.1.1", "0.1.1", "0.1.1"] + (
-        [] if fail_update else ["0.1.2", "0.1.1"]
+    assert health_versions == ["0.5.0", "0.5.0", "0.5.0"] + (
+        [] if fail_update else ["0.5.1", "0.5.0"]
     )
     if fail_update:
         assert result["failure"] == {"phase": "update", "code": "command_json_invalid"}
     else:
         assert all(stage["status"] == "passed" for stage in result["stages"])
         for stage in result["stages"][4:]:
-            assert stage["preserved"] == {"config": True, "auth": True, "sentinel": True}
+            assert stage["preserved"] == {
+                "config": True,
+                "auth": True,
+                "profile": True,
+                "sentinel": True,
+            }
         final = result["stages"][-1]
         assert final["service"] == {
             "active": False,
@@ -715,93 +799,74 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
         assert paths.sentinel.is_file()
 
 
-@pytest.mark.parametrize("canonical", [False, True])
 @pytest.mark.parametrize(
-    "mutation", [None, "extra-secret", "wrong-folder", "wrong-url", "boolean-exit"]
+    "mutation",
+    [None, "extra-secret", "wrong-folder", "wrong-url", "boolean-exit", "invalid-id", "legacy"],
 )
-def test_setup_outcome_accepts_only_the_exact_declared_cli_shape(canonical, mutation):
-    result = {"status": "ok", "exit_code": 0, "url": "http://127.0.0.1:8080"}
-    folder = Path("/var/lib/xferry/files") if canonical else None
-    if canonical:
-        result["files_dir"] = str(folder)
+def test_setup_outcome_accepts_only_the_current_deployment_shape(mutation):
+    folder = Path("/var/lib/xferry/files")
+    result = _setup_result(folder)
     if mutation == "extra-secret":
         result["password"] = "never-an-evidence-field"
     elif mutation == "wrong-folder":
-        result["files_dir"] = "/unexpected"
+        result["details"]["files_dir"] = "/unexpected"
     elif mutation == "wrong-url":
         result["url"] = "http://0.0.0.0:8080"
     elif mutation == "boolean-exit":
         result["exit_code"] = False
+    elif mutation == "invalid-id":
+        result["details"]["instance_id"] = "unsafe text"
+    elif mutation == "legacy":
+        result = {"status": "ok", "exit_code": 0, "url": result["url"]}
     if mutation:
         with pytest.raises(probe.ProbeFailure, match="setup_outcome_invalid"):
             probe._setup_outcome(result, files_dir=folder)
     else:
-        probe._setup_outcome(result, files_dir=folder)
+        assert probe._setup_outcome(result, files_dir=folder) == INSTANCE_ID
 
 
-def _doctor_result(*, canonical: bool) -> dict[str, Any]:
-    """Model the installed CLI independently of the consumer's expected-key constants."""
+def _doctor_result() -> dict[str, Any]:
     statuses = {
-        "platform": "supported",
-        "installation": "installed",
+        "manifest": "valid",
         "configuration": "valid",
-        "service": "active",
-        "network": "reachable",
+        "runtime": "running",
+        "files": "available",
         "health": "healthy",
     }
-    if canonical:
-        statuses["files"] = "available"
-    return {
-        "status": "ok",
-        "exit_code": 0,
-        "code": "doctor-ok",
-        "checks": {
-            name: {"status": status, "detail": "unemitted sensitive diagnostic"}
-            for name, status in statuses.items()
+    return _outcome(
+        details={
+            "checks": {
+                name: {"status": status, "detail": "unemitted sensitive diagnostic"}
+                for name, status in statuses.items()
+            }
         },
-        "detail": "unemitted diagnostic",
-        "message": "unemitted diagnostic",
-        "detected": {},
-        "next_actions": [],
-        "supported_matrix": [],
-    }
+        state=_observed(health="healthy"),
+    )
 
 
-@pytest.mark.parametrize("canonical", [False, True])
-def test_doctor_outcome_accepts_only_the_declared_legacy_or_canonical_checks(canonical):
-    result = _doctor_result(canonical=canonical)
-    checks = probe._doctor_outcome(result, canonical=canonical)
-    assert set(checks) == {
-        "platform",
-        "installation",
-        "configuration",
-        "service",
-        "network",
-        "health",
-    } | ({"files"} if canonical else set())
+def test_doctor_outcome_requires_all_current_deployment_checks():
+    checks = probe._doctor_outcome(_doctor_result(), identity=INSTANCE_ID)
+    assert set(checks) == {"manifest", "configuration", "runtime", "files", "health"}
     assert all(value is True for value in checks.values())
     assert "sensitive" not in json.dumps(checks)
 
 
 @pytest.mark.parametrize(
-    ("canonical", "mutation"),
+    "mutation",
     [
-        (True, "missing-files"),
-        (True, "missing-check"),
-        (True, "unknown-check"),
-        (True, "missing-files-directory"),
-        (True, "unavailable-files-directory"),
-        (True, "malformed-files-check"),
-        (True, "unknown-top-level-field"),
-        (False, "unexpected-files"),
-        (False, "missing-check"),
-        (False, "unknown-check"),
-        (False, "failed-health"),
+        "missing-files",
+        "missing-check",
+        "unknown-check",
+        "missing-files-directory",
+        "unavailable-files-directory",
+        "malformed-files-check",
+        "unknown-top-level-field",
+        "failed-health",
     ],
 )
-def test_doctor_outcome_rejects_incomplete_unknown_or_failing_checks(canonical, mutation):
-    result = _doctor_result(canonical=canonical)
-    checks = result["checks"]
+def test_doctor_outcome_rejects_incomplete_unknown_or_failing_checks(mutation):
+    result = _doctor_result()
+    checks = result["details"]["checks"]
     if mutation == "missing-files":
         checks.pop("files")
     elif mutation == "missing-check":
@@ -816,9 +881,36 @@ def test_doctor_outcome_rejects_incomplete_unknown_or_failing_checks(canonical, 
         checks["files"] = "available"
     elif mutation == "unknown-top-level-field":
         result["unexpected"] = "sensitive diagnostic"
-    elif mutation == "unexpected-files":
-        checks["files"] = {"status": "available"}
     else:
         checks["health"]["status"] = "unhealthy"
     with pytest.raises(probe.ProbeFailure, match="doctor_outcome_invalid"):
-        probe._doctor_outcome(result, canonical=canonical)
+        probe._doctor_outcome(result, identity=INSTANCE_ID)
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "schema", "identity", "artifact", "profile", "files", "sha"]
+)
+def test_manifest_contract_binds_identity_profile_and_exact_artifact(sandbox, mutation):
+    _, paths = sandbox
+    _create_private_state(paths)
+    (paths.release_root / "releases/0.5.0").mkdir(parents=True)
+    _write_manifest(paths, "0.5.0")
+    document = json.loads(paths.manifest.read_text())
+    if mutation == "schema":
+        document["schema"] = 1
+    elif mutation == "identity":
+        document["instance_id"] = "00000000-0000-0000-0000-000000000000"
+    elif mutation == "artifact":
+        document["artifact"]["version"] = "0.4.0"
+    elif mutation == "profile":
+        document["profile"] = "/unexpected"
+    elif mutation == "files":
+        document["files_dir"] = "/unexpected"
+    elif mutation == "sha":
+        document["artifact"]["sha256"] = "0" * 64
+    paths.manifest.write_text(json.dumps(document))
+    if mutation:
+        with pytest.raises(probe.ProbeFailure, match="release_state_invalid"):
+            probe._deployment_identity(paths, "0.5.0", INSTANCE_ID)
+    else:
+        probe._deployment_identity(paths, "0.5.0", INSTANCE_ID)

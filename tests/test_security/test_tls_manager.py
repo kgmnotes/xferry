@@ -12,6 +12,11 @@ from xferry.security.tls import generate_self_signed_cert
 from xferry.security.tls_manager import TLSManager
 
 
+@pytest.fixture(autouse=True)
+def isolated_private_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("xferry.security.tls_manager.automatic_state_dir", lambda: tmp_path)
+
+
 def _write_cert_pair(cert_path: Path, key_path: Path, common_name: str = "example.com") -> None:
     generate_self_signed_cert(
         cert_path=cert_path,
@@ -119,7 +124,7 @@ class TestTLSManagerDescribe:
 
 class TestTLSManagerControlFlow:
     def test_try_letsencrypt_uses_existing_certificate(self, tmp_path: Path, monkeypatch) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         live_dir = config_dir / "live" / "example.com"
         cert_path = live_dir / "fullchain.pem"
         key_path = live_dir / "privkey.pem"
@@ -156,7 +161,7 @@ class TestTLSManagerControlFlow:
         monkeypatch,
         capsys,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         live_dir = config_dir / "live" / "example.com"
         cert_path = live_dir / "fullchain.pem"
         key_path = live_dir / "privkey.pem"
@@ -205,7 +210,7 @@ class TestTLSManagerControlFlow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         live_dir = config_dir / "live" / "example.com"
         cert_path = live_dir / "fullchain.pem"
         key_path = live_dir / "privkey.pem"
@@ -243,7 +248,7 @@ class TestTLSManagerControlFlow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        live_dir = tmp_path / ".xferry" / "acme" / "live" / "example.com"
+        live_dir = tmp_path / "acme" / "live" / "example.com"
         key_path = live_dir / "privkey.pem"
         live_dir.mkdir(parents=True)
         key_path.write_text("not a private key", encoding="utf-8")
@@ -276,7 +281,7 @@ class TestTLSManagerControlFlow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         live_dir = config_dir / "live" / "example.com"
         cert_path = live_dir / "fullchain.pem"
         key_path = live_dir / "privkey.pem"
@@ -321,7 +326,7 @@ class TestTLSManagerControlFlow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         obtained_cert = config_dir / "live" / "example.com" / "fullchain.pem"
         obtained_key = config_dir / "live" / "example.com" / "privkey.pem"
 
@@ -356,7 +361,7 @@ class TestTLSManagerControlFlow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         obtained_cert = config_dir / "live" / "example.com" / "fullchain.pem"
         obtained_key = config_dir / "live" / "example.com" / "privkey.pem"
 
@@ -396,7 +401,7 @@ class TestTLSManagerControlFlow:
             "PRIVATE KEY"
         ) not in message
 
-    def test_try_letsencrypt_reuses_fresh_legacy_cert_when_new_store_is_empty(
+    def test_try_letsencrypt_ignores_legacy_home_cache(
         self,
         tmp_path: Path,
         monkeypatch,
@@ -406,7 +411,10 @@ class TestTLSManagerControlFlow:
         legacy_key = legacy_dir / "privkey.pem"
         _write_cert_pair(legacy_cert, legacy_key)
 
-        obtain_mock = Mock()
+        obtained_cert = tmp_path / "acme/live/example.com/fullchain.pem"
+        obtained_key = obtained_cert.with_name("privkey.pem")
+        _write_cert_pair(obtained_cert, obtained_key)
+        obtain_mock = Mock(return_value=(obtained_cert, obtained_key))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(
             "xferry.security.tls_manager.check_cert_needs_renewal", lambda _path: False
@@ -425,16 +433,17 @@ class TestTLSManagerControlFlow:
 
         m._try_letsencrypt()
 
-        assert m.cert_file == str(legacy_cert)
-        assert m.key_file == str(legacy_key)
-        obtain_mock.assert_not_called()
+        assert m.cert_file == str(obtained_cert)
+        assert m.key_file == str(obtained_key)
+        assert legacy_cert.exists() and legacy_key.exists()
+        assert not obtain_mock.called
 
     def test_try_letsencrypt_renews_mismatched_legacy_cache(
         self,
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        config_dir = tmp_path / ".xferry" / "acme"
+        config_dir = tmp_path / "acme"
         obtained_cert = config_dir / "live" / "example.com" / "fullchain.pem"
         obtained_key = config_dir / "live" / "example.com" / "privkey.pem"
         legacy_dir = tmp_path / ".xferry" / "letsencrypt" / "live" / "example.com"
@@ -500,10 +509,8 @@ class TestTLSManagerControlFlow:
             m.setup()
 
     def test_sslip_resolves_public_ip_and_domain(self, tmp_path: Path, monkeypatch) -> None:
-        obtained_cert = (
-            tmp_path / ".xferry" / "acme" / "live" / "8-8-8-8.sslip.io" / "fullchain.pem"
-        )
-        obtained_key = tmp_path / ".xferry" / "acme" / "live" / "8-8-8-8.sslip.io" / "privkey.pem"
+        obtained_cert = tmp_path / "acme" / "live" / "8-8-8-8.sslip.io" / "fullchain.pem"
+        obtained_key = tmp_path / "acme" / "live" / "8-8-8-8.sslip.io" / "privkey.pem"
 
         def fake_obtain(**kwargs):
             assert kwargs["domain"] == "8-8-8-8.sslip.io"

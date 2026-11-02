@@ -3,30 +3,40 @@
 
 # BEGIN GENERATED: xferry-settings/docker
 [server]
+config_version = 1
 access = public
 log_level = info
 log_format = json
 host = 0.0.0.0
-port = 8443
-files_dir = /data/files
-workers = 10
+port = 443
+files_dir = /srv/xferry/files
+workers = 4
 
 [security]
-auth_file = /run/secrets/xferry_auth
+auth_file = /srv/xferry/auth
 allowed_hosts =
 
 [tls]
 https_mode = auto
 # public_ip = 203.0.113.10
-acme_http_port = 8080
+acme_http_port = 80
 
 [limits]
+max_connections = 32
+max_tls_handshakes = 2
+max_transfers = 4
+auth_max_active = 2
+auth_max_pending = 16
+auth_wait_timeout = 5
+tls_handshake_timeout = 5
+admission_wait_timeout = 2
+keep_alive_timeout = 5
 max_size_mb = 100
 upload_storage_limit_mb = 4096
 upload_file_limit = 4096
 upload_reserve_free_mb = 1024
 upload_quota_externally_managed = false
-body_memory_budget_mb = 512
+body_memory_budget_mb =
 body_idle_timeout = 5
 body_timeout = 300
 body_min_rate = 0

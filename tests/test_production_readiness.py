@@ -48,8 +48,9 @@ def _verified(
     workflow_attempt: int = ATTEMPT,
     signer_name: str = "managed-systemd-matrix.yml",
     subject_name: str = "systemd-matrix-verified.json",
+    tag: str = TAG,
 ) -> list[dict[str, Any]]:
-    reference = f"refs/tags/{TAG}"
+    reference = f"refs/tags/{tag}"
     base = f"https://github.com/{readiness.REPOSITORY}"
     signer = f"{base}/.github/workflows/{signer_name}@{reference}"
     config = f"{base}/{readiness.PRODUCTION_WORKFLOW}@{reference}"
@@ -412,8 +413,8 @@ def test_public_archive_binds_signed_public_plan_and_full_ten_pair_receipt(
         plan["workflowAttempt"],
     )
     artifact["name"] = f"managed-public-verified-{workflow_run}-{attempt}"
-    artifact["workflow_run"].update(id=workflow_run, head_sha=source)
-    run.update(id=workflow_run, head_sha=source, run_attempt=attempt)
+    artifact["workflow_run"].update(id=workflow_run, head_sha=source, head_branch=plan["targetTag"])
+    run.update(id=workflow_run, head_sha=source, run_attempt=attempt, head_branch=plan["targetTag"])
     evidence["state"]["verified"] = _verified(
         body,
         source_commit=source,
@@ -421,6 +422,7 @@ def test_public_archive_binds_signed_public_plan_and_full_ten_pair_receipt(
         workflow_attempt=attempt,
         signer_name="managed-public-matrix.yml",
         subject_name="managed-public-verified.json",
+        tag=plan["targetTag"],
     )
     arguments = {
         "kind": "public",
@@ -429,7 +431,7 @@ def test_public_archive_binds_signed_public_plan_and_full_ten_pair_receipt(
         "archive": path,
         "artifact_id": 456,
         "source_commit": source,
-        "tag": TAG,
+        "tag": plan["targetTag"],
         "workflow_run": workflow_run,
         "workflow_attempt": attempt,
     }

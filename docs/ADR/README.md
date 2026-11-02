@@ -2,7 +2,7 @@
 
 These records describe accepted architecture and retain superseded decisions
 as historical context. Eleven decisions are active and accepted; ADR-006 is
-superseded by ADR-011.
+superseded by ADR-011 and ADR-005 by ADR-013.
 
 | ID | Status | Decision |
 | --- | --- | --- |
@@ -10,7 +10,7 @@ superseded by ADR-011.
 | [ADR-002](ADR-002-payload-protection.md) | Accepted | Payload protection: `none`, XOR, and AES |
 | [ADR-003](ADR-003-runtime-crypto-acme.md) | Accepted | Runtime cryptography and ACME dependencies |
 | [ADR-004](ADR-004-upload-containment.md) | Accepted | Upload containment |
-| [ADR-005](ADR-005-thread-pool.md) | Accepted | Thread pool concurrency |
+| [ADR-005](ADR-005-thread-pool.md) | Superseded by ADR-013 | Thread pool concurrency |
 | [ADR-006](ADR-006-release-artifacts.md) | Superseded by ADR-011 | Source-only distribution |
 | [ADR-007](ADR-007-trusted-proxy-identity.md) | Accepted | Trusted proxy identity |
 | [ADR-008](ADR-008-notepad-recovery.md) | Accepted | Notepad recovery |
@@ -18,6 +18,7 @@ superseded by ADR-011.
 | [ADR-010](ADR-010-methods-and-presets.md) | Accepted | Always-on methods and launch presets |
 | [ADR-011](ADR-011-controlled-distribution.md) | Accepted | Controlled distribution and staged activation |
 | [ADR-012](ADR-012-encrypted-streaming-transfers.md) | Accepted | Client-encrypted streaming transfers |
+| [ADR-013](ADR-013-unified-deployment-and-capacity.md) | Accepted | Unified lifecycle, configuration and bounded capacity |
 
 A new decision should state its context, choice, and consequences. Change the
 active set when implementation changes; use Git history for earlier text.

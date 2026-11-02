@@ -24,7 +24,7 @@ UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS = (
 )
 _MAX_RELEASE_ENTRIES = 128
 _MAX_MANIFEST_BYTES = MAX_MANIFEST_BYTES
-RETAINED_STATE_CONTENT = b"xferry-retained-v1\n"
+RETAINED_STATE_CONTENT = b"xferry-retained-v2\n"
 
 
 def retained_state_path(layout: ManagedLayout) -> Path:
@@ -40,6 +40,11 @@ def has_retained_state(layout: ManagedLayout) -> bool:
     descriptor: int | None = None
     try:
         path = retained_state_path(layout)
+        from .deployment import load_manifest
+
+        manifest = load_manifest(layout.config_file.parent / "deployment.json")
+        if manifest.backend != "native" or manifest.state_dir != layout.data_root:
+            return False
         descriptor, _, _, missing = _open_trusted_directory_or_missing(path.parent, capabilities)
         if missing is not None:
             return False
@@ -176,6 +181,20 @@ def has_unsupported_managed_state(
     """Return whether setup must preserve unsupported or ambiguous managed state."""
     try:
         _validate_layout_paths(layout)
+        from .deployment import load_manifest
+
+        manifest_path = layout.config_file.parent / "deployment.json"
+        if any(
+            path.exists() or path.is_symlink()
+            for path in (manifest_path, layout.config_file, layout.auth_file)
+        ):
+            spec = load_manifest(manifest_path)
+            if (
+                spec.backend != "native"
+                or spec.state_dir != layout.data_root
+                or spec.profile != layout.config_file.parent / "profile.ini"
+            ):
+                return True
         capabilities = _descriptor_capabilities()
         if capabilities is None:
             return True
@@ -446,6 +465,18 @@ def _owned_state_is_safe(
     expected_entries = (
         (layout.config_file, "file", None, allow_expected_entries or retained),
         (layout.auth_file, "file", None, allow_expected_entries or retained),
+        (
+            layout.config_file.parent / "profile.ini",
+            "file",
+            None,
+            allow_expected_entries or retained,
+        ),
+        (
+            layout.config_file.parent / "deployment.json",
+            "file",
+            None,
+            allow_expected_entries or retained,
+        ),
         (layout.data_root, "directory", None, allow_expected_entries or retained),
         (layout.unit_file, "file", None, allow_expected_entries),
         (layout.cli_link, "symlink", Path("/opt/xferry/current/xferry"), allow_expected_entries),

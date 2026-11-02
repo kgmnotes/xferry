@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from xferry.management import cli, configuration, instances, wizard
-from xferry.management.docker_deploy import DockerResult
 from xferry.management.i18n import LanguageSelection, Translator
 
 
@@ -57,23 +56,20 @@ def test_explain_works_without_configuration_or_discovery(
     assert row["ini"] == "[server] files_dir"
 
 
-def test_automatic_limits_show_effective_values() -> None:
+def test_resource_limits_show_configured_and_effective_defaults() -> None:
     rows = {row["name"]: row for row in configuration.describe_settings("", all_settings=True)}
     memory = rows["body_memory_budget_mb"]
     websocket = rows["max_websocket_connections"]
-    assert memory["configured"] is None and memory["source"] == "automatic"
-    assert memory["effective"] > 0
-    assert websocket["configured"] is None and websocket["effective"] >= 0
+    assert memory["configured"] == 128 and memory["source"] == "default"
+    assert memory["effective"] == 128
+    assert websocket["configured"] is None and websocket["effective"] == 8
 
 
 def test_readable_native_check_never_elevates_service_user(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "xferry.ini"
-    path.write_text("[server]\naccess = private\n")
-    monkeypatch.setattr(
-        instances, "select_instance", lambda *_a, **_kw: instances.Instance(path, "managed")
-    )
+    path.write_text("[server]\nconfig_version = 1\naccess = private\n")
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1001)
     monkeypatch.setattr(cli, "_privileged", lambda *_: pytest.fail("read-only check elevated"))
     assert cli.main(["config", "check", "--config", str(path)]) == 0
@@ -126,47 +122,6 @@ def test_sudo_handoff_uses_absolute_interpreter_and_separate_argv(
     assert kwargs == {"check": False}
 
 
-@pytest.mark.parametrize(
-    "action", ["status", "start", "stop", "restart", "logs", "update", "rollback", "uninstall"]
-)
-def test_lifecycle_dispatches_discovered_docker_without_linux_backend(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    path = tmp_path / "custom deployment/xferry.ini"
-    path.parent.mkdir()
-    path.write_text("[server]\naccess = lab\n")
-    (path.parent / ".xferry-deployment.json").write_text("{}")
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
-    calls = []
-    monkeypatch.setattr(
-        docker,
-        "docker_operation",
-        lambda config, command, **kwargs: (
-            calls.append((config, command, kwargs)) or DockerResult(0, "done")
-        ),
-    )
-    argv = [action, "--config", str(path)]
-    if action == "update":
-        argv.extend(("--to", "0.2.0"))
-    assert cli.main(argv) == 0
-    assert calls[0][0:2] == (path, action)
-
-
-def test_custom_docker_installation_is_remembered(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(instances, "user_data_dir", lambda: tmp_path / "user")
-    config = tmp_path / "nonstandard location/xferry.ini"
-    config.parent.mkdir()
-    config.write_text("[server]\naccess = lab\n")
-    (config.parent / ".xferry-deployment.json").write_text("{}")
-    instances.register_instance(config, "docker")
-    assert instances.resolve_instance() == instances.Instance(config, "docker")
-    assert (tmp_path / "user/instances.json").stat().st_mode & 0o777 == 0o600
-
-
 def test_advanced_settings_can_be_selected_by_number(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = configuration.describe_settings("", all_settings=True)
     group = str(next(row["group"] for row in rows if row["name"] == "workers"))
@@ -203,21 +158,27 @@ def test_portable_credentials_command_uses_selected_config(
 ) -> None:
     config = tmp_path / "xferry.ini"
     assert cli.main(["credentials", "reset", "--config", str(config), "--json"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert len(payload["password"]) == 12
-    assert payload["password"] not in config.read_text()
-    assert configuration.load_settings_text(config.read_text()).auth_file
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert "password" not in payload
+    settings = configuration.load_settings_text(config.read_text())
+    password = Path(settings.auth_file).read_text().strip().split(":", 1)[1]
+    assert len(password) == 12
+    assert password not in config.read_text()
+    assert password not in captured.out + captured.err
+    assert captured.err == ""
 
 
-def test_show_all_reports_private_state_without_offering_a_setting(
+def test_show_all_reports_canonical_private_state_without_an_alias(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
+    config.write_text("[server]\nconfig_version = 1\naccess = private\n")
     assert cli.main(["config", "show", "--all", "--config", str(config), "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
-    state = next(row for row in rows if row["name"] == "state_directory")
-    assert state["read_only"] and Path(state["value"]).is_absolute()
+    state = next(row for row in rows if row["name"] == "state_dir")
+    assert Path(state["value"]).is_absolute()
+    assert not any(row["name"] == "state_directory" for row in rows)
     with pytest.raises(configuration.SettingsError):
         configuration.parse_assignments(["state_directory=/tmp/state"])
 
@@ -262,52 +223,6 @@ def test_sudo_reenters_same_scie_launcher(tmp_path: Path, monkeypatch: pytest.Mo
     assert "-m" not in argv
 
 
-@pytest.mark.parametrize("blocked", [False, True])
-def test_complete_setup_plans_before_signed_bootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked: bool
-) -> None:
-    import xferry.management.bootstrap as bootstrap
-    import xferry.management.managed_state as managed_state
-    import xferry.management.platform as platform
-    from xferry.management.model import PreflightFailure, SetupPreflight
-    from xferry.management.setup import SetupResult
-
-    events = []
-    plan = SimpleNamespace(
-        layout=SimpleNamespace(current_executable=tmp_path / "runtime"),
-        files_dir=tmp_path / "files",
-    )
-    failures = (PreflightFailure("executable-missing", "not installed"),)
-    if blocked:
-        failures += (PreflightFailure("port-unavailable", "port occupied"),)
-    preflight = SetupPreflight(False, (8080,), (8080,) if blocked else (), False, failures)
-    monkeypatch.setattr(instances, "discover_instances", lambda: ())
-    monkeypatch.setattr(managed_state, "has_retained_state", lambda _: False)
-    monkeypatch.setattr(
-        platform, "detect_host_facts", lambda **_kw: SimpleNamespace(is_supported=True)
-    )
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        cli, "_prepare_setup_plan", lambda _: events.append("plan") or (plan, preflight)
-    )
-    monkeypatch.setattr(
-        cli, "_display_plan_before_mutation", lambda *_a, **_kw: events.append("summary")
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "install_release",
-        lambda *_a, **_kw: events.append("bootstrap") or SimpleNamespace(exit_code=0),
-    )
-    monkeypatch.setattr(
-        cli, "_apply_setup_plan", lambda *_a: events.append("apply") or SetupResult(0, "done")
-    )
-    result = cli.main(["setup", "--access", "private"])
-    if blocked:
-        assert result != 0 and events == ["plan"]
-    else:
-        assert result == 0 and events == ["plan", "summary", "bootstrap", "apply"]
-
-
 def test_incompatible_setup_options_never_elevate_or_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(instances, "discover_instances", lambda: pytest.fail("instance probe"))
     monkeypatch.setattr(cli, "_privileged", lambda *_: pytest.fail("elevation"))
@@ -318,7 +233,7 @@ def test_clearing_files_folder_restores_stable_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text(f"[server]\nfiles_dir = {tmp_path / 'old files'}\n")
+    config.write_text(f"[server]\nconfig_version = 1\nfiles_dir = {tmp_path / 'old files'}\n")
     launch = tmp_path / "launch"
     launch.mkdir()
     monkeypatch.chdir(launch)
@@ -335,7 +250,7 @@ def test_wizard_can_recover_from_invalid_scalar_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
+    config.write_text("[server]\nconfig_version = 1\naccess = private\n")
     answers = iter(("2", invalid, "2", "25", "9", "yes"))
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert wizard.configure(config, "portable", "en") == 0
@@ -346,7 +261,7 @@ def test_wizard_can_recover_from_runtime_validation_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
+    config.write_text("[server]\nconfig_version = 1\naccess = private\n")
     rows = configuration.describe_settings("", all_settings=True)
     groups = list(dict.fromkeys(row["group"] for row in rows))
     cors = [row for row in rows if row["group"] == "cors"]
@@ -375,15 +290,15 @@ def test_wizard_can_recover_from_runtime_validation_error(
     )
 
 
-def test_migration_cancellation_leaves_old_file_and_no_sidecar(
+def test_unsupported_profile_is_refused_without_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "xferry.ini"
-    before = f"[server]\npreset = local\nroot_dir = {tmp_path / 'old state'}\n"
+    before = f"[server]\nconfig_version = 1\npreset = local\nroot_dir = {tmp_path / 'old state'}\n"
     config.write_text(before)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "no")
-    assert cli.main(["config", "--config", str(config)]) == 0
+    assert cli.main(["config", "--config", str(config)]) == 2
     assert config.read_text() == before
     assert not config.with_name(f".{config.name}.state.json").exists()
 
@@ -429,183 +344,20 @@ def test_native_setup_keeps_explicit_files_folder(monkeypatch: pytest.MonkeyPatc
     prompts = []
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "3")
     assert wizard.prepare_setup(args, "en")
-    assert args.files_dir == "/srv/explicit-share" and args.private
+    assert args.files_dir == "/srv/explicit-share" and args.access == "private"
     assert all("Files folder" not in prompt for prompt in prompts)
-
-
-def test_docker_setup_preserves_all_explicit_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    calls = []
-    monkeypatch.setattr(
-        wizard, "docker_wizard", lambda *_a, **_kw: pytest.fail("explicit options lost in wizard")
-    )
-    monkeypatch.setattr(
-        docker,
-        "deploy_docker",
-        lambda output, **kwargs: calls.append((output, kwargs)) or DockerResult(0, "configured"),
-    )
-    path = tmp_path / "deployment/xferry.ini"
-    assert (
-        cli.main(
-            [
-                "setup",
-                "--docker",
-                "--config",
-                str(path),
-                "--public-ip",
-                "8.8.8.8",
-                "--email",
-                "ops@example.com",
-                "--to",
-                "0.2.0",
-            ]
-        )
-        == 0
-    )
-    _, kwargs = calls[0]
-    assert kwargs["public_ip"] == "8.8.8.8"
-    assert kwargs["settings_changes"] == {"email": "ops@example.com"}
-    assert kwargs["image"] == "ghcr.io/kgmnotes/xferry:v0.2.0"
 
 
 def test_wizard_preview_uses_effective_environment_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\nport = 8080\n")
+    config.write_text("[server]\nconfig_version = 1\nport = 8080\n")
     monkeypatch.setenv("XFERRY_PORT", "9090")
     monkeypatch.setattr("builtins.input", lambda _: "0")
     assert wizard.configure(config, "portable", "en") == 0
     assert "URL: http://127.0.0.1:9090" in capsys.readouterr().out
     assert configuration.load_settings_text(config.read_text()).port == 8080
-
-
-@pytest.mark.parametrize("mode", ["automatic", "domain", "private"])
-def test_first_docker_setup_walks_through_folder_access_and_credentials(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    mode: str,
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    config = tmp_path / "deployment/xferry.ini"
-    shared = tmp_path / "files with spaces"
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(docker, "default_files_directory", lambda: shared)
-    answers = ["", {"automatic": "1", "domain": "2", "private": "3"}[mode]]
-    if mode == "domain":
-        answers.append("files.example.com")
-    answers.append("yes")
-    iterator = iter(answers)
-    monkeypatch.setattr("builtins.input", lambda _: next(iterator))
-    calls = []
-    url = "http://127.0.0.1:8080" if mode == "private" else "https://files.example.com"
-
-    def activate(output, **kwargs):
-        calls.append((output, kwargs))
-        return DockerResult(
-            0,
-            "Server ready",
-            url=url,
-            files_dir=str(shared),
-            username="admin",
-            password="abcdefgh2345",
-        )
-
-    monkeypatch.setattr(docker, "deploy_docker", activate)
-    assert cli.main(["setup", "--docker", "--config", str(config)]) == 0
-    assert calls == [
-        (
-            config.parent,
-            {
-                "files_dir": shared,
-                "domain": "files.example.com" if mode == "domain" else None,
-                "private": mode == "private",
-                "dry_run": False,
-            },
-        )
-    ]
-    output = capsys.readouterr().out
-    assert f"URL: {url}" in output and str(shared) in output
-    assert output.count("Credentials: admin:abcdefgh2345") == 1
-    assert not config.exists()
-
-
-@pytest.mark.parametrize(
-    "answers,expected", [(["", "3", "no"], 0), (["", "9"], 2), (["", "2", ""], 2)]
-)
-def test_first_docker_setup_can_be_cancelled_or_corrected_without_activation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str], expected: int
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    config = tmp_path / "deployment/xferry.ini"
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(docker, "deploy_docker", lambda *_a, **_kw: pytest.fail("activation"))
-    iterator = iter(answers)
-    monkeypatch.setattr("builtins.input", lambda _: next(iterator))
-    assert cli.main(["setup", "--docker", "--config", str(config)]) == expected
-    assert not config.parent.exists()
-
-
-@pytest.mark.parametrize("installed_runtime", [False, True])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_retained_setup_resumes_saved_files_and_credentials_without_questions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    installed_runtime: bool,
-    dry_run: bool,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    import xferry.management.bootstrap as bootstrap
-    import xferry.management.managed_state as managed_state
-    import xferry.management.model as model
-    import xferry.management.setup as setup
-
-    runtime = tmp_path / "runtime"
-    if installed_runtime:
-        runtime.write_text("signed runtime placeholder")
-    config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
-    auth = tmp_path / "xferry.auth"
-    auth.write_text("admin:original-password\n")
-    layout = SimpleNamespace(current_executable=runtime, config_file=config, auth_file=auth)
-    before = (config.read_bytes(), auth.read_bytes())
-    events = []
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(instances, "discover_instances", lambda: ())
-    monkeypatch.setattr(model, "ManagedLayout", lambda: layout)
-    monkeypatch.setattr(managed_state, "has_retained_state", lambda selected: selected is layout)
-    monkeypatch.setattr("builtins.input", lambda _: pytest.fail("retained setup asked questions"))
-
-    def install(version):
-        events.append(("install", version))
-        return SimpleNamespace(exit_code=0)
-
-    def resume(selected):
-        assert selected is layout
-        events.append(("resume", selected.config_file))
-        return setup.SetupResult(0, "Saved credentials preserved", detail="http://127.0.0.1:8080")
-
-    monkeypatch.setattr(bootstrap, "install_release", install)
-    monkeypatch.setattr(setup, "SetupExecutor", lambda: SimpleNamespace(resume=resume))
-    arguments = ["setup", "--config", "/etc/xferry/xferry.ini", "--json"]
-    if dry_run:
-        arguments.append("--dry-run")
-    assert cli.main(arguments) == 0
-    if dry_run:
-        assert events == []
-    else:
-        assert [event[0] for event in events] == (
-            ["resume"] if installed_runtime else ["install", "resume"]
-        )
-    assert (config.read_bytes(), auth.read_bytes()) == before
-    output = json.loads(capsys.readouterr().out)
-    assert "original-password" not in json.dumps(output)
 
 
 def test_portable_wizard_creates_public_profile_and_password_in_one_journey(
@@ -633,7 +385,7 @@ def test_wizard_cancelled_password_rotation_preserves_existing_secret(
 ) -> None:
     config = tmp_path / "xferry.ini"
     auth = tmp_path / "xferry.auth"
-    config.write_text(f"[security]\nauth_file = {auth}\n")
+    config.write_text(f"[server]\nconfig_version = 1\n[security]\nauth_file = {auth}\n")
     auth.write_text("operator:unchanged-password\n")
     before = (config.read_bytes(), auth.read_bytes())
     answers = iter(("8", "no", "0"))
@@ -646,7 +398,7 @@ def test_wizard_refuses_saving_invalid_draft_and_keeps_it_correctable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
+    config.write_text("[server]\nconfig_version = 1\naccess = private\n")
     answers = iter(("2", "many", "9", "2", "32", "9", "yes"))
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert wizard.configure(config, "portable", "en") == 0
@@ -654,54 +406,11 @@ def test_wizard_refuses_saving_invalid_draft_and_keeps_it_correctable(
     assert "Correct the draft before saving" in capsys.readouterr().out
 
 
-def test_multiple_saved_servers_require_explicit_script_choice_but_offer_terminal_numbers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    first = instances.Instance(tmp_path / "first/xferry.ini", "docker")
-    second = instances.Instance(tmp_path / "second/xferry.ini", "docker")
-    monkeypatch.setattr(instances, "discover_instances", lambda: (first, second))
-    calls = []
-    monkeypatch.setattr(
-        docker,
-        "docker_operation",
-        lambda path, action, **kwargs: calls.append((path, action)) or DockerResult(0, "running"),
-    )
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
-    assert cli.main(["status"]) == 2
-    assert "--config FILE" in capsys.readouterr().err
-    assert calls == []
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _: "2")
-    assert cli.main(["status"]) == 0
-    assert calls == [(second.config, "status")]
-    output = capsys.readouterr().out
-    assert str(first.config) in output and str(second.config) in output
-
-
-@pytest.mark.parametrize("answer", ["0", "3", "invalid"])
-def test_invalid_instance_choice_cannot_act_on_another_server(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str
-) -> None:
-    import xferry.management.docker_deploy as docker
-
-    found = (
-        instances.Instance(tmp_path / "first.ini", "docker"),
-        instances.Instance(tmp_path / "second.ini", "docker"),
-    )
-    monkeypatch.setattr(instances, "discover_instances", lambda: found)
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _: answer)
-    monkeypatch.setattr(docker, "docker_operation", lambda *_a, **_kw: pytest.fail("wrong server"))
-    assert cli.main(["restart"]) == 2
-
-
 def test_thematic_settings_redirect_password_changes_to_password_action(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    before = "[server]\naccess = private\n"
+    before = "[server]\nconfig_version = 1\naccess = private\n"
     config.write_text(before)
     rows = configuration.describe_settings(before, all_settings=True)
     groups = list(dict.fromkeys(row["group"] for row in rows))
@@ -719,7 +428,7 @@ def test_invalid_thematic_group_keeps_editor_open_and_source_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    before = "[server]\naccess = private\n"
+    before = "[server]\nconfig_version = 1\naccess = private\n"
     config.write_text(before)
     answers = iter(("7", "not-a-number", "0"))
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
@@ -744,7 +453,7 @@ def test_settings_filters_find_certificate_options_without_printing_all_limits(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "xferry.ini"
-    config.write_text("[server]\naccess = private\n")
+    config.write_text("[server]\nconfig_version = 1\naccess = private\n")
     assert (
         cli.main(
             [

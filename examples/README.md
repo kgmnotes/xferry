@@ -1,7 +1,7 @@
 # Examples
 
 These are contributor examples exercised from a reviewed source checkout. User
-installation starts with the root [README](../README.md#choose-an-installation);
+installation starts with the root [README](../README.md#choose-a-way-to-run);
 the local build examples here do not replace portable, managed, or immutable
 container release journeys.
 

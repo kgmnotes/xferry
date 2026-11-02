@@ -94,7 +94,7 @@ def test_installed_artifact_checks_an_explicit_valid_config_without_saved_profil
         config = Path(arguments[3])
         assert config.parent == tmp_path
         assert config.read_text(encoding="utf-8") == (
-            f"[server]\naccess = private\nfiles_dir = {tmp_path / 'files'}\n"
+            f"[server]\nconfig_version=1\naccess = private\nfiles_dir = {tmp_path / 'files'}\n"
         )
         with monkeypatch.context() as isolated:
             for key in tuple(os.environ):

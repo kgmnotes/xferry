@@ -19,9 +19,10 @@ experiments in one local web UI and HTTP API.
 - [Integrate with the HTTP and WebSocket API](api.md)
 - [Look up generated CLI help](cli-reference.md)
 
-Portable installs are owned by pipx, managed Linux installs by the signed SCIE
-lifecycle, and containers by immutable GHCR version tags or digests. Contributor
-source builds remain documented separately and are not the first user path.
+The CLI is installed and removed with pipx. A persistent deployment uses the
+same setup and lifecycle commands for a signed Linux service or a container
+pinned by image digest. Manifests identify deployments; foreground profiles use
+`run --config FILE`. Contributor source builds are documented separately.
 
 Start with the [developer guide](developer-guide.md) for source navigation and
 focused tests. Developer reference material includes the [architecture](architecture.md),

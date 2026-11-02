@@ -87,6 +87,41 @@ profiles write their own explicit paths, HTTPS and resource defaults. MiB is
 <!-- BEGIN GENERATED: xferry-contracts/settings-reference -->
 ### server
 
+#### `config_version`
+
+Explicit configuration format version
+
+Default: `1`. Exactly 1
+
+Older formats are refused without changes
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+```
+
+Environment: `XFERRY_CONFIG_VERSION`.
+
+#### `state_dir`
+
+Private state root containing notes, transfer state and ACME
+
+Default: `"not set"`. Separate from files_dir
+
+Empty uses a stable profile-specific directory. Docker uses its owned private volume.
+
+Applies to: foreground/native; Docker state volume is reported by status and doctor. Change: restart.
+
+```ini
+[server]
+config_version = 1
+state_dir = /var/lib/xferry
+```
+
+Environment: `XFERRY_STATE_DIR`; launch: `--state-dir`.
+
 #### `access`
 
 Who can reach the server. Public mode always enforces verified HTTPS, file-backed access and finite limits.
@@ -99,6 +134,7 @@ Applies to: all. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 access = public
 ```
 
@@ -114,6 +150,7 @@ Applies to: all. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 log_level = info
 ```
 
@@ -129,6 +166,7 @@ Applies to: all. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 log_format = text
 ```
 
@@ -146,6 +184,7 @@ Applies to: all. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 host = 127.0.0.1
 ```
 
@@ -157,12 +196,13 @@ Listen port
 
 Default: `8080`. Minimum 1; maximum 65535
 
-Default: 8080 for private/lab, 8443 for public. Open this port in the host firewall when sharing.
+Default: 8080 for private/lab, 443 for public. Open this port in the host firewall when sharing.
 
 Applies to: all. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 port = 8080
 ```
 
@@ -180,6 +220,7 @@ Applies to: all; installation-owned mappings use the files-folder action. Change
 
 ```ini
 [server]
+config_version = 1
 files_dir = /srv/share
 ```
 
@@ -191,12 +232,13 @@ Enable resumable browser-encrypted large-file transfers
 
 Default: `false`. true or false
 
-Encrypted transfers require at least two workers and a body budget for two encrypted chunks.
+Encrypted transfers require a body budget for two encrypted chunks.
 
 Applies to: advanced. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 encrypted_uploads = true
 ```
 
@@ -204,177 +246,194 @@ Environment: `XFERRY_ENCRYPTED_UPLOADS`; launch: `--encrypted-uploads`.
 
 #### `workers`
 
-Number of worker threads
+Maximum concurrently executing short application operations
 
-Default: `10`. Minimum 1
+Default: `4`. Minimum 1
 
-Encrypted uploads require at least 2. Automatic memory and WebSocket limits depend on this value.
+Independent of TCP connections, TLS, authentication, transfers and idle WebSocket sessions. The permit is released before writing a response.
 
 Applies to: advanced. Change: restart.
 
 ```ini
 [server]
+config_version = 1
 workers = 4
 ```
 
 Environment: `XFERRY_WORKERS`; launch: `-w`, `--workers`.
 
-### tls
-
-#### `https_mode`
-
-How the server obtains HTTPS certificates. Automatic uses a public IPv4 hostname; domain uses your DNS name.
-
-Default: `"off for private/lab; auto for public"`. off, auto, domain, files, self-signed
-
-domain requires domain; files requires cert_file and key_file; self-signed is private/lab only.
-
-Applies to: all; file certificates in Docker require explicit mounts. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-https_mode = auto
-```
-
-Environment: `XFERRY_HTTPS_MODE`; launch: `--https`.
-
-#### `cert_file`
-
-Path to certificate file (PEM)
-
-Default: `"not set"`. A readable PEM certificate or certificate-chain file
-
-Requires https_mode = files and key_file. Public wildcard binds also require allowed_hosts.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-cert_file = /etc/xferry/server.pem
-```
-
-Environment: `XFERRY_CERT_FILE`; launch: `--cert`.
-
-#### `key_file`
-
-Path to private key file (PEM)
-
-Default: `"not set"`. A readable PEM private-key file matching cert_file
-
-Requires https_mode = files and cert_file. Protect this file from other users.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-key_file = /etc/xferry/server.key
-```
-
-Environment: `XFERRY_KEY_FILE`; launch: `--key`.
-
-#### `domain`
-
-DNS hostname used for an automatically issued domain certificate.
-
-Default: `"not set"`. A DNS hostname without URL or port
-
-Requires https_mode = domain, DNS pointing to this host, and public HTTP port 80 reaching the challenge listener.
-
-Applies to: all. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-domain = files.example.com
-```
-
-Environment: `XFERRY_DOMAIN`; launch: `--domain`.
-
-#### `email`
-
-Email for Let's Encrypt notifications (optional)
-
-Default: `"not set"`. An email address, or empty to omit contact details
-
-Used only with https_mode = auto or domain for certificate-account contact details.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-email = admin@example.com
-```
-
-Environment: `XFERRY_EMAIL`; launch: `--email`.
-
-#### `public_ip`
-
-Public IPv4 address used to form an automatic sslip.io certificate hostname.
-
-Default: `"not set"`. A public IPv4 address; empty means automatic detection
-
-Requires https_mode = auto. Use when automatic public-IP detection selects the wrong address.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-public_ip = 203.0.113.10
-```
-
-Environment: `XFERRY_PUBLIC_IP`; launch: `--public-ip`.
-
-#### `acme_server`
-
-ACME directory URL or staging for test certificates.
-
-Default: `"not set"`. HTTPS directory URL or staging
-
-Requires https_mode = auto or domain. Empty selects the production service; staging issues certificates browsers will not trust.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-acme_server = staging
-```
-
-Environment: `XFERRY_ACME_SERVER`; launch: `--acme-server`.
-
-#### `acme_http_address`
-
-Bind address for HTTP-01 challenge server
-
-Default: `""`. An IP address; empty listens on all interfaces
-
-Requires https_mode = auto or domain. Public HTTP port 80 must reach this HTTP-01 listener.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-acme_http_address = 0.0.0.0
-```
-
-Environment: `XFERRY_ACME_HTTP_ADDRESS`; launch: `--acme-http-address`.
-
-#### `acme_http_port`
-
-Bind port for HTTP-01 challenge server
-
-Default: `80`. Minimum 1; maximum 65535
-
-Requires https_mode = auto or domain. Default 80; use another internal port only when public port 80 is forwarded to it.
-
-Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
-
-```ini
-[tls]
-acme_http_port = 80
-```
-
-Environment: `XFERRY_ACME_HTTP_PORT`; launch: `--acme-http-port`.
-
 ### limits
+
+#### `max_connections`
+
+Maximum admitted TCP connections, including TLS and WebSocket sessions
+
+Default: `32`. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+max_connections = 32
+```
+
+Environment: `XFERRY_MAX_CONNECTIONS`; launch: `--max-connections`.
+
+#### `max_tls_handshakes`
+
+Maximum simultaneous TLS handshakes
+
+Default: `2`. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+max_tls_handshakes = 2
+```
+
+Environment: `XFERRY_MAX_TLS_HANDSHAKES`; launch: `--max-tls-handshakes`.
+
+#### `max_transfers`
+
+Maximum simultaneous bulk transfers
+
+Default: `4`. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+max_transfers = 4
+```
+
+Environment: `XFERRY_MAX_TRANSFERS`; launch: `--max-transfers`.
+
+#### `auth_max_active`
+
+Maximum simultaneous password verifications
+
+Default: `2`. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+auth_max_active = 2
+```
+
+Environment: `XFERRY_AUTH_MAX_ACTIVE`; launch: `--auth-max-active`.
+
+#### `auth_max_pending`
+
+Maximum admitted authentication work, including active checks
+
+Default: `16`. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+auth_max_pending = 16
+```
+
+Environment: `XFERRY_AUTH_MAX_PENDING`; launch: `--auth-max-pending`.
+
+#### `auth_wait_timeout`
+
+Total authentication queue deadline in seconds
+
+Default: `5.0`; unit: seconds. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+auth_wait_timeout = 5
+```
+
+Environment: `XFERRY_AUTH_WAIT_TIMEOUT`; launch: `--auth-wait-timeout`.
+
+#### `tls_handshake_timeout`
+
+TLS queue and handshake deadline in seconds
+
+Default: `5.0`; unit: seconds. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+tls_handshake_timeout = 5
+```
+
+Environment: `XFERRY_TLS_HANDSHAKE_TIMEOUT`; launch: `--tls-handshake-timeout`.
+
+#### `admission_wait_timeout`
+
+Request or transfer admission deadline in seconds
+
+Default: `2.0`; unit: seconds. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+admission_wait_timeout = 2
+```
+
+Environment: `XFERRY_ADMISSION_WAIT_TIMEOUT`; launch: `--admission-wait-timeout`.
+
+#### `keep_alive_timeout`
+
+Idle HTTP keep-alive timeout in seconds
+
+Default: `5.0`; unit: seconds. Positive finite value
+
+Independent of workers and body memory
+
+Applies to: all. Change: restart.
+
+```ini
+[server]
+config_version = 1
+[limits]
+keep_alive_timeout = 5
+```
+
+Environment: `XFERRY_KEEP_ALIVE_TIMEOUT`; launch: `--keep-alive-timeout`.
 
 #### `max_size_mb`
 
@@ -385,6 +444,8 @@ Default: `100`; unit: MiB. Integer at least 1 MiB
 Applies to: all. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 max_size_mb = 100
 ```
@@ -402,6 +463,8 @@ Used only when encrypted_uploads is true; max_size_mb still limits each encrypte
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 encrypted_upload_max_size_mb = 0
 ```
@@ -419,6 +482,8 @@ Used only when encrypted_uploads is true; inactive partial uploads are cleaned u
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 encrypted_upload_incomplete_ttl_seconds = 604800
 ```
@@ -436,6 +501,8 @@ Public defaults to 4096 MiB. At least one disk control must remain enabled unles
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 upload_storage_limit_mb = 4096
 ```
@@ -453,6 +520,8 @@ Public defaults to 4096 files. Existing files in files_dir count toward the limi
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 upload_file_limit = 4096
 ```
@@ -470,6 +539,8 @@ Public defaults to 1024 MiB. Applies to the filesystem containing files_dir.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 upload_reserve_free_mb = 1024
 ```
@@ -487,6 +558,8 @@ Public access permits all three upload disk controls to be zero only when this i
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 upload_quota_externally_managed = false
 ```
@@ -504,6 +577,8 @@ Notes are stored in private state, outside files_dir.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 note_storage_limit_mb = 256
 ```
@@ -521,6 +596,8 @@ Limits encrypted notes in private state, independently of upload_file_limit.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 note_count_limit = 1000
 ```
@@ -538,6 +615,8 @@ Applies only to retained SMUGGLE pages in the files folder; 0 disables age-based
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 smuggle_temp_age = 3600
 ```
@@ -555,6 +634,8 @@ Applies only to retained SMUGGLE pages; 0 disables the count limit.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 smuggle_temp_file_limit = 32
 ```
@@ -572,6 +653,8 @@ Applies only to retained SMUGGLE pages; 0 disables the storage limit.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 smuggle_temp_storage_limit_mb = 128
 ```
@@ -589,6 +672,8 @@ Rejects oversized HTTP headers before request bodies are read.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 max_header_size_kb = 64
 ```
@@ -599,13 +684,15 @@ Environment: `XFERRY_MAX_HEADER_SIZE_KB`; launch: `--max-header-size`.
 
 Admission budget for aggregate in-flight request bodies in MiB, not an RSS ceiling
 
-Default: `"automatic from request size and worker count"`; unit: MiB. Empty means automatic; otherwise an integer at least 1 MiB
+Default: `"automatic from available RAM/cgroup memory: 32–128 MiB"`; unit: MiB. Empty means automatic; otherwise an integer at least 1 MiB
 
-Automatic is max_size_mb × workers, raised for encrypted chunks when needed. Public defaults to 512 MiB.
+Automatic is one eighth of effective host/container RAM, bounded to 32–128 MiB. Independent of TCP and processing limits.
 
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 body_memory_budget_mb = 256
 ```
@@ -623,6 +710,8 @@ Public access requires a positive value.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 body_idle_timeout = 5
 ```
@@ -640,6 +729,8 @@ Public access requires a positive value.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 body_timeout = 300
 ```
@@ -657,6 +748,8 @@ Measured across body reads; 0 disables the minimum rate without disabling timeou
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 body_min_rate = 1024
 ```
@@ -674,6 +767,8 @@ Must stay positive in every access mode.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 stream_send_idle_timeout = 5
 ```
@@ -691,6 +786,8 @@ Public access requires a positive value.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 stream_send_timeout = 300
 ```
@@ -699,15 +796,17 @@ Environment: `XFERRY_STREAM_SEND_TIMEOUT`; launch: `--stream-send-timeout`.
 
 #### `max_websocket_connections`
 
-Max active WebSocket connections; each occupies a worker and 0 rejects all
+Maximum WebSocket sessions; idle sessions reserve no processing worker
 
-Default: `"automatic: half of the worker count"`. Empty means automatic; otherwise an integer at least 0
+Default: `"default: 8 connections, independent of worker count"`. Empty means automatic; otherwise an integer at least 0
 
-Automatic reserves half the workers for WebSockets (workers // 2). Each active connection occupies one worker; 0 rejects all.
+Default is 8, independently of workers. Sessions also count toward max_connections; 0 rejects all WebSocket upgrades.
 
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 max_websocket_connections = 5
 ```
@@ -725,11 +824,186 @@ Applies while reading an incomplete WebSocket frame; it does not close an otherw
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [limits]
 websocket_frame_idle_timeout = 5
 ```
 
 Environment: `XFERRY_WEBSOCKET_FRAME_IDLE_TIMEOUT`; launch: `--websocket-frame-idle-timeout`.
+
+### tls
+
+#### `https_mode`
+
+How the server obtains HTTPS certificates. Automatic uses a public IPv4 hostname; domain uses your DNS name.
+
+Default: `"off for private/lab; auto for public"`. off, auto, domain, files, self-signed
+
+domain requires domain; files requires cert_file and key_file; self-signed is private/lab only.
+
+Applies to: all; file certificates in Docker require explicit mounts. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+https_mode = auto
+```
+
+Environment: `XFERRY_HTTPS_MODE`; launch: `--https`.
+
+#### `cert_file`
+
+Path to certificate file (PEM)
+
+Default: `"not set"`. A readable PEM certificate or certificate-chain file
+
+Requires https_mode = files and key_file. Public wildcard binds also require allowed_hosts.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+cert_file = /etc/xferry/server.pem
+```
+
+Environment: `XFERRY_CERT_FILE`; launch: `--cert`.
+
+#### `key_file`
+
+Path to private key file (PEM)
+
+Default: `"not set"`. A readable PEM private-key file matching cert_file
+
+Requires https_mode = files and cert_file. Protect this file from other users.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+key_file = /etc/xferry/server.key
+```
+
+Environment: `XFERRY_KEY_FILE`; launch: `--key`.
+
+#### `domain`
+
+DNS hostname used for an automatically issued domain certificate.
+
+Default: `"not set"`. A DNS hostname without URL or port
+
+Requires https_mode = domain, DNS pointing to this host, and public HTTP port 80 reaching the challenge listener.
+
+Applies to: all. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+domain = files.example.com
+```
+
+Environment: `XFERRY_DOMAIN`; launch: `--domain`.
+
+#### `email`
+
+Email for Let's Encrypt notifications (optional)
+
+Default: `"not set"`. An email address, or empty to omit contact details
+
+Used only with https_mode = auto or domain for certificate-account contact details.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+email = admin@example.com
+```
+
+Environment: `XFERRY_EMAIL`; launch: `--email`.
+
+#### `public_ip`
+
+Public IPv4 address used to form an automatic sslip.io certificate hostname.
+
+Default: `"not set"`. A public IPv4 address; empty means automatic detection
+
+Requires https_mode = auto. Use when automatic public-IP detection selects the wrong address.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+public_ip = 203.0.113.10
+```
+
+Environment: `XFERRY_PUBLIC_IP`; launch: `--public-ip`.
+
+#### `acme_server`
+
+ACME directory URL or staging for test certificates.
+
+Default: `"not set"`. HTTPS directory URL or staging
+
+Requires https_mode = auto or domain. Empty selects the production service; staging issues certificates browsers will not trust.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+acme_server = staging
+```
+
+Environment: `XFERRY_ACME_SERVER`; launch: `--acme-server`.
+
+#### `acme_http_address`
+
+Bind address for HTTP-01 challenge server
+
+Default: `""`. An IP address; empty listens on all interfaces
+
+Requires https_mode = auto or domain. Public HTTP port 80 must reach this HTTP-01 listener.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+acme_http_address = 0.0.0.0
+```
+
+Environment: `XFERRY_ACME_HTTP_ADDRESS`; launch: `--acme-http-address`.
+
+#### `acme_http_port`
+
+Bind port for HTTP-01 challenge server
+
+Default: `80`. Minimum 1; maximum 65535
+
+Requires https_mode = auto or domain. Default 80; use another internal port only when public port 80 is forwarded to it.
+
+Applies to: advanced. Change: HTTPS workflow; validates certificates and verifies the restarted server.
+
+```ini
+[server]
+config_version = 1
+[tls]
+acme_http_port = 80
+```
+
+Environment: `XFERRY_ACME_HTTP_PORT`; launch: `--acme-http-port`.
 
 ### security
 
@@ -744,6 +1018,8 @@ Required for public access; optional for private/lab. Use xferry credentials to 
 Applies to: all; installation-owned paths are managed automatically. Change: credentials workflow; use Password or credentials reset.
 
 ```ini
+[server]
+config_version = 1
 [security]
 auth_file = /etc/xferry/auth
 ```
@@ -761,6 +1037,8 @@ Empty derives allowed hosts from the listener/certificate. Public wildcard binds
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [security]
 allowed_hosts = files.example.com localhost
 ```
@@ -780,6 +1058,8 @@ Public access rejects *. Set an exact origin only when using a separate browser 
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [cors]
 cors_origin = https://portal.example.com
 ```
@@ -799,6 +1079,8 @@ Installed plugins only; public access also requires plugins_allow_public_direct 
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [plugins]
 plugin_allowlist = example.module:plugin
 ```
@@ -816,6 +1098,8 @@ Only matters with access = public and a nonempty plugin_allowlist.
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [plugins]
 plugins_allow_public_direct = false
 ```
@@ -833,6 +1117,8 @@ Only matters with plugin_allowlist; allows a plugin to replace a built-in HTTP m
 Applies to: advanced. Change: restart.
 
 ```ini
+[server]
+config_version = 1
 [plugins]
 plugins_override_core = false
 ```

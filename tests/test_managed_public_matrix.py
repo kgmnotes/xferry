@@ -41,8 +41,8 @@ def signed(
     metadata: dict[str, Any] = {}
     releases = {}
     for role, version, source, run, release_id in (
-        ("previous", "0.1.0", "a" * 40, "111", 11),
-        ("target", "0.2.0", "b" * 40, "222", 22),
+        ("previous", "0.5.0", "a" * 40, "111", 11),
+        ("target", "0.6.0", "b" * 40, "222", 22),
     ):
         tag = "v" + version
         release: dict[str, Any] = {
@@ -111,8 +111,8 @@ def signed(
         "sourceCommit": "b" * 40,
         "workflowRun": "222",
         "workflowAttempt": 2,
-        "targetTag": "v0.2.0",
-        "previousTag": "v0.1.0",
+        "targetTag": "v0.6.0",
+        "previousTag": "v0.5.0",
         "helpers": public._helpers(),
         "releases": releases,
     }
@@ -148,18 +148,16 @@ def _lifecycle(plan: dict[str, Any], platform: str, distro: str, version: str) -
         if phase == "doctor":
             stage["checks"] = dict.fromkeys(
                 (
-                    "platform",
-                    "installation",
+                    "manifest",
                     "configuration",
+                    "runtime",
                     "files",
-                    "service",
-                    "network",
                     "health",
                 ),
                 True,
             )
         if phase in {"dry_run", "update", "rollback", "uninstall"}:
-            stage["preserved"] = dict.fromkeys(("config", "auth", "sentinel"), True)
+            stage["preserved"] = dict.fromkeys(("config", "auth", "profile", "sentinel"), True)
             if phase in {"dry_run", "rollback"}:
                 stage["preserved"]["unit"] = True
         if phase == "uninstall":
@@ -254,23 +252,16 @@ def test_offline_full_public_contract_accepts_all_ten_bound_pairs(signed: Any) -
     assert sum(len(arch["receipts"]) for arch in result["architectures"]) == 10
 
 
-@pytest.mark.parametrize("contract", ["legacy", "canonical"])
 @pytest.mark.parametrize(
     "mutation", [None, "missing", "false", "numeric", "missing-health", "extra"]
 )
 def test_doctor_receipts_require_exact_successful_checks_for_declared_cli(
-    signed: Any, contract: str, mutation: str | None
+    signed: Any, mutation: str | None
 ) -> None:
     plan, _, _ = signed
     result = _result(plan)
-    if contract == "legacy":
-        for architecture in result["architectures"]:
-            for pair in architecture["receipts"]:
-                lifecycle = pair["lifecycle"]
-                lifecycle["cliContracts"] = {"previous": "legacy", "target": "legacy"}
-                lifecycle["stages"][3]["checks"].pop("files")
     checks = result["architectures"][0]["receipts"][0]["lifecycle"]["stages"][3]["checks"]
-    required = "files" if contract == "canonical" else "configuration"
+    required = "files"
     if mutation == "missing":
         checks.pop(required)
     elif mutation == "false":
@@ -280,7 +271,7 @@ def test_doctor_receipts_require_exact_successful_checks_for_declared_cli(
     elif mutation == "missing-health":
         checks.pop("health")
     elif mutation == "extra":
-        checks["files" if contract == "legacy" else "unexpected"] = True
+        checks["unexpected"] = True
     if mutation is None:
         assert _validate(result, plan) == result
     else:
@@ -349,9 +340,9 @@ def test_result_rejects_incomplete_or_weakened_actual_lifecycle(signed: Any, mut
     elif mutation == "lost_config":
         life["stages"][5]["preserved"]["config"] = False
     elif mutation == "wrong_version":
-        life["stages"][5]["version"] = "0.1.0"
+        life["stages"][5]["version"] = "0.5.0"
     elif mutation == "wrong_digest":
-        life["stages"][5]["installed"]["0.2.0"]["executableSha256"] = "0" * 64
+        life["stages"][5]["installed"]["0.6.0"]["executableSha256"] = "0" * 64
     elif mutation == "missing_phase":
         life["stages"].pop()
     else:
@@ -360,7 +351,7 @@ def test_result_rejects_incomplete_or_weakened_actual_lifecycle(signed: Any, mut
         _validate(result, plan)
 
 
-@pytest.mark.parametrize("tag", ["v0.2.0", "v0.3.0", "v0.1.0-rc1", "latest", "v00.1.0"])
+@pytest.mark.parametrize("tag", ["v0.6.0", "v0.7.0", "v0.5.0-rc1", "latest", "v00.5.0"])
 def test_plan_requires_distinct_lower_stable_predecessor(signed: Any, tag: str) -> None:
     plan, _, _ = signed
     plan["previousTag"] = tag
@@ -453,27 +444,27 @@ def test_prepare_selects_highest_lower_signed_public_release_without_latest(sign
 
     def fetch(url: str, limit: int) -> bytes:
         requests.append(url)
-        if url == public.API + "/releases/tags/v0.2.0":
-            return json.dumps(metadata["v0.2.0"]).encode()
+        if url == public.API + "/releases/tags/v0.6.0":
+            return json.dumps(metadata["v0.6.0"]).encode()
         if url == public.API + "/releases?per_page=100&page=1":
             return json.dumps(
                 [
-                    metadata["v0.2.0"],
-                    {"tag_name": "v0.1.9", "draft": False, "prerelease": False, "assets": []},
-                    metadata["v0.1.0"],
+                    metadata["v0.6.0"],
+                    {"tag_name": "v0.5.9", "draft": False, "prerelease": False, "assets": []},
+                    metadata["v0.5.0"],
                 ]
             ).encode()
         assert len(bodies[url]) <= limit
         return bodies[url]
 
     result = public.prepare_public_plan(
-        target_tag="v0.2.0",
+        target_tag="v0.6.0",
         source_commit=plan["sourceCommit"],
         workflow_run=plan["workflowRun"],
         workflow_attempt=2,
         fetch=fetch,
     )
-    assert result["previousTag"] == "v0.1.0"
+    assert result["previousTag"] == "v0.5.0"
     assert not any("latest" in url for url in requests)
 
 
@@ -481,15 +472,15 @@ def test_prepare_missing_baseline_never_produces_a_bootstrap_success(signed: Any
     plan, bodies, metadata = signed
 
     def fetch(url: str, _limit: int) -> bytes:
-        if url.endswith("/releases/tags/v0.2.0"):
-            return json.dumps(metadata["v0.2.0"]).encode()
+        if url.endswith("/releases/tags/v0.6.0"):
+            return json.dumps(metadata["v0.6.0"]).encode()
         if "?per_page=" in url:
             return b"[]"
         return bodies[url]
 
     with pytest.raises(public.PublicFailure, match="public_baseline_required"):
         public.prepare_public_plan(
-            target_tag="v0.2.0",
+            target_tag="v0.6.0",
             source_commit=plan["sourceCommit"],
             workflow_run=plan["workflowRun"],
             workflow_attempt=2,
@@ -497,9 +488,46 @@ def test_prepare_missing_baseline_never_produces_a_bootstrap_success(signed: Any
         )
 
 
+def test_prepare_ignores_legacy_releases_below_deployment_floor(signed: Any) -> None:
+    plan, bodies, metadata = signed
+    legacy = {
+        "tag_name": "v0.4.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [{"name": release_manifest_asset_name(p)} for p in public.SUPPORTED_PLATFORM_IDS],
+    }
+
+    def fetch(url: str, _limit: int) -> bytes:
+        if url.endswith("/releases/tags/v0.6.0"):
+            return json.dumps(metadata["v0.6.0"]).encode()
+        if "?per_page=" in url:
+            return json.dumps([legacy]).encode()
+        assert "/v0.4.0/" not in url
+        return bodies[url]
+
+    with pytest.raises(public.PublicFailure, match="public_baseline_required"):
+        public.prepare_public_plan(
+            target_tag=plan["targetTag"],
+            source_commit=plan["sourceCommit"],
+            workflow_run=plan["workflowRun"],
+            workflow_attempt=2,
+            fetch=fetch,
+        )
+
+
+def test_prepared_plan_cannot_bypass_the_current_deployment_floor(signed: Any, monkeypatch) -> None:
+    plan, _, _ = signed
+    assert public.validate_public_plan(plan) == plan
+    # Even an otherwise valid, signed plan becomes ineligible when its exact
+    # predecessor is below the controller's current compatibility boundary.
+    monkeypatch.setattr(public, "MIN_DEPLOYMENT_RELEASE", "0.5.1")
+    with pytest.raises(public.PublicFailure, match="public_baseline_required"):
+        public.validate_public_plan(plan)
+
+
 def test_release_asset_inventory_is_bounded_before_downloads(signed: Any) -> None:
     _, _, metadata = signed
-    raw = copy.deepcopy(metadata["v0.2.0"])
+    raw = copy.deepcopy(metadata["v0.6.0"])
     raw["assets"] = [{"name": str(number), "size": 1} for number in range(129)]
     with pytest.raises(public.PublicFailure, match="public_release_invalid"):
         public._public_release(
@@ -513,8 +541,8 @@ def test_release_listing_cannot_silently_truncate_before_selecting_baseline(sign
     plan, bodies, metadata = signed
 
     def fetch(url: str, _limit: int) -> bytes:
-        if url.endswith("/releases/tags/v0.2.0"):
-            return json.dumps(metadata["v0.2.0"]).encode()
+        if url.endswith("/releases/tags/v0.6.0"):
+            return json.dumps(metadata["v0.6.0"]).encode()
         if "?per_page=" in url:
             return json.dumps(
                 [
@@ -526,7 +554,7 @@ def test_release_listing_cannot_silently_truncate_before_selecting_baseline(sign
 
     with pytest.raises(public.PublicFailure, match="public_list_incomplete"):
         public.prepare_public_plan(
-            target_tag="v0.2.0",
+            target_tag="v0.6.0",
             source_commit=plan["sourceCommit"],
             workflow_run=plan["workflowRun"],
             workflow_attempt=2,
@@ -589,79 +617,47 @@ def test_public_profile_cannot_use_host_or_implicit_network(tmp_path: Path, netw
         )
 
 
-def _cross_schema_result(plan: dict[str, Any]) -> dict[str, Any]:
-    result = _result(plan)
-    for architecture in result["architectures"]:
-        for pair in architecture["receipts"]:
-            lifecycle = pair["lifecycle"]
-            lifecycle["cliContracts"] = {"previous": "legacy", "target": "canonical"}
-            lifecycle["stages"][3]["checks"].pop("files")
-            stage = lifecycle["stages"][5]
-            stage["preserved"].pop("config")
-            stage["configuration"] = {
-                "transition": "legacy-to-canonical",
-                "values_preserved": True,
-                "files_path_preserved": True,
-                "state_path_preserved": True,
-                "unit_updated": True,
-            }
-    return result
-
-
-def test_schema2_accepts_explicit_cross_schema_proof_and_exact_rollback(signed: Any) -> None:
-    plan, _, _ = signed
-    result = _cross_schema_result(plan)
-    assert _validate(result, plan) == result
-    for architecture in result["architectures"]:
-        for pair in architecture["receipts"]:
-            lifecycle = pair["lifecycle"]
-            assert "config" not in lifecycle["stages"][5]["preserved"]
-            assert lifecycle["stages"][6]["preserved"]["config"] is True
-            assert lifecycle["stages"][6]["preserved"]["unit"] is True
-
-
 @pytest.mark.parametrize(
     "mutation",
     [
         "schema1-result",
         "schema1-probe",
-        "missing-transition",
-        "fake-unchanged",
-        "false-files",
-        "false-state",
-        "false-unit",
+        "missing-config",
+        "missing-profile",
+        "false-profile",
+        "legacy-transition",
         "rollback-unit",
         "missing-contract",
+        "legacy-contract",
         "backwards-contract",
         "invalid-contract",
     ],
 )
-def test_cross_schema_receipt_cannot_weaken_identity_configuration_or_rollback(
+def test_legacy_or_incomplete_receipts_cannot_weaken_current_public_contract(
     signed: Any, mutation: str
 ) -> None:
     plan, _, _ = signed
-    result = _cross_schema_result(plan)
+    result = _result(plan)
     lifecycle = result["architectures"][0]["receipts"][0]["lifecycle"]
     updated, rolled_back = lifecycle["stages"][5:7]
     if mutation == "schema1-result":
         result["schema"] = 1
     elif mutation == "schema1-probe":
         lifecycle["schema"] = 1
-    elif mutation == "missing-transition":
-        updated.pop("configuration")
-    elif mutation == "fake-unchanged":
-        updated["preserved"]["config"] = True
-    elif mutation.startswith("false-"):
-        field = {
-            "false-files": "files_path_preserved",
-            "false-state": "state_path_preserved",
-            "false-unit": "unit_updated",
-        }[mutation]
-        updated["configuration"][field] = False
+    elif mutation == "missing-config":
+        updated["preserved"].pop("config")
+    elif mutation == "missing-profile":
+        updated["preserved"].pop("profile")
+    elif mutation == "false-profile":
+        updated["preserved"]["profile"] = False
+    elif mutation == "legacy-transition":
+        updated["configuration"] = {"transition": "legacy-to-canonical"}
     elif mutation == "rollback-unit":
         rolled_back["preserved"]["unit"] = False
     elif mutation == "missing-contract":
         lifecycle.pop("cliContracts")
+    elif mutation == "legacy-contract":
+        lifecycle["cliContracts"] = {"previous": "legacy", "target": "canonical"}
     elif mutation == "backwards-contract":
         lifecycle["cliContracts"] = {"previous": "canonical", "target": "legacy"}
     else:

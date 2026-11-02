@@ -6,79 +6,18 @@ import fcntl
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 
+from .execution import AdministrativeRunner
+from .execution import CommandResult as CommandResult
+from .execution import CommandRunner as CommandRunner
 
-@dataclass(frozen=True)
-class CommandResult:
-    """Captured subprocess outcome without implicit printing or logging."""
-
-    argv: tuple[str, ...]
-    returncode: int
-    stdout: str = ""
-    stderr: str = ""
-    not_found: bool = False
-
-
-class Runner(Protocol):
-    """Small injectable command execution interface."""
-
-    def run(
-        self,
-        argv: Sequence[str],
-        *,
-        env: Mapping[str, str] | None = None,
-    ) -> CommandResult: ...
-
-
-class CommandRunner:
-    """Run a command without a shell and capture all output."""
-
-    def run(
-        self,
-        argv: Sequence[str],
-        *,
-        env: Mapping[str, str] | None = None,
-    ) -> CommandResult:
-        """Return captured output; never echo argv, stdout, or stderr."""
-        command = tuple(str(item) for item in argv)
-        process_environment = None
-        if env is not None:
-            process_environment = os.environ.copy()
-            process_environment.update(env)
-        try:
-            completed = subprocess.run(  # noqa: S603 - fixed administrative argv
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=process_environment,
-            )
-        except FileNotFoundError:
-            return CommandResult(argv=command, returncode=127, not_found=True)
-        except OSError:
-            return CommandResult(argv=command, returncode=127)
-        return CommandResult(
-            argv=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
-
-    def stream(self, argv: Sequence[str]) -> int:
-        """Run a command with inherited stdout/stderr for long-lived operator streams."""
-        command = tuple(str(item) for item in argv)
-        try:
-            completed = subprocess.run(command, check=False)  # noqa: S603 - fixed administrative argv
-        except OSError:
-            return 127
-        return completed.returncode
+Runner = AdministrativeRunner
 
 
 class MutationError(RuntimeError):
@@ -179,6 +118,11 @@ class FilesystemTransaction:
         self._chown = chown or os.chown
         self._committed = False
         self._retained_directories: set[Path] = set()
+        self._rollback_callbacks: list[Callable[[], object]] = []
+
+    def on_rollback(self, callback: Callable[[], object]) -> None:
+        """Register a conditional restoration for resources outside managed files."""
+        self._rollback_callbacks.append(callback)
 
     def ensure_retained_directory(self, path: Path, *, mode: int, uid: int, gid: int) -> None:
         """Create a public directory whose contents must survive failed activation."""
@@ -224,12 +168,17 @@ class FilesystemTransaction:
             return
         for path in reversed(self._order):
             self._restore(path, self._states[path])
+        for callback in reversed(self._rollback_callbacks):
+            if callback() is False:
+                raise OSError("external resource changed; conditional rollback was not applied")
+        self._rollback_callbacks.clear()
         self._states.clear()
         self._order.clear()
 
     def commit(self) -> None:
         """Forget snapshots after all external health checks succeed."""
         self._committed = True
+        self._rollback_callbacks.clear()
         self._states.clear()
         self._order.clear()
 

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import struct
 from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
@@ -21,22 +18,19 @@ def managed_files_path(layout: ManagedLayout) -> Path:
     """Return the host path; legacy installations retain their actual uploads."""
     metadata = deployment_metadata_path(layout)
     if metadata.exists():
-        if metadata.is_symlink() or metadata.stat().st_size > 65536:
-            raise ValueError("unsafe deployment metadata")
-        document = json.loads(metadata.read_text(encoding="utf-8"))
-        if (
-            not isinstance(document, dict)
-            or document.get("schema") != 1
-            or document.get("kind") != "managed"
-            or not isinstance(document.get("files_dir"), str)
-        ):
-            raise ValueError("unsupported deployment metadata")
-        return _safe_files_path(Path(document["files_dir"]))
+        from .deployment import load_manifest
+
+        spec = load_manifest(metadata)
+        if spec.backend != "native":
+            raise ValueError("expected native deployment metadata")
+        return _safe_files_path(spec.files_dir)
     if layout.config_file.exists():
         from xferry.settings import load_settings_file
 
         settings = load_settings_file(layout.config_file, state_dir=layout.data_root)
-        return Path(settings.files_dir or Path(settings.root_dir) / "uploads").resolve()
+        return Path(
+            settings.files_dir or Path(settings.state_dir or layout.data_root) / "files"
+        ).resolve()
     return layout.data_root / "files"
 
 
@@ -81,12 +75,14 @@ def stage_managed_files_folder(
     uid: int,
     gid: int,
     private_files: Sequence[Path] = (),
-) -> None:
+) -> tuple[dict[str, object], ...]:
     """Stage mapping and new folders; never change existing folder ownership."""
     source = _safe_files_path(host)
+    receipts: list[dict[str, object]] = []
     for private in (
         layout.config_file.parent,
         layout.data_root / "notes",
+        layout.data_root / ".xferry",
         layout.acme_root,
         layout.release_root,
     ):
@@ -98,47 +94,12 @@ def stage_managed_files_folder(
     if source.exists():
         if not source.is_dir():
             raise ValueError("files directory is not a directory")
-        metadata = source.stat()
-        access = (
-            (metadata.st_mode >> 6) & 7
-            if metadata.st_uid == uid
-            else ((metadata.st_mode >> 3) & 7 if metadata.st_gid == gid else metadata.st_mode & 7)
-        )
-        # Account for named ACL grants without changing the existing directory.
-        if hasattr(os, "getxattr"):
-            try:
-                acl = os.getxattr(source, "system.posix_acl_access")
-                if struct.unpack_from("<I", acl)[0] == 2:
-                    entries = [struct.unpack_from("<HHI", acl, i) for i in range(4, len(acl), 8)]
-                    mask = next((entry[1] for entry in entries if entry[0] == 16), 7)
-                    named = next(
-                        (entry[1] for entry in entries if entry[0] == 2 and entry[2] == uid), None
-                    )
-                    if metadata.st_uid == uid:
-                        access = next(entry[1] for entry in entries if entry[0] == 1)
-                    elif named is not None:
-                        access = named & mask
-                    else:
-                        groups = [
-                            entry[1]
-                            for entry in entries
-                            if (entry[0] == 4 and metadata.st_gid == gid)
-                            or (entry[0] == 8 and entry[2] == gid)
-                        ]
-                        if groups:
-                            access = 0
-                            for permission in groups:
-                                access |= permission & mask
-                        else:
-                            access = next(entry[1] for entry in entries if entry[0] == 32)
-            except (OSError, struct.error):
-                pass
-        if access & 7 != 7:
-            raise ValueError(
-                "files directory needs read/write/search access for xferry; "
-                "grant access with setfacl -m u:xferry:rwx,d:u:xferry:rwx PATH "
-                "or choose a new dedicated directory"
-            )
+        from .ownership import grant_directory_access, restore_directory_access
+
+        receipt = grant_directory_access(source, uid)
+        if receipt is not None:
+            transaction.on_rollback(lambda: restore_directory_access(receipt))
+            receipts.append(receipt)
     else:
         transaction.ensure_retained_directory(source, mode=0o750, uid=uid, gid=gid)
     transaction.retain_directory(source)
@@ -146,18 +107,7 @@ def stage_managed_files_folder(
     destination = layout.data_root / "files"
     if not destination.exists():
         transaction.ensure_retained_directory(destination, mode=0o750, uid=uid, gid=gid)
-    body = json.dumps(
-        {
-            "schema": 1,
-            "kind": "managed",
-            "files_dir": str(source),
-            "state_dir": str(layout.data_root),
-        },
-        indent=2,
-    )
-    transaction.atomic_write(
-        deployment_metadata_path(layout), (body + "\n").encode(), mode=0o640, uid=0, gid=gid
-    )
     transaction.atomic_write(
         layout.unit_file, render_managed_unit(layout, source), mode=0o644, uid=0, gid=0
     )
+    return tuple(receipts)

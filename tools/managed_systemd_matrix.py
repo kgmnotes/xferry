@@ -2,7 +2,7 @@
 
 Containers have private namespaces, no network, no host runtime mounts, and only
 one disposable evidence directory writable. Public release readiness is never
-implied by these ephemeral 0.1.1 -> 0.1.2 fixtures.
+implied by these ephemeral 0.5.0 -> 0.5.1 fixtures.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from xferry.management.release_contract import (  # noqa: E402
     require_workflow_run,
 )
 
-VERSIONS = ("0.1.1", "0.1.2")
+VERSIONS = ("0.5.0", "0.5.1")
 RELEASE_BASE_URL = "https://127.0.0.1:44443/releases"
 REHEARSAL_KEY_ID = "xferry-rehearsal-2026-10"
 PAIRS = tuple(
@@ -302,7 +302,8 @@ def _public_key(source: Path) -> bytes:
         raise MatrixFailure("source_invalid") from None
 
 
-def _verify_patch(source: Path, version: str, public: bytes) -> None:
+def _verify_patch(source: Path, version: str, public: bytes) -> set[str]:
+    """Require every exact transform and return its exact expected Git change set."""
     originals = {
         name: _git(source, "show", f"HEAD^:{name}").decode("utf-8") for name in _PATCH_FILES
     }
@@ -330,6 +331,10 @@ def _verify_patch(source: Path, version: str, public: bytes) -> None:
     expected = (expected_config, expected_releases, trust[:start] + replacement + trust[end:])
     for name, text in zip(_PATCH_FILES, expected, strict=True):
         _require(_regular(source / name, 512 * 1024) == text.encode(), "source_invalid")
+    # A fixture at the base package version has a legitimate no-op version
+    # transform. Keep checking its complete config.py bytes above, and omit
+    # only that unchanged file from the required Git diff names.
+    return set(_PATCH_FILES) - ({_PATCH_FILES[0]} if expected_config == config else set())
 
 
 def validate_fixtures(options: RunOptions) -> dict[str, Any]:
@@ -440,17 +445,17 @@ def validate_fixtures(options: RunOptions) -> dict[str, Any]:
             _require(
                 hashlib.sha256(patch).hexdigest() == metadata["patch_sha256"], "source_invalid"
             )
-            _require(
-                set(_git(source, "diff", "--name-only", "HEAD^", "HEAD").decode().splitlines())
-                == set(_PATCH_FILES),
-                "source_invalid",
-            )
             public = _public_key(source)
             _require(
                 hashlib.sha256(public).hexdigest() == key["public_key_sha256"], "source_invalid"
             )
             public_keys.append(public)
-            _verify_patch(source, version, public)
+            expected_patch_files = _verify_patch(source, version, public)
+            _require(
+                set(_git(source, "diff", "--name-only", "HEAD^", "HEAD").decode().splitlines())
+                == expected_patch_files,
+                "source_invalid",
+            )
             wheel = (
                 options.sources_root.parent
                 / "wheels"
@@ -626,8 +631,8 @@ def validate_probe(
                 "receipt_invalid",
             )
         if "version" in fields:
-            expected_version = "0.1.2" if phase == "update" else "0.1.1"
-            retained = list(VERSIONS) if phase in {"update", "rollback"} else ["0.1.1"]
+            expected_version = "0.5.1" if phase == "update" else "0.5.0"
+            retained = list(VERSIONS) if phase in {"update", "rollback"} else ["0.5.0"]
             _require(
                 stage["version"] == expected_version
                 and stage["current_link"] == f"releases/{expected_version}"
@@ -638,13 +643,13 @@ def validate_probe(
             _require(stage["health"] is True, "receipt_invalid")
         if "preserved" in fields:
             preserved = _object(
-                stage["preserved"], {"config", "auth", "sentinel"}, "receipt_invalid"
+                stage["preserved"], {"config", "auth", "profile", "sentinel"}, "receipt_invalid"
             )
             _require(all(value is True for value in preserved.values()), "receipt_invalid")
         if "checks" in fields:
             checks = _object(
                 stage["checks"],
-                set(_doctor_statuses(canonical=True)),
+                set(_doctor_statuses()),
                 "receipt_invalid",
             )
             _require(all(value is True for value in checks.values()), "receipt_invalid")

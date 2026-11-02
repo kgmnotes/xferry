@@ -10,11 +10,12 @@ import socket
 import stat
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from importlib import resources
 from pathlib import Path
 
+from .deployment import Credentials as Credentials
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .model import ManagedLayout, SetupMode, SetupPlan, SetupPreflight, SetupProbes
 from .planning import check_setup_preflight, render_managed_config
@@ -39,15 +40,6 @@ HealthCheck = Callable[[HealthEndpoint, str, str, float], HealthResult]
 
 def _resolve_identity() -> tuple[int, int]:
     return pwd.getpwnam("xferry").pw_uid, grp.getgrnam("xferry").gr_gid
-
-
-@dataclass(frozen=True)
-class Credentials:
-    """One-time operator credential returned only after authenticated health."""
-
-    username: str
-    password: str = field(repr=False)
-    url: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +159,7 @@ class SetupExecutor:
         *,
         runner: Runner | None = None,
         preflight_check: Callable[[SetupPlan], SetupPreflight] | None = None,
+        artifact_identity: Callable[[ManagedLayout], dict[str, object]] | None = None,
         health_check: HealthCheck = authenticated_ping,
         effective_uid: Callable[[], int] = os.geteuid,
         root_uid: int = 0,
@@ -181,6 +174,7 @@ class SetupExecutor:
         transaction_factory: Callable[[], FilesystemTransaction] | None = None,
     ) -> None:
         self.runner = runner or CommandRunner()
+        self.artifact_identity = artifact_identity
         self.preflight_check = preflight_check or self._check_preflight
         self.health_check = health_check
         self.effective_uid = effective_uid
@@ -236,9 +230,8 @@ class SetupExecutor:
         except OSError:
             return SetupResult(1, "managed mutation lock failed")
 
-    def resume(self, layout: ManagedLayout) -> SetupResult:
+    def resume(self, layout: ManagedLayout, *, require_retained: bool = True) -> SetupResult:
         """Activate a reinstalled signed runtime with its preserved configuration."""
-        from xferry.security.tls import sslip_domain_for_ip
         from xferry.settings import SettingsError, load_settings_file
 
         from .managed_files import managed_files_path, stage_managed_files_folder
@@ -247,6 +240,7 @@ class SetupExecutor:
             has_unsupported_managed_state,
             retained_state_path,
         )
+        from .service import _endpoint
 
         if self.effective_uid() != 0:
             return SetupResult(3, "managed setup requires root")
@@ -254,11 +248,20 @@ class SetupExecutor:
             with managed_mutation(
                 layout.lock_file, effective_uid=self.effective_uid, root_uid=self.root_uid
             ):
-                if not has_retained_state(layout) or has_unsupported_managed_state(layout):
+                if (
+                    require_retained and not has_retained_state(layout)
+                ) or has_unsupported_managed_state(layout):
                     return SetupResult(1, "retained managed state could not be verified")
                 if not layout.current_executable.is_file():
                     return SetupResult(
                         2, "reinstall the signed XFerry runtime before resuming setup"
+                    )
+                from .deployment import load_manifest
+
+                spec = load_manifest(layout.config_file.parent / "deployment.json")
+                if not spec.profile.is_file():
+                    return SetupResult(
+                        2, "Operator profile is missing; restore its backup before recovery."
                     )
                 settings = load_settings_file(layout.config_file, state_dir=layout.data_root)
                 settings.to_server_config()
@@ -321,15 +324,9 @@ class SetupExecutor:
                         exit_code=6,
                         message="installed service failed to start",
                     )
-                    host = settings.domain
-                    if host is None and settings.sslip and settings.public_ip:
-                        host = sslip_domain_for_ip(settings.public_ip)
-                    endpoint = HealthEndpoint(
-                        "127.0.0.1",
-                        settings.port,
-                        host or "127.0.0.1",
-                        tls=settings.effective_tls_enabled(),
-                    )
+                    endpoint = _endpoint(settings)
+                    if endpoint is None:
+                        raise _SetupFailure(2, "retained health endpoint could not be determined")
                     ready = _wait_for_health(
                         self.health_check,
                         endpoint,
@@ -342,11 +339,41 @@ class SetupExecutor:
                     )
                     if not ready.health.ok:
                         raise _SetupFailure(6, "restored service is unhealthy")
-                    retained_state_path(layout).unlink()
+                    import hashlib
+                    import json
+
+                    from .deployment import OwnershipReceipt, resource_receipt
+
+                    executable = layout.current_executable.resolve(strict=True)
+                    resources = {resource.path: resource for resource in spec.ownership.resources}
+                    resources[str(self.unit_path)] = resource_receipt(self.unit_path)
+                    reveal_credentials = spec.backend_options.get("credentials_revealed") is False
+                    updated = replace(
+                        spec,
+                        backend_options={**spec.backend_options, "credentials_revealed": True},
+                        artifact={
+                            "version": executable.parent.name,
+                            "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        },
+                        ownership=OwnershipReceipt(
+                            tuple(resources.values()), spec.ownership.acl, spec.ownership.accounts
+                        ),
+                    )
+                    transaction.atomic_write(
+                        layout.config_file.parent / "deployment.json",
+                        (json.dumps(updated.to_json(), indent=2) + "\n").encode(),
+                        mode=0o644,
+                        uid=0,
+                        gid=0,
+                    )
+                    retained_state_path(layout).unlink(missing_ok=True)
                     transaction.commit()
                     return SetupResult(
                         0,
                         "managed service restored; existing credentials retained",
+                        credentials=Credentials(username, password, endpoint.url)
+                        if reveal_credentials
+                        else None,
                         detail=endpoint.url,
                     )
                 except (_SetupFailure, OSError, ValueError) as exc:
@@ -389,7 +416,20 @@ class SetupExecutor:
         try:
             group_created, user_created = self._ensure_identities(plan.layout.runtime_home)
             runtime_uid, runtime_gid = self.resolve_identity()
-            password = self._stage_files(plan, transaction, runtime_uid, runtime_gid)
+            password = self._stage_files(
+                plan,
+                transaction,
+                runtime_uid,
+                runtime_gid,
+                accounts=tuple(
+                    name
+                    for name, created in (
+                        ("user:xferry", user_created),
+                        ("group:xferry", group_created),
+                    )
+                    if created
+                ),
+            )
             self._checked(
                 (
                     str(plan.layout.current_executable),
@@ -435,6 +475,22 @@ class SetupExecutor:
                 if plan.mode is not SetupMode.PRIVATE and not readiness.endpoint_observed:
                     raise _SetupFailure(5, "public service readiness timed out before first bind")
                 raise _SetupFailure(6, "installed service is unhealthy")
+            import json
+
+            from .deployment import load_manifest
+
+            manifest_path = plan.layout.config_file.parent / "deployment.json"
+            spec = load_manifest(manifest_path)
+            spec = replace(
+                spec, backend_options={**spec.backend_options, "credentials_revealed": True}
+            )
+            transaction.atomic_write(
+                manifest_path,
+                (json.dumps(spec.to_json(), indent=2) + "\n").encode(),
+                mode=0o644,
+                uid=0,
+                gid=0,
+            )
             transaction.commit()
             return SetupResult(
                 exit_code=0,
@@ -458,7 +514,7 @@ class SetupExecutor:
                 else ""
             )
             return SetupResult(failure.exit_code, failure.message, detail=retained)
-        except (KeyError, OSError, ValueError):
+        except (KeyError, OSError, ValueError) as error:
             restore = self._rollback(
                 transaction,
                 added_ports,
@@ -474,7 +530,7 @@ class SetupExecutor:
                 if plan.files_dir and plan.files_dir.exists()
                 else ""
             )
-            return SetupResult(1, "managed setup failed", detail=retained)
+            return SetupResult(1, f"managed setup failed: {error}", detail=retained)
 
     def _stage_files(
         self,
@@ -482,10 +538,12 @@ class SetupExecutor:
         transaction: FilesystemTransaction,
         runtime_uid: int,
         runtime_gid: int,
+        *,
+        accounts: tuple[str, ...] = (),
     ) -> str:
         transaction.ensure_directory(
             plan.layout.config_file.parent,
-            mode=0o750,
+            mode=0o755,
             uid=0,
             gid=runtime_gid,
         )
@@ -524,18 +582,78 @@ class SetupExecutor:
             uid=0,
             gid=0,
         )
+        acl_receipts: tuple[dict[str, object], ...] = ()
         if plan.files_dir is not None:
             from dataclasses import replace
 
             from .managed_files import stage_managed_files_folder
 
-            stage_managed_files_folder(
+            acl_receipts = stage_managed_files_folder(
                 replace(plan.layout, unit_file=self.unit_path),
                 plan.files_dir,
                 transaction,
                 runtime_uid,
                 runtime_gid,
             )
+        import hashlib
+        import json
+
+        from .configuration import edit_ini
+        from .deployment import DeploymentSpec, OwnershipReceipt, resource_receipt
+        from .managed_files import deployment_metadata_path
+
+        profile = plan.layout.config_file.parent / "profile.ini"
+        host_files = plan.files_dir or plan.layout.data_root / "files"
+        profile_text = edit_ini(render_managed_config(plan), {"files_dir": str(host_files)})
+        transaction.atomic_write(profile, profile_text.encode(), mode=0o640, uid=0, gid=runtime_gid)
+        executable = (
+            plan.layout.current_executable.resolve(strict=True)
+            if self.artifact_identity is None
+            else None
+        )
+        from .versions import is_supported_release_version
+
+        version = executable.parent.name if executable is not None else ""
+        if not is_supported_release_version(version):
+            from xferry.config import __version__
+
+            version = __version__
+        receipt = OwnershipReceipt(
+            resources=tuple(
+                resource_receipt(path, kind="secret" if path == plan.layout.auth_file else "file")
+                for path in (
+                    profile,
+                    plan.layout.config_file,
+                    plan.layout.auth_file,
+                    self.unit_path,
+                )
+            )
+            + (resource_receipt(plan.layout.data_root, kind="tree"),),
+            acl=acl_receipts,
+            accounts=accounts,
+        )
+        artifact = self.artifact_identity(plan.layout) if self.artifact_identity is not None else {}
+        if executable is not None:
+            artifact = {
+                "version": version,
+                "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            }
+        spec = DeploymentSpec.new(
+            "native",
+            profile,
+            host_files,
+            plan.layout.data_root,
+            artifact,
+            ownership=receipt,
+            backend_options={"credentials_revealed": False},
+        )
+        transaction.atomic_write(
+            deployment_metadata_path(plan.layout),
+            (json.dumps(spec.to_json(), indent=2) + "\n").encode(),
+            mode=0o644,
+            uid=0,
+            gid=0,
+        )
         return password
 
     def _check_preflight(self, plan: SetupPlan) -> SetupPreflight:

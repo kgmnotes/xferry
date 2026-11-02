@@ -8,7 +8,6 @@ or exports generated authentication/configuration values or their hashes.
 from __future__ import annotations
 
 import argparse
-import configparser
 import hashlib
 import json
 import os
@@ -30,22 +29,6 @@ else:
 
 SCOPE = "native-systemd-public-lifecycle"
 SCHEMA = 2
-_RETIRED = frozenset(
-    {
-        "preset",
-        "public_direct",
-        "root_dir",
-        "quiet",
-        "debug",
-        "json_log",
-        "open_browser",
-        "tls",
-        "letsencrypt",
-        "sslip",
-        "acme_staging",
-        "auth",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -127,89 +110,8 @@ def _cli_contract(executable: Path, version: str) -> str:
     ).decode("utf-8")
     canonical = re.search(r"(?<![\w-])--access(?=$|[\s\]=,{])", help_text) is not None
     legacy = re.search(r"(?<![\w-])--private(?=$|[\s\]=,{])", help_text) is not None
-    common._require(canonical != legacy, "command_output_invalid")
-    return "canonical" if canonical else "legacy"
-
-
-def _config_entries(payload: bytes) -> dict[tuple[str, str], str]:
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read_string(payload.decode("utf-8"))
-    common._require(not parser.defaults(), "state_preservation_failed")
-    return {
-        (section, name): value
-        for section in parser.sections()
-        for name, value in parser.items(section)
-    }
-
-
-def _configuration_transition(
-    paths: common.SystemPaths, before: bytes, previous_unit: bytes
-) -> dict[str, object]:
-    """Independently prove the private baseline's conversion, without exporting values."""
-    old = _config_entries(before)
-    after = _config_entries(common._regular_bytes(paths.config, common.MAX_HEALTH_BYTES))
-
-    def enabled(name: str) -> bool:
-        values = [value for (_section, key), value in old.items() if key == name]
-        common._require(len(values) <= 1, "state_preservation_failed")
-        value = values[0].strip().lower() if values else "false"
-        common._require(
-            value in {"true", "yes", "on", "1", "false", "no", "off", "0"},
-            "state_preservation_failed",
-        )
-        return value in {"true", "yes", "on", "1"}
-
-    # Public acceptance deliberately creates a private loopback baseline.
-    # Everything except the retired spellings must retain its exact INI value.
-    root = old.get(("server", "root_dir"))
-    common._require(root == str(paths.data_root), "state_preservation_failed")
-    common._require(
-        old.get(("server", "preset"), "local") == "local"
-        and not any(enabled(name) for name in ("public_direct", "tls", "letsencrypt", "sslip")),
-        "state_preservation_failed",
-    )
-    files = old.get(("server", "files_dir"), str(paths.data_root / "uploads"))
-    common._require(Path(files).is_absolute(), "state_preservation_failed")
-    expected = {key: value for key, value in old.items() if key[1] not in _RETIRED}
-    expected.update(
-        {
-            ("server", "access"): "private",
-            ("server", "host"): old.get(("server", "host"), "127.0.0.1"),
-            ("server", "files_dir"): files,
-            ("server", "log_level"): "debug"
-            if enabled("debug")
-            else "warning"
-            if enabled("quiet")
-            else "info",
-            ("server", "log_format"): "json" if enabled("json_log") else "text",
-            ("tls", "https_mode"): "off",
-        }
-    )
-    common._require(after == expected, "state_preservation_failed")
-    unit = common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES)
-    lines = unit.decode("utf-8").splitlines()
-    common._require(
-        unit != previous_unit
-        and b"--check-config" in previous_unit
-        and b"--check-config" not in unit
-        and f"Environment=XFERRY_STATE_HOME={root}" in lines
-        and f"ExecStartPre={paths.release_root}/current/xferry config check --config {paths.config}"
-        in lines
-        and f"ExecStart={paths.release_root}/current/xferry run --config {paths.config}" in lines,
-        "state_preservation_failed",
-    )
-    for line in previous_unit.decode("utf-8").splitlines():
-        if line.startswith(
-            ("User=", "Group=", "Protect", "NoNewPrivileges=", "ReadWritePaths=", "UMask=")
-        ):
-            common._require(line in lines, "state_preservation_failed")
-    return {
-        "transition": "legacy-to-canonical",
-        "values_preserved": True,
-        "files_path_preserved": True,
-        "state_path_preserved": True,
-        "unit_updated": True,
-    }
+    common._require(canonical and not legacy, "command_output_invalid")
+    return "canonical"
 
 
 def _release_state(
@@ -317,30 +219,20 @@ def run_public_probe(
         common._command(("sh", str(installer)), environment=_environment())
         common._version(paths, previous)
         previous_contract = _cli_contract(paths.cli, previous)
-        common._require(
-            not (previous_contract == "canonical" and target_contract == "legacy"),
-            "command_output_invalid",
-        )
         evidence["cliContracts"] = {"previous": previous_contract, "target": target_contract}
-        conversion = previous_contract == "legacy" and target_contract == "canonical"
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))
         stage.update(service=common._service(False), status="passed")
 
         phase = "setup"
         stage = {"phase": phase, "status": "started"}
         evidence["stages"].append(stage)
-        setup_flags = (
-            ("--access", "private") if previous_contract == "canonical" else ("--private",)
-        )
         setup = common._json_command(
-            (str(paths.cli), "setup", *setup_flags, "--json"),
+            (str(paths.cli), "setup", "--backend", "native", "--access", "private", "--json"),
             environment=_environment(),
             discard_stderr=True,
         )
-        common._setup_outcome(
-            setup,
-            files_dir=paths.data_root / "files" if previous_contract == "canonical" else None,
-        )
+        identity = common._setup_outcome(setup, files_dir=paths.data_root / "files")
+        common._deployment_identity(paths, previous, identity)
         common._version(paths, previous)
         common.verify_health(previous, paths)
         descriptor = os.open(
@@ -349,7 +241,6 @@ def run_public_probe(
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(b"xferry public managed lifecycle sentinel\n")
         baseline = common._state_hashes(paths)
-        baseline_config = common._regular_bytes(paths.config, common.MAX_HEALTH_BYTES)
         baseline_unit = common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES)
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))
         stage.update(service=common._service(True), health=True, status="passed")
@@ -358,9 +249,10 @@ def run_public_probe(
         stage = {"phase": phase, "status": "started"}
         evidence["stages"].append(stage)
         doctor = common._json_command(
-            (str(paths.cli), "doctor", "--deep", "--json"), environment=_environment()
+            (str(paths.cli), "doctor", "--instance", identity, "--deep", "--json"),
+            environment=_environment(),
         )
-        checks = common._doctor_outcome(doctor, canonical=previous_contract == "canonical")
+        checks = common._doctor_outcome(doctor, identity=identity)
         common._version(paths, previous)
         common.verify_health(previous, paths)
         stage.update(_release_state(paths, previous, (previous,), plan, options.platform))
@@ -373,50 +265,27 @@ def run_public_probe(
                 argv = [str(controller), "update", "--to", target]
                 if phase == "dry_run":
                     argv.append("--dry-run")
-                if target_contract == "canonical":
-                    argv.extend(("--config", str(paths.config)))
+                argv.extend(("--instance", identity))
                 result = common._json_command((*argv, "--json"), environment=_environment())
                 version = previous if phase == "dry_run" else target
-                common._require(
-                    set(result) == common._RELEASE_FIELDS | {"version"}
-                    and result["code"]
-                    == ("update_dry_run" if phase == "dry_run" else "update_complete")
-                    and result["dry_run"] is (phase == "dry_run")
-                    and result["before"] == previous
-                    and result["target"] == result["version"] == target
-                    and result["active"] == version
-                    and result["rollback"] == "not_needed",
-                    "update_outcome_invalid",
-                )
             else:
                 argv = [str(controller), phase]
                 if phase == "rollback":
                     argv.extend(("--to", previous))
-                if target_contract == "canonical":
-                    argv.extend(("--config", str(paths.config)))
+                argv.extend(("--instance", identity))
                 result = common._json_command((*argv, "--json"), environment=_environment())
-                common._require(
-                    set(result)
-                    == common._RELEASE_FIELDS | ({"version"} if phase == "rollback" else set())
-                    and result["code"] == f"{phase}_complete"
-                    and result["dry_run"] is False
-                    and result["active"] is None
-                    and result["before"] is None
-                    and result["target"] is None
-                    and result["rollback"] == "not_attempted",
-                    "release_outcome_invalid",
-                )
                 version = previous
-                if phase == "rollback":
-                    common._require(result["version"] == previous, "rollback_outcome_invalid")
+            common._release_outcome(
+                result,
+                phase=phase,
+                identity=identity,
+                source=previous,
+                target=target,
+                paths=paths,
+            )
+            if phase != "uninstall":
+                common._deployment_identity(paths, version, identity)
             preserved = common._preservation(baseline, paths)
-            if phase == "update" and conversion:
-                # Do not label rewritten INI bytes as unchanged. The separate
-                # proof checks every retained value and the selected state/files.
-                stage["configuration"] = _configuration_transition(
-                    paths, baseline_config, baseline_unit
-                )
-                preserved.pop("config")
             if phase in {"dry_run", "rollback"}:
                 preserved["unit"] = (
                     common._regular_bytes(paths.unit, common.MAX_HEALTH_BYTES) == baseline_unit
