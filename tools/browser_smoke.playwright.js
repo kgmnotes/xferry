@@ -4771,6 +4771,79 @@ async (page) => {
     return { empty, selected };
   }
 
+  function probeUploadTargetPathGrid() {
+    const groupElement = document.getElementById("uploadTargetPathGroup");
+    const advancedOpen = groupElement?.closest("#uploadAdvancedControls")?.open === true;
+    const targetButtons = Array.from(
+      groupElement?.querySelectorAll("[data-upload-target-path]") || []
+    );
+    const groupRect = groupElement?.getBoundingClientRect();
+    const group = groupRect ? {
+      left: groupRect.left, right: groupRect.right,
+      top: groupRect.top, bottom: groupRect.bottom,
+      width: groupRect.width, height: groupRect.height,
+    } : null;
+    const buttons = targetButtons.map(button => {
+      const rect = button.getBoundingClientRect();
+      return {
+        target: button.getAttribute("data-upload-target-path"),
+        label: button.textContent.trim(),
+        left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+        width: rect.width, height: rect.height,
+        clientWidth: button.clientWidth, scrollWidth: button.scrollWidth,
+      };
+    });
+    const near = (left, right) => Math.abs(left - right) <= 1;
+    const distinctPositions = key => buttons.reduce((positions, button) => {
+      if (!positions.some(value => near(value, button[key]))) positions.push(button[key]);
+      return positions;
+    }, []).length;
+    const columns = distinctPositions("left");
+    const rows = distinctPositions("top");
+    const visible = Boolean(advancedOpen && groupElement?.getClientRects().length && group &&
+      group.width > 0 && group.height > 0 && buttons.length === 4 && buttons.every(button =>
+        button.width + 0.01 >= 44 && button.height + 0.01 >= 44 && button.clientWidth > 0
+      ));
+    const expectedTargets = ["/", "/upload", "/api", "/file"];
+    const targetsMatch = buttons.length === expectedTargets.length && buttons.every(
+      (button, index) => button.target === expectedTargets[index] && button.label === button.target
+    );
+    const labelsFit = visible && buttons.every(button => button.scrollWidth <= button.clientWidth + 1);
+    const aligned = buttons.length === 4 && columns === 2 && rows === 2 &&
+      near(buttons[0].top, buttons[1].top) && near(buttons[0].bottom, buttons[1].bottom) &&
+      near(buttons[2].top, buttons[3].top) && near(buttons[2].bottom, buttons[3].bottom) &&
+      near(buttons[0].left, buttons[2].left) && near(buttons[0].right, buttons[2].right) &&
+      near(buttons[1].left, buttons[3].left) && near(buttons[1].right, buttons[3].right) &&
+      buttons[0].right <= buttons[1].left + 1 && buttons[2].right <= buttons[3].left + 1 &&
+      buttons[0].bottom <= buttons[2].top + 1 && buttons[1].bottom <= buttons[3].top + 1;
+    const contained = Boolean(group && group.left >= -1 && group.right <= innerWidth + 1 &&
+      buttons.every(button => button.left >= group.left - 1 && button.right <= group.right + 1 &&
+        button.top >= group.top - 1 && button.bottom <= group.bottom + 1));
+    return {
+      valid: visible && targetsMatch && labelsFit && aligned && contained,
+      advancedOpen, visible, targetsMatch, labelsFit, aligned, contained, columns, rows,
+      group, buttons, viewportWidth: innerWidth,
+      template: groupElement ? getComputedStyle(groupElement).gridTemplateColumns : "",
+    };
+  }
+
+  async function assertMobileUploadTargetPathGrid() {
+    const summary = page.locator("#uploadAdvancedControls > summary");
+    const group = page.locator("#uploadTargetPathGroup");
+    await summary.click();
+    try {
+      await group.waitFor({ state: "visible" });
+      const grid = await page.evaluate(probeUploadTargetPathGrid);
+      if (!grid.valid) {
+        throw new Error(`Mobile target path grid contract failed: ${JSON.stringify(grid)}`);
+      }
+      return grid;
+    } finally {
+      await summary.click();
+      await group.waitFor({ state: "hidden" });
+    }
+  }
+
   async function assertResponsiveUploadSummaryAndActions() {
     await page.setViewportSize({ width: 1440, height: 1024 });
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
@@ -4829,15 +4902,9 @@ async (page) => {
       const dropZone = document.getElementById("dropZone");
       const button = document.getElementById("uploadBtn");
       const panel = document.querySelector("#upload-tab .tool-card--workflow");
-      const targetPathGroup = document.getElementById("uploadTargetPathGroup");
-      const targetPathButtons = Array.from(
-        targetPathGroup?.querySelectorAll("[data-upload-target-path]") || []
-      );
+      const advanced = document.getElementById("uploadAdvancedControls");
       const dropRect = dropZone?.getBoundingClientRect();
       const buttonRect = button?.getBoundingClientRect();
-      const targetPathColumns = targetPathGroup
-        ? getComputedStyle(targetPathGroup).gridTemplateColumns.trim().split(/\s+/).length
-        : 0;
       return {
         summaryIsDetails: summary instanceof HTMLDetailsElement,
         summaryOpen: summary?.open === true,
@@ -4861,16 +4928,17 @@ async (page) => {
           height: buttonRect.height,
         } : null,
         panelRight: panel?.getBoundingClientRect().right || 0,
-        targetPathColumns,
-        targetPathLabelsFit: targetPathButtons.length === 4 && targetPathButtons.every(
-          (targetButton) => targetButton.scrollWidth <= targetButton.clientWidth + 1
-        ),
+        advancedClosed: advanced instanceof HTMLDetailsElement && !advanced.open,
       };
     });
     await page.screenshot({
       path: `${artifactDir}/task4-upload-mobile.png`,
       fullPage: true,
     });
+    const targetPathGrid = await assertMobileUploadTargetPathGrid();
+    mobile.targetPathColumns = targetPathGrid.columns;
+    mobile.targetPathLabelsFit = targetPathGrid.labelsFit;
+    mobile.targetPathGrid = targetPathGrid;
     await page.setViewportSize({ width: 1440, height: 1024 });
     await page.goto(rootUrl, { waitUntil: "domcontentloaded" });
     await waitForSpaReady();
@@ -4897,7 +4965,9 @@ async (page) => {
       mobile.buttonRect.height >= mobile.dropRect.height ||
       mobile.documentWidth > mobile.viewportWidth + 1 ||
       mobile.panelRight > mobile.viewportWidth + 1 ||
-      mobile.targetPathColumns !== 2
+      !mobile.advancedClosed ||
+      mobile.targetPathColumns !== 2 ||
+      !mobile.targetPathLabelsFit
     ) {
       throw new Error(
         `Responsive upload summary/action contract failed: ${JSON.stringify({ desktop, mobile })}`

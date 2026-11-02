@@ -3232,13 +3232,16 @@ def test_root_credentials_keeps_configuration_errors_distinct(
     assert "missing" in capsys.readouterr().err
 
 
-def test_interactive_active_ufw_prompts_once_for_exact_public_ports(
+def test_interactive_active_ufw_dry_run_uses_isolated_layout_without_prompting(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A vague or repeated firewall prompt would not capture precise operator consent."""
-    from xferry.management import cli
+    """A preview must use the selected layout without inspecting host deployment state."""
+    from xferry.management import application, cli
 
     runner = FakeRunner(ufw_active=True)
+    layout = _layout(tmp_path)
+    app = application.ManagementApplication(runner=runner, layout=layout)
     seen_plans: list[SetupPlan] = []
     prompts: list[str] = []
 
@@ -3264,12 +3267,14 @@ def test_interactive_active_ufw_prompts_once_for_exact_public_ports(
     monkeypatch.setattr("xferry.management.system.CommandRunner", lambda: runner)
     monkeypatch.setattr("xferry.management.platform.detect_host_facts", lambda **_kwargs: _facts())
     monkeypatch.setattr("xferry.management.setup.default_setup_preflight", preflight)
+    monkeypatch.setattr(application, "default_application", lambda: app)
     monkeypatch.setattr(cli.sys, "stdin", InteractiveInput())
     monkeypatch.setattr(builtins, "input", answer)
 
     assert main(["setup", "--public-ip", "8.8.8.8", "--dry-run"]) == 0
     assert prompts == []
     assert len(seen_plans) == 1
+    assert seen_plans[0].layout == layout
     assert seen_plans[0].firewall_action is None
     assert seen_plans[0].firewall_ports == ()
 
