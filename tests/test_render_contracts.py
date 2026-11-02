@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from dataclasses import fields
@@ -171,6 +172,183 @@ def test_cli_reference_captures_real_english_root_and_per_command_help() -> None
         assert f"## `xferry {command} --help`" in rendered
     assert "Signed release version to install (default:" in rendered
     assert "Управляем" not in rendered
+
+
+def _observed_setup_usage_variants() -> tuple[str, str]:
+    """Actual Python 3.12 and 3.13/3.14 layouts of the same setup grammar."""
+    common = (
+        "usage: xferry setup [-h] [--help-all] [--instance ID] [--backend {native,docker}]\n"
+        "                    [--access {private,public}] [--domain DOMAIN] [--files-dir DIR] "
+        "[--public-ip IP]\n"
+    )
+    return (
+        common
+        + "                    [--email EMAIL] [--firewall {allow,deny}]\n"
+        + "                    [--to VERSION | --image REPOSITORY@sha256:DIGEST] "
+        + "[--dry-run] [--json]",
+        common
+        + "                    [--email EMAIL] [--firewall {allow,deny}] [--to VERSION |\n"
+        + "                    --image REPOSITORY@sha256:DIGEST] [--dry-run] [--json]",
+    )
+
+
+def test_cli_usage_reflows_actual_python_variants_without_changing_grammar() -> None:
+    older, newer = _observed_setup_usage_variants()
+    canonical = render_contracts._canonicalize_initial_usage(older)
+
+    assert canonical == render_contracts._canonicalize_initial_usage(newer)
+    assert canonical.split() == older.split() == newer.split()
+    assert "[--to VERSION | --image REPOSITORY@sha256:DIGEST]" in " ".join(canonical.split())
+    assert all(len(line) <= 100 for line in canonical.splitlines())
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_cli_usage_reflow_preserves_description_and_option_table_bytes(newline: str) -> None:
+    usage = _observed_setup_usage_variants()[1].replace("\n", newline)
+    body = newline.join(
+        (
+            "",
+            "",
+            "Description  with\ttabs and double spaces.",
+            "",
+            "options:",
+            "  -H HOST, --host HOST, --bind-host HOST  Keep  this spacing.",
+            "      wrapped option explanation\twith tabs",
+            "",
+            "usage: this later example must not be reflowed",
+            "   [--example VALUE]",
+            "",
+        )
+    )
+
+    canonical = render_contracts._canonicalize_initial_usage(usage + body)
+
+    assert canonical.endswith(body)
+    assert canonical[: -len(body)].split() == usage.split()
+
+
+@pytest.mark.parametrize("text", ["", "Overview\n\nusage: example --option VALUE", "Usage: text"])
+def test_cli_usage_reflow_leaves_noninitial_usage_text_unchanged(text: str) -> None:
+    assert render_contracts._canonicalize_initial_usage(text) == text
+
+
+def test_cli_help_capture_applies_usage_reflow_without_normalizing_option_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = []
+    body = "\n\nDescription  keeps spacing.\n\noptions:\n  --to VERSION  Keep\tthis detail."
+    for usage in _observed_setup_usage_variants():
+
+        def main(arguments: list[str], help_text: str = usage + body) -> int:
+            assert arguments == ["--lang", "en", "setup", "--help"]
+            print(help_text)
+            return 0
+
+        monkeypatch.setattr(render_contracts.management_cli, "main", main)
+        captured.append(render_contracts._capture_english_help(["setup"]))
+
+    assert captured[0] == captured[1]
+    assert captured[0].endswith(body)
+
+
+def test_cli_usage_reflow_retains_real_parser_aliases_metavars_and_nargs() -> None:
+    parser = argparse.ArgumentParser(prog="xferry semantic-contract", add_help=False)
+    parser.add_argument("-q", "--quiet", action="store_true", help="A flag without an argument.")
+    parser.add_argument("-H", "--host", "--bind-host", metavar="HOST", help="A hostname.")
+    parser.add_argument("--pair", nargs=2, metavar=("SOURCE", "TARGET"), help="A pair.")
+    parser.add_argument("--maybe", nargs="?", const="soon", metavar="TIME", help="Optional time.")
+    parser.add_argument("--item", action="append", metavar="ITEM", help="Repeatable item.")
+    parser.add_argument("--many", nargs="+", metavar="VALUE", help="One or more values.")
+    parser.add_argument("command", choices=("upload", "download"))
+    parser.add_argument("destination", nargs="?", metavar="DESTINATION")
+    original = parser.format_help().rstrip()
+
+    canonical = render_contracts._canonicalize_initial_usage(original)
+
+    original_usage, separator, original_body = original.partition("\n\n")
+    canonical_usage, canonical_separator, canonical_body = canonical.partition("\n\n")
+    assert canonical_usage.split() == original_usage.split()
+    assert canonical_separator == separator == "\n\n"
+    assert canonical_body == original_body
+    for action in parser._actions:
+        for option in action.option_strings:
+            assert re.search(rf"(?<![\w-]){re.escape(option)}(?![\w-])", canonical)
+    for metavar in ("HOST", "SOURCE", "TARGET", "TIME", "ITEM", "VALUE", "DESTINATION"):
+        assert metavar in canonical
+    assert "{upload,download}" in canonical
+    parsed = parser.parse_args(
+        [
+            "-q",
+            "--bind-host",
+            "files.example",
+            "--pair",
+            "from",
+            "to",
+            "--maybe",
+            "--item",
+            "one",
+            "--item",
+            "two",
+            "--many",
+            "first",
+            "second",
+            "--",
+            "upload",
+            "there",
+        ]
+    )
+    assert parsed.quiet and parsed.host == "files.example"
+    assert parsed.pair == ["from", "to"] and parsed.maybe == "soon"
+    assert parsed.item == ["one", "two"] and parsed.many == ["first", "second"]
+    assert parsed.command == "upload" and parsed.destination == "there"
+
+
+@pytest.mark.parametrize("change", ["added-option", "removed-option", "changed-metavar"])
+def test_cli_usage_reflow_still_detects_real_parser_contract_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    original_parser = render_contracts.management_cli._command_parser
+    selected = {"present": change != "added-option", "metavar": "ORIGINAL_VALUE"}
+
+    def parser(command, translator, **options):
+        result = original_parser(command, translator, **options)
+        if command == "setup" and selected["present"]:
+            result.add_argument(
+                "--contract-probe", metavar=selected["metavar"], help="Runtime contract probe."
+            )
+        return result
+
+    monkeypatch.setattr(render_contracts.management_cli, "_command_parser", parser)
+    monkeypatch.setattr(
+        render_contracts,
+        "TARGETS",
+        (render_contracts.ContractTarget("docs/cli-reference.md", (render_contracts.CLI_REGION,)),),
+    )
+    destination = tmp_path / "docs" / "cli-reference.md"
+    destination.parent.mkdir()
+    destination.write_bytes(_single_marked_document(CLI_REGION))
+    assert render_contracts.render_all(check=False, repo_root=tmp_path) == 0
+    original = destination.read_bytes()
+    assert render_contracts.render_all(check=True, repo_root=tmp_path) == 0
+
+    if change == "changed-metavar":
+        selected["metavar"] = "CHANGED_VALUE"
+    else:
+        selected["present"] = change == "added-option"
+
+    assert render_contracts.render_all(check=True, repo_root=tmp_path) == 1
+    assert destination.read_bytes() == original
+    changed = render_contracts.render_cli_reference()
+    assert changed != original
+    if change == "removed-option":
+        assert b"--contract-probe" not in changed
+    else:
+        assert b"--contract-probe" in changed
+        assert selected["metavar"].encode() in changed
+    assert render_contracts.render_all(check=False, repo_root=tmp_path) == 0
+    assert render_contracts.render_all(check=True, repo_root=tmp_path) == 0
 
 
 def test_cli_and_managed_support_contracts_have_canonical_document_targets() -> None:

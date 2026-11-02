@@ -9,6 +9,7 @@ import io
 import json
 import re
 import sys
+import textwrap
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -164,6 +165,23 @@ CLI_REFERENCE_COMMANDS: tuple[str, ...] = (
 )
 
 
+def _canonicalize_initial_usage(rendered: str) -> str:
+    """Reflow only argparse's initial usage block across supported Python versions."""
+    if not rendered.startswith("usage: "):
+        return rendered
+    separator = re.search(r"\r?\n[ \t]*\r?\n", rendered)
+    end = separator.start() if separator else len(rendered)
+    usage = " ".join(line.strip() for line in rendered[:end].splitlines())
+    wrapped = textwrap.fill(
+        usage,
+        width=100,
+        subsequent_indent=" " * len("usage: "),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return wrapped + rendered[end:]
+
+
 def _capture_english_help(arguments: list[str]) -> str:
     """Capture the real dispatcher help under an explicit English selection."""
     stdout = io.StringIO()
@@ -179,11 +197,11 @@ def _capture_english_help(arguments: list[str]) -> str:
     rendered = stdout.getvalue().rstrip()
     if not rendered:
         raise ValueError(f"CLI help was empty for {' '.join(arguments) or 'root'}")
-    return rendered
+    return _canonicalize_initial_usage(rendered)
 
 
 def render_cli_reference() -> bytes:
-    """Render root and every public command's actual English help output."""
+    """Render actual English help with version-independent usage whitespace."""
     sections: list[str] = []
     for command in (None, *CLI_REFERENCE_COMMANDS):
         arguments = [] if command is None else [command]
@@ -349,16 +367,16 @@ def render_all(*, check: bool, repo_root: Path = REPO_ROOT) -> int:
 
     if check and drifted:
         print("Generated public contract regions are out of date:", file=sys.stderr)
-        for path in drifted:
-            print(f"  - {path}", file=sys.stderr)
+        for printed_path in drifted:
+            print(f"  - {printed_path}", file=sys.stderr)
         print("Run 'python3 tools/render_contracts.py --write'.", file=sys.stderr)
         return 1
     if check:
         print("Generated public contract regions are current.")
     elif updated:
         print("Updated generated public contract regions:")
-        for path in updated:
-            print(f"  - {path}")
+        for printed_path in updated:
+            print(f"  - {printed_path}")
     else:
         print("Generated public contract regions already current.")
     return 0

@@ -19,12 +19,20 @@ For an existing installation:
    the old configuration, protected authentication file, shared folder, notes,
    encrypted sidecars and certificate state together.
 2. Stop the old service with its original controller. Keep its data intact.
-3. Install the current controller and create a fresh deployment using
+3. Before a fresh native setup, use the old controller's removal procedure to
+   remove its managed runtime, configuration and private state **after backing
+   them up**. Keep the backup outside `/etc/xferry`, `/opt/xferry` and
+   `/var/lib/xferry`. Stopping alone leaves old state that the new native setup
+   correctly refuses. If the old removal also deletes its shared folder, restore
+   the files into a dedicated external folder before continuing. A fresh Docker
+   deployment can instead use a separate bundle and volumes while the old
+   deployment stays stopped.
+4. Install the current controller and create a fresh deployment using
    `xferry setup --backend native` or `xferry setup --backend docker`. Select an
    explicit shared folder and review the plan.
-4. Re-enter the needed settings using the current reference. Verify TLS, Basic
+5. Re-enter the needed settings using the current reference. Verify TLS, Basic
    Auth and a complete upload/download/delete cycle before switching clients.
-5. To recover the old deployment, stop the new one and restore its matching old
+6. To recover the old deployment, stop the new one and restore its matching old
    controller, runtime and backed-up state. The new controller does not manage
    that old installation.
 

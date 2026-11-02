@@ -37,11 +37,9 @@ Examples:
 ## `xferry run --help`
 
 ```text
-usage: xferry run [-h] [-V] [--help-all] [--config FILE] [--open]
-                  [--access {private,public,lab}] [-H HOST] [-p PORT]
-                  [--files-dir DIR]
-                  [--https {off,auto,domain,files,self-signed}]
-                  [--auth-file FILE] [--allowed-host HOST]
+usage: xferry run [-h] [-V] [--help-all] [--config FILE] [--open] [--access {private,public,lab}]
+       [-H HOST] [-p PORT] [--files-dir DIR] [--https {off,auto,domain,files,self-signed}]
+       [--auth-file FILE] [--allowed-host HOST]
 
 Run the file server on this host.
 
@@ -92,10 +90,10 @@ command options. Use xferry config show --all to see effective values and source
 ## `xferry setup --help`
 
 ```text
-usage: xferry setup [-h] [--help-all] [--instance ID] [--backend {native,docker}]
-                    [--access {private,public}] [--domain DOMAIN] [--files-dir DIR] [--public-ip IP]
-                    [--email EMAIL] [--firewall {allow,deny}]
-                    [--to VERSION | --image REPOSITORY@sha256:DIGEST] [--dry-run] [--json]
+usage: xferry setup [-h] [--help-all] [--instance ID] [--backend {native,docker}] [--access
+       {private,public}] [--domain DOMAIN] [--files-dir DIR] [--public-ip IP] [--email EMAIL]
+       [--firewall {allow,deny}] [--to VERSION | --image REPOSITORY@sha256:DIGEST] [--dry-run]
+       [--json]
 
 Install and configure a Linux service or Docker server on this host.
 
@@ -126,8 +124,7 @@ Example: xferry setup --backend native
 
 ```text
 usage: xferry config [-h] [--help-all] [--instance ID | --config FILE] [--all] [--group GROUP]
-                     [--search TEXT] [--dry-run] [--json]
-                     [{show,explain,check,set}] [KEY[=VALUE] ...]
+       [--search TEXT] [--dry-run] [--json] [{show,explain,check,set}] [KEY[=VALUE] ...]
 
 Open settings, or show/explain/check/set a setting.
 
