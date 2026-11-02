@@ -9219,7 +9219,7 @@ async (page) => {
   }
 
   async function assertUploadHelpUx() {
-    await waitForTabState("upload", { focused: true });
+    await waitForTabState("upload");
 
     await waitForPageCondition(
       "upload profile and request summary defaults",

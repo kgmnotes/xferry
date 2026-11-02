@@ -1998,6 +1998,113 @@ main().catch(error => { console.error(error); process.exitCode = 1; });
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_full_upload_help_keeps_disclosure_focus_after_opening_advanced_controls() -> None:
+    """Real helper composition must accept summary focus while retaining tab-state checks."""
+    node_script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const extract = (startName, endName) => {
+  const start = source.indexOf(`  async function ${startName}(`);
+  const end = source.indexOf(`  async function ${endName}(`, start);
+  assert.ok(start >= 0 && end > start, `${startName} helper is missing`);
+  return source.slice(start, end);
+};
+const helperSource = [
+  extract("openUploadAdvancedControls", "assertVisibleUploadMethodComposer"),
+  extract("waitForTabState", "assertTopTabContract"),
+  extract("assertUploadHelpUx", "waitForCheckdataRequestPreview"),
+].join("\n");
+const fields = {
+  "request-line": "POST /upload",
+  "body-kind": "multipart/form-data, file field",
+  mime: "application/octet-stream",
+  "filename-source": "Multipart part filename",
+};
+const tab = {
+  classList: { contains: name => name === "active" },
+  getAttribute: name => ({ "aria-selected": "true", tabindex: "0" })[name],
+};
+const panel = { classList: { contains: name => name === "active" }, hidden: false };
+const advanced = { open: false, summary: {} };
+const summary = {
+  open: false,
+  summary: {},
+  getClientRects: () => [{}],
+  querySelector: selector => ({
+    textContent: fields[selector.match(/data-upload-summary="([a-z-]+)"/)[1]],
+  }),
+};
+const profiles = ["multipart", "raw-url", "raw-header", "raw-generated"].map(
+  (profile, index) => ({
+    dataset: { uploadProfile: profile },
+    tabIndex: index === 0 ? 0 : -1,
+    getAttribute: name => name === "aria-checked" ? String(index === 0) : null,
+  })
+);
+const elements = { "tab-upload": tab, "upload-tab": panel,
+  uploadAdvancedControls: advanced, uploadRequestSummary: summary };
+const document = {
+  activeElement: tab,
+  getElementById: id => elements[id] || null,
+  querySelector: () => null,
+  querySelectorAll: selector => {
+    if (selector === '.tab[role="tab"][data-tab-target]') return [tab];
+    if (selector === '.tab-content[role="tabpanel"]') return [panel];
+    assert.equal(selector, "#uploadProfileGroup [data-upload-profile]");
+    return profiles;
+  },
+};
+const clicks = [];
+const page = {
+  locator: selector => {
+    const element = elements[selector.slice(1)];
+    assert.ok(element, `unexpected locator ${selector}`);
+    return {
+      evaluate: async callback => callback(element),
+      locator: child => {
+        assert.equal(child, ":scope > summary");
+        return { click: async () => {
+          element.open = true;
+          document.activeElement = element.summary;
+          clicks.push(selector);
+        } };
+      },
+    };
+  },
+};
+const waitForPageCondition = async (label, predicate, argument, timeout) => {
+  assert.equal(timeout, 10000, "tab and summary checks retain their bounded timeout");
+  if (!predicate(argument)) throw new Error(label);
+};
+const helpers = new Function("document", "page", "waitForPageCondition",
+  "assertVisibleUploadMethodComposer", `${helperSource}\nreturn {
+    open: openUploadAdvancedControls, help: assertUploadHelpUx, wait: waitForTabState,
+  };`
+)(document, page, waitForPageCondition, async () => {});
+async function main() {
+  await helpers.wait("upload", { focused: true });
+  await helpers.open();
+  assert.deepEqual(clicks, ["#uploadAdvancedControls", "#uploadRequestSummary"]);
+  assert.equal(document.activeElement, summary.summary);
+  await helpers.help();
+  assert.equal(document.activeElement, summary.summary, "help must not refocus or click the tab");
+  await assert.rejects(helpers.wait("upload", { focused: true }), /waitForTabState/);
+  panel.hidden = true;
+  await assert.rejects(helpers.help(), /waitForTabState/, "inactive panels still fail");
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script, str(REPO_ROOT / "tools/browser_smoke.playwright.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_advanced_smoke_uses_per_tab_session_and_canonical_send() -> None:
     script = (REPO_ROOT / "tools/browser_smoke.playwright.js").read_text(encoding="utf-8")
 
