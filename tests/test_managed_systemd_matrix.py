@@ -253,7 +253,12 @@ def fixtures(
             return (entry[field] if field else BASE_TREE).encode() + b"\n"
         if arguments[0] == "diff":
             if "--name-only" in arguments:
-                return ("\n".join(matrix._PATCH_FILES) + "\n").encode()
+                changed = [
+                    name
+                    for name in matrix._PATCH_FILES
+                    if (source / name).read_bytes() != originals[name]
+                ]
+                return ("\n".join(changed) + "\n").encode()
             return f"raw patch {version}\n".encode()
         raise AssertionError("unexpected injected validation command")
 
@@ -277,6 +282,77 @@ def test_fixture_validation_binds_all_sources_assets_and_four_signatures(fixture
             result["fixtureSources"][version]["commit"]
             == metadata["versions"][version]["fixture_commit"]
         )
+
+
+@pytest.mark.parametrize(
+    ("base_version", "fixture_version", "version_changes"),
+    [("0.5.0", "0.5.0", False), ("0.5.1", "0.5.1", False), ("0.5.0", "0.5.1", True)],
+)
+def test_exact_fixture_transform_matches_real_git_diff_when_version_is_unchanged(
+    tmp_path: Path,
+    base_version: str,
+    fixture_version: str,
+    version_changes: bool,
+) -> None:
+    """Use real Git so a mock cannot invent a version change absent from the patch."""
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in matrix._PATCH_FILES:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = (matrix.REPO_ROOT / name).read_text()
+        if name == "xferry/config.py":
+            version_line = next(
+                line for line in text.splitlines() if line.startswith("__version__ = ")
+            )
+            text = text.replace(version_line, f'__version__ = "{base_version}"', 1)
+        path.write_text(text)
+    subprocess.run(("git", "init", "--quiet"), cwd=source, check=True)
+    subprocess.run(("git", "config", "user.name", "XFerry Fixture Test"), cwd=source, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@invalid.example"), cwd=source, check=True
+    )
+    for label in ("base", "fixture"):
+        if label == "fixture":
+            patch_fixture_source(
+                source,
+                version=fixture_version,
+                public_key_hex=PUBLIC.hex(),
+                release_base_url=matrix.RELEASE_BASE_URL,
+            )
+        subprocess.run(("git", "add", "--all"), cwd=source, check=True)
+        subprocess.run(
+            ("git", "commit", "--quiet", "--no-gpg-sign", "-m", label),
+            cwd=source,
+            check=True,
+        )
+    expected = set(matrix._PATCH_FILES) - ({"xferry/config.py"} if not version_changes else set())
+    assert matrix._verify_patch(source, fixture_version, PUBLIC) == expected
+    actual = subprocess.check_output(
+        ("git", "diff", "--name-only", "HEAD^", "HEAD"),
+        cwd=source,
+        text=True,
+    )
+    assert set(actual.splitlines()) == expected
+
+
+@pytest.mark.parametrize("mutation", ["unexpected-file", "missing-version-transform"])
+def test_fixture_validation_still_requires_exact_changed_paths(fixtures, monkeypatch, mutation):
+    options, _, calls, command = fixtures
+
+    def changed_names(argv, **kwargs):
+        result = command(argv, **kwargs)
+        if "--name-only" in argv:
+            if mutation == "unexpected-file":
+                return result + b"xferry/cli.py\n"
+            if kwargs["cwd"].name == "0.5.1":
+                return result.replace(b"xferry/config.py\n", b"")
+        return result
+
+    monkeypatch.setattr(matrix, "_command", changed_names)
+    with pytest.raises(matrix.MatrixFailure, match="source_invalid"):
+        matrix.validate_fixtures(options)
+    assert not any(argv[0] == "docker" for argv in calls)
 
 
 @pytest.mark.parametrize(

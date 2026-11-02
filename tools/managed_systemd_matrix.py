@@ -302,7 +302,8 @@ def _public_key(source: Path) -> bytes:
         raise MatrixFailure("source_invalid") from None
 
 
-def _verify_patch(source: Path, version: str, public: bytes) -> None:
+def _verify_patch(source: Path, version: str, public: bytes) -> set[str]:
+    """Require every exact transform and return its exact expected Git change set."""
     originals = {
         name: _git(source, "show", f"HEAD^:{name}").decode("utf-8") for name in _PATCH_FILES
     }
@@ -330,6 +331,10 @@ def _verify_patch(source: Path, version: str, public: bytes) -> None:
     expected = (expected_config, expected_releases, trust[:start] + replacement + trust[end:])
     for name, text in zip(_PATCH_FILES, expected, strict=True):
         _require(_regular(source / name, 512 * 1024) == text.encode(), "source_invalid")
+    # A fixture at the base package version has a legitimate no-op version
+    # transform. Keep checking its complete config.py bytes above, and omit
+    # only that unchanged file from the required Git diff names.
+    return set(_PATCH_FILES) - ({_PATCH_FILES[0]} if expected_config == config else set())
 
 
 def validate_fixtures(options: RunOptions) -> dict[str, Any]:
@@ -440,17 +445,17 @@ def validate_fixtures(options: RunOptions) -> dict[str, Any]:
             _require(
                 hashlib.sha256(patch).hexdigest() == metadata["patch_sha256"], "source_invalid"
             )
-            _require(
-                set(_git(source, "diff", "--name-only", "HEAD^", "HEAD").decode().splitlines())
-                == set(_PATCH_FILES),
-                "source_invalid",
-            )
             public = _public_key(source)
             _require(
                 hashlib.sha256(public).hexdigest() == key["public_key_sha256"], "source_invalid"
             )
             public_keys.append(public)
-            _verify_patch(source, version, public)
+            expected_patch_files = _verify_patch(source, version, public)
+            _require(
+                set(_git(source, "diff", "--name-only", "HEAD^", "HEAD").decode().splitlines())
+                == expected_patch_files,
+                "source_invalid",
+            )
             wheel = (
                 options.sources_root.parent
                 / "wheels"
