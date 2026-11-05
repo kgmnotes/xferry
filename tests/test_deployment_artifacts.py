@@ -442,10 +442,12 @@ def test_journey_docs_publish_portable_managed_container_and_contributor_contrac
         assert "pipx install xferry" in document
         assert "migration.md" in document
         assert "xferry setup --backend native" in document
-        assert "xferry setup --backend docker" in document
         assert "ghcr.io/kgmnotes/xferry:latest" not in document
         assert "curl | sudo sh" not in document
 
+    assert "xferry setup --backend native --access public --files-dir" in readme
+    assert "docs/quick-start.md#container-through-setup" in readme
+    assert "xferry setup --backend docker" in quick_start
     assert "git clone https://github.com/kgmnotes/xferry.git" not in quick_start
     assert "xferry run --open" in quick_start
     assert quick_start.index("## Run once") < quick_start.index("## Persistent Linux service")

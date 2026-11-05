@@ -895,7 +895,7 @@ render `error.message` for operators.
 @pytest.mark.parametrize(
     ("path", "message"),
     (
-        ("README.md", "README must route portable"),
+        ("README.md", "README must explain public VPS setup"),
         ("SECURITY.md", "SECURITY must preserve authorized-use"),
         ("CONTRIBUTING.md", "CONTRIBUTING must preserve local checks"),
         ("docs/operations.md", "operations must own portable"),

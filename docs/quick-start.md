@@ -1,8 +1,8 @@
 # Quick start
 
-This page describes the unpublished **0.5.0 source candidate**. Published older
-packages keep their version's CLI. For candidate validation before release,
-install a [source checkout](contributing.md) with its matching artifacts.
+Install the released CLI to run xferry locally, as a persistent Linux service,
+or in a container. For a public server on a VPS, follow
+[Persistent Linux service](#persistent-linux-service).
 
 Run these commands on the machine where files will be served. For a VPS, connect
 to its terminal first. The current configuration format is version 1 and the
@@ -26,8 +26,7 @@ pipx install xferry
 ```
 
 `xferry` opens the interactive menu. The commands below give the same choices
-explicitly. Use a release that includes this interface; a source checkout uses
-its own matching artifacts as described in [Contributing](contributing.md).
+explicitly. For contributor source builds, see [Contributing](contributing.md).
 
 ## Run once
 
