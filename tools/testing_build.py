@@ -552,67 +552,122 @@ def verify_published_assets(identity: TestingIdentity, assets: Path) -> None:
             raise ValueError("published testing bytes differ from signed handoff")
 
 
-def _anonymous_image_index(image_digest: str) -> bytes:
-    token_document = fetch_json(
+_REGISTRY_METADATA_LIMIT = 1024 * 1024
+_INDEX_TYPES = (
+    "application/vnd.oci.image.index.v1+json, "
+    "application/vnd.docker.distribution.manifest.list.v2+json"
+)
+_MANIFEST_TYPES = (
+    "application/vnd.oci.image.manifest.v1+json, "
+    "application/vnd.docker.distribution.manifest.v2+json"
+)
+
+
+def _anonymous_registry_token() -> str:
+    document = fetch_json(
         "https://ghcr.io/token?service=ghcr.io&scope=repository:kgmnotes/xferry-testing:pull"
     )
-    token = token_document.get("token")
+    token = document.get("token")
     if not isinstance(token, str) or not token:
         raise ValueError("testing image does not allow anonymous access")
+    return token
+
+
+def _anonymous_registry_payload(path: str, *, accept: str, token: str | None = None) -> bytes:
+    if re.fullmatch(r"(?:manifests|blobs)/sha256:[0-9a-f]{64}", path) is None:
+        raise ValueError("testing registry metadata requires an exact digest")
+    selected_token = _anonymous_registry_token() if token is None else token
     request = urllib.request.Request(
-        f"https://ghcr.io/v2/kgmnotes/xferry-testing/manifests/{image_digest}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": (
-                "application/vnd.oci.image.index.v1+json, "
-                "application/vnd.docker.distribution.manifest.list.v2+json"
-            ),
-        },
+        f"https://ghcr.io/v2/kgmnotes/xferry-testing/{path}",
+        headers={"Authorization": f"Bearer {selected_token}", "Accept": accept},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
-        payload = bytes(response.read(1024 * 1024 + 1))
-    if len(payload) > 1024 * 1024:
-        raise ValueError("testing OCI index exceeds its size limit")
+        payload = bytes(response.read(_REGISTRY_METADATA_LIMIT + 1))
+    if not payload or len(payload) > _REGISTRY_METADATA_LIMIT:
+        raise ValueError("testing OCI metadata exceeds its size limit")
     return payload
 
 
+def _anonymous_image_index(image_digest: str, *, token: str | None = None) -> bytes:
+    return _anonymous_registry_payload(
+        f"manifests/{image_digest}", accept=_INDEX_TYPES, token=token
+    )
+
+
+def _registry_descriptor(descriptor: object, *, kind: str, token: str) -> dict[str, Any]:
+    if not isinstance(descriptor, dict):
+        raise ValueError("testing OCI descriptor must be an object")
+    digest, size = descriptor.get("digest"), descriptor.get("size")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        or type(size) is not int
+        or not 0 < size <= _REGISTRY_METADATA_LIMIT
+    ):
+        raise ValueError("testing OCI descriptor has an invalid digest or size")
+    payload = _anonymous_registry_payload(
+        f"{kind}/{digest}",
+        accept=_MANIFEST_TYPES if kind == "manifests" else "application/octet-stream",
+        token=token,
+    )
+    if len(payload) != size or "sha256:" + hashlib.sha256(payload).hexdigest() != digest:
+        raise ValueError("published OCI metadata differs from its authenticated descriptor")
+    document = json.loads(payload)
+    if not isinstance(document, dict):
+        raise ValueError("testing OCI metadata must be an object")
+    return document
+
+
 def verify_public_image(identity: TestingIdentity, image_digest: str) -> None:
-    """Prove an anonymous VPS can pull both architectures and inspect image identity."""
+    """Verify each authenticated OCI config and anonymously pull both architectures."""
     image = f"{TESTING_IMAGE}@{image_digest}"
+    token = _anonymous_registry_token()
+    payload = _anonymous_image_index(image_digest, token=token)
+    if "sha256:" + hashlib.sha256(payload).hexdigest() != image_digest:
+        raise ValueError("published image index differs from the signed digest")
+    index = json.loads(payload)
+    if not isinstance(index, dict) or not isinstance(index.get("manifests"), list):
+        raise ValueError("testing image index must list its platform manifests")
+    manifests: dict[str, dict[str, Any]] = {}
+    for descriptor in index["manifests"]:
+        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("platform"), dict):
+            raise ValueError("testing image platform descriptor is invalid")
+        platform = descriptor["platform"]
+        if platform.get("os") != "linux":
+            continue
+        architecture = platform.get("architecture")
+        if (
+            not isinstance(architecture, str)
+            or architecture not in {"amd64", "arm64"}
+            or architecture in manifests
+        ):
+            raise ValueError("testing image has an unsupported or duplicate Linux architecture")
+        manifests[architecture] = descriptor
+    if set(manifests) != {"amd64", "arm64"}:
+        raise ValueError("testing image does not contain both supported Linux architectures")
+    expected = {
+        "org.opencontainers.image.version": identity.version,
+        "org.opencontainers.image.revision": identity.source_commit,
+        "io.xferry.build-id": identity.build_id,
+        "io.xferry.channel": "testing",
+    }
     with TemporaryDirectory(prefix="xferry-anonymous-docker-") as directory:
         command = ["docker", "--config", directory]
-        payload = _anonymous_image_index(image_digest)
-        if hashlib.sha256(payload).hexdigest() != image_digest.removeprefix("sha256:"):
-            raise ValueError("published image index differs from the signed digest")
-        manifests = json.loads(payload).get("manifests", [])
-        platforms = {
-            item.get("platform", {}).get("architecture")
-            for item in manifests
-            if item.get("platform", {}).get("os") == "linux"
-        }
-        if platforms != {"amd64", "arm64"}:
-            raise ValueError("testing image does not contain both supported Linux architectures")
         for architecture in ("arm64", "amd64"):
+            manifest = _registry_descriptor(manifests[architecture], kind="manifests", token=token)
+            document = _registry_descriptor(manifest.get("config"), kind="blobs", token=token)
+            config = document.get("config")
+            labels = config.get("Labels") if isinstance(config, dict) else None
+            if (
+                document.get("architecture") != architecture
+                or document.get("os") != "linux"
+                or not isinstance(labels, dict)
+                or any(labels.get(key) != value for key, value in expected.items())
+            ):
+                raise ValueError("published image identity differs from the testing build")
             subprocess.run(
                 [*command, "pull", "--platform", f"linux/{architecture}", image], check=True
             )
-            document = json.loads(
-                subprocess.check_output(
-                    [*command, "image", "inspect", "--platform", f"linux/{architecture}", image],
-                    text=True,
-                )
-            )[0]
-            labels = document.get("Config", {}).get("Labels", {})
-            expected = {
-                "org.opencontainers.image.version": identity.version,
-                "org.opencontainers.image.revision": identity.source_commit,
-                "io.xferry.build-id": identity.build_id,
-                "io.xferry.channel": "testing",
-            }
-            if document.get("Architecture") != architecture or any(
-                labels.get(key) != value for key, value in expected.items()
-            ):
-                raise ValueError("published image identity labels differ from testing build")
 
 
 def _identity_arguments(parser: argparse.ArgumentParser) -> None:
