@@ -44,24 +44,30 @@ pre-commit install
 
 ## Branches and commits
 
-Create a short-lived branch from `main`. Use Conventional Commit summaries,
-for example `fix(upload): reject an invalid filename` or
-`docs(api): clarify Advanced Session ownership`.
+Create a short-lived feature branch from `testing` and open its PR into
+`testing`. Use Conventional Commit summaries, for example
+`fix(upload): reject an invalid filename` or `docs(api): clarify session ownership`.
+Use automated agent review and resolve its findings before merging. During
+active development, human PR approval is not required. The protected `testing`
+branch requires the aggregate `CI gate`: documentation-only changes run the
+documentation checks, while code, dependencies, workflows and tools run the full
+checks. See [the testing channel guide](testing-channel.md) for preview
+installation, manual VPS checks and rollback.
 
-Use automated agent review and resolve its findings before merging into `main`.
-During active development, human PR approval is not required. All CI and
-Security jobs must pass for the current change against up-to-date `main`,
-including Authenticated network transfer smoke and Browser (firefox/webkit).
-Strict status checks and branch protection remain enforced.
-
-Development review does not authorize a production release. The separate
-`production-release` signer approval still authorizes the exact prepared
-version, source, and artifacts; see the
+After the owner accepts an exact preview on their VPS, prepare its final version
+and changelog for protected `main`. Existing main status checks remain required
+until the aggregate gate is present there. Functional changes after acceptance
+need a new preview. Development review does not authorize production publication;
+the separate `production-release` signer approval still authorizes the exact
+prepared version, source and artifacts. See the
 [release runbook](https://github.com/kgmnotes/xferry/blob/main/docs/release-runbook.md).
 
 ## Checks
 
-Run the checks relevant to your change. The complete local set is:
+Run the checks relevant to your change. For documentation-only edits, run the
+documentation generators/guards and strict MkDocs build; runtime tests are not
+required. CI makes the same conservative path classification. The complete local
+set for code changes is:
 
 ```bash
 python -m pip check

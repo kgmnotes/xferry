@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .channels import Channel, key_ring_for_channel, release_tag, validate_version_for_channel
 from .execution import ProcessRunner, ReadDownloader
 from .progress import ProgressObserver, observe_progress, run_stage
 from .release_contract import (
@@ -18,7 +19,9 @@ from .release_contract import (
     require_platform_id,
 )
 from .release_trust import (
-    DEFAULT_RELEASE_KEY_RING,
+    DEFAULT_RELEASE_KEY_RING as DEFAULT_RELEASE_KEY_RING,
+)
+from .release_trust import (
     INSTALLER_SIGNATURE_TYPE,
     MAX_SIGNATURE_BYTES,
     ReleaseKeyRing,
@@ -26,7 +29,7 @@ from .release_trust import (
     verify_detached_signature,
     verify_signed_manifest,
 )
-from .versions import MIN_DEPLOYMENT_RELEASE, compare_release_versions, is_supported_release_version
+from .versions import MIN_DEPLOYMENT_RELEASE, compare_release_versions
 
 
 @dataclass(frozen=True)
@@ -43,13 +46,23 @@ def install_release(
     dry_run: bool = False,
     runner: ProcessRunner | None = None,
     downloader: ReadDownloader | None = None,
-    key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
+    key_ring: ReleaseKeyRing | None = None,
     progress: ProgressObserver | None = None,
+    channel: Channel = "stable",
+    expected_source_commit: str | None = None,
+    expected_build_id: str | None = None,
 ) -> InstallResult:
     """Authenticate manifest and installer bytes before any privileged execution."""
     with observe_progress(progress):
         return _install_release(
-            version, dry_run=dry_run, runner=runner, downloader=downloader, key_ring=key_ring
+            version,
+            dry_run=dry_run,
+            runner=runner,
+            downloader=downloader,
+            key_ring=key_ring or key_ring_for_channel(channel),
+            channel=channel,
+            expected_source_commit=expected_source_commit,
+            expected_build_id=expected_build_id,
         )
 
 
@@ -60,8 +73,13 @@ def _install_release(
     runner: ProcessRunner | None,
     downloader: ReadDownloader | None,
     key_ring: ReleaseKeyRing,
+    channel: Channel,
+    expected_source_commit: str | None,
+    expected_build_id: str | None,
 ) -> InstallResult:
-    if not is_supported_release_version(version):
+    try:
+        validate_version_for_channel(version, channel)
+    except ValueError:
         return InstallResult(2, "an exact supported release version is required")
     if compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0:
         return InstallResult(
@@ -78,7 +96,9 @@ def _install_release(
             return InstallResult(4, facts.managed_support_detail, version, dry_run)
         platform = require_platform_id(current_platform_id())
         client = downloader or HttpsDownloader()
-        base = f"https://github.com/kgmnotes/xferry/releases/download/v{version}"
+        base = (
+            f"https://github.com/kgmnotes/xferry/releases/download/{release_tag(version, channel)}"
+        )
         manifest_name = release_manifest_asset_name(platform)
         payload, signature = run_stage(
             "download",
@@ -89,11 +109,19 @@ def _install_release(
         )
         manifest = run_stage(
             "verify",
-            lambda: verify_signed_manifest(payload, signature, key_ring=key_ring),
+            lambda: (
+                verify_signed_manifest(payload, signature, key_ring=key_ring)
+                if channel == "stable"
+                else verify_signed_manifest(payload, signature, key_ring=key_ring, channel=channel)
+            ),
             ok=lambda manifest: manifest.version == version and manifest.platform == platform,
         )
         if manifest.version != version or manifest.platform != platform:
             return InstallResult(1, "release identity mismatch", version, dry_run)
+        if (
+            expected_source_commit is not None and manifest.source_commit != expected_source_commit
+        ) or (expected_build_id is not None and manifest.build_id != expected_build_id):
+            return InstallResult(1, "CLI and runtime build identity mismatch", version, dry_run)
         name = f"install-{platform}.sh"
         installer, installer_signature = run_stage(
             "download",

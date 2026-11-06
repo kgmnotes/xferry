@@ -8,9 +8,9 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main]
+    branches: [main, testing]
   pull_request:
-    branches: [main]
+    branches: [main, testing]
 
 permissions:
   contents: read
@@ -24,7 +24,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography==50.0.2
+      - id: classify
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "push" || "$EVENT" == "pull_request" ]]; then
+            python tools/testing_build.py classify --before "$BEFORE" --after "$AFTER" >> "$GITHUB_OUTPUT"
+          else
+            echo 'code=true' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -87,6 +116,8 @@ jobs:
           path: coverage.xml
 
   network-smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: Authenticated network transfer smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -117,7 +148,8 @@ jobs:
           if-no-files-found: warn
 
   python314-readiness:
-    if: ${{ !inputs.candidate-gates }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
     name: Python 3.14 package and security smoke
     runs-on: ubuntu-latest
     outputs:
@@ -246,6 +278,8 @@ jobs:
           mkdocs build --strict
 
   risk-lanes:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: Risk lanes
     runs-on: ubuntu-latest
 
@@ -302,10 +336,10 @@ jobs:
             tests/test_security/test_websocket_upgrade.py
 
   cross-platform:
-    if: ${{ !inputs.candidate-gates }}
+    if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
     name: Portable wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    needs: python314-readiness
+    needs: [changes, python314-readiness]
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -357,10 +391,11 @@ jobs:
           if-no-files-found: ignore
 
   smoke:
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: Release smoke
     # Keep the browser host compatible with the pinned Playwright CLI.
     runs-on: ubuntu-24.04
-    needs: test
+    needs: [changes, test]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
@@ -640,6 +675,8 @@ jobs:
           retention-days: 14
 
   browser-matrix:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: Browser (${{ matrix.browser }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -686,10 +723,10 @@ jobs:
           retention-days: 14
 
   scie-verify:
-    if: ${{ !inputs.candidate-gates }}
+    if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
     name: Build and verify SCIE bundle (${{ matrix.platform }}, native)
     runs-on: ${{ matrix.runner }}
-    needs: test
+    needs: [changes, test]
     strategy:
       fail-fast: false
       matrix:
@@ -809,3 +846,37 @@ jobs:
             tests/test_management_application_cli.py \
             tests/test_management_releases.py::test_default_rollback_selects_previous_verified_release_and_keeps_old_current \
             tests/test_management_releases.py::test_default_uninstall_removes_only_managed_runtime_and_preserves_state
+
+  security:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
+    uses: ./.github/workflows/security.yml
+
+  gate:
+    name: CI gate
+    if: ${{ always() }}
+    needs: [changes, test, network-smoke, python314-readiness, docs, risk-lanes, cross-platform, smoke, browser-matrix, scie-verify, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every applicable check
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          CANDIDATE_GATES: ${{ inputs.candidate-gates }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          jobs = json.loads(os.environ["RESULTS"])
+          assert jobs["changes"]["result"] == "success", "change classification failed"
+          assert jobs["docs"]["result"] == "success", "documentation gate failed"
+          code = jobs["changes"]["outputs"].get("code")
+          assert code in {"true", "false"}, "classification output missing"
+          optional = {"python314-readiness", "cross-platform", "scie-verify", "security"}
+          candidate = os.environ["CANDIDATE_GATES"] == "true"
+          for name, job in jobs.items():
+              expected = "skipped" if name not in {"changes", "docs"} and (
+                  code == "false" or (candidate and name in optional)
+              ) else "success"
+              assert job["result"] == expected, f"{name}: {job['result']}, expected {expected}"
+          PY

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from xferry.settings import load_settings_text
 
+from .channels import Channel, normalize_channel
 from .compiler import compile_profile, public_url
 from .configuration import configuration_diff
 from .deployment import (
@@ -419,6 +420,9 @@ class NativeBackend:
         purge: bool = False,
         confirmed: bool = False,
         version: str | None = None,
+        channel: Channel | None = None,
+        expected_source_commit: str | None = None,
+        expected_build_id: str | None = None,
         lines: int = 100,
         since: str | None = None,
         follow: bool = False,
@@ -435,6 +439,12 @@ class NativeBackend:
                 1 if state.state in {"broken", "incomplete"} else 0,
                 f"Native server is {state.state}.",
                 state=state,
+                details={
+                    "channel": spec.artifact.get("channel", "stable"),
+                    "version": spec.artifact.get("version"),
+                    "source_commit": spec.artifact.get("source_commit"),
+                    "build_id": spec.artifact.get("build_id"),
+                },
             )
         if dry_run and action not in {"update", "rollback"}:
             return OperationResult(0, f"Native {action} validated; no changes made.", state=state)
@@ -477,7 +487,19 @@ class NativeBackend:
         if manager is None:
             from .releases import default_update_manager
 
-            manager = default_update_manager()
+            selected_channel = normalize_channel(channel or spec.artifact.get("channel", "stable"))
+            if (
+                selected_channel == "stable"
+                and expected_source_commit is None
+                and expected_build_id is None
+            ):
+                manager = default_update_manager()
+            else:
+                manager = default_update_manager(
+                    channel=selected_channel,
+                    expected_source_commit=expected_source_commit,
+                    expected_build_id=expected_build_id,
+                )
         if action == "uninstall":
             unit = next(
                 (
@@ -513,13 +535,37 @@ class NativeBackend:
             with self._mutation(instance):
                 latest = self._validate(instance)
                 executable = self.layout.current_executable.resolve(strict=True)
-                next_spec = replace(
-                    latest,
-                    artifact={
-                        "version": executable.parent.name,
-                        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-                    },
-                )
+                from .release_contract import MANIFEST_NAME, ReleaseManifest
+
+                installed = ReleaseManifest.parse((executable.parent / MANIFEST_NAME).read_bytes())
+                artifact: dict[str, str] = {
+                    "version": executable.parent.name,
+                    "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                    "channel": installed.channel,
+                }
+                if installed.source_commit is not None:
+                    artifact["source_commit"] = installed.source_commit
+                if installed.build_id is not None:
+                    artifact["build_id"] = installed.build_id
+                next_spec = replace(latest, artifact=artifact)
+                if (
+                    action == "rollback"
+                    and spec.artifact.get("channel", "stable") == "testing"
+                    and installed.channel == "stable"
+                ):
+                    next_spec = self._receipt(
+                        next_spec,
+                        changed=tuple(
+                            path
+                            for path in (
+                                latest.profile,
+                                self.layout.config_file,
+                                self.layout.unit_file,
+                                self.layout.auth_file,
+                            )
+                            if path.is_file()
+                        ),
+                    )
                 write_manifest(instance.manifest, next_spec)
         return OperationResult(
             release_result.exit_code,

@@ -109,6 +109,25 @@ class ManagementApplication:
                 2, "Purge requires confirmation; use --yes or confirm the prompt."
             )
         selected = self.resolve(instance)
+        if action in {"update", "rollback"}:
+            from .channels import normalize_channel
+
+            channel = normalize_channel(
+                options.get("channel") or selected.spec.artifact.get("channel", "stable")
+            )
+            if channel == "testing" and selected.spec.backend == "native":
+                from xferry.config import __version__
+
+                from .build_identity import testing_identity
+
+                version = options.get("version") or __version__
+                identity = testing_identity(version)
+                options.update(
+                    version=version,
+                    channel=channel,
+                    expected_source_commit=identity["source_commit"],
+                    expected_build_id=identity["build_id"],
+                )
         if action == "uninstall" and not options.get("dry_run", False):
             with deployment_setup_lock():
                 return self._backend(selected).operate(action, selected, **options)
@@ -229,7 +248,14 @@ class ManagementApplication:
         return OperationResult(
             code,
             f"{spec.backend.capitalize()} diagnostics completed.",
-            details={"checks": checks, **storage_details},
+            details={
+                "checks": checks,
+                **storage_details,
+                "channel": spec.artifact.get("channel", "stable"),
+                "version": spec.artifact.get("version"),
+                "source_commit": spec.artifact.get("source_commit"),
+                "build_id": spec.artifact.get("build_id"),
+            },
             state=state,
         )
 
@@ -250,15 +276,28 @@ class ManagementApplication:
         output: str | Path | None = None,
         resources: ResourceOverrides | None = None,
         image: str | None = None,
+        channel: str = "stable",
     ) -> OperationResult:
+        from xferry.config import __version__
+
+        from .channels import normalize_channel, validate_version_for_channel
         from .versions import (
             MIN_DEPLOYMENT_RELEASE,
             compare_release_versions,
             is_supported_release_version,
         )
 
+        selected_channel = normalize_channel(channel)
+        identity: dict[str, str] = {}
+        if selected_channel == "testing":
+            from .build_identity import testing_identity
+
+            version = validate_version_for_channel(version or __version__, selected_channel)
+            identity = testing_identity(version)
+            if image is not None:
+                raise ValueError("Testing setup selects its signed image; omit --image.")
         if version is not None and (
-            not is_supported_release_version(version)
+            (selected_channel == "stable" and not is_supported_release_version(version))
             or compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0
         ):
             return OperationResult(
@@ -282,6 +321,10 @@ class ManagementApplication:
             selected = self.resolve(instance_id)
             if selected.backend != backend:
                 raise ValueError("selected instance belongs to another backend")
+            if selected.spec.artifact.get("channel", "stable") != selected_channel:
+                raise ValueError(
+                    "Use update with an explicit --channel to switch this installation."
+                )
             if backend == "native":
                 cast("NativeBackend", self._backend(selected))._validate(selected)
             if backend == "docker":
@@ -301,6 +344,7 @@ class ManagementApplication:
                 email=email,
                 dry_run=dry_run,
                 image=image,
+                **({"channel": selected_channel} if selected_channel == "testing" else {}),
             )
         import sys
 
@@ -312,8 +356,6 @@ class ManagementApplication:
             )
         if not dry_run and self.effective_uid() != 0:
             return OperationResult(3, "Native setup requires root.")
-        from xferry.config import __version__
-
         from .managed_state import has_retained_state, has_unsupported_managed_state
         from .model import ManagedLayout, ResourceOverrides, SetupMode, SetupOptions
         from .planning import build_setup_plan
@@ -327,8 +369,35 @@ class ManagementApplication:
                 "Unsupported or ambiguous native state was preserved; remove it "
                 "with its original tooling before a clean setup.",
             )
+        if layout.current_executable.is_file():
+            from .release_contract import MAX_MANIFEST_BYTES, ReleaseManifest
+
+            manifest_path = (
+                layout.current_executable.resolve(strict=True).parent / "xferry-release.json"
+            )
+            with manifest_path.open("rb") as stream:
+                installed_runtime = ReleaseManifest.parse(stream.read(MAX_MANIFEST_BYTES + 1))
+            if installed_runtime.channel != selected_channel:
+                raise ValueError(
+                    "Existing native runtime belongs to another channel; recover it with "
+                    "that channel before switching via update --channel."
+                )
         retained = has_retained_state(layout)
         if retained:
+            recorded = self.resolve(layout.config_file.parent / "deployment.json")
+            if recorded.spec.artifact.get("channel", "stable") != selected_channel:
+                raise ValueError(
+                    "Recover the retained channel before switching via update --channel."
+                )
+            if selected_channel == "testing":
+                if (
+                    recorded.spec.artifact.get("version") != version
+                    or recorded.spec.artifact.get("source_commit") != identity["source_commit"]
+                    or recorded.spec.artifact.get("build_id") != identity["build_id"]
+                ):
+                    raise ValueError(
+                        "Recover the retained version before switching testing builds."
+                    )
             if dry_run:
                 return OperationResult(
                     0,
@@ -338,9 +407,15 @@ class ManagementApplication:
             if not layout.current_executable.is_file():
                 from .bootstrap import install_release
 
-                installed_retained = install_release(version or __version__, runner=self.runner)
+                installed_retained = install_release(
+                    version or __version__,
+                    runner=self.runner,
+                    **self._testing_install_options(selected_channel, identity),
+                )
                 if installed_retained.exit_code:
                     return OperationResult(installed_retained.exit_code, installed_retained.message)
+            if selected_channel == "testing":
+                self._verify_testing_runtime(layout, version or __version__)
             resumed = SetupExecutor(runner=self.runner, effective_uid=self.effective_uid).resume(
                 layout
             )
@@ -349,6 +424,10 @@ class ManagementApplication:
             return self._result(resumed)
         if (layout.config_file.parent / "deployment.json").exists():
             existing = self.resolve(layout.config_file.parent / "deployment.json")
+            if existing.spec.artifact.get("channel", "stable") != selected_channel:
+                raise ValueError(
+                    "Use update with an explicit --channel to switch this installation."
+                )
             observed = self.observe(existing)
             if observed.state in {"running", "stopped"}:
                 return OperationResult(
@@ -363,6 +442,8 @@ class ManagementApplication:
                     "before activation.",
                     state=observed,
                 )
+            if selected_channel == "testing":
+                self._verify_testing_runtime(layout, version or __version__)
             recovered = SetupExecutor(runner=self.runner, effective_uid=self.effective_uid).resume(
                 layout, require_retained=False
             )
@@ -426,6 +507,8 @@ class ManagementApplication:
                     "files_dir": str(plan.files_dir),
                     "port": plan.port,
                     "version": version or __version__,
+                    "channel": selected_channel,
+                    **identity,
                     "runtime_install_required": not layout.current_executable.is_file(),
                 },
                 plan=OperationPlan(
@@ -442,21 +525,68 @@ class ManagementApplication:
         if not layout.current_executable.is_file():
             from .bootstrap import install_release
 
-            installed = install_release(version or __version__, runner=self.runner)
+            installed = install_release(
+                version or __version__,
+                runner=self.runner,
+                **self._testing_install_options(selected_channel, identity),
+            )
             if installed.exit_code:
                 return OperationResult(installed.exit_code, installed.message)
+        if selected_channel == "testing":
+            artifact = self._verify_testing_runtime(layout, version or __version__)
+            return self.setup_native(plan, testing_artifact=artifact)
         return self.setup_native(plan)
+
+    @staticmethod
+    def _testing_install_options(channel: str, identity: Mapping[str, str]) -> dict[str, Any]:
+        if channel != "testing":
+            return {}
+        return {
+            "channel": "testing",
+            "expected_source_commit": identity["source_commit"],
+            "expected_build_id": identity["build_id"],
+        }
+
+    @staticmethod
+    def _verify_testing_runtime(layout: ManagedLayout, version: str) -> dict[str, str]:
+        from .build_identity import verify_testing_identity
+        from .release_contract import current_platform_id, require_platform_id
+        from .release_verifier import verify_release_envelope
+
+        executable = layout.current_executable.resolve(strict=True)
+        manifest = verify_release_envelope(
+            executable.parent / "xferry-release.json",
+            executable.parent / "xferry-release.json.sig",
+            executable,
+            expected_version=version,
+            expected_platform=require_platform_id(current_platform_id()),
+            channel="testing",
+        )
+        return {
+            **verify_testing_identity(manifest, version),
+            "version": manifest.version,
+            "sha256": manifest.executable_sha256,
+        }
 
     @with_progress
     def setup_native(
-        self, plan: SetupPlan, *, executor: SetupExecutor | None = None
+        self,
+        plan: SetupPlan,
+        *,
+        executor: SetupExecutor | None = None,
+        testing_artifact: Mapping[str, str] | None = None,
     ) -> OperationResult:
         from .setup import SetupExecutor
 
+        executor_options: dict[str, Any] = {
+            "runner": self.runner,
+            "effective_uid": self.effective_uid,
+        }
+        if testing_artifact:
+            artifact = dict(testing_artifact)
+            executor_options["artifact_identity"] = lambda layout: dict(artifact)
         with dedicated_files_folder(plan.files_dir or plan.layout.data_root / "files"):
-            result = (
-                executor or SetupExecutor(runner=self.runner, effective_uid=self.effective_uid)
-            ).apply(plan)
+            result = (executor or SetupExecutor(**executor_options)).apply(plan)
             if result.exit_code == 0:
                 path = plan.layout.config_file.parent / "deployment.json"
                 register_instance(path)

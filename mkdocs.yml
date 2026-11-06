@@ -45,6 +45,7 @@ nav:
       - Public deployment: public-direct.md
       - Configuration migration: migration.md
       - Encrypted transfers and recovery: encrypted-transfers.md
+      - Testing channel: testing-channel.md
       - Production release: release-runbook.md
       - Release incident response: incident-response.md
   - Security:

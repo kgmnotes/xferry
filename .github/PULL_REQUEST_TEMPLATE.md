@@ -18,6 +18,9 @@ Please fill out the sections below; delete any that do not apply.
 
 ## Checklist
 
+Complete checks relevant to the change. Documentation-only edits need generated
+documentation guards and the strict MkDocs build; runtime tests are optional.
+
 - [ ] Tests added/updated and `pytest` passes locally
 - [ ] Development and hook environment uses Python 3.11+ (Python 3.12 recommended); application support remains Python 3.10–3.14
 - [ ] Tooling installed with `PIP_CONSTRAINT=constraints/ci.txt python -m pip install -e ".[dev,lint,test]"`

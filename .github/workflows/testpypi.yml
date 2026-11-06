@@ -1,92 +1,281 @@
-name: TestPyPI Candidate Rehearsal
+name: Testing Builds
 
 on:
+  push:
+    branches: [testing]
   workflow_dispatch:
-    inputs:
-      confirm_testpypi:
-        description: Upload the immutable STAGE-009 xferry 0.1.0 candidate to TestPyPI
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: testpypi-xferry-0.1.0
+  group: testing-publish-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+  SCIENCE_NET_TIMEOUT: "60"
 
 jobs:
   identity:
-    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}
+    if: ${{ github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/testing' }}
     runs-on: ubuntu-latest
     outputs:
-      artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}
+      build: ${{ steps.identity.outputs.build }}
+      version: ${{ steps.identity.outputs.version }}
+      build-id: ${{ steps.identity.outputs.build-id }}
+      tag: ${{ steps.identity.outputs.tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.12"
-      - name: Require protected rehearsal branch
+      - run: python -m pip install cryptography==50.0.2
+      - name: Require current protected testing source and exact successful CI
+        id: identity
         env:
           GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/codex%2Fstage-010-testpypi-rehearsal-v2")"
-          test "$(jq -r '.commit.sha' <<<"${branch_json}")" = "${GITHUB_SHA}"
-          test "$(jq -r '.protected' <<<"${branch_json}")" = "true"
-      - name: Verify fixed producer identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api repos/kgmnotes/xferry/actions/artifacts/11095067140 > artifact.json
-          gh api repos/kgmnotes/xferry/actions/runs/36712344792 > run.json
-          python tools/testpypi_publish.py identity --artifact-metadata artifact.json --run-metadata run.json
-      - name: Download immutable STAGE-009 candidate
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
+          branch_json="$(gh api repos/kgmnotes/xferry/branches/testing)"
+          test "$(jq -r '.protected' <<< "$branch_json")" = true
+          test "$(jq -r '.commit.sha' <<< "$branch_json")" = "$GITHUB_SHA"
+          python tools/testing_build.py wait-ci --source-commit "$GITHUB_SHA"
+          build=true
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            build="$(python tools/testing_build.py classify --before "$BEFORE" --after "$GITHUB_SHA" | cut -d= -f2)"
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          if [ "$build" = false ]; then
+            echo 'Documentation changes passed CI; no testing packages needed.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python tools/testing_build.py prepare --source-commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/testing-overlay"
+          jq -r '"version=\(.version)", "build-id=\(.build_id)", "tag=\(.tag)"' \
+            "$RUNNER_TEMP/testing-overlay/identity.json" >> "$GITHUB_OUTPUT"
+          tag="$(jq -r '.tag' "$RUNNER_TEMP/testing-overlay/identity.json")"
+          if gh api "repos/kgmnotes/xferry/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite an existing testing tag.' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: steps.identity.outputs.build == 'true'
         with:
-          repository: kgmnotes/xferry
-          run-id: 36712344792
-          artifact-ids: 11095067140
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: downloaded
-      - name: Authenticate candidate and prepare unchanged distributions
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python tools/testpypi_publish.py prepare --artifact-metadata artifact.json --run-metadata run.json \
-            --archive downloaded/release-candidate.tar --candidate-dir promoted --packages-dir dist
-      - name: Preserve authenticated distributions for the OIDC job
-        id: staged-distributions
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
-        with:
-          name: authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/
+          name: testing-source
+          path: ${{ runner.temp }}/testing-overlay/
+          include-hidden-files: true
+          retention-days: 90
           if-no-files-found: error
-          retention-days: 14
 
-  publish:
+  python:
     needs: identity
+    if: needs.identity.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      wheel-sha256: ${{ steps.wheel.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: testing-source
+          path: ${{ runner.temp }}/testing-overlay
+      - run: python -m pip install build cryptography==50.0.2
+      - name: Build exact source overlay and validate installed wheel and sdist
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/testing-overlay/source"
+          python -m build --sdist --wheel --outdir "$GITHUB_WORKSPACE/dist"
+          python tools/verify_python_artifacts.py validate --workspace "$PWD" \
+            --wheel "$GITHUB_WORKSPACE/dist/xferry-$VERSION-py3-none-any.whl" --sdist "$GITHUB_WORKSPACE/dist/xferry-$VERSION.tar.gz"
+          python tools/verify_python_artifacts.py prepare-wheelhouse --workspace "$PWD" \
+            --wheel "$GITHUB_WORKSPACE/dist/xferry-$VERSION-py3-none-any.whl" --wheelhouse "$RUNNER_TEMP/testing-wheelhouse" \
+            --constraints "$PWD/constraints/ci.txt"
+          python tools/verify_python_artifacts.py offline-smoke --workspace "$PWD" \
+            --wheel "$GITHUB_WORKSPACE/dist/xferry-$VERSION-py3-none-any.whl" --sdist "$GITHUB_WORKSPACE/dist/xferry-$VERSION.tar.gz" \
+            --wheelhouse "$RUNNER_TEMP/testing-wheelhouse" --fresh-root "$RUNNER_TEMP/testing-offline" \
+            --constraints "$PWD/constraints/ci.txt"
+      - id: wheel
+        run: |
+          set -euo pipefail
+          echo "sha256=$(sha256sum dist/xferry-*.whl | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-python
+          path: dist/
+          retention-days: 90
+          if-no-files-found: error
+
+  native:
+    needs: [identity, python]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: testing-source
+          path: ${{ runner.temp }}/testing-overlay
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: testing-python
+          path: wheel
+      - run: python -m pip install build pex==2.99.0 cryptography==50.0.2
+      - name: Build native executable from the exact tested wheel
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+          BUILD_ID: ${{ needs.identity.outputs.build-id }}
+          WHEEL_SHA256: ${{ needs.python.outputs.wheel-sha256 }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python "$RUNNER_TEMP/testing-overlay/source/tools/build_scie_release.py" \
+            --platform "$PLATFORM" --output-dir "$GITHUB_WORKSPACE/bundle" \
+            --version "$VERSION" --source-commit "$GITHUB_SHA" --workflow-run "$GITHUB_RUN_ID" \
+            --channel testing --build-id "$BUILD_ID" --signing-key-id xferry-testing-2026-11 \
+            --require-hosted-signature --wheel "$GITHUB_WORKSPACE/wheel/xferry-$VERSION-py3-none-any.whl" \
+            --wheel-sha256 "$WHEEL_SHA256"
+          executable="$GITHUB_WORKSPACE/bundle/xferry-$VERSION-$PLATFORM"
+          PATH=/nonexistent "$executable" run --version
+          PATH=/nonexistent "$executable" --help >/dev/null
+          bash -n bundle/install.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-scie-${{ matrix.platform }}
+          path: bundle/
+          retention-days: 90
+          if-no-files-found: error
+
+  docker:
+    needs: [identity, python]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: testing-python
+          path: wheel
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: Authenticate to testing package only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build immutable multiarch testing image from exact wheel
+        id: image
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+          BUILD_ID: ${{ needs.identity.outputs.build-id }}
+          WHEEL_SHA256: ${{ needs.python.outputs.wheel-sha256 }}
+        run: |
+          set -euo pipefail
+          echo "$WHEEL_SHA256  wheel/xferry-$VERSION-py3-none-any.whl" | sha256sum --check
+          image="ghcr.io/kgmnotes/xferry-testing:v$VERSION"
+          if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
+            echo 'Refusing to replace an existing testing image.' >&2
+            exit 1
+          fi
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --file packaging/Dockerfile.candidate --build-context "wheel=$PWD/wheel" \
+            --build-arg RELEASE_VERSION="$VERSION" --build-arg SOURCE_COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_ID="$BUILD_ID" --build-arg BUILD_CHANNEL=testing \
+            --metadata-file image.json --tag "$image" .
+          echo "digest=$(jq -r '.["containerimage.digest"]' image.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-image-receipt
+          path: image.json
+          retention-days: 90
+          if-no-files-found: error
+
+  sign:
+    needs: [identity, python, native, docker]
+    runs-on: ubuntu-latest
+    environment: testing-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography==50.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: testing-*
+          path: downloaded
+      - name: Sign exact native and installer bytes with isolated testing identity
+        env:
+          XFERRY_TESTING_SIGNING_KEY_PEM: ${{ secrets.XFERRY_TESTING_SIGNING_KEY_PEM }}
+          KEY_ID: ${{ vars.XFERRY_TESTING_SIGNING_KEY_ID }}
+          IMAGE_DIGEST: ${{ needs.docker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$KEY_ID" = xferry-testing-2026-11
+          mkdir candidate
+          cp -R downloaded/testing-python candidate/python
+          cp -R downloaded/testing-scie-linux-x86_64 candidate/scie-linux-x86_64
+          cp -R downloaded/testing-scie-linux-aarch64 candidate/scie-linux-aarch64
+          python tools/testing_build.py sign --identity downloaded/testing-source/identity.json \
+            --candidate candidate --output signed --image-digest "$IMAGE_DIGEST" --key-id "$KEY_ID"
+          cp downloaded/testing-source/identity.json identity.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-signed
+          path: |
+            signed/
+            identity.json
+          retention-days: 90
+          if-no-files-found: error
+
+  publish-python:
+    needs: [identity, sign]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
       actions: read
       id-token: write
     steps:
-      - name: Download authenticated candidate distributions
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          artifact-ids: ${{ needs.identity.outputs.artifact-id }}
-          merge-multiple: true
+          name: testing-python
           path: dist
       - name: Trusted Publishing to TestPyPI only
-        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
@@ -94,33 +283,83 @@ jobs:
           skip-existing: false
           attestations: true
 
-  pipx-smoke:
-    needs: publish
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+  publish-native:
+    needs: [identity, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
-        with:
-          python-version: "3.12"
-      - name: Install pipx verifier
-        run: python -m pip --isolated install --index-url https://pypi.org/simple/ pipx==1.8.0
-      - name: Prove accepted TestPyPI bytes and actual isolated pipx journey
-        shell: bash
+          name: testing-signed
+          path: release
+      - name: Create public immutable prerelease without replacing stable latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.identity.outputs.tag }}
         run: |
           set -euo pipefail
-          python tools/testpypi_publish.py smoke \
-            --download-dir "$RUNNER_TEMP/testpypi-accepted" --fresh-root "$RUNNER_TEMP/testpypi-pipx"
-      - name: Preserve TestPyPI acceptance receipt
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+          gh release create "$TAG" release/signed/* --repo kgmnotes/xferry \
+            --target "$GITHUB_SHA" --prerelease --latest=false --title "$TAG" \
+            --notes 'Testing build. Install commands appear in testing-ready.json after registry verification. Manual VPS acceptance is pending.'
+
+  ready:
+    needs: [identity, docker, publish-python, publish-native]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: testpypi-receipt-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/testpypi-accepted/testpypi-receipt.json
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - run: python -m pip install cryptography==50.0.2 pipx==1.8.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: testing-signed
+          path: release
+      - name: Verify public GitHub bytes, TestPyPI hashes and anonymous GHCR access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ needs.docker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python tools/testing_build.py ready --identity release/identity.json --assets release/signed \
+            --image-digest "$IMAGE_DIGEST" --output testing-ready.json --verify-published
+          wheel_url="$(jq -r '.wheel_url' testing-ready.json)"
+          PIP_INDEX_URL=https://pypi.org/simple/ PIP_EXTRA_INDEX_URL= \
+            pipx install --suffix=-preview "$wheel_url"
+          "$HOME/.local/bin/xferry-preview" run --version
+          image="$(jq -r '.image' testing-ready.json)"
+          python tools/docker_image_smoke.py --image "$image"
+      - name: Publish verified ready report and copyable commands
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" testing-ready.json --repo kgmnotes/xferry
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("testing-ready.json").read_text())
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as out:
+              out.write(f"Testing build ready: {report['version']} ({report['build_id']})\n\n")
+              out.write(f"Source: `{report['source_commit']}`\n\n")
+              out.write("Manual VPS acceptance: pending.\n\n")
+              for name, command in report["commands"].items():
+                  out.write(f"{name}:\n```sh\n{command}\n```\n\n")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          path: testing-ready.json
+          retention-days: 90
           if-no-files-found: error
-          retention-days: 14

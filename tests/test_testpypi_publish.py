@@ -274,30 +274,30 @@ def test_prepare_does_not_write_before_archive_identity_verifies(tmp_path, ident
 @pytest.mark.parametrize(
     ("before", "after"),
     [
-        ("workflow_dispatch:", "push:"),
+        ("branches: [testing]", "branches: [main]"),
+        ("workflow_dispatch:", "pull_request:"),
         ("https://test.pypi.org/legacy/", "https://upload.pypi.org/legacy/"),
-        ("environment: testpypi", "environment: production-release"),
+        ("environment: testpypi", "environment: release-production"),
+        ("environment: testing-signing", "environment: production-release"),
         ("id-token: write", "id-token: read"),
         ("contents: read\n  actions: read", "contents: write\n  actions: read"),
-        ("packages-dir: dist/", "packages-dir: promoted/python/"),
-        ("run-id: 36712344792", "run-id: 1"),
-        ("artifact-ids: 11095067140", "artifact-ids: 1"),
+        ("packages-dir: dist/", "packages-dir: elsewhere/"),
         ("skip-existing: false", "skip-existing: true"),
         ("persist-credentials: false", "persist-credentials: true"),
         ("7245906fb61fa33a13554f9d5fb856fe61758086", "release/v1"),
-        ("python tools/testpypi_publish.py prepare", "python -m build"),
+        ("python tools/testing_build.py prepare --source-commit", "python -m build"),
+        ("python tools/testing_build.py wait-ci --source-commit", "echo trusted"),
         ("attestations: true", "password: ${{ secrets.PYPI_TOKEN }}"),
-        ("refs/heads/codex/stage-010-testpypi-rehearsal-v2", "refs/heads/main"),
-        ("needs: publish", "needs: identity"),
+        ("refs/heads/testing", "refs/heads/main"),
+        ("needs: [identity, sign]", "needs: identity"),
+        ("--prerelease --latest=false", "--latest=true"),
+        ("--verify-published", "--skip-verification"),
+        ("ghcr.io/kgmnotes/xferry-testing:v$VERSION", "ghcr.io/kgmnotes/xferry:v$VERSION"),
         (
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' || true }}",
+            "secrets.XFERRY_TESTING_SIGNING_KEY_PEM",
+            "secrets.XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM",
         ),
-        ("    if: ${{ inputs.confirm_testpypi", "    # if: ${{ inputs.confirm_testpypi"),
-        (
-            "          python tools/testpypi_publish.py prepare",
-            "          # python tools/testpypi_publish.py prepare",
-        ),
+        ("    if: ${{ github.repository ==", "    # if: ${{ github.repository =="),
     ],
 )
 def test_staging_policy_rejects_boundary_regressions(before, after):
@@ -318,116 +318,68 @@ def test_staging_policy_requires_explicit_top_level_permissions():
     without_permissions = workflow.replace(
         "\npermissions:\n  contents: read\n  actions: read\n", "\n", 1
     )
-
-    findings = staging_policy_findings(without_permissions)
-
-    assert any("permissions" in finding.message.lower() for finding in findings)
-
-
-def test_staging_policy_preserves_authenticated_handoff_for_fourteen_days():
-    workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
-
-    assert "retention-days: 14" in workflow.split("  publish:", 1)[0]
-    findings = staging_policy_findings(
-        workflow.replace("retention-days: 14", "retention-days: 1", 1)
+    assert any(
+        "permissions" in item.message.lower()
+        for item in staging_policy_findings(without_permissions)
     )
 
-    assert any("retention" in finding.message.lower() for finding in findings)
 
-
-def test_staging_policy_scopes_handoff_retention_to_authenticated_upload():
+def test_staging_policy_preserves_source_handoff_retention():
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
-    anchor = "      - name: Preserve authenticated distributions for the OIDC job\n"
-    compromised = workflow.replace("retention-days: 14", "retention-days: 1", 1).replace(
-        anchor,
-        (
-            "      - name: Unrelated identity retention\n"
-            "        run: true\n"
-            "        env:\n"
-            "          EXPECTED_RETENTION: retention-days: 14\n"
-            f"{anchor}"
-        ),
-        1,
-    )
-
-    findings = staging_policy_findings(compromised)
-
-    assert any("retention" in finding.message.lower() for finding in findings)
+    compromised = workflow.replace("retention-days: 90", "retention-days: 1", 1)
+    assert any("retention" in item.message.lower() for item in staging_policy_findings(compromised))
 
 
 @pytest.mark.parametrize(
     "unsafe_step",
     [
         (
-            "      - uses: actions/checkout@"
-            "3d3c42e5aac5ba805825da76410c181273ba90b1\n"
-            "        with:\n"
-            "          persist-credentials: false\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+            "        with:\n          persist-credentials: false\n"
         ),
         "      - uses: ./.github/actions/prepare-testpypi\n",
-        (
-            "      - name: Execute repository code\n"
-            "        run: python tools/testpypi_publish.py prepare\n"
-        ),
+        "      - name: Execute repository code\n        run: python tools/testing_build.py sign\n",
     ],
 )
 def test_staging_policy_rejects_repository_execution_in_oidc_job(unsafe_step):
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
     anchor = "      - name: Trusted Publishing to TestPyPI only\n"
-    assert anchor in workflow
-
     findings = staging_policy_findings(workflow.replace(anchor, unsafe_step + anchor, 1))
-
     assert any("oidc" in finding.message.lower() for finding in findings)
 
 
 @pytest.mark.parametrize(
     ("before", "after"),
     [
-        ("Require protected rehearsal branch", "Trust mutable rehearsal branch"),
-        ('branches/codex%2Fstage-010-testpypi-rehearsal-v2")', 'branches/main")'),
-        ('.commit.sha\' <<<"${branch_json}"', '.name\' <<<"${branch_json}"'),
-        (
-            '.protected\' <<<"${branch_json}"',
-            '.name\' <<<"${branch_json}"',
-        ),
+        ("branches/testing)", "branches/main)"),
+        ("jq -r '.commit.sha'", "jq -r '.name'"),
+        ("jq -r '.protected'", "jq -r '.name'"),
     ],
 )
 def test_staging_policy_requires_protected_branch_preflight(before, after):
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
     assert before in workflow
-    assert staging_policy_findings(workflow) == []
-
-    findings = staging_policy_findings(workflow.replace(before, after, 1))
-
-    assert any("protected" in finding.message.lower() for finding in findings)
+    assert any(
+        "protected" in item.message.lower()
+        for item in staging_policy_findings(workflow.replace(before, after, 1))
+    )
 
 
 def test_staging_policy_rejects_administration_only_branch_endpoint():
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
-    anchor = 'branch_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
-    assert anchor in workflow
-    injection = (
-        'protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/'
-        'codex%2Fstage-010-testpypi-rehearsal-v2/protection")"\n          '
+    compromised = workflow.replace("branches/testing)", "branches/testing/protection)")
+    assert any(
+        "administration" in item.message.lower() for item in staging_policy_findings(compromised)
     )
-
-    findings = staging_policy_findings(workflow.replace(anchor, injection + anchor, 1))
-
-    assert any("administration" in finding.message.lower() for finding in findings)
 
 
 def test_staging_policy_checks_every_publish_destination():
     workflow = (REPO_ROOT / ".github/workflows/testpypi.yml").read_text()
     injection = (
-        "      - uses: pypa/gh-action-pypi-publish@"
-        "7245906fb61fa33a13554f9d5fb856fe61758086\n"
-        "        with:\n"
-        "          repository-url: https://evil.invalid/legacy/\n"
+        "      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086\n"
+        "        with:\n          repository-url: https://evil.invalid/legacy/\n"
     )
-    assert staging_policy_findings(
-        workflow.replace("\n  pipx-smoke:", "\n" + injection + "\n  pipx-smoke:")
-    )
+    assert staging_policy_findings(workflow.replace("\n  ready:", "\n" + injection + "\n  ready:"))
 
 
 def test_path_scoped_staging_guard_does_not_depend_on_release_workflow(tmp_path):

@@ -90,16 +90,19 @@ command options. Use xferry config show --all to see effective values and source
 ## `xferry setup --help`
 
 ```text
-usage: xferry setup [-h] [--help-all] [--instance ID] [--backend {native,docker}] [--access
-       {private,public}] [--domain DOMAIN] [--files-dir DIR] [--public-ip IP] [--email EMAIL]
-       [--firewall {allow,deny}] [--to VERSION | --image REPOSITORY@sha256:DIGEST] [--dry-run]
-       [--json]
+usage: xferry setup [-h] [--help-all] [--channel {stable,testing}] [--instance ID] [--backend
+       {native,docker}] [--access {private,public}] [--domain DOMAIN] [--files-dir DIR] [--public-ip
+       IP] [--email EMAIL] [--firewall {allow,deny}] [--to VERSION | --image
+       REPOSITORY@sha256:DIGEST] [--dry-run] [--json]
 
 Install and configure a Linux service or Docker server on this host.
 
 options:
   -h, --help            Show this help and exit.
   --help-all            Show all command options.
+  --channel {stable,testing}
+                        Select stable or opt into an exact testing build; updates keep the recorded
+                        channel.
   --instance ID         Select a persistent deployment by ID.
   --backend {native,docker}
                         Install a Linux service or Docker Compose deployment (default: native).
@@ -270,17 +273,21 @@ Example: xferry credentials reset
 ## `xferry update --help`
 
 ```text
-usage: xferry update [-h] [--help-all] [--instance ID] --to VERSION [--dry-run] [--json]
+usage: xferry update [-h] [--help-all] [--channel {stable,testing}] [--instance ID] --to VERSION
+       [--dry-run] [--json]
 
 Update the installed server to an exact release version.
 
 options:
-  -h, --help     Show this help and exit.
-  --help-all     Show all command options.
-  --instance ID  Select a persistent deployment by ID.
-  --to VERSION   Exact release version.
-  --dry-run      Validate and preview changes.
-  --json         Print machine-readable results.
+  -h, --help            Show this help and exit.
+  --help-all            Show all command options.
+  --channel {stable,testing}
+                        Select stable or opt into an exact testing build; updates keep the recorded
+                        channel.
+  --instance ID         Select a persistent deployment by ID.
+  --to VERSION          Exact release version.
+  --dry-run             Validate and preview changes.
+  --json                Print machine-readable results.
 
 Example: xferry update --to 0.5.0
 ```
@@ -288,17 +295,21 @@ Example: xferry update --to 0.5.0
 ## `xferry rollback --help`
 
 ```text
-usage: xferry rollback [-h] [--help-all] [--instance ID] [--to VERSION] [--dry-run] [--json]
+usage: xferry rollback [-h] [--help-all] [--channel {stable,testing}] [--instance ID] [--to VERSION]
+       [--dry-run] [--json]
 
 Restore a verified release on a long-lived installation.
 
 options:
-  -h, --help     Show this help and exit.
-  --help-all     Show all command options.
-  --instance ID  Select a persistent deployment by ID.
-  --to VERSION   Exact release version.
-  --dry-run      Validate and preview changes.
-  --json         Print machine-readable results.
+  -h, --help            Show this help and exit.
+  --help-all            Show all command options.
+  --channel {stable,testing}
+                        Select stable or opt into an exact testing build; updates keep the recorded
+                        channel.
+  --instance ID         Select a persistent deployment by ID.
+  --to VERSION          Exact release version.
+  --dry-run             Validate and preview changes.
+  --json                Print machine-readable results.
 
 Example: xferry rollback
 ```

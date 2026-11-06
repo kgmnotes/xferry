@@ -191,3 +191,9 @@ pipx uninstall xferry
 Removing the CLI does not remove a running service or container. Stop and
 uninstall the selected deployment first. A CLI installed in your own virtual
 environment is removed with that environment's package manager.
+
+## Try an unreleased build
+
+Use the opt-in [testing channel](testing-channel.md) for a hash-pinned TestPyPI
+wheel, signed native runtime or Docker preview. The guide covers clean VPS
+installation, updates and rollback before a stable release.

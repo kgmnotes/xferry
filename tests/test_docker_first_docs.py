@@ -95,7 +95,7 @@ def test_privileged_release_downloads_follow_only_https_redirects(path: Path) ->
 def test_release_runbook_separates_staging_and_production_publishers() -> None:
     text = _read(Path("docs/release-runbook.md"))
 
-    assert "TestPyPI rehearsal mapping uses workflow `testpypi.yml`" in text
+    assert "TestPyPI testing mapping uses workflow `testpypi.yml`" in text
     assert "Environment `testpypi`" in text
     assert "production PyPI mapping uses workflow `release-production.yml`" in text
     assert "Environment `release-production`" in text

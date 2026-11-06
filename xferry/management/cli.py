@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from xferry.config import __version__
 
@@ -161,6 +161,17 @@ def _command_parser(
     )
     parser.add_argument("-h", "--help", action="help", help=translator.get("help_option"))
     parser.add_argument("--help-all", action="help", help="Show all command options.")
+    if command in {"setup", "update", "rollback"}:
+        parser.add_argument(
+            "--channel",
+            choices=("stable", "testing"),
+            help=(
+                "Select stable or opt into an exact testing build; "
+                "updates keep the recorded channel."
+            ),
+        )
+    else:
+        parser.set_defaults(channel=None)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--instance", metavar="ID", help="Select a persistent deployment by ID.")
     if command in {"config", "credentials"}:
@@ -496,6 +507,7 @@ def _setup_options(args: argparse.Namespace) -> dict[str, object]:
         "public_ip": args.public_ip,
         "email": args.email,
         "firewall": {"allow": True, "deny": False}.get(args.firewall),
+        **({"channel": args.channel} if args.channel is not None else {}),
     }
 
 
@@ -514,6 +526,7 @@ def _setup_arguments(args: argparse.Namespace) -> list[str]:
         "output",
         "to",
         "image",
+        "channel",
     ):
         value = getattr(args, name, None)
         if value is not None:
@@ -659,6 +672,8 @@ def _persistent_handler(args: argparse.Namespace, context: ManagementContext) ->
             options.update(lines=args.lines, since=args.since, follow=args.follow)
         if args.command in {"update", "rollback"}:
             options.update(version=args.to, dry_run=args.dry_run)
+            if args.channel is not None:
+                options["channel"] = args.channel
         if args.command == "uninstall":
             confirmed = args.yes
             if (
@@ -879,9 +894,13 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
                         language=context.language.code,
                     )
         if command == "setup":
+            from .channels import normalize_channel, validate_version_for_channel
             from .versions import is_supported_release_version
 
-            if args.to is not None and not is_supported_release_version(args.to):
+            selected_channel = normalize_channel(args.channel or "stable")
+            if args.to is not None and selected_channel == "testing":
+                validate_version_for_channel(args.to, selected_channel)
+            elif args.to is not None and not is_supported_release_version(args.to):
                 raise ValueError(
                     "--to requires an exact supported release version, such as " + __version__
                 )
@@ -976,14 +995,19 @@ def _verify_release_envelope_handler(argv: Sequence[str]) -> int:
     parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--platform", required=True, choices=SUPPORTED_PLATFORM_IDS)
+    parser.add_argument("--channel", choices=("stable", "testing"), default="stable")
     try:
         args = parser.parse_args(argv)
+        verifier_options: dict[str, Any] = (
+            {"channel": "testing"} if args.channel == "testing" else {}
+        )
         verify_release_envelope(
             args.manifest,
             args.signature,
             args.executable,
             expected_version=args.version,
             expected_platform=cast(PlatformId, args.platform),
+            **verifier_options,
         )
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1

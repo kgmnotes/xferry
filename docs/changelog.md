@@ -8,6 +8,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Protected testing branch with versioned TestPyPI, signed native and Docker
+  previews, exact CLI/runtime build identity and manual VPS acceptance before
+  stable release preparation.
+- Explicit stable/testing setup and updates, plus a retained stable runtime and
+  compatible configuration for rollback after multiple preview updates.
+- Aggregate CI gate with documentation-only checks for prose changes.
+
 - A keyboard-driven terminal wizard for setup and configuration, with back
   navigation, field validation, searchable settings and a review before applying.
 - Live operation stages and elapsed time during installation and configuration.

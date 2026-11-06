@@ -677,7 +677,10 @@ def test_reusable_candidate_source_gates_preserve_normal_ci_checks() -> None:
         job = _workflow_job(workflow, job_name)
         assert "if: ${{ !inputs.candidate-gates }}" not in job.split("    steps:", 1)[0]
     for job_name in ("python314-readiness", "cross-platform", "scie-verify"):
-        assert "if: ${{ !inputs.candidate-gates }}" in _workflow_job(workflow, job_name)
+        assert (
+            "if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}"
+            in _workflow_job(workflow, job_name)
+        )
     security = (REPO_ROOT / ".github/workflows/security.yml").read_text(encoding="utf-8")
     assert "workflow_call:" in security
     assert "python -m pip_audit --strict --no-deps -r constraints/ci.txt" in security
@@ -901,7 +904,7 @@ def test_ci_runs_toolchain_check_and_a_blocking_scie_bundle_gate() -> None:
     scie_job = _workflow_job(workflow, "scie-verify")
 
     assert "python tools/check_toolchain_pins.py" in test_job
-    assert "needs: test" in scie_job
+    assert "needs: [changes, test]" in scie_job
     assert 'python -m pip install -e ".[test]" build pex==2.99.0' in scie_job
     assert "linux-x86_64" in scie_job
     assert "linux-aarch64" in scie_job
@@ -979,7 +982,7 @@ def test_cross_platform_acceptance_transfers_one_wheel_across_all_nine_pairs() -
     assert "name: portable-wheel" in upload
     assert "path: dist/xferry-*.whl" in upload
     assert "if-no-files-found: error" in upload
-    assert "needs: python314-readiness" in portable
+    assert "needs: [changes, python314-readiness]" in portable
     assert "os: [ubuntu-latest, macos-15, windows-latest]" in portable
     assert 'python-version: ["3.10", "3.12", "3.14"]' in portable
     assert "python-version: ${{ matrix.python-version }}" in portable

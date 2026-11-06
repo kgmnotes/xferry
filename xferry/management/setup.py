@@ -365,6 +365,7 @@ class SetupExecutor:
                         spec,
                         backend_options={**spec.backend_options, "credentials_revealed": True},
                         artifact={
+                            **spec.artifact,
                             "version": executable.parent.name,
                             "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                         },
@@ -669,6 +670,7 @@ class SetupExecutor:
         artifact = self.artifact_identity(plan.layout) if self.artifact_identity is not None else {}
         if executable is not None:
             artifact = {
+                **artifact,
                 "version": version,
                 "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
             }
