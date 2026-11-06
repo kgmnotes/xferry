@@ -9,6 +9,7 @@ ARG BUILD_ID
 ARG BUILD_CHANNEL=stable
 LABEL org.opencontainers.image.version=$RELEASE_VERSION \
       org.opencontainers.image.revision=$SOURCE_COMMIT \
+      org.opencontainers.image.source=https://github.com/kgmnotes/xferry \
       io.xferry.build-id=$BUILD_ID \
       io.xferry.channel=$BUILD_CHANNEL
 

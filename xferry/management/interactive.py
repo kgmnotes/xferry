@@ -696,7 +696,8 @@ def _tls(ui: TerminalUI, changes: dict[str, str], target: str) -> None:
     public = mode in {"auto", "domain", "files"}
     selected.update(
         access="public" if public else "private",
-        host="0.0.0.0" if public else "127.0.0.1",
+        # The operator explicitly selected the public preset above.
+        host="0.0.0.0" if public else "127.0.0.1",  # nosec B104
         port="443" if public else "8080",
         https_mode=mode,
         acme_http_port="80",

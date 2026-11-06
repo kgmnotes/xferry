@@ -439,6 +439,10 @@ def test_testing_workflow_keeps_publishers_and_refs_separate() -> None:
     assert "skip-existing: false" in workflow
     assert "--verify-published" in workflow
     assert "retention-days: 90" in workflow
+    assert "name: testing-source-${{ github.run_id }}.${{ github.run_attempt }}" in workflow
+    assert "name: testing-signed-${{ needs.identity.outputs.build-id }}" in workflow
+    assert "pattern: testing-*-${{ needs.identity.outputs.build-id }}" in workflow
+    assert "$GITHUB_WORKSPACE/dist/xferry-*.whl" not in workflow
     assert "--clobber" not in workflow
     assert "https://upload.pypi.org/legacy/" not in workflow
     assert not re.search(r"\bssh\b|\bscp\b", workflow)

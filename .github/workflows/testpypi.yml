@@ -69,7 +69,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: steps.identity.outputs.build == 'true'
         with:
-          name: testing-source
+          name: testing-source-${{ github.run_id }}.${{ github.run_attempt }}
           path: ${{ runner.temp }}/testing-overlay/
           include-hidden-files: true
           retention-days: 90
@@ -90,7 +90,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-source
+          name: testing-source-${{ needs.identity.outputs.build-id }}
           path: ${{ runner.temp }}/testing-overlay
       - run: python -m pip install build cryptography==50.0.2
       - name: Build exact source overlay and validate installed wheel and sdist
@@ -115,7 +115,7 @@ jobs:
           echo "sha256=$(sha256sum dist/xferry-*.whl | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: testing-python
+          name: testing-python-${{ needs.identity.outputs.build-id }}
           path: dist/
           retention-days: 90
           if-no-files-found: error
@@ -140,11 +140,11 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-source
+          name: testing-source-${{ needs.identity.outputs.build-id }}
           path: ${{ runner.temp }}/testing-overlay
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-python
+          name: testing-python-${{ needs.identity.outputs.build-id }}
           path: wheel
       - run: python -m pip install build pex==2.99.0 cryptography==50.0.2
       - name: Build native executable from the exact tested wheel
@@ -167,7 +167,7 @@ jobs:
           bash -n bundle/install.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: testing-scie-${{ matrix.platform }}
+          name: testing-scie-${{ matrix.platform }}-${{ needs.identity.outputs.build-id }}
           path: bundle/
           retention-days: 90
           if-no-files-found: error
@@ -187,7 +187,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-python
+          name: testing-python-${{ needs.identity.outputs.build-id }}
           path: wheel
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
@@ -217,7 +217,7 @@ jobs:
           echo "digest=$(jq -r '.["containerimage.digest"]' image.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: testing-image-receipt
+          name: testing-image-receipt-${{ needs.identity.outputs.build-id }}
           path: image.json
           retention-days: 90
           if-no-files-found: error
@@ -236,26 +236,27 @@ jobs:
       - run: python -m pip install cryptography==50.0.2
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          pattern: testing-*
+          pattern: testing-*-${{ needs.identity.outputs.build-id }}
           path: downloaded
       - name: Sign exact native and installer bytes with isolated testing identity
         env:
           XFERRY_TESTING_SIGNING_KEY_PEM: ${{ secrets.XFERRY_TESTING_SIGNING_KEY_PEM }}
           KEY_ID: ${{ vars.XFERRY_TESTING_SIGNING_KEY_ID }}
           IMAGE_DIGEST: ${{ needs.docker.outputs.digest }}
+          BUILD_ID: ${{ needs.identity.outputs.build-id }}
         run: |
           set -euo pipefail
           test "$KEY_ID" = xferry-testing-2026-11
           mkdir candidate
-          cp -R downloaded/testing-python candidate/python
-          cp -R downloaded/testing-scie-linux-x86_64 candidate/scie-linux-x86_64
-          cp -R downloaded/testing-scie-linux-aarch64 candidate/scie-linux-aarch64
-          python tools/testing_build.py sign --identity downloaded/testing-source/identity.json \
+          cp -R "downloaded/testing-python-$BUILD_ID" candidate/python
+          cp -R "downloaded/testing-scie-linux-x86_64-$BUILD_ID" candidate/scie-linux-x86_64
+          cp -R "downloaded/testing-scie-linux-aarch64-$BUILD_ID" candidate/scie-linux-aarch64
+          python tools/testing_build.py sign --identity "downloaded/testing-source-$BUILD_ID/identity.json" \
             --candidate candidate --output signed --image-digest "$IMAGE_DIGEST" --key-id "$KEY_ID"
-          cp downloaded/testing-source/identity.json identity.json
+          cp "downloaded/testing-source-$BUILD_ID/identity.json" identity.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: testing-signed
+          name: testing-signed-${{ needs.identity.outputs.build-id }}
           path: |
             signed/
             identity.json
@@ -272,7 +273,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-python
+          name: testing-python-${{ needs.identity.outputs.build-id }}
           path: dist
       - name: Trusted Publishing to TestPyPI only
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
@@ -292,7 +293,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-signed
+          name: testing-signed-${{ needs.identity.outputs.build-id }}
           path: release
       - name: Create public immutable prerelease without replacing stable latest
         env:
@@ -321,7 +322,7 @@ jobs:
       - run: python -m pip install cryptography==50.0.2 pipx==1.8.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: testing-signed
+          name: testing-signed-${{ needs.identity.outputs.build-id }}
           path: release
       - name: Verify public GitHub bytes, TestPyPI hashes and anonymous GHCR access
         env:
