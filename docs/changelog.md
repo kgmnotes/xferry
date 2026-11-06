@@ -8,8 +8,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.5.0] - 2026-11-03
 
-Candidate source notes; this version has not been published.
-
 ### Changed
 
 - Unified foreground, native and Compose journeys around versioned profiles,

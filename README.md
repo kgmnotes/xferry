@@ -2,116 +2,77 @@
 
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)](https://www.python.org/)
-![Source version](https://img.shields.io/badge/version-0.5.0-orange.svg)
+![Version](https://img.shields.io/badge/version-0.5.0-orange.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 xferry is an HTTP toolkit for testing Secure Web Gateways on systems you are
-authorized to test. Its web UI provides **Upload**, **Download**, **Requests**,
-**Advanced**, and **Notepad** tabs.
+authorized to test. Run it on a VPS, then use its web UI from a computer behind
+the gateway to upload and download files, try custom HTTP methods, and exchange
+encrypted notes.
 
-This checkout documents the **unpublished 0.5.0 candidate**. The commands below
-apply to that version; published older packages use their own release documentation.
-To try the candidate before publication, use a [source checkout](CONTRIBUTING.md).
+## Run on a VPS
 
-## Choose a way to run
+Connect to your VPS over SSH. You need a [supported Linux host](docs/managed-hosts.md)
+with systemd, Python 3.10–3.14, sudo or root access, and a public IPv4 address.
+Allow inbound TCP **80 and 443**; both ports must be available to xferry.
+Port 80 is also needed later for certificate renewal.
 
-Install the CLI on the machine where files will be served:
+Install pipx if needed (Ubuntu / Debian):
+
+```console
+sudo apt install pipx
+pipx ensurepath
+```
+
+Reconnect your SSH session so the updated PATH takes effect, then install xferry:
 
 ```console
 pipx install xferry
 ```
 
-**Run once** as a portable foreground process on your computer. Open the printed
-URL and stop with `Ctrl+C`:
+Choose a dedicated folder for uploads and downloads, replacing `/srv/share` below
+with your path. Existing files in that folder will be available for downloading;
+new uploads will be saved there. Deleting files in the web UI affects this folder.
 
 ```console
-xferry run --open
+xferry setup --backend native --access public --files-dir /srv/share
 ```
 
-Choose another shared folder explicitly:
+Review the installation plan and confirm it; setup requests sudo when needed.
+It installs a persistent service, obtains a browser-trusted TLS certificate for
+an automatic sslip.io address, enables Basic Auth, and starts HTTPS on port **443**.
+No domain of your own is required. Setup prints the URL, username, generated
+password, and deployment ID. Save those details. The service keeps running after
+you disconnect from SSH.
 
-```console
-xferry run --files-dir ~/Shared --open
-```
+To use your own domain, see [Public deployment](docs/public-direct.md).
 
-**Persistent Linux service** on a [supported host](docs/managed-hosts.md) or VPS:
+## Send your first file
 
-```console
-xferry setup --backend native --files-dir /srv/share
-```
+1. On your computer, open the HTTPS URL printed by setup and sign in with the
+   printed username and password.
+2. In **Upload**, choose a small test file and press **Send**.
+3. Open **Download**, download the file and check its contents. It is stored in
+   the folder you selected on the VPS.
 
-**Container** on a host with Docker Engine and its Compose plugin:
+To exercise your gateway, open xferry from the computer and network path that
+passes through it. See [Common scenarios](docs/scenarios.md) for request tests,
+reports, encrypted notes and transport experiments.
 
-```console
-xferry setup --backend docker --files-dir /srv/share
-```
+## Other ways to run
 
-Setup previews the installation, checks the selected folder, starts the server,
-and prints its deployment ID, URL and generated Basic Auth password. Public
-setup uses browser-trusted TLS on port **443**. Choose an automatic address or
-your own domain; inbound TCP 80 must also be reachable for certificates.
+- **Locally:** after installing with pipx, run `xferry run --open`. This opens a
+  foreground server at <http://127.0.0.1:8080>; stop it with `Ctrl+C`.
+- **Docker:** follow [Container through setup](docs/quick-start.md#container-through-setup).
+- **From source:** see [Contributing](CONTRIBUTING.md).
 
-Run `xferry` for an interactive menu. The menu distinguishes running, stopped,
-incomplete and retained installations, and offers the matching next action.
-See the [quick start](docs/quick-start.md) for all three journeys, a first transfer
-and removal. A [source checkout](CONTRIBUTING.md) and manual Compose are operator
-workflows. Existing deployments must follow the [upgrade notes](docs/migration.md);
-the current interface does not convert legacy configuration or deployment state.
+## Documentation
 
-## Choose where files live
-
-```console
-xferry run --files-dir /srv/share
-xferry run --files-dir .
-```
-
-The selected directory is used directly: existing files can be downloaded, new
-uploads are saved there, and deletion actions affect its contents. With no
-folder specified, foreground runs use your user data directory; a new Linux
-service uses `/var/lib/xferry/files`. These defaults do not depend on the current
-directory. Notes, passwords and certificate state are kept separately. Use a separate
-shared folder for each persistent instance.
-
-## Change settings and manage the server
-
-```console
-xferry config
-xferry config explain files_dir
-xferry status
-xferry logs
-xferry stop
-xferry start
-```
-
-Configuration changes automatically apply to a running installed server. A
-stopped server stays stopped. Use `--instance ID` to select a persistent
-deployment, or `config --config FILE` for a foreground profile.
-[All settings](docs/settings.md) includes defaults, units and examples;
-`xferry --help` shows common commands and `xferry run --help-all` shows all launch
-options.
-
-`xferry uninstall` removes the selected runtime and retains configuration,
-credentials, private state and the shared folder for reinstall. `xferry uninstall
---purge --yes` removes resources recorded as owned by xferry; the shared folder
-and its files remain, including the default files folder. Both commands print
-the resources they retain. Purge requires an explicit confirmation; declining
-the prompt cancels it, and scripts must pass `--yes`.
-The separately installed pipx CLI is removed with `pipx uninstall xferry`.
-
-## Try a transfer
-
-```bash
-printf 'authorized test\n' > sample.txt
-curl --fail-with-body -H 'X-File-Name: sample.txt' \
-  --data-binary @sample.txt http://127.0.0.1:8080/uploads
-curl --fail-with-body http://127.0.0.1:8080/uploads/sample.txt
-```
-
-For authenticated HTTPS, add `--user USER` and use the URL printed by setup.
-
-- [Common scenarios](docs/scenarios.md): methods, files, notes and transport artifacts
-- [API reference](API.md): Advanced Sessions, custom HTTP methods such as `SYNCDATA`, and payload protection (`none`, XOR, AES-256-GCM)
-- [Operations](docs/operations.md), [public deployment](docs/public-direct.md), [managed hosts](docs/managed-hosts.md)
-- [CLI reference](docs/cli-reference.md), [migration](docs/migration.md), [security](SECURITY.md)
+- [Quick start](docs/quick-start.md): installation alternatives and curl examples
+- [Operations](docs/operations.md): status, logs, stop/start, updates and removal
+- [Settings](docs/settings.md) and [CLI reference](docs/cli-reference.md)
+- [API reference](API.md): HTTP methods, Advanced Sessions and payload protection
+- [Upgrade notes](docs/migration.md): read before updating an existing deployment
+- [Security policy](SECURITY.md)
 
 Documentation: <https://xferry.kgmnotes.ru/> · License: MIT

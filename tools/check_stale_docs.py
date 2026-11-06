@@ -420,15 +420,16 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         Path("README.md"),
         re.compile(
             r"\A(?=[\s\S]*pipx install xferry)"
+            r"(?=[\s\S]*xferry setup --backend native --access public --files-dir\s+\S+)"
             r"(?=[\s\S]*managed-hosts\.md)"
             r"(?=[\s\S]*xferry run --open)"
-            r"(?=[\s\S]*web UI)(?=[\s\S]*curl --fail-with-body)"
-            r"(?=[\s\S]*Advanced Session)(?=[\s\S]*SYNCDATA)"
-            r"(?=[\s\S]*`none`[\s\S]*XOR[\s\S]*AES-256-GCM)[\s\S]*",
+            r"(?=[\s\S]*web UI)(?=[\s\S]*TLS)(?=[\s\S]*Basic\s+Auth)"
+            r"(?=[\s\S]*quick-start\.md#container-through-setup)"
+            r"(?=[\s\S]*scenarios\.md)(?=[\s\S]*API\.md)[\s\S]*",
             re.IGNORECASE,
         ),
-        "README must route portable, managed and container users while keeping UI, curl, "
-        "Advanced Sessions, custom methods, and crypto support discoverable",
+        "README must explain public VPS setup with a selected files folder, TLS, Basic Auth, "
+        "and web UI, and route readers to local, container, scenario, and API documentation",
     ),
     SemanticRequirement(
         Path("docs/quick-start.md"),
@@ -440,6 +441,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
             r"(?=[\s\S]*pipx ensurepath)"
             r"(?=[\s\S]*pipx install xferry)"
             r"(?=[\s\S]*xferry run --open)"
+            r"(?=[\s\S]*curl --fail-with-body)"
             r"(?=[\s\S]*managed-hosts\.md)"
             r"(?=[\s\S]*operations\.md)(?=[\s\S]*public-direct\.md)[\s\S]*",
             re.IGNORECASE,
