@@ -503,6 +503,22 @@ def test_testing_workflow_keeps_publishers_and_refs_separate() -> None:
     assert "--prerelease --latest=false" in workflow
     assert "skip-existing: false" in workflow
     assert "--verify-published" in workflow
+    ready_step = workflow.split(
+        "      - name: Verify public GitHub bytes, TestPyPI hashes and anonymous GHCR access\n", 1
+    )[1].split("      - name: Publish verified ready report", 1)[0]
+    for variable, directory in (
+        ("PIPX_HOME", "home"),
+        ("PIPX_BIN_DIR", "bin"),
+        ("PIPX_MAN_DIR", "man"),
+    ):
+        assert f"{variable}: ${{{{ runner.temp }}}}/xferry-ready-pipx/{directory}" in ready_step
+    assert "PIP_CONFIG_FILE: /dev/null" in ready_step
+    assert 'PYTHONNOUSERSITE: "1"' in ready_step
+    assert "PIP_INDEX_URL: https://pypi.org/simple/" in ready_step
+    assert 'PIP_EXTRA_INDEX_URL: ""' in ready_step
+    assert 'python -I -m pipx install --suffix=-preview "$wheel_url"' in ready_step
+    assert '"$PIPX_BIN_DIR/xferry-preview" run --version' in ready_step
+    assert "$HOME/.local/bin" not in ready_step
     assert "retention-days: 90" in workflow
     assert "name: testing-source-${{ github.run_id }}.${{ github.run_attempt }}" in workflow
     assert "name: testing-signed-${{ needs.identity.outputs.build-id }}" in workflow

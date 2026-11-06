@@ -648,6 +648,7 @@ def portable_smoke(
         ),
         cwd=probe_dir,
         env=environment,
+        timeout=600,
     )
     print(f"portable wheel SHA256: {digest}", flush=True)
     _probe_installed_artifact(venv_dir=venv_dir, probe_dir=probe_dir, workspace=workspace)
