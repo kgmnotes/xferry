@@ -154,6 +154,20 @@ def _normalize_version_file(name: str, payload: bytes) -> bytes:
         ).encode()
     if name == "README.md":
         return re.sub(r"version-[^-\s/]+-orange\.svg", "version-VERSION-orange.svg", text).encode()
+    if name == "docs/cli-reference.md":
+        version = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        text = re.sub(
+            r"(?m)^(  --to VERSION          Signed release version to install \(default: )"
+            + version
+            + r"(\)\.)$",
+            r"\g<1>VERSION\g<2>",
+            text,
+        )
+        return re.sub(
+            r"(?m)^(Example: xferry update --to )" + version + r"$",
+            r"\g<1>VERSION",
+            text,
+        ).encode()
     if name == "packaging/channels.toml":
         document = tomllib.loads(text)
         document.pop("promotion", None)
@@ -178,7 +192,7 @@ def validate_final_diff(workspace: Path, preview_commit: str, final_commit: str)
         if not raw:
             continue
         name = raw.decode()
-        if name == "CHANGELOG.md":
+        if name in {"CHANGELOG.md", "docs/changelog.md"}:
             continue
         before = _normalize_version_file(name, _git_file(workspace, preview_commit, name))
         after = _normalize_version_file(name, _git_file(workspace, final_commit, name))

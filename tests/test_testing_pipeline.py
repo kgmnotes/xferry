@@ -370,6 +370,70 @@ def test_final_rebuild_allows_version_changelog_metadata_only(tmp_path: Path) ->
         promotion.validate_final_diff(repository, preview, changed)
 
 
+def test_final_rebuild_allows_synchronized_changelog_and_cli_version_metadata(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "repo")
+    docs = repository / "docs"
+    docs.mkdir()
+    cli = docs / "cli-reference.md"
+    cli.write_bytes((ROOT / "docs/cli-reference.md").read_bytes())
+    changelog = repository / "CHANGELOG.md"
+    changelog.write_bytes((ROOT / "CHANGELOG.md").read_bytes())
+    generated_changelog = docs / "changelog.md"
+    generated_changelog.write_bytes((ROOT / "docs/changelog.md").read_bytes())
+    preview = _commit(repository)
+
+    for name in ("xferry/config.py", "xferry/data/index.html", "README.md"):
+        path = repository / name
+        path.write_text(path.read_text().replace("0.5.0", "0.5.1"))
+    changelog.write_text(
+        changelog.read_text().replace("## [Unreleased]", "## [0.5.1] - 2026-11-06")
+    )
+    header = generated_changelog.read_text().split("\n\n", 1)[0]
+    generated_changelog.write_text(header + "\n\n" + changelog.read_text())
+    cli.write_text(
+        cli.read_text()
+        .replace(
+            "Signed release version to install (default: 0.5.0).",
+            "Signed release version to install (default: 0.5.1).",
+        )
+        .replace("Example: xferry update --to 0.5.0", "Example: xferry update --to 0.5.1")
+    )
+    final = _commit(repository)
+    promotion.validate_final_diff(repository, preview, final)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("Signed release version to install", "Unsigned release version to install"),
+        ("Exact release version.", "Newest release version."),
+        (
+            "Example: xferry update --to 0.5.0",
+            "Example: xferry update --to 0.5.1 --channel testing",
+        ),
+        ("Protocol example: 0.5.0", "Protocol example: 0.5.1"),
+    ],
+)
+def test_final_rebuild_rejects_cli_reference_changes_outside_exact_version_markers(
+    tmp_path: Path,
+    before: str,
+    after: str,
+) -> None:
+    repository = _repository(tmp_path / "repo")
+    docs = repository / "docs"
+    docs.mkdir()
+    cli = docs / "cli-reference.md"
+    cli.write_text((ROOT / "docs/cli-reference.md").read_text() + "\nProtocol example: 0.5.0\n")
+    preview = _commit(repository)
+    assert before in cli.read_text()
+    cli.write_text(cli.read_text().replace(before, after))
+    final = _commit(repository)
+    with pytest.raises(ValueError, match="changes behavior"):
+        promotion.validate_final_diff(repository, preview, final)
+
+
 def test_final_rebuild_rejects_dependency_changes(tmp_path: Path) -> None:
     repository = _repository(tmp_path / "repo")
     preview = _git(repository, "rev-parse", "HEAD")

@@ -43,7 +43,8 @@ and download its `testing-ready.json`. It records the exact version, source,
 build ID, image digest and copyable commands. Use `commands.pipx` to install a
 separate `xferry-preview` command. Its hash-pinned wheel URL comes from TestPyPI;
 dependencies use the normal PyPI index. A venv user can use `commands.pip`
-instead. Do not combine TestPyPI and PyPI with `--extra-index-url`.
+instead; replace `xferry-preview` with `xferry` in the lifecycle commands when
+using that venv. Do not combine TestPyPI and PyPI with `--extra-index-url`.
 
 On a clean Debian/Ubuntu VPS, install prerequisites before the report's pipx
 command:
