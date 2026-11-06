@@ -599,6 +599,7 @@ def _mock_registry(
 ) -> tuple[list[list[str]], list[str]]:
     commands: list[list[str]] = []
     requests: list[str] = []
+    stored_images: dict[str, str] = {}
     monkeypatch.setattr(builds, "_anonymous_registry_token", lambda: "public-fixture-token")
 
     def read(path: str, *, accept: str, token: str | None = None) -> bytes:
@@ -610,8 +611,17 @@ def _mock_registry(
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         assert command[:2] == ["docker", "--config"]
-        assert command[3:5] == ["pull", "--platform"]
+        assert command[3] == "pull"
         assert kwargs["check"] is True
+        architecture = (
+            command[command.index("--platform") + 1].split("/")[1]
+            if "--platform" in command
+            else "amd64"
+        )
+        reference = command[-1]
+        if reference in stored_images and stored_images[reference] != architecture:
+            raise subprocess.CalledProcessError(1, command, stderr="cannot overwrite digest")
+        stored_images[reference] = architecture
         return subprocess.CompletedProcess(command, 0)
 
     def unsupported_inspect(*args: Any, **kwargs: Any) -> None:
@@ -629,10 +639,30 @@ def test_anonymous_image_readback_checks_both_architectures_without_new_docker_f
     digest, payloads = _registry_fixture(identity)
     commands, requests = _mock_registry(monkeypatch, payloads)
     builds.verify_public_image(identity, digest)
-    assert [command[5] for command in commands] == ["linux/arm64", "linux/amd64"]
-    assert all(command[-1] == f"ghcr.io/kgmnotes/xferry-testing@{digest}" for command in commands)
+    assert [command[5] for command in commands[:2]] == ["linux/arm64", "linux/amd64"]
+    index = json.loads(payloads[f"manifests/{digest}"])
+    descriptors = {item["platform"]["architecture"]: item["digest"] for item in index["manifests"]}
+    expected = [descriptors["arm64"], descriptors["amd64"], digest]
+    assert [command[-1] for command in commands] == [
+        f"ghcr.io/kgmnotes/xferry-testing@{item}" for item in expected
+    ]
+    assert "--platform" not in commands[-1]
+    assert len({command[-1] for command in commands}) == 3
     assert len(requests) == 5
     assert sum(path.startswith("blobs/") for path in requests) == 2
+
+
+def test_classic_store_regression_rejects_reusing_one_index_for_two_platforms(
+    identity: PreviewIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest, payloads = _registry_fixture(identity)
+    _mock_registry(monkeypatch, payloads)
+    image = f"ghcr.io/kgmnotes/xferry-testing@{digest}"
+    command = ["docker", "--config", "/temporary-anonymous-client", "pull", "--platform"]
+    builds.subprocess.run([*command, "linux/arm64", image], check=True)
+    with pytest.raises(subprocess.CalledProcessError, match="non-zero exit status 1"):
+        builds.subprocess.run([*command, "linux/amd64", image], check=True)
 
 
 @pytest.mark.parametrize(

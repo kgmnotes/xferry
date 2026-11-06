@@ -665,9 +665,14 @@ def verify_public_image(identity: TestingIdentity, image_digest: str) -> None:
                 or any(labels.get(key) != value for key, value in expected.items())
             ):
                 raise ValueError("published image identity differs from the testing build")
+            platform_image = f"{TESTING_IMAGE}@{manifests[architecture]['digest']}"
             subprocess.run(
-                [*command, "pull", "--platform", f"linux/{architecture}", image], check=True
+                [*command, "pull", "--platform", f"linux/{architecture}", platform_image],
+                check=True,
             )
+        # Classic image stores retain one platform per reference. Resolve the signed
+        # index only once, using the host's native platform for the following smoke.
+        subprocess.run([*command, "pull", image], check=True)
 
 
 def _identity_arguments(parser: argparse.ArgumentParser) -> None:
