@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -615,3 +616,66 @@ def test_manual_acceptance_cannot_reuse_another_dispatch_or_skipped_job(
             identity,
             record,
         )
+
+
+@pytest.mark.parametrize(
+    "event,ref,base,code,candidate,expected",
+    [
+        ("push", "refs/heads/main", "", True, False, True),
+        ("pull_request", "refs/pull/1/merge", "main", True, False, True),
+        ("push", "refs/heads/testing", "", True, False, False),
+        ("pull_request", "refs/pull/1/merge", "testing", True, False, False),
+        ("workflow_dispatch", "refs/heads/main", "", True, False, False),
+        ("push", "refs/tags/v0.5.1", "", True, False, False),
+        ("push", "refs/heads/main", "", False, False, False),
+        ("pull_request", "refs/pull/1/merge", "main", False, False, False),
+        ("push", "refs/heads/main", "", True, True, False),
+    ],
+)
+def test_main_security_compatibility_contexts_have_narrow_rollout_guard(
+    event: str,
+    ref: str,
+    base: str,
+    code: bool,
+    candidate: bool,
+    expected: bool,
+) -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    job = workflow.split("  security-compatibility:\n", 1)[1].split("  gate:\n", 1)[0]
+    assert "name: ${{ matrix.context }}" in job
+    assert "needs: [changes, security]" in job
+    for context in ("bandit", "pip-audit (Python 3.12)", "pip-audit (Python 3.14)"):
+        assert f"          - {context}\n" in job
+    expression = job.split("    if: ${{ ", 1)[1].split(" }}", 1)[0]
+    assert "always()" in expression
+    expression = expression.replace("!inputs.candidate-gates", str(not candidate))
+    values = {
+        "needs.changes.outputs.code": str(code).lower(),
+        "github.event_name": event,
+        "github.ref": ref,
+        "github.base_ref": base,
+    }
+    for name, value in values.items():
+        expression = expression.replace(name, repr(value))
+    expression = expression.replace("always()", "True").replace("&&", "and").replace("||", "or")
+    parsed = ast.parse(expression, mode="eval")
+    assert eval(compile(parsed, "compatibility guard", "eval"), {"__builtins__": {}}) is expected
+    assert "python -m pip" not in job
+    assert "pip_audit" not in job
+    assert "bandit -r" not in job
+
+
+@pytest.mark.parametrize("security_result", ["success", "failure", "cancelled", "skipped"])
+def test_main_security_compatibility_fails_when_actual_audits_do_not_pass(
+    security_result: str,
+) -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    job = workflow.split("  security-compatibility:\n", 1)[1].split("  gate:\n", 1)[0]
+    assert "SECURITY_RESULT: ${{ needs.security.result }}" in job
+    command = job.split("        run: ", 1)[1].splitlines()[0]
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "SECURITY_RESULT": security_result},
+        capture_output=True,
+    )
+    assert (result.returncode == 0) is (security_result == "success")

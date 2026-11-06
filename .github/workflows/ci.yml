@@ -852,6 +852,26 @@ jobs:
     if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
     uses: ./.github/workflows/security.yml
 
+  security-compatibility:
+    # Keep main's existing required contexts until it adopts the aggregate CI gate.
+    name: ${{ matrix.context }}
+    needs: [changes, security]
+    if: ${{ always() && needs.changes.outputs.code == 'true' && !inputs.candidate-gates && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == 'main')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        context:
+          - bandit
+          - pip-audit (Python 3.12)
+          - pip-audit (Python 3.14)
+    steps:
+      - name: Forward reusable security result
+        env:
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: test "$SECURITY_RESULT" = success
+
   gate:
     name: CI gate
     if: ${{ always() }}

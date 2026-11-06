@@ -133,7 +133,9 @@ production signing approval.
 
 Protect `testing` with the required `CI gate`, PR review policy and no forced
 pushes. Keep existing `main` checks until the new gate exists on `main`; then
-migrate its protection deliberately. The `testing-signing` environment permits
+migrate its protection deliberately. During rollout, `main` also emits the
+three legacy security contexts from the reusable security result, without
+running the audits twice. The `testing-signing` environment permits
 only the protected `testing` branch, with no repeated production approval. It
 contains `XFERRY_TESTING_SIGNING_KEY_PEM` and
 `XFERRY_TESTING_SIGNING_KEY_ID=xferry-testing-2026-11`. The public key is
