@@ -503,6 +503,22 @@ def test_testing_workflow_keeps_publishers_and_refs_separate() -> None:
     assert "--prerelease --latest=false" in workflow
     assert "skip-existing: false" in workflow
     assert "--verify-published" in workflow
+    ready_step = workflow.split(
+        "      - name: Verify public GitHub bytes, TestPyPI hashes and anonymous GHCR access\n", 1
+    )[1].split("      - name: Publish verified ready report", 1)[0]
+    for variable, directory in (
+        ("PIPX_HOME", "home"),
+        ("PIPX_BIN_DIR", "bin"),
+        ("PIPX_MAN_DIR", "man"),
+    ):
+        assert f"{variable}: ${{{{ runner.temp }}}}/xferry-ready-pipx/{directory}" in ready_step
+    assert "PIP_CONFIG_FILE: /dev/null" in ready_step
+    assert 'PYTHONNOUSERSITE: "1"' in ready_step
+    assert "PIP_INDEX_URL: https://pypi.org/simple/" in ready_step
+    assert 'PIP_EXTRA_INDEX_URL: ""' in ready_step
+    assert 'python -I -m pipx install --suffix=-preview "$wheel_url"' in ready_step
+    assert '"$PIPX_BIN_DIR/xferry-preview" run --version' in ready_step
+    assert "$HOME/.local/bin" not in ready_step
     assert "retention-days: 90" in workflow
     assert "name: testing-source-${{ github.run_id }}.${{ github.run_attempt }}" in workflow
     assert "name: testing-signed-${{ needs.identity.outputs.build-id }}" in workflow
@@ -519,54 +535,185 @@ def test_testing_workflow_keeps_publishers_and_refs_separate() -> None:
     assert "environment: production" in production
 
 
-def test_anonymous_image_readback_checks_both_architectures(
-    identity: PreviewIdentity, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    index = json.dumps(
-        {
-            "manifests": [
-                {"platform": {"os": "linux", "architecture": name}} for name in ("amd64", "arm64")
-            ]
+def _registry_fixture(
+    identity: PreviewIdentity, tamper: str | None = None
+) -> tuple[str, dict[str, bytes]]:
+    payloads: dict[str, bytes] = {}
+    descriptors = []
+
+    def encoded(document: object) -> bytes:
+        return json.dumps(document, sort_keys=True).encode()
+
+    def descriptor(payload: bytes) -> dict[str, Any]:
+        return {"digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+
+    for architecture in ("arm64", "amd64"):
+        labels = {
+            "org.opencontainers.image.version": identity.version,
+            "org.opencontainers.image.revision": SOURCE,
+            "io.xferry.build-id": identity.build_id,
+            "io.xferry.channel": "testing",
         }
-    ).encode()
+        if architecture == "arm64" and tamper in labels:
+            labels[tamper] = "wrong-build"
+        config = {"architecture": architecture, "os": "linux", "config": {"Labels": labels}}
+        if architecture == "arm64" and tamper in {"architecture", "os"}:
+            config[tamper] = "unsupported"
+        config_payload = encoded(config)
+        config_descriptor = descriptor(config_payload)
+        payloads[f"blobs/{config_descriptor['digest']}"] = (
+            config_payload.replace(b'"linux"', b'"linuX"')
+            if architecture == "arm64" and tamper == "config-hash"
+            else config_payload
+        )
+        if architecture == "arm64" and tamper == "config-size":
+            config_descriptor["size"] += 1
+        if architecture == "arm64" and tamper == "config-digest-format":
+            config_descriptor["digest"] = "sha256:invalid"
+        manifest = {"schemaVersion": 2, "config": config_descriptor, "layers": []}
+        manifest_payload = encoded(manifest)
+        manifest_descriptor = descriptor(manifest_payload)
+        payloads[f"manifests/{manifest_descriptor['digest']}"] = (
+            manifest_payload.replace(b'"schemaVersion": 2', b'"schemaVersion": 3')
+            if architecture == "arm64" and tamper == "manifest-hash"
+            else manifest_payload
+        )
+        if architecture == "arm64" and tamper == "manifest-size":
+            manifest_descriptor["size"] += 1
+        if architecture == "arm64" and tamper == "descriptor-size-boolean":
+            manifest_descriptor["size"] = True
+        if architecture == "arm64" and tamper == "manifest-digest-format":
+            manifest_descriptor["digest"] = "sha256:invalid"
+        manifest_descriptor["platform"] = {"os": "linux", "architecture": architecture}
+        descriptors.append(manifest_descriptor)
+    if tamper == "duplicate-architecture":
+        descriptors.append(descriptors[0])
+    index = encoded({"schemaVersion": 2, "manifests": descriptors})
     digest = "sha256:" + hashlib.sha256(index).hexdigest()
-    state = {"architecture": "arm64"}
-    calls = []
+    payloads[f"manifests/{digest}"] = index
+    return digest, payloads
+
+
+def _mock_registry(
+    monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes]
+) -> tuple[list[list[str]], list[str]]:
+    commands: list[list[str]] = []
+    requests: list[str] = []
+    monkeypatch.setattr(builds, "_anonymous_registry_token", lambda: "public-fixture-token")
+
+    def read(path: str, *, accept: str, token: str | None = None) -> bytes:
+        assert token == "public-fixture-token"
+        assert accept
+        requests.append(path)
+        return payloads[path]
 
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        state["architecture"] = command[command.index("--platform") + 1].split("/")[1]
+        commands.append(command)
+        assert command[:2] == ["docker", "--config"]
+        assert command[3:5] == ["pull", "--platform"]
+        assert kwargs["check"] is True
         return subprocess.CompletedProcess(command, 0)
 
-    def output(command: list[str], **kwargs: Any) -> bytes | str:
-        calls.append(command)
-        if "--raw" in command:
-            return index
-        return json.dumps(
-            [
-                {
-                    "Architecture": state["architecture"],
-                    "Config": {
-                        "Labels": {
-                            "org.opencontainers.image.version": identity.version,
-                            "org.opencontainers.image.revision": SOURCE,
-                            "io.xferry.build-id": identity.build_id,
-                            "io.xferry.channel": "testing",
-                        }
-                    },
-                }
-            ]
-        )
+    def unsupported_inspect(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("older Docker clients must not need image inspect --platform")
 
-    monkeypatch.setattr(builds, "_anonymous_image_index", lambda digest: index)
+    monkeypatch.setattr(builds, "_anonymous_registry_payload", read)
     monkeypatch.setattr(builds.subprocess, "run", run)
-    monkeypatch.setattr(builds.subprocess, "check_output", output)
+    monkeypatch.setattr(builds.subprocess, "check_output", unsupported_inspect)
+    return commands, requests
+
+
+def test_anonymous_image_readback_checks_both_architectures_without_new_docker_flags(
+    identity: PreviewIdentity, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest, payloads = _registry_fixture(identity)
+    commands, requests = _mock_registry(monkeypatch, payloads)
     builds.verify_public_image(identity, digest)
-    assert all(command[:2] == ["docker", "--config"] for command in calls)
-    assert {command[command.index("--platform") + 1] for command in calls if "pull" in command} == {
-        "linux/amd64",
-        "linux/arm64",
-    }
+    assert [command[5] for command in commands] == ["linux/arm64", "linux/amd64"]
+    assert all(command[-1] == f"ghcr.io/kgmnotes/xferry-testing@{digest}" for command in commands)
+    assert len(requests) == 5
+    assert sum(path.startswith("blobs/") for path in requests) == 2
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "manifest-hash",
+        "manifest-size",
+        "config-hash",
+        "config-size",
+        "manifest-digest-format",
+        "config-digest-format",
+        "descriptor-size-boolean",
+        "architecture",
+        "os",
+        "duplicate-architecture",
+        "org.opencontainers.image.version",
+        "org.opencontainers.image.revision",
+        "io.xferry.build-id",
+        "io.xferry.channel",
+    ],
+)
+def test_anonymous_image_readback_rejects_tampered_descriptors_and_identity(
+    identity: PreviewIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    digest, payloads = _registry_fixture(identity, tamper)
+    commands, _ = _mock_registry(monkeypatch, payloads)
+    with pytest.raises(ValueError):
+        builds.verify_public_image(identity, digest)
+    assert not commands
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "https://untrusted.example/manifest",
+        "../manifest",
+        "blobs/sha256:invalid",
+        "manifests/sha256:" + "a" * 64 + "/extra",
+    ],
+)
+def test_anonymous_registry_metadata_rejects_other_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    def forbid(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("invalid registry paths must not make network requests")
+
+    monkeypatch.setattr(builds.urllib.request, "urlopen", forbid)
+    with pytest.raises(ValueError, match="exact digest"):
+        builds._anonymous_registry_payload(path, accept="application/json", token="public-token")
+
+
+def test_anonymous_registry_metadata_uses_fixed_https_origin_and_bounded_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = "blobs/sha256:" + "a" * 64
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            assert size == builds._REGISTRY_METADATA_LIMIT + 1
+            return b"x" * size
+
+    def open_request(request: Any, *, timeout: int) -> Response:
+        assert request.full_url == f"https://ghcr.io/v2/kgmnotes/xferry-testing/{path}"
+        assert request.get_header("Authorization") == "Bearer public-token"
+        assert timeout == 30
+        return Response()
+
+    monkeypatch.setattr(builds.urllib.request, "urlopen", open_request)
+    with pytest.raises(ValueError, match="size limit"):
+        builds._anonymous_registry_payload(
+            path, accept="application/octet-stream", token="public-token"
+        )
 
 
 def test_manual_acceptance_cannot_reuse_another_dispatch_or_skipped_job(

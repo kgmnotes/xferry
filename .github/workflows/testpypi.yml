@@ -328,14 +328,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_DIGEST: ${{ needs.docker.outputs.digest }}
+          PIPX_HOME: ${{ runner.temp }}/xferry-ready-pipx/home
+          PIPX_BIN_DIR: ${{ runner.temp }}/xferry-ready-pipx/bin
+          PIPX_MAN_DIR: ${{ runner.temp }}/xferry-ready-pipx/man
+          PIP_CONFIG_FILE: /dev/null
+          PIP_INDEX_URL: https://pypi.org/simple/
+          PIP_EXTRA_INDEX_URL: ""
+          PYTHONNOUSERSITE: "1"
         run: |
           set -euo pipefail
           python tools/testing_build.py ready --identity release/identity.json --assets release/signed \
             --image-digest "$IMAGE_DIGEST" --output testing-ready.json --verify-published
           wheel_url="$(jq -r '.wheel_url' testing-ready.json)"
-          PIP_INDEX_URL=https://pypi.org/simple/ PIP_EXTRA_INDEX_URL= \
-            pipx install --suffix=-preview "$wheel_url"
-          "$HOME/.local/bin/xferry-preview" run --version
+          python -I -m pipx install --suffix=-preview "$wheel_url"
+          "$PIPX_BIN_DIR/xferry-preview" run --version
           image="$(jq -r '.image' testing-ready.json)"
           python tools/docker_image_smoke.py --image "$image"
       - name: Publish verified ready report and copyable commands
