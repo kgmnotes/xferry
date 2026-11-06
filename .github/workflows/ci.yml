@@ -338,7 +338,8 @@ jobs:
   cross-platform:
     if: ${{ needs.changes.outputs.code == 'true' && !inputs.candidate-gates }}
     name: Portable wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    # Keep required check names while avoiding the capacity-limited macOS ARM fleet.
+    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
     needs: [changes, python314-readiness]
     timeout-minutes: 15
     strategy:
