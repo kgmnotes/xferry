@@ -856,3 +856,21 @@ def test_main_security_compatibility_fails_when_actual_audits_do_not_pass(
         capture_output=True,
     )
     assert (result.returncode == 0) is (security_result == "success")
+
+
+def test_every_ci_browser_dependency_install_configures_complete_apt_sources_first() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text().split("jobs:\n", 1)[1]
+    jobs = list(re.finditer(r"(?m)^  ([a-z][a-z0-9-]*):\n", workflow))
+    configured = set()
+    for index, match in enumerate(jobs):
+        end = jobs[index + 1].start() if index + 1 < len(jobs) else len(workflow)
+        job = workflow[match.end() : end]
+        lines = job.splitlines()
+        for line_number, line in enumerate(lines):
+            if "install-browser" not in line or "--with-deps" not in line:
+                continue
+            before_install = "\n".join(lines[:line_number])
+            assert "run: sudo python3 tools/configure_ci_browser_apt.py" in before_install, match[1]
+            assert "sudo sed -i" not in before_install
+            configured.add(match[1])
+    assert configured == {"smoke", "browser-matrix"}
