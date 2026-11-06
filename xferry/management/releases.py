@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -21,6 +23,13 @@ from urllib.parse import urljoin, urlsplit
 from xferry.security.tls import sslip_domain_for_ip
 from xferry.settings import SettingsError, load_settings_text
 
+from .channels import (
+    Channel,
+    key_ring_for_channel,
+    normalize_channel,
+    release_tag,
+    validate_version_for_channel,
+)
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .managed_state import (
     RETAINED_STATE_CONTENT,
@@ -47,7 +56,6 @@ from .release_contract import (
     require_platform_id,
 )
 from .release_trust import (
-    DEFAULT_RELEASE_KEY_RING,
     MAX_SIGNATURE_BYTES,
     SIGNATURE_NAME,
     ReleaseKeyRing,
@@ -67,9 +75,11 @@ from .system import (
 )
 from .versions import (
     MIN_DEPLOYMENT_RELEASE,
+    SUPPORTED_RELEASE_MAJOR,
     compare_release_versions,
     is_canonical_release_version,
     is_supported_release_version,
+    is_testing_version,
 )
 
 _SERVICE = "xferry.service"
@@ -239,8 +249,11 @@ class ReleaseManager:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         remote_updates_enabled: bool = False,
-        release_key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
+        release_key_ring: ReleaseKeyRing | None = None,
         host_facts: Callable[[], HostFacts] | None = None,
+        channel: Channel = "stable",
+        expected_source_commit: str | None = None,
+        expected_build_id: str | None = None,
     ) -> None:
         self.layout = replace(
             layout or ManagedLayout(),
@@ -263,7 +276,10 @@ class ReleaseManager:
         self.monotonic = monotonic
         self.sleep = sleep
         self._remote_updates_enabled = remote_updates_enabled is True
-        self.release_key_ring = release_key_ring
+        self.channel = normalize_channel(channel)
+        self.release_key_ring = release_key_ring or key_ring_for_channel(self.channel)
+        self.expected_source_commit = expected_source_commit
+        self.expected_build_id = expected_build_id
         self.host_facts = host_facts or (lambda: detect_host_facts(data_path=self.layout.data_root))
 
     def update(self, version: str | None, dry_run: bool) -> ReleaseResult:
@@ -273,7 +289,7 @@ class ReleaseManager:
         requested = None if version is None else _safe_version(version)
         if requested is None:
             return ReleaseResult(2, "invalid_release_version", dry_run=dry_run)
-        if not is_supported_release_version(requested):
+        if not _supported_installed_version(requested):
             return ReleaseResult(
                 2,
                 "unsupported_release_major",
@@ -281,6 +297,10 @@ class ReleaseManager:
                 dry_run=dry_run,
                 target=requested,
             )
+        try:
+            validate_version_for_channel(requested, self.channel)
+        except ValueError:
+            return ReleaseResult(2, "release_channel_mismatch", version=requested, dry_run=dry_run)
         if compare_release_versions(requested, MIN_DEPLOYMENT_RELEASE) < 0:
             return ReleaseResult(
                 2,
@@ -357,7 +377,7 @@ class ReleaseManager:
             manifest = verified_manifest.manifest
             if manifest.version != requested:
                 raise _ReleaseFailure(1, "release_manifest_mismatch")
-            if not is_supported_release_version(manifest.version):
+            if not _supported_installed_version(manifest.version):
                 return ReleaseResult(
                     2,
                     "unsupported_release_major",
@@ -385,7 +405,11 @@ class ReleaseManager:
                     target=manifest.version,
                     active=current_version,
                     rollback="not_needed",
-                    next_actions=(f"Run `sudo xferry update --to {manifest.version}` to apply.",),
+                    next_actions=(
+                        f"Run `sudo xferry update --to {manifest.version}"
+                        + (" --channel testing" if self.channel == "testing" else "")
+                        + "` to apply.",
+                    ),
                 )
             if manifest.version == current_version:
                 with managed_mutation(
@@ -468,7 +492,7 @@ class ReleaseManager:
         requested = None if to_version is None else _safe_version(to_version)
         if to_version is not None and requested is None:
             return ReleaseResult(2, "invalid_release_version")
-        if requested is not None and not is_supported_release_version(requested):
+        if requested is not None and not _supported_installed_version(requested):
             return ReleaseResult(2, "unsupported_release_major", version=requested)
         if (
             requested is not None
@@ -600,7 +624,7 @@ class ReleaseManager:
         selected_platform: PlatformId,
     ) -> _VerifiedRemoteManifest:
         manifest_url = (
-            f"{self.release_base_url}/download/v{requested}/"
+            f"{self.release_base_url}/download/{release_tag(requested, self.channel)}/"
             f"{release_manifest_asset_name(selected_platform)}"
         )
         try:
@@ -608,7 +632,7 @@ class ReleaseManager:
         except OSError:
             raise _ReleaseFailure(5, "release_download_failed") from None
         try:
-            manifest = parse_signed_manifest(manifest_payload)
+            manifest = parse_signed_manifest(manifest_payload, channel=self.channel)
         except ReleaseTrustError as failure:
             raise _ReleaseFailure(1, failure.code) from None
         except (OSError, ValueError):
@@ -625,12 +649,24 @@ class ReleaseManager:
                 manifest,
                 signature_payload,
                 key_ring=self.release_key_ring,
+                channel=self.channel,
             )
         except ReleaseTrustError as failure:
             raise _ReleaseFailure(1, failure.code) from None
         except (OSError, ValueError):
             raise _ReleaseFailure(1, "release_signature_invalid") from None
+        self._require_build_identity(manifest)
         return _VerifiedRemoteManifest(manifest, manifest_payload, signature_payload)
+
+    def _require_build_identity(self, manifest: ReleaseManifest) -> None:
+        if manifest.channel == "testing" and (
+            (
+                self.expected_source_commit is not None
+                and manifest.source_commit != self.expected_source_commit
+            )
+            or (self.expected_build_id is not None and manifest.build_id != self.expected_build_id)
+        ):
+            raise _ReleaseFailure(1, "release_build_identity_mismatch")
 
     def _download_candidate(self, staging: Path, manifest: ReleaseManifest) -> Path:
         url = f"{self.release_base_url}/download/{manifest.tag}/{manifest.executable_name}"
@@ -670,6 +706,7 @@ class ReleaseManager:
         manifest = verified_manifest.manifest
         self._validate_release_layout()
         previous = self._current_supported_version()
+        self._read_stable_snapshot()
         _require_non_downgrade(manifest.version, previous)
         if previous == manifest.version:
             if self._installed_manifest(self._release_path(previous)) != manifest:
@@ -689,6 +726,10 @@ class ReleaseManager:
             raise _ReleaseFailure(1, "release_operation_failed")
         was_active = service_state is _ServiceState.ACTIVE
         health = self._health_context()
+        if manifest.channel == "testing":
+            previous_manifest = self._installed_manifest(self._release_path(previous))
+            if previous_manifest is not None and previous_manifest.channel == "stable":
+                self._save_stable_snapshot(previous)
         created = False
         try:
             created = self._install_verified_release(
@@ -750,15 +791,54 @@ class ReleaseManager:
         previous = self._current_supported_version()
         if previous == target:
             return ReleaseResult(0, "rollback_complete", version=target)
-        self._validate_candidate(self._release_path(target) / _EXECUTABLE_NAME)
         service_state = self._service_state()
         if service_state is _ServiceState.PROBE_ERROR:
             raise _ReleaseFailure(1, "release_operation_failed")
         was_active = service_state is _ServiceState.ACTIVE
-        health = self._health_context()
-        failure = self._activate(target, previous, health, was_active=was_active)
-        if failure is not None:
-            return ReleaseResult(failure.exit_code, failure.message, version=target)
+        previous_health = self._health_context()
+        transaction = FilesystemTransaction()
+        restored_metadata = False
+
+        def restore_metadata() -> None:
+            nonlocal restored_metadata
+            transaction.rollback()
+            if restored_metadata:
+                restored_metadata = False
+                if self.runner.run(("systemctl", "daemon-reload")).returncode != 0:
+                    raise OSError("could not reload restored systemd unit")
+
+        try:
+            previous_manifest = self._installed_manifest(self._release_path(previous))
+            if (
+                self.channel == "stable"
+                and previous_manifest is not None
+                and previous_manifest.channel == "testing"
+            ):
+                snapshot = self._read_stable_snapshot()
+                if snapshot is None or snapshot[0] != target:
+                    raise _ReleaseFailure(1, "stable_snapshot_unavailable")
+                for path, content, mode, uid, gid in snapshot[1]:
+                    transaction.atomic_write(path, content, mode=mode, uid=uid, gid=gid)
+                restored_metadata = True
+                if self.runner.run(("systemctl", "daemon-reload")).returncode != 0:
+                    raise _ReleaseFailure(1, "stable_snapshot_restore_failed")
+            self._validate_candidate(self._release_path(target) / _EXECUTABLE_NAME)
+            health = self._health_context()
+
+            failure = self._activate(
+                target,
+                previous,
+                health,
+                was_active=was_active,
+                before_restore=restore_metadata if restored_metadata else None,
+                previous_health=previous_health,
+            )
+            if failure is not None:
+                return ReleaseResult(failure.exit_code, failure.message, version=target)
+            transaction.commit()
+            restored_metadata = False
+        finally:
+            restore_metadata()
         self._prune_verified(target, previous)
         return ReleaseResult(0, "rollback_complete", version=target)
 
@@ -769,6 +849,8 @@ class ReleaseManager:
         health: _HealthContext,
         *,
         was_active: bool,
+        before_restore: Callable[[], None] | None = None,
+        previous_health: _HealthContext | None = None,
     ) -> _ReleaseFailure | None:
         switched = False
         failure: _ReleaseFailure | None = None
@@ -798,7 +880,17 @@ class ReleaseManager:
                     return failure
             except (OSError, _ReleaseFailure):
                 pass
-        if not self._restore(previous, health, was_active=was_active):
+        try:
+            if before_restore is not None:
+                before_restore()
+        except OSError:
+            return _ReleaseFailure(
+                1,
+                "restore_incomplete",
+                rollback="incomplete",
+                active=self._observed_current_version(),
+            )
+        if not self._restore(previous, previous_health or health, was_active=was_active):
             return _ReleaseFailure(
                 1,
                 "restore_incomplete",
@@ -1034,7 +1126,7 @@ class ReleaseManager:
 
     def _current_supported_version(self) -> str:
         version = self._current_version()
-        if not is_supported_release_version(version):
+        if not _supported_installed_version(version):
             raise _ReleaseFailure(2, "unsupported_release_major")
         if compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0:
             raise _ReleaseFailure(2, "unsupported_deployment_release")
@@ -1063,13 +1155,26 @@ class ReleaseManager:
     def _select_rollback_target(self, requested: str | None) -> tuple[str, Path, ReleaseManifest]:
         self._validate_release_layout()
         current = self._current_supported_version()
+        current_manifest = self._installed_manifest(self._release_path(current))
+        if (
+            self.channel == "stable"
+            and current_manifest is not None
+            and current_manifest.channel == "testing"
+        ):
+            stable = self._read_stable_snapshot()
+            if stable is None:
+                raise _ReleaseFailure(1, "stable_snapshot_unavailable")
+            if requested is not None and requested != stable[0]:
+                raise _ReleaseFailure(1, "stable_snapshot_unavailable")
+            requested = stable[0]
         verified: list[tuple[str, Path, ReleaseManifest]] = []
         releases = self.layout.release_root / "releases"
         for path in releases.iterdir():
             manifest = self._installed_manifest(path)
             if (
                 manifest is not None
-                and is_supported_release_version(manifest.version)
+                and _supported_installed_version(manifest.version)
+                and manifest.channel == self.channel
                 and compare_release_versions(manifest.version, MIN_DEPLOYMENT_RELEASE) >= 0
             ):
                 verified.append((manifest.version, path, manifest))
@@ -1077,11 +1182,14 @@ class ReleaseManager:
             match = next((item for item in verified if item[0] == requested), None)
             if match is None:
                 raise _ReleaseFailure(1, "rollback_target_unverified")
+            self._require_build_identity(match[2])
             return match
         previous = [item for item in verified if item[0] != current]
         if not previous:
             raise _ReleaseFailure(1, "rollback_target_unverified")
-        return max(previous, key=lambda item: item[1].stat().st_mtime_ns)
+        target = max(previous, key=lambda item: item[1].stat().st_mtime_ns)
+        self._require_build_identity(target[2])
+        return target
 
     def _installed_manifest(self, release: Path) -> ReleaseManifest | None:
         try:
@@ -1096,6 +1204,8 @@ class ReleaseManager:
                 return None
             manifest_payload = metadata_path.read_bytes()
             manifest = ReleaseManifest.parse(manifest_payload)
+            if manifest.channel == "testing" and manifest.signing_scheme != "ed25519":
+                return None
             if manifest.signing_scheme == "ed25519":
                 signature_path = release / _SIGNATURE_NAME
                 signature_stat = signature_path.lstat()
@@ -1104,7 +1214,12 @@ class ReleaseManager:
                 manifest = verify_signed_manifest(
                     manifest_payload,
                     signature_path.read_bytes(),
-                    key_ring=self.release_key_ring,
+                    key_ring=(
+                        self.release_key_ring
+                        if manifest.channel == self.channel
+                        else key_ring_for_channel(manifest.channel)
+                    ),
+                    channel=manifest.channel,
                 )
             if manifest.version != release.name or manifest.platform != self.platform_id():
                 return None
@@ -1116,14 +1231,112 @@ class ReleaseManager:
         except (OSError, ValueError):
             return None
 
+    def _snapshot_paths(self) -> tuple[Path, ...]:
+        return (
+            self.layout.config_file,
+            self.layout.config_file.parent / "profile.ini",
+            self.layout.config_file.parent / "deployment.json",
+            self.unit_path,
+        )
+
+    def _save_stable_snapshot(self, version: str) -> None:
+        """Retain stable configuration separately from credentials and user data."""
+        entries: dict[str, object] = {}
+        for index, path in enumerate(self._snapshot_paths()):
+            if not path.exists():
+                continue
+            metadata = path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != self.root_uid
+            ):
+                raise _ReleaseFailure(1, "stable_snapshot_unsafe")
+            if metadata.st_size > 1024 * 1024 or metadata.st_mode & 0o022:
+                raise _ReleaseFailure(1, "stable_snapshot_unsafe")
+            payload = path.read_bytes()
+            entries[str(index)] = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "uid": metadata.st_uid,
+                "gid": metadata.st_gid,
+            }
+        document = json.dumps({"schema": 1, "version": version, "files": entries}).encode()
+        snapshot = self.layout.release_root / "last-stable.json"
+        if snapshot.is_symlink():
+            raise _ReleaseFailure(1, "stable_snapshot_unsafe")
+        transaction = FilesystemTransaction()
+        transaction.atomic_write(
+            snapshot,
+            document,
+            mode=0o600,
+            uid=self.root_uid,
+            gid=self.layout.release_root.stat().st_gid,
+        )
+        transaction.commit()
+
+    def _read_stable_snapshot(self) -> tuple[str, list[tuple[Path, bytes, int, int, int]]] | None:
+        snapshot = self.layout.release_root / "last-stable.json"
+        try:
+            metadata = snapshot.lstat()
+        except FileNotFoundError:
+            return None
+        try:
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != self.root_uid
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_size > 6 * 1024 * 1024
+            ):
+                raise ValueError
+            document = json.loads(snapshot.read_bytes())
+            if document["schema"] != 1 or not is_supported_release_version(document["version"]):
+                raise ValueError
+            files = document["files"]
+            if (
+                not isinstance(files, dict)
+                or "0" not in files
+                or not set(files) <= {"0", "1", "2", "3"}
+            ):
+                raise ValueError
+            entries = []
+            for index, path in enumerate(self._snapshot_paths()):
+                if str(index) not in files:
+                    continue
+                item = files[str(index)]
+                payload = base64.b64decode(item["content"], validate=True)
+                mode, uid, gid = item["mode"], item["uid"], item["gid"]
+                if (
+                    len(payload) > 1024 * 1024
+                    or hashlib.sha256(payload).hexdigest() != item["sha256"]
+                    or not all(type(value) is int for value in (mode, uid, gid))
+                    or uid != self.root_uid
+                    or gid < 0
+                    or mode < 0
+                    or mode > 0o777
+                    or mode & 0o022
+                ):
+                    raise ValueError
+                if path.is_symlink() or (path.exists() and not path.is_file()):
+                    raise ValueError
+                entries.append((path, payload, mode, uid, gid))
+            return document["version"], entries
+        except (OSError, ValueError, KeyError, TypeError):
+            raise _ReleaseFailure(1, "stable_snapshot_unsafe") from None
+
     def _prune_verified(self, current: str, previous: str) -> None:
         keep = {current, previous}
+        stable = self._read_stable_snapshot()
+        if stable is not None:
+            keep.add(stable[0])
         releases = self.layout.release_root / "releases"
         for path in list(releases.iterdir()):
             if path.name in keep:
                 continue
             manifest = self._installed_manifest(path)
-            if manifest is not None and is_supported_release_version(manifest.version):
+            if manifest is not None and _supported_installed_version(manifest.version):
                 _remove_managed_tree(path)
 
     def _remove_created_if_inactive(self, version: str) -> None:
@@ -1227,15 +1440,31 @@ def default_release_manager() -> ReleaseManager:
     return ReleaseManager()
 
 
-def default_update_manager() -> ReleaseManager:
+def default_update_manager(
+    *,
+    channel: Channel = "stable",
+    expected_source_commit: str | None = None,
+    expected_build_id: str | None = None,
+) -> ReleaseManager:
     """Return the sole public dependency set allowed to access remote releases."""
-    return ReleaseManager(remote_updates_enabled=True)
+    return ReleaseManager(
+        remote_updates_enabled=True,
+        channel=channel,
+        expected_source_commit=expected_source_commit,
+        expected_build_id=expected_build_id,
+    )
 
 
 def _safe_version(value: object) -> str | None:
-    if not is_canonical_release_version(value):
+    if not is_canonical_release_version(value) and not is_testing_version(value):
         return None
     return value
+
+
+def _supported_installed_version(value: str) -> bool:
+    return is_supported_release_version(value) or (
+        is_testing_version(value) and value.split(".", 1)[0] == SUPPORTED_RELEASE_MAJOR
+    )
 
 
 def _require_non_downgrade(candidate: str, current: str) -> None:

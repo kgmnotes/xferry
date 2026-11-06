@@ -168,7 +168,7 @@ SERVER_COMMAND_ARRAY_EXPANSION_PATTERN = re.compile(
     r"\"?\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\[@\]\}\"?",
     re.MULTILINE,
 )
-ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version"})
+ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version", "--plain"})
 
 WORKFLOW_ACTION_PATTERN = re.compile(
     r"^\s*(?:-\s+)?(?P<quote>[\"']?)uses(?P=quote):\s*(?P<reference>\S+)",
@@ -1960,140 +1960,161 @@ def managed_public_workflow_policy_findings(text: str) -> list[Finding]:
 
 
 def testpypi_workflow_policy_findings(text: str) -> list[Finding]:
-    """Keep the fixed staging rehearsal separate from production release policy."""
+    """Keep automatic previews on protected testing source and separate trust roots."""
     path = Path(".github/workflows/testpypi.yml")
     findings: list[Finding] = []
 
     def reject(reason: str) -> None:
         findings.append(contract_finding(path, reason))
 
-    # A commented safety check provides no execution boundary. Ignore comments
-    # before examining both YAML fields and commands inside run blocks.
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    if _workflow_events(text)[0] != frozenset({"workflow_dispatch"}):
-        reject("TestPyPI rehearsal must be manual-only")
+    events, push = _workflow_events(text)
+    if events != frozenset({"push", "workflow_dispatch"}) or "branches: [testing]" not in push:
+        reject("testing publishers must trigger only on testing pushes or manual dispatch")
     for match in WORKFLOW_ACTION_PATTERN.finditer(text):
         reference = match.group("reference").strip("\"'")
-        if not reference.startswith("./") and (
-            "@" not in reference
-            or WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1]) is None
-        ):
-            reject("TestPyPI actions must be commit-SHA pinned")
-    permissions_found, permission_entries = _permission_entries(text, 0)
-    permissions = {scope: access for scope, access, _ in permission_entries}
-    if (
-        not permissions_found
-        or len(permission_entries) != 2
-        or permissions != {"contents": "read", "actions": "read"}
-    ):
-        reject("TestPyPI workflow permissions must explicitly grant only read access")
-    jobs = {job.name: job for job in _workflow_jobs(text)}
-    if set(jobs) != {"identity", "publish", "pipx-smoke"}:
-        reject("TestPyPI rehearsal requires exactly identity, publish and pipx-smoke jobs")
-        return findings
-    expected_gate = (
-        "    if: ${{ inputs.confirm_testpypi && github.repository == 'kgmnotes/xferry' "
-        "&& github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2' }}"
-    )
-    if expected_gate not in jobs["identity"].text.splitlines():
-        reject("TestPyPI identity gate must enforce the exact confirmation/repository/ref")
-    protected_branch_contract = (
-        "Require protected rehearsal branch",
-        'branches/codex%2Fstage-010-testpypi-rehearsal-v2")',
-        '.commit.sha\' <<<"${branch_json}"',
-        '.protected\' <<<"${branch_json}"',
-    )
-    if any(item not in jobs["identity"].text for item in protected_branch_contract):
-        reject("TestPyPI identity must verify the exact protected rehearsal branch")
-    if "stage-010-testpypi-rehearsal-v2/protection" in jobs["identity"].text:
-        reject("TestPyPI cannot call the Administration-only branch protection endpoint")
-    for command in ("identity", "prepare"):
         if (
-            re.search(
-                rf"^          python tools/testpypi_publish\.py {command} ",
-                jobs["identity"].text,
-                re.MULTILINE,
-            )
-            is None
+            reference.startswith("./")
+            or "@" not in reference
+            or not WORKFLOW_COMMIT_SHA_PATTERN.fullmatch(reference.split("@", 1)[1])
         ):
-            reject(f"TestPyPI identity must execute its {command} verifier")
-    handoff_step = _workflow_step_with_id(jobs["identity"].text, "staged-distributions")
-    if handoff_step is None or "retention-days: 14" not in handoff_step:
-        reject("TestPyPI authenticated handoff retention must be fourteen days")
-    if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or _publisher_channels(
-        jobs["publish"]
-    ) != frozenset({"pypi"}):
-        reject("TestPyPI requires exactly one official publisher and no other write channel")
-    if re.search(r"(?:twine\s+upload|(?:uv|hatch)\s+publish)", text):
-        reject("TestPyPI uploads must use only the official publisher step")
-    required = {
-        "identity": (
-            "inputs.confirm_testpypi",
-            "github.repository == 'kgmnotes/xferry'",
-            "github.ref == 'refs/heads/codex/stage-010-testpypi-rehearsal-v2'",
-            "artifact-id: ${{ steps.staged-distributions.outputs.artifact-id }}",
-            "testpypi_publish.py identity",
-            "repository: kgmnotes/xferry",
-            "run-id: 36712344792",
-            "artifact-ids: 11095067140",
-            "github-token: ${{ github.token }}",
-            "merge-multiple: true",
-            "testpypi_publish.py prepare",
-            "--archive downloaded/release-candidate.tar",
-            "--candidate-dir promoted --packages-dir dist",
-            "id: staged-distributions",
-            "authenticated-testpypi-distributions-${{ github.run_id }}-${{ github.run_attempt }}",
-            "if-no-files-found: error",
-            "retention-days: 14",
-        ),
-        "publish": (
-            "needs: identity",
-            "environment: testpypi",
-            "artifact-ids: ${{ needs.identity.outputs.artifact-id }}",
-            "merge-multiple: true",
-            "path: dist",
-            "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086",
-            "repository-url: https://test.pypi.org/legacy/",
-            "packages-dir: dist/",
-            "verify-metadata: true",
-            "skip-existing: false",
-            "attestations: true",
-        ),
-        "pipx-smoke": (
-            "needs: publish",
-            "os: [ubuntu-latest, macos-15, windows-latest]",
-            "testpypi_publish.py smoke",
-        ),
+            reject("testing actions must be external and commit-SHA pinned")
+    found, entries = _permission_entries(text, 0)
+    if (
+        not found
+        or len(entries) != 2
+        or {k: v for k, v, _ in entries} != {"contents": "read", "actions": "read"}
+    ):
+        reject("testing workflow permissions must default to contents/actions read")
+    jobs = {job.name: job for job in _workflow_jobs(text)}
+    dependencies = {
+        "identity": None,
+        "python": {"identity"},
+        "native": {"identity", "python"},
+        "docker": {"identity", "python"},
+        "sign": {"identity", "python", "native", "docker"},
+        "publish-python": {"identity", "sign"},
+        "publish-native": {"identity", "sign"},
+        "ready": {"identity", "docker", "publish-python", "publish-native"},
+    }
+    if set(jobs) != set(dependencies):
+        reject("testing requires exactly identity/build/sign/publish/ready jobs")
+        return findings
+    gate = (
+        "    if: ${{ github.repository == 'kgmnotes/xferry' "
+        "&& github.ref == 'refs/heads/testing' }}"
+    )
+    if gate not in jobs["identity"].text.splitlines():
+        reject("testing identity gate must enforce the exact repository and testing ref")
+    identity_checks = (
+        "branches/testing)",
+        "jq -r '.protected'",
+        "jq -r '.commit.sha'",
+    )
+    if (
+        any(item not in jobs["identity"].text for item in identity_checks)
+        or '"$GITHUB_SHA"' not in jobs["identity"].text
+    ):
+        reject("testing identity must verify the exact protected testing branch")
+    if "branches/testing/protection" in text:
+        reject("testing cannot use the Administration-only branch protection endpoint")
+    if "python tools/testing_build.py wait-ci --source-commit" not in jobs["identity"].text:
+        reject("testing requires successful CI for the exact source before building")
+    if "python tools/testing_build.py prepare --source-commit" not in jobs["identity"].text:
+        reject("testing must build an isolated source overlay")
+    expected_permissions = {
+        "docker": {"contents": "read", "actions": "read", "packages": "write"},
+        "publish-python": {"actions": "read", "id-token": "write"},
+        "publish-native": {"contents": "write", "actions": "read"},
+        "ready": {"contents": "write", "actions": "read"},
     }
     for name, job in jobs.items():
-        if any(item not in job.text for item in required[name]):
-            reject(f"TestPyPI {name} job lost its fixed staging contract")
-        permissions = {scope: access for scope, access, _ in _permission_entries(job.text, 4)[1]}
-        expected = {"actions": "read", "id-token": "write"}
-        if name == "publish" and permissions != expected:
-            reject("Only TestPyPI publish may grant job-scoped OIDC and read scopes")
-        if name != "publish" and any(access != "read" for access in permissions.values()):
-            reject("TestPyPI verification jobs must remain read-only")
-    publish_actions = tuple(
-        match.group("reference").strip("\"'")
-        for match in WORKFLOW_ACTION_PATTERN.finditer(jobs["publish"].text)
+        if dependencies[name] is not None and _job_dependencies(job) != frozenset(
+            dependencies[name]
+        ):
+            reject(f"testing {name} lost its prerequisite chain")
+        permissions = {k: v for k, v, _ in _permission_entries(job.text, 4)[1]}
+        if permissions != expected_permissions.get(name, {}):
+            reject(f"testing {name} permissions violate its isolated write boundary")
+        if name != "sign" and "${{ secrets." in job.text:
+            reject("only testing sign may read a signing secret")
+        if name not in {
+            "docker",
+            "publish-python",
+            "publish-native",
+            "ready",
+        } and _publisher_channels(job):
+            reject("testing writes must stay in their dedicated publishers")
+    if (
+        not _uses_named_environment(jobs["sign"], "testing-signing")
+        or "${{ secrets.XFERRY_TESTING_SIGNING_KEY_PEM }}" not in jobs["sign"].text
+    ):
+        reject("testing signing requires its separate key and testing-signing environment")
+    if text.count("${{ secrets.") != 1 or "XFERRY_RELEASE_ED25519_PRIVATE_KEY_PEM" in text:
+        reject("testing must consume only its own signing secret")
+    publish = jobs["publish-python"].text
+    if not _uses_named_environment(jobs["publish-python"], "testpypi"):
+        reject("testing Python publisher requires the testpypi environment")
+    actions = tuple(
+        match.group("reference").strip("\"'") for match in WORKFLOW_ACTION_PATTERN.finditer(publish)
     )
-    if publish_actions != (
+    if actions != (
         "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
         "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086",
-    ) or re.search(r"^\s+run\s*:", jobs["publish"].text, re.MULTILINE):
-        reject("TestPyPI OIDC publish must execute only the two approved pinned actions")
+    ) or re.search(r"^\s+run\s*:", publish, re.MULTILINE):
+        reject("TestPyPI OIDC publisher may execute only the two approved pinned actions")
+    for item in (
+        "repository-url: https://test.pypi.org/legacy/",
+        "packages-dir: dist/",
+        "verify-metadata: true",
+        "skip-existing: false",
+        "attestations: true",
+        "name: testing-python",
+    ):
+        if item not in publish:
+            reject("TestPyPI publisher lost its immutable verified distribution handoff")
+    if text.count("uses: pypa/gh-action-pypi-publish@") != 1 or re.search(
+        r"(?:twine\s+upload|(?:uv|hatch)\s+publish)", text
+    ):
+        reject("testing requires exactly one official TestPyPI publisher")
+    if any(
+        item in text
+        for item in (
+            "upload.pypi.org",
+            "production-release",
+            "release-production",
+            "--extra-index-url",
+            "ghcr.io/kgmnotes/xferry:",
+        )
+    ):
+        reject("testing must never target production destinations or mix indexes")
+    for name, markers in {
+        "docker": (
+            "ghcr.io/kgmnotes/xferry-testing:v$VERSION",
+            "--build-arg BUILD_ID=",
+            "--build-arg BUILD_CHANNEL=testing",
+        ),
+        "sign": ("python tools/testing_build.py sign", "--image-digest", "--key-id"),
+        "publish-native": (
+            'gh release create "$TAG"',
+            "--prerelease --latest=false",
+            '--target "$GITHUB_SHA"',
+        ),
+        "ready": (
+            "python tools/testing_build.py ready",
+            "--verify-published",
+            "testing-ready.json",
+            "python tools/docker_image_smoke.py",
+        ),
+    }.items():
+        if any(marker not in jobs[name].text for marker in markers):
+            reject(f"testing {name} lost its artifact identity or destination boundary")
     for block in text.split("uses: actions/checkout@")[1:]:
         if "persist-credentials: false" not in block.split("\n      -", 1)[0]:
-            reject("TestPyPI checkout credentials must not persist")
-    if PUBLISH_JOB_REBUILD_PATTERN.search(jobs["publish"].text):
-        reject("TestPyPI publisher must not rebuild candidates")
-    if PYPI_STATIC_CREDENTIAL_PATTERN.search(text) or "${{ secrets." in text:
-        reject("TestPyPI must not consume static credentials or signing secrets")
-    if any(value in text for value in ("upload.pypi.org", "production", "--extra-index-url")):
-        reject("TestPyPI cannot target production or mix package indexes")
-    if any(_publisher_channels(job) for name, job in jobs.items() if name != "publish"):
-        reject("TestPyPI writes must be isolated to the publish job")
+            reject("testing checkout credentials must not persist")
+    for name in ("identity", "python", "native", "sign"):
+        if "retention-days: 90" not in jobs[name].text:
+            reject("testing authenticated handoff retention must be ninety days")
     return findings
 
 

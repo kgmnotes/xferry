@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .model import ManagedLayout
 from .release_contract import MAX_MANIFEST_BYTES, ReleaseManifest, current_platform_id
-from .versions import is_supported_release_version
+from .versions import SUPPORTED_RELEASE_MAJOR, is_supported_release_version, is_testing_version
 
 UNSUPPORTED_MANAGED_STATE_CODE = "unsupported-managed-state"
 UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS = (
@@ -267,7 +267,10 @@ def _release_state(
                 if not stat.S_ISDIR(entry_metadata.st_mode):
                     return _ReleaseState.BLOCKED
                 version = entry.name
-                if not is_supported_release_version(version):
+                if not is_supported_release_version(version) and not (
+                    is_testing_version(version)
+                    and version.split(".", 1)[0] == SUPPORTED_RELEASE_MAJOR
+                ):
                     return _ReleaseState.BLOCKED
                 release_descriptor = os.open(
                     version,

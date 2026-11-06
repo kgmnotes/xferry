@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, TypeAlias, TypedDict, TypeGuard
 
-from .versions import is_canonical_release_version
+from .channels import Channel
+from .versions import is_canonical_release_version, is_package_version, is_testing_version
 
 MANIFEST_NAME = "xferry-release.json"
 INSTALLED_EXECUTABLE_NAME = "xferry"
@@ -38,6 +39,7 @@ _CANONICAL_MACHINE: dict[PlatformId, str] = {
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SOURCE_COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _WORKFLOW_RUN_RE = re.compile(r"(?:local|[1-9][0-9]*)\Z")
+_BUILD_ID_RE = re.compile(r"([1-9][0-9]*)\.([1-9][0-9]*)\Z")
 _ASSET_NAME_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,254}\Z")
 _SIGNING_KEY_ID_RE = re.compile(r"(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])\Z")
 
@@ -99,7 +101,7 @@ def platform_display_name(platform_id: PlatformId) -> str:
 
 def artifact_name(version: str, platform_id: PlatformId) -> str:
     """Return the deterministic downloadable SCIE name for one release."""
-    if not is_canonical_release_version(version):
+    if not is_package_version(version):
         raise ValueError("invalid release version")
     selected = require_platform_id(platform_id)
     return f"xferry-{version}-{selected}"
@@ -136,6 +138,14 @@ def require_workflow_run(value: object) -> str:
     if not isinstance(value, str) or _WORKFLOW_RUN_RE.fullmatch(value) is None:
         raise ValueError("invalid workflow run")
     return value
+
+
+def require_build_id(value: object, *, workflow_run: str | None = None) -> str:
+    """Bind a testing build to one positive GitHub run and attempt."""
+    match = _BUILD_ID_RE.fullmatch(value) if isinstance(value, str) else None
+    if match is None or (workflow_run is not None and match.group(1) != workflow_run):
+        raise ValueError("invalid testing build identity")
+    return str(value)
 
 
 def require_signing_key_id(value: object) -> str:
@@ -178,6 +188,8 @@ class ReleaseManifest:
     artifact_digests: tuple[tuple[str, str], ...] = ()
     signing_scheme: str | None = None
     signing_key_ids: tuple[str, ...] = ()
+    channel: Channel = "stable"
+    build_id: str | None = None
 
     @classmethod
     def create_v2(
@@ -220,13 +232,52 @@ class ReleaseManifest:
         return cls._parse_document(document, require_v2=True)
 
     @classmethod
+    def create_v3(
+        cls,
+        *,
+        version: str,
+        platform: PlatformId,
+        executable_size: int,
+        executable_sha256: str,
+        source_commit: str,
+        workflow_run: str,
+        build_id: str,
+        artifact_digests: Mapping[str, str] | None = None,
+        signing_key_ids: Sequence[str] = (),
+        channel: Channel = "testing",
+    ) -> ReleaseManifest:
+        """Create testing-only metadata with an explicit immutable build identity."""
+        selected_platform = require_platform_id(platform)
+        name = artifact_name(version, selected_platform)
+        keys = list(signing_key_ids)
+        document: dict[str, object] = {
+            "schema_version": 3,
+            "version": version,
+            "tag": f"testing-v{version}",
+            "platform": selected_platform,
+            "executable": {
+                "name": name,
+                "size": executable_size,
+                "sha256": executable_sha256,
+            },
+            "source": {"commit": source_commit, "workflow_run": workflow_run},
+            "artifact_digests": (
+                {name: executable_sha256} if artifact_digests is None else dict(artifact_digests)
+            ),
+            "signing": {"scheme": "ed25519" if keys else "unsigned", "key_ids": keys},
+            "channel": channel,
+            "build_id": build_id,
+        }
+        return cls._parse_document(document, require_v2=False)
+
+    @classmethod
     def parse(cls, payload: bytes) -> ReleaseManifest:
         """Read a current-format manifest; obsolete installed formats are refused."""
         return cls._parse_payload(payload, require_v2=True)
 
     @classmethod
     def parse_new(cls, payload: bytes) -> ReleaseManifest:
-        """Read a strict v2 manifest for a newly downloaded release."""
+        """Read current stable or testing metadata before selecting trust policy."""
         return cls._parse_payload(payload, require_v2=True)
 
     @classmethod
@@ -253,13 +304,15 @@ class ReleaseManifest:
         if not isinstance(document, dict):
             raise ValueError
         schema_version = document.get("schema_version")
-        if type(schema_version) is not int or schema_version != 2:
+        if type(schema_version) is not int or schema_version not in {2, 3}:
             raise ValueError
-        return cls._parse_v2(document)
+        return cls._parse_current(document, schema_version=schema_version)
 
     @classmethod
-    def _parse_v2(cls, document: dict[object, object]) -> ReleaseManifest:
-        if set(document) != {
+    def _parse_current(
+        cls, document: dict[object, object], *, schema_version: int
+    ) -> ReleaseManifest:
+        required = {
             "schema_version",
             "version",
             "tag",
@@ -268,9 +321,15 @@ class ReleaseManifest:
             "source",
             "artifact_digests",
             "signing",
-        }:
+        }
+        if schema_version == 3:
+            required.update({"channel", "build_id"})
+        if set(document) != required:
             raise ValueError
-        common = cls._parse_common(document)
+        channel: Channel = "testing" if schema_version == 3 else "stable"
+        if schema_version == 3 and document["channel"] != "testing":
+            raise ValueError
+        common = cls._parse_common(document, channel=channel)
         source = document["source"]
         digest_document = document["artifact_digests"]
         signing = document["signing"]
@@ -280,6 +339,11 @@ class ReleaseManifest:
         workflow_run = source["workflow_run"]
         source_commit = require_source_commit(source["commit"])
         workflow_run = require_workflow_run(source["workflow_run"])
+        build_id = (
+            require_build_id(document["build_id"], workflow_run=workflow_run)
+            if schema_version == 3
+            else None
+        )
         if (
             not isinstance(digest_document, dict)
             or not digest_document
@@ -312,20 +376,30 @@ class ReleaseManifest:
         else:
             raise ValueError
         return cls(
-            schema_version=2,
+            schema_version=schema_version,
             **common,
             source_commit=source_commit,
             workflow_run=workflow_run,
             artifact_digests=tuple(sorted(digests)),
             signing_scheme=scheme,
             signing_key_ids=key_ids,
+            channel=channel,
+            build_id=build_id,
         )
 
     @staticmethod
-    def _parse_common(document: dict[object, object]) -> _CommonManifestFields:
+    def _parse_common(
+        document: dict[object, object], *, channel: Channel = "stable"
+    ) -> _CommonManifestFields:
         version = document["version"]
         tag = document["tag"]
-        if not is_canonical_release_version(version) or tag != f"v{version}":
+        valid = (
+            is_testing_version(version)
+            if channel == "testing"
+            else is_canonical_release_version(version)
+        )
+        prefix = "testing-v" if channel == "testing" else "v"
+        if not isinstance(version, str) or not valid or tag != f"{prefix}{version}":
             raise ValueError
         platform_id = require_platform_id(document["platform"])
         executable = document["executable"]
@@ -365,7 +439,7 @@ class ReleaseManifest:
                 "sha256": self.executable_sha256,
             },
         }
-        if self.schema_version == 2:
+        if self.schema_version in {2, 3}:
             document.update(
                 {
                     "source": {
@@ -379,4 +453,6 @@ class ReleaseManifest:
                     },
                 }
             )
+        if self.schema_version == 3:
+            document.update({"channel": self.channel, "build_id": self.build_id})
         return (json.dumps(document, indent=2) + "\n").encode("utf-8")

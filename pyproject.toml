@@ -47,6 +47,9 @@ dependencies = [
     "cryptography>=50.0",
     "defusedxml==0.7.1",
     "josepy>=2.2,<3",
+    "packaging>=24,<27",
+    "prompt_toolkit>=3.0.53,<4",
+    "rich>=15,<16",
 ]
 
 [project.urls]

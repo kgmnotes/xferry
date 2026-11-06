@@ -6,15 +6,14 @@ import hashlib
 import stat
 from pathlib import Path
 
+from .channels import Channel, key_ring_for_channel, validate_version_for_channel
 from .release_contract import MAX_MANIFEST_BYTES, PlatformId, ReleaseManifest, require_platform_id
 from .release_trust import (
-    DEFAULT_RELEASE_KEY_RING,
     MAX_SIGNATURE_BYTES,
     ReleaseKeyRing,
     ReleaseTrustError,
     verify_signed_manifest,
 )
-from .versions import is_supported_release_version
 
 
 class ReleaseEnvelopeError(ValueError):
@@ -60,11 +59,14 @@ def verify_release_envelope(
     *,
     expected_version: str,
     expected_platform: PlatformId,
-    key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
+    key_ring: ReleaseKeyRing | None = None,
+    channel: Channel = "stable",
 ) -> ReleaseManifest:
     """Verify exact signed metadata and bind it to one already-authenticated executable."""
-    if not is_supported_release_version(expected_version):
-        raise ReleaseEnvelopeError("invalid_release_version")
+    try:
+        validate_version_for_channel(expected_version, channel)
+    except ValueError:
+        raise ReleaseEnvelopeError("invalid_release_version") from None
     try:
         selected_platform = require_platform_id(expected_platform)
     except ValueError:
@@ -84,7 +86,8 @@ def verify_release_envelope(
         manifest = verify_signed_manifest(
             manifest_payload,
             signature_payload,
-            key_ring=key_ring,
+            key_ring=key_ring or key_ring_for_channel(channel),
+            channel=channel,
         )
     except ReleaseTrustError as failure:
         raise ReleaseEnvelopeError(failure.code) from None

@@ -365,11 +365,13 @@ from pathlib import Path
 import acme
 import cryptography
 import josepy
+import prompt_toolkit
+import rich
 from OpenSSL import SSL
 import xferry
 from xferry import XFerryServer
 
-del acme, cryptography, josepy, SSL
+del acme, cryptography, josepy, prompt_toolkit, rich, SSL
 assert importlib.util.find_spec("src") is None
 repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
 venv = Path(os.environ["XFERRY_PROBE_VENV"]).resolve()

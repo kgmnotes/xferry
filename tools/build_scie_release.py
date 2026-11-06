@@ -13,12 +13,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Protocol
+from typing import Any, Protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from xferry.management.channels import (  # noqa: E402
+    Channel,
+    release_tag,
+    validate_version_for_channel,
+)
 from xferry.management.managed_state import (  # noqa: E402
     UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS,
 )
@@ -94,6 +99,9 @@ def _render_installer(
     platform_id: PlatformId,
     manifest_signature_required: bool,
     require_hosted_signature: bool,
+    channel: Channel = "stable",
+    build_id: str | None = None,
+    source_commit: str | None = None,
 ) -> str:
     payload = executable.read_bytes()
     managed_os_cases = "|".join(
@@ -103,6 +111,10 @@ def _render_installer(
     )
     replacements = {
         "@VERSION@": version,
+        "@CHANNEL@": channel,
+        "@RELEASE_TAG@": release_tag(version, channel),
+        "@BUILD_ID@": build_id or "",
+        "@SOURCE_COMMIT@": source_commit or "",
         "@EXECUTABLE_NAME@": executable.name,
         "@EXECUTABLE_SIZE@": str(len(payload)),
         "@EXECUTABLE_SHA256@": hashlib.sha256(payload).hexdigest(),
@@ -124,7 +136,7 @@ def _render_installer(
     rendered = template.read_text(encoding="utf-8")
     for token, value in replacements.items():
         rendered = rendered.replace(token, value)
-    if "@" in rendered:
+    if re.search(r"@[A-Z][A-Z0-9_]*@", rendered):
         raise ValueError("installer template contains an unresolved placeholder")
     return rendered
 
@@ -169,11 +181,16 @@ def build_release_bundle(
     require_hosted_signature: bool = False,
     wheel: Path | None = None,
     wheel_sha256: str | None = None,
+    channel: Channel = "stable",
+    build_id: str | None = None,
 ) -> ReleaseBundle:
     """Build one native pinned-CPython SCIE and its bootstrap metadata."""
 
-    if not is_supported_release_version(version):
+    if channel == "stable" and not is_supported_release_version(version):
         raise ValueError("release bundle version must belong to the supported release line")
+    validate_version_for_channel(version, channel)
+    if channel == "testing" and build_id is None:
+        raise ValueError("testing release bundle requires a build ID")
     repo_root = repo_root.resolve()
     selected_platform = require_platform_id(platform_id)
     build_host_platform = current_platform_id()
@@ -265,14 +282,19 @@ def build_release_bundle(
 
         payload = executable.read_bytes()
         sha256 = hashlib.sha256(payload).hexdigest()
-        release_manifest = ReleaseManifest.create_v2(
-            version=version,
-            platform=selected_platform,
-            executable_size=len(payload),
-            executable_sha256=sha256,
-            source_commit=selected_source_commit,
-            workflow_run=selected_workflow_run,
-            signing_key_ids=selected_signing_key_ids,
+        manifest_arguments: dict[str, Any] = {
+            "version": version,
+            "platform": selected_platform,
+            "executable_size": len(payload),
+            "executable_sha256": sha256,
+            "source_commit": selected_source_commit,
+            "workflow_run": selected_workflow_run,
+            "signing_key_ids": selected_signing_key_ids,
+        }
+        release_manifest = (
+            ReleaseManifest.create_v3(**manifest_arguments, build_id=build_id)
+            if channel == "testing" and build_id is not None
+            else ReleaseManifest.create_v2(**manifest_arguments)
         )
         manifest_payload = release_manifest.to_bytes().decode("utf-8")
         manifest = bundle_dir / "xferry-release.json"
@@ -289,6 +311,9 @@ def build_release_bundle(
                 platform_id=selected_platform,
                 manifest_signature_required=release_manifest.signing_scheme == "ed25519",
                 require_hosted_signature=require_hosted_signature,
+                channel=channel,
+                build_id=build_id,
+                source_commit=selected_source_commit,
             ),
             encoding="utf-8",
         )
@@ -319,6 +344,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--wheel-sha256")
+    parser.add_argument("--channel", choices=("stable", "testing"), default="stable")
+    parser.add_argument("--build-id")
     arguments = parser.parse_args(argv)
     version = arguments.version
     if version is None:
@@ -337,6 +364,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_hosted_signature=arguments.require_hosted_signature,
         wheel=arguments.wheel,
         wheel_sha256=arguments.wheel_sha256,
+        channel=arguments.channel,
+        build_id=arguments.build_id,
     )
     for asset in (bundle.executable, bundle.installer, bundle.manifest, bundle.checksums):
         print(asset)

@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     outputs:
       release-tag: ${{ steps.identity.outputs.release-tag }}
       release-version: ${{ steps.identity.outputs.release-version }}
@@ -53,6 +54,14 @@ jobs:
           echo "release-tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "release-version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "source-commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Require manual acceptance and unchanged functionality from the exact preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.identity.outputs.release-version }}
+        run: |
+          set -euo pipefail
+          python -m pip install cryptography==50.0.2
+          python tools/testing_release.py preflight --source-commit "$GITHUB_SHA" --version "$RELEASE_VERSION"
       - name: Refuse an already published PyPI version
         env:
           RELEASE_VERSION: ${{ steps.identity.outputs.release-version }}

@@ -13,6 +13,7 @@ from typing import Literal, NoReturn, Protocol, TypeAlias
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from .channels import Channel, normalize_channel
 from .release_contract import (
     MANIFEST_NAME,
     ReleaseManifest,
@@ -23,8 +24,9 @@ from .release_contract import (
 )
 
 SIGNATURE_NAME = f"{MANIFEST_NAME}.sig"
-SignatureType: TypeAlias = Literal["release-manifest-v2", "installer-v1"]
+SignatureType: TypeAlias = Literal["release-manifest-v2", "release-manifest-v3", "installer-v1"]
 MANIFEST_SIGNATURE_TYPE: Literal["release-manifest-v2"] = "release-manifest-v2"
+TESTING_MANIFEST_SIGNATURE_TYPE: Literal["release-manifest-v3"] = "release-manifest-v3"
 INSTALLER_SIGNATURE_TYPE: Literal["installer-v1"] = "installer-v1"
 _SIGNATURE_CONTEXT = b"xferry-release-signature-v1\x00"
 _ED25519_SIGNATURE_BYTES = 64
@@ -95,6 +97,16 @@ EMBEDDED_RELEASE_KEYS: tuple[TrustedReleaseKey, ...] = (
     ),
 )
 DEFAULT_RELEASE_KEY_RING = ReleaseKeyRing(EMBEDDED_RELEASE_KEYS)
+TESTING_SIGNING_KEY_ID = "xferry-testing-2026-11"
+EMBEDDED_TESTING_KEYS: tuple[TrustedReleaseKey, ...] = (
+    TrustedReleaseKey(
+        key_id=TESTING_SIGNING_KEY_ID,
+        public_key=bytes.fromhex(
+            "6086c4feb99d9ef9b059c9df6d11fcbbfdb7a89ed82b43782b387b0b78c7cf4f"
+        ),
+    ),
+)
+DEFAULT_TESTING_KEY_RING = ReleaseKeyRing(EMBEDDED_TESTING_KEYS)
 
 
 class _Signer(Protocol):
@@ -117,6 +129,8 @@ def _reject_json_constant(_value: str) -> NoReturn:
 def _require_signature_type(value: object) -> SignatureType:
     if value == MANIFEST_SIGNATURE_TYPE:
         return MANIFEST_SIGNATURE_TYPE
+    if value == TESTING_MANIFEST_SIGNATURE_TYPE:
+        return TESTING_MANIFEST_SIGNATURE_TYPE
     if value == INSTALLER_SIGNATURE_TYPE:
         return INSTALLER_SIGNATURE_TYPE
     raise ValueError("invalid signature payload type")
@@ -219,12 +233,14 @@ def create_detached_signature(
     return DetachedReleaseSignature(selected_key_id, selected_type, signature).to_bytes()
 
 
-def parse_signed_manifest(payload: bytes) -> ReleaseManifest:
-    """Parse one canonical signed v2 manifest before trusting any of its references."""
+def parse_signed_manifest(payload: bytes, *, channel: Channel = "stable") -> ReleaseManifest:
+    """Parse canonical signed metadata without implicitly changing artifact channels."""
     try:
         manifest = ReleaseManifest.parse_new(payload)
     except ValueError:
         raise ReleaseTrustError("release_manifest_invalid") from None
+    if manifest.channel != normalize_channel(channel):
+        raise ReleaseTrustError("release_channel_mismatch")
     if manifest.signing_scheme != "ed25519" or not manifest.signing_key_ids:
         raise ReleaseTrustError("release_manifest_unsigned")
     if manifest.to_bytes() != payload:
@@ -265,12 +281,21 @@ def verify_manifest_signature(
     signature_payload: bytes,
     *,
     key_ring: ReleaseKeyRing,
+    channel: Channel = "stable",
 ) -> None:
     """Authenticate a parsed canonical manifest and bind its declared signer."""
+    if manifest.channel != normalize_channel(channel):
+        raise ReleaseTrustError("release_channel_mismatch")
+    if manifest.to_bytes() != payload:
+        raise ReleaseTrustError("release_manifest_noncanonical")
     key_id = verify_detached_signature(
         payload,
         signature_payload,
-        payload_type=MANIFEST_SIGNATURE_TYPE,
+        payload_type=(
+            TESTING_MANIFEST_SIGNATURE_TYPE
+            if manifest.channel == "testing"
+            else MANIFEST_SIGNATURE_TYPE
+        ),
         key_ring=key_ring,
     )
     if manifest.signing_key_ids != (key_id,):
@@ -281,9 +306,18 @@ def verify_signed_manifest(
     payload: bytes,
     signature_payload: bytes,
     *,
-    key_ring: ReleaseKeyRing = DEFAULT_RELEASE_KEY_RING,
+    key_ring: ReleaseKeyRing | None = None,
+    channel: Channel = "stable",
 ) -> ReleaseManifest:
-    """Parse and verify canonical v2 metadata using only the selected local key ring."""
-    manifest = parse_signed_manifest(payload)
-    verify_manifest_signature(payload, manifest, signature_payload, key_ring=key_ring)
+    """Verify one explicitly selected channel using its separate local trust roots."""
+    from .channels import key_ring_for_channel
+
+    manifest = parse_signed_manifest(payload, channel=channel)
+    verify_manifest_signature(
+        payload,
+        manifest,
+        signature_payload,
+        key_ring=key_ring if key_ring is not None else key_ring_for_channel(channel),
+        channel=channel,
+    )
     return manifest
