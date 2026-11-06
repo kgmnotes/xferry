@@ -36,11 +36,13 @@ from .instances import (
     unregister_instance,
 )
 from .ownership import grant_directory_access, restore_directory_access
+from .progress import ProgressObserver, emit_progress, progress_stage, run_stage, with_progress
 
 
 class ComposeBackend:
-    def __init__(self, runner: ProcessRunner) -> None:
+    def __init__(self, runner: ProcessRunner, *, progress: ProgressObserver | None = None) -> None:
         self.runner = runner
+        self.progress = progress
 
     def _validate(self, instance: Instance) -> DeploymentSpec:
         spec = instance.spec
@@ -169,13 +171,18 @@ class ComposeBackend:
         except (OSError, ValueError, TypeError, KeyError) as error:
             return ObservedState("broken", instance.id, "docker", detail=str(error))
 
+    @with_progress
     def pin_image(self, image: str) -> str:
         if not (
             re.fullmatch(r"ghcr\.io/kgmnotes/xferry:v[0-9][a-zA-Z0-9.+-]*", image)
             or re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}", image)
         ):
             raise ValueError("an exact XFerry image version or digest is required")
-        result = self.runner.run(("docker", "pull", image))
+        result = run_stage(
+            "download",
+            lambda: self.runner.run(("docker", "pull", image)),
+            ok=lambda result: result.returncode == 0,
+        )
         if result.returncode:
             raise ValueError("could not pull the selected XFerry image")
         result = self.runner.run(
@@ -236,6 +243,7 @@ class ComposeBackend:
             spec, ownership=OwnershipReceipt(tuple(resources.values()), acl or spec.ownership.acl)
         )
 
+    @with_progress
     def setup(
         self,
         output: Path,
@@ -306,7 +314,10 @@ class ComposeBackend:
             values["domain"] = normalize_domain(domain)
             values["allowed_hosts"] = values["domain"]
         elif not private:
-            address = validate_public_ipv4(public_ip) if public_ip else resolve_public_ipv4()
+            address = run_stage(
+                "preflight",
+                lambda: validate_public_ipv4(public_ip) if public_ip else resolve_public_ipv4(),
+            )
             values["public_ip"] = address
             values["allowed_hosts"] = sslip_domain_for_ip(address)
         else:
@@ -316,8 +327,11 @@ class ComposeBackend:
         text = edit_ini(render_sample_profile("docker"), values)
         text = re.sub(r"(?m)^[ \t]*state_dir[ \t]*=.*(?:\r?\n|$)", "", text)
         # Read-only validation and an explicit no-mutation preview precede pull/mkdir.
-        settings = load_settings_text(
-            text, state_dir=output / "state", config_path=output / "xferry.ini"
+        settings = run_stage(
+            "preflight",
+            lambda: load_settings_text(
+                text, state_dir=output / "state", config_path=output / "xferry.ini"
+            ),
         )
         settings.to_server_config()
         if dry_run:
@@ -365,31 +379,38 @@ class ComposeBackend:
                     )
                 )
                 try:
-                    files.mkdir(parents=True, exist_ok=True, mode=0o750)
-                    acl = grant_directory_access(files, 10001) if sys.platform == "linux" else None
-                    password = generate_password()
-                    _atomic_write(
-                        output / "secrets/xferry_auth", f"admin:{password}\n".encode(), 0o600
-                    )
-                    _atomic_write(spec.profile, text.encode(), 0o600)
-                    _atomic_write(
-                        output / "runtime.ini", compile_profile(text, spec).encode(), 0o644
-                    )
-                    _atomic_write(output / "compose.yaml", self._compose(spec, text), 0o600)
-                    spec = self._receipt(spec, acl=(acl,) if acl else ())
-                    write_manifest(manifest, spec)
-                    register_instance(manifest)
-                    item = Instance(spec.instance_id, "docker", spec.profile, manifest)
+                    with progress_stage("prepare"):
+                        files.mkdir(parents=True, exist_ok=True, mode=0o750)
+                        acl = (
+                            grant_directory_access(files, 10001)
+                            if sys.platform == "linux"
+                            else None
+                        )
+                        password = generate_password()
+                        _atomic_write(
+                            output / "secrets/xferry_auth", f"admin:{password}\n".encode(), 0o600
+                        )
+                        _atomic_write(spec.profile, text.encode(), 0o600)
+                        _atomic_write(
+                            output / "runtime.ini", compile_profile(text, spec).encode(), 0o644
+                        )
+                        _atomic_write(output / "compose.yaml", self._compose(spec, text), 0o600)
+                        spec = self._receipt(spec, acl=(acl,) if acl else ())
+                        write_manifest(manifest, spec)
+                        register_instance(manifest)
+                        item = Instance(spec.instance_id, "docker", spec.profile, manifest)
                     _activate(self.runner, self._prefix(item))
                     spec = replace(
                         spec, backend_options={**spec.backend_options, "credentials_revealed": True}
                     )
                     write_manifest(manifest, spec)
                 except Exception:
+                    emit_progress("restore", "running")
+                    restored = True
                     if acl:
-                        restore_directory_access(acl)
+                        restored = restore_directory_access(acl)
                     if not manifest.exists():
-                        _restore_bundle(snapshots)
+                        restored = _restore_bundle(snapshots) and restored
                     # Keep all generated state/auth for inspection/retry. No active
                     # service survives a failed first setup.
                     prefix = (
@@ -400,7 +421,10 @@ class ComposeBackend:
                         "-f",
                         str(output / "compose.yaml"),
                     )
-                    self.runner.run((*prefix, "down", "--remove-orphans"))
+                    stopped = self.runner.run((*prefix, "down", "--remove-orphans"))
+                    emit_progress(
+                        "restore", "done" if restored and stopped.returncode == 0 else "failed"
+                    )
                     raise
             return OperationResult(
                 0,
@@ -416,6 +440,7 @@ class ComposeBackend:
                 state=self.observe(item),
             )
 
+    @with_progress
     def configure(
         self, instance: Instance, candidate: str, *, expected_text: str, apply: bool = False
     ) -> OperationResult:
@@ -433,7 +458,7 @@ class ComposeBackend:
         )
         if next_spec.files_dir != spec.files_dir:
             raise ValueError("changing persistent storage requires an explicit data migration")
-        runtime = compile_profile(candidate, next_spec)
+        runtime = run_stage("validate_config", lambda: compile_profile(candidate, next_spec))
         if not apply:
             return OperationResult(0, "Configuration is valid; no changes made.", details=changes)
         with _portable_lock(instance.config):
@@ -451,25 +476,28 @@ class ComposeBackend:
             )
             snapshots = {path: path.read_bytes() for path in paths}
             try:
-                _atomic_write(spec.profile, candidate.encode(), 0o600)
-                _atomic_write(output / "runtime.ini", runtime.encode(), 0o644)
-                _atomic_write(output / "compose.yaml", self._compose(spec, candidate), 0o600)
-                write_manifest(
-                    instance.manifest,
-                    self._receipt(
-                        spec,
-                        changed=(spec.profile, output / "runtime.ini", output / "compose.yaml"),
-                    ),
-                )
-                if state.running:
-                    _activate(self.runner, self._prefix(instance))
+                with progress_stage("apply_config"):
+                    _atomic_write(spec.profile, candidate.encode(), 0o600)
+                    _atomic_write(output / "runtime.ini", runtime.encode(), 0o644)
+                    _atomic_write(output / "compose.yaml", self._compose(spec, candidate), 0o600)
+                    write_manifest(
+                        instance.manifest,
+                        self._receipt(
+                            spec,
+                            changed=(spec.profile, output / "runtime.ini", output / "compose.yaml"),
+                        ),
+                    )
+                    if state.running:
+                        _activate(self.runner, self._prefix(instance))
             except Exception as error:
+                emit_progress("restore", "running")
                 restored = _restore_bundle(snapshots)
                 if restored and state.running:
                     try:
                         _activate(self.runner, self._prefix(instance))
                     except (OSError, RuntimeError):
                         restored = False
+                emit_progress("restore", "done" if restored else "failed")
                 return OperationResult(
                     1,
                     f"Configuration failed: {error}. "

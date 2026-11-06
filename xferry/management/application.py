@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from .execution import AdministrativeRunner, CommandRunner
+from .progress import ProgressObserver, run_stage, with_progress
 
 if TYPE_CHECKING:
     from .compose_backend import ComposeBackend
@@ -42,7 +43,9 @@ class ManagementApplication:
         compose_backend: ComposeBackend | None = None,
         layout: ManagedLayout | None = None,
         effective_uid: Callable[[], int] | None = None,
+        progress: ProgressObserver | None = None,
     ) -> None:
+        self.progress = progress
         self.runner = runner or CommandRunner()
         self._native_backend = native_backend
         self._compose_backend = compose_backend
@@ -111,6 +114,7 @@ class ManagementApplication:
                 return self._backend(selected).operate(action, selected, **options)
         return self._backend(selected).operate(action, selected, **options)
 
+    @with_progress
     def configure(
         self,
         instance: str | Path | Instance | None,
@@ -229,6 +233,7 @@ class ManagementApplication:
             state=state,
         )
 
+    @with_progress
     def setup(
         self,
         *,
@@ -371,20 +376,29 @@ class ManagementApplication:
             else SetupMode.SSLIP
         )
         facts = detect_host_facts(data_path=Path(files_dir) if files_dir else layout.data_root)
-        plan = build_setup_plan(
-            SetupOptions(
-                mode=mode,
-                domain=domain,
-                public_ip=public_ip,
-                email=email,
-                firewall_answer=firewall,
-                resources=resources or ResourceOverrides(),
-                layout=layout,
-                files_dir=Path(files_dir) if files_dir else None,
+        plan = run_stage(
+            "preflight",
+            lambda: build_setup_plan(
+                SetupOptions(
+                    mode=mode,
+                    domain=domain,
+                    public_ip=public_ip,
+                    email=email,
+                    firewall_answer=firewall,
+                    resources=resources or ResourceOverrides(),
+                    layout=layout,
+                    files_dir=Path(files_dir) if files_dir else None,
+                ),
+                facts,
             ),
-            facts,
         )
-        preflight = default_setup_preflight(plan, self.runner, interactive=False)
+        preflight = run_stage(
+            "preflight",
+            lambda: default_setup_preflight(plan, self.runner, interactive=False),
+            ok=lambda check: all(
+                failure.code == "executable-missing" for failure in check.failures
+            ),
+        )
         blockers = tuple(
             failure for failure in preflight.failures if failure.code != "executable-missing"
         )
@@ -433,6 +447,7 @@ class ManagementApplication:
                 return OperationResult(installed.exit_code, installed.message)
         return self.setup_native(plan)
 
+    @with_progress
     def setup_native(
         self, plan: SetupPlan, *, executor: SetupExecutor | None = None
     ) -> OperationResult:

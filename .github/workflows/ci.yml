@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           python -m pip check
           python -m xferry --help > /dev/null
-          python -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+          python -c "import acme, cryptography, josepy, prompt_toolkit, rich; from OpenSSL import SSL"
 
       - name: Pytest collection policy
         run: python tools/check_pytest_collection_policy.py
@@ -147,7 +147,7 @@ jobs:
           set -euo pipefail
           python -m pip check
           python -m xferry --help > /dev/null
-          python -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+          python -c "import acme, cryptography, josepy, prompt_toolkit, rich; from OpenSSL import SSL"
           python tools/check_dependency_constraints.py --constraints constraints/ci.txt
           python -m pip_audit --strict --no-deps -r constraints/ci.txt
 
@@ -573,7 +573,7 @@ jobs:
           docker build -t xferry:ci .
           python tools/verify_docker_image.py --image xferry:ci
           docker run --rm --entrypoint python xferry:ci \
-            -c "import acme, cryptography, josepy; from OpenSSL import SSL"
+            -c "import acme, cryptography, josepy, prompt_toolkit, rich; from OpenSSL import SSL"
           docker run --rm xferry:ci run --version
           python tools/docker_image_smoke.py \
             --image xferry:ci \

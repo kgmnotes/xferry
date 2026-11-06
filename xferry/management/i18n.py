@@ -21,7 +21,7 @@ _ENVIRONMENT_LANGUAGE_KEYS = ("XFERRY_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE"
 _MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "root_description": "Run xferry for a short menu, setup to install, or run to start once.",
-        "root_options": "Root options: --help, --version, --lang LANG.",
+        "root_options": "Root options: --help, --version, --lang LANG, --plain (text interface).",
         "unknown_command": "Unknown command '{command}'. Run `xferry help` for available commands.",
         "examples_heading": "Examples:",
         "root_examples": (
@@ -69,7 +69,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "root_description": (
             "Запустите xferry для меню, setup для установки или run для разового запуска."
         ),
-        "root_options": "Общие параметры: --help, --version, --lang LANG.",
+        "root_options": (
+            "Общие параметры: --help, --version, --lang LANG, --plain (текстовое меню)."
+        ),
         "unknown_command": "Неизвестная команда '{command}'. Список команд: `xferry help`.",
         "examples_heading": "Примеры:",
         "root_examples": (

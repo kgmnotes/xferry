@@ -32,6 +32,7 @@ from .health import HealthEndpoint, HealthResult
 from .instances import Instance, dedicated_files_folder, unregister_instance
 from .model import ManagedLayout
 from .ownership import restore_directory_access
+from .progress import ProgressObserver, emit_progress, progress_stage, run_stage, with_progress
 from .system import FilesystemTransaction, managed_mutation
 
 if TYPE_CHECKING:
@@ -48,7 +49,9 @@ class NativeBackend:
         release_manager: ReleaseManager | None = None,
         health_check: Callable[[HealthEndpoint, str, str, float], HealthResult] | None = None,
         root_uid: int = 0,
+        progress: ProgressObserver | None = None,
     ) -> None:
+        self.progress = progress
         self.root_uid = root_uid
         self.runner = runner
         self.layout = layout or ManagedLayout()
@@ -174,17 +177,22 @@ class NativeBackend:
         endpoint = _endpoint(runtime)
         if endpoint is None:
             raise ValueError("cannot determine authenticated health endpoint")
-        return _wait_for_health(
-            self.health_check,
-            endpoint,
-            username,
-            password,
-            readiness_timeout=120,
-            timeout=2,
-            monotonic=time.monotonic,
-            sleep=time.sleep,
+        return run_stage(
+            "wait_ready",
+            lambda: _wait_for_health(
+                self.health_check,
+                endpoint,
+                username,
+                password,
+                readiness_timeout=120,
+                timeout=2,
+                monotonic=time.monotonic,
+                sleep=time.sleep,
+            ),
+            ok=lambda result: result.health.ok,
         ).health.ok
 
+    @with_progress
     def configure(
         self, instance: Instance, candidate: str, *, expected_text: str, apply: bool = False
     ) -> OperationResult:
@@ -201,7 +209,7 @@ class NativeBackend:
                 raise ValueError(
                     "encrypted payloads and state require a coordinated storage migration"
                 )
-        runtime = compile_profile(candidate, next_spec)
+        runtime = run_stage("validate_config", lambda: compile_profile(candidate, next_spec))
         diff = configuration_diff(expected_text, candidate)
         details = {"diff": diff, "changed": candidate != expected_text}
         if not apply:
@@ -220,71 +228,87 @@ class NativeBackend:
                 )
             transaction = FilesystemTransaction()
             try:
-                acl = spec.ownership.acl
-                if next_spec.files_dir != spec.files_dir:
-                    import pwd
+                with progress_stage("apply_config"):
+                    acl = spec.ownership.acl
+                    if next_spec.files_dir != spec.files_dir:
+                        import pwd
 
-                    from .managed_files import stage_managed_files_folder
+                        from .managed_files import stage_managed_files_folder
 
-                    account = pwd.getpwnam("xferry")
-                    receipt = stage_managed_files_folder(
-                        self.layout,
-                        next_spec.files_dir,
-                        transaction,
-                        account.pw_uid,
-                        account.pw_gid,
-                        private_files=tuple(
-                            Path(value)
-                            for value in (settings.auth_file, settings.cert_file, settings.key_file)
-                            if value
+                        account = pwd.getpwnam("xferry")
+                        receipt = stage_managed_files_folder(
+                            self.layout,
+                            next_spec.files_dir,
+                            transaction,
+                            account.pw_uid,
+                            account.pw_gid,
+                            private_files=tuple(
+                                Path(value)
+                                for value in (
+                                    settings.auth_file,
+                                    settings.cert_file,
+                                    settings.key_file,
+                                )
+                                if value
+                            ),
+                        )
+                        acl = (*acl, *receipt)
+                    for path, text in (
+                        (spec.profile, candidate),
+                        (self.layout.config_file, runtime),
+                    ):
+                        metadata = path.stat()
+                        transaction.atomic_write(
+                            path,
+                            text.encode(),
+                            mode=stat.S_IMODE(metadata.st_mode),
+                            uid=metadata.st_uid,
+                            gid=metadata.st_gid,
+                        )
+                    result = self.runner.run(
+                        (
+                            str(self.layout.current_executable),
+                            "config",
+                            "check",
+                            "--config",
+                            str(self.layout.config_file),
+                        )
+                    )
+                    if result.returncode:
+                        raise ValueError("installed runtime rejected the configuration")
+                    next_spec = self._receipt(
+                        next_spec,
+                        acl=acl,
+                        changed=(spec.profile, self.layout.config_file)
+                        + (
+                            (self.layout.unit_file,)
+                            if next_spec.files_dir != spec.files_dir
+                            else ()
                         ),
                     )
-                    acl = (*acl, *receipt)
-                for path, text in ((spec.profile, candidate), (self.layout.config_file, runtime)):
-                    metadata = path.stat()
                     transaction.atomic_write(
-                        path,
-                        text.encode(),
-                        mode=stat.S_IMODE(metadata.st_mode),
-                        uid=metadata.st_uid,
-                        gid=metadata.st_gid,
+                        instance.manifest,
+                        (json.dumps(next_spec.to_json(), indent=2) + "\n").encode(),
+                        mode=0o644,
+                        uid=instance.manifest.stat().st_uid,
+                        gid=instance.manifest.stat().st_gid,
                     )
-                result = self.runner.run(
-                    (
-                        str(self.layout.current_executable),
-                        "config",
-                        "check",
-                        "--config",
-                        str(self.layout.config_file),
-                    )
-                )
-                if result.returncode:
-                    raise ValueError("installed runtime rejected the configuration")
-                next_spec = self._receipt(
-                    next_spec,
-                    acl=acl,
-                    changed=(spec.profile, self.layout.config_file)
-                    + ((self.layout.unit_file,) if next_spec.files_dir != spec.files_dir else ()),
-                )
-                transaction.atomic_write(
-                    instance.manifest,
-                    (json.dumps(next_spec.to_json(), indent=2) + "\n").encode(),
-                    mode=0o644,
-                    uid=instance.manifest.stat().st_uid,
-                    gid=instance.manifest.stat().st_gid,
-                )
-                if (
-                    next_spec.files_dir != spec.files_dir
-                    and self.runner.run(("systemctl", "daemon-reload")).returncode
-                ):
-                    raise ValueError("could not reload systemd folder mapping")
-                if state.running:
-                    if self.runner.run(
-                        ("systemctl", "restart", "xferry.service")
-                    ).returncode or not self._health(next_spec):
-                        raise ValueError("service did not become healthy after configuration")
-                transaction.commit()
+                    if (
+                        next_spec.files_dir != spec.files_dir
+                        and self.runner.run(("systemctl", "daemon-reload")).returncode
+                    ):
+                        raise ValueError("could not reload systemd folder mapping")
+                    if state.running:
+                        restarted = run_stage(
+                            "restart",
+                            lambda: self.runner.run(("systemctl", "restart", "xferry.service")),
+                            ok=lambda result: result.returncode == 0,
+                        )
+                        if restarted.returncode or not self._health(next_spec):
+                            raise ValueError("service did not become healthy after configuration")
+                    transaction.commit()
             except Exception as error:
+                emit_progress("restore", "running")
                 try:
                     transaction.rollback()
                     restored = self.runner.run(("systemctl", "daemon-reload")).returncode == 0
@@ -297,6 +321,7 @@ class NativeBackend:
                         )
                 except (OSError, ValueError):
                     restored = False
+                emit_progress("restore", "done" if restored else "failed")
                 return OperationResult(
                     1,
                     f"Configuration failed: {error}. "

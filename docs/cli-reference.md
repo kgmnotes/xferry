@@ -25,7 +25,7 @@ Run xferry for a short menu, setup to install, or run to start once.
   update        Update the installed server to an exact release version.
   rollback      Restore a verified release on a long-lived installation.
 
-Root options: --help, --version, --lang LANG.
+Root options: --help, --version, --lang LANG, --plain (text interface).
 
 Examples:
   xferry run --files-dir ~/Shared

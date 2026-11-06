@@ -4,6 +4,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A keyboard-driven terminal wizard for setup and configuration, with back
+  navigation, field validation, searchable settings and a review before applying.
+- Live operation stages and elapsed time during installation and configuration.
+  Use the global `--plain` option for the numbered text interface.
+
 ## [0.5.0] - 2026-11-03
 
 ### Changed

@@ -121,7 +121,7 @@ def test_import_probe_rejects_foreign_package_even_outside_checkout(tmp_path: Pa
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
     foreign = tmp_path / "foreign"
     foreign.mkdir()
-    for name in ("acme", "cryptography", "josepy"):
+    for name in ("acme", "cryptography", "josepy", "prompt_toolkit", "rich"):
         (foreign / f"{name}.py").write_text("")
     (foreign / "OpenSSL.py").write_text("SSL = object()\n")
     (foreign / "xferry.py").write_text("class XFerryServer: pass\n")

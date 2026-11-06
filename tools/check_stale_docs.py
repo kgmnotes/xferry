@@ -168,7 +168,7 @@ SERVER_COMMAND_ARRAY_EXPANSION_PATTERN = re.compile(
     r"\"?\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\[@\]\}\"?",
     re.MULTILINE,
 )
-ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version"})
+ROOT_CLI_FLAGS = frozenset({"-h", "--help", "--version", "--plain"})
 
 WORKFLOW_ACTION_PATTERN = re.compile(
     r"^\s*(?:-\s+)?(?P<quote>[\"']?)uses(?P=quote):\s*(?P<reference>\S+)",

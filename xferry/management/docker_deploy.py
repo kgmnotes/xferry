@@ -193,6 +193,10 @@ def _compose(
 
 
 def _activate(runner: ProcessRunner, prefix: tuple[str, ...], *, start: bool = True) -> None:
+    from functools import partial
+
+    from .progress import run_stage
+
     commands: list[tuple[str, ...]] = [
         ("run", "--rm", "--no-deps", "secrets-init"),
     ]
@@ -210,7 +214,11 @@ def _activate(runner: ProcessRunner, prefix: tuple[str, ...], *, start: bool = T
             )
         )
     for arguments in commands:
-        result = runner.run((*prefix, *arguments))
+        result = run_stage(
+            "prepare" if arguments[0] == "run" else "wait_ready",
+            partial(runner.run, (*prefix, *arguments)),
+            ok=lambda result: result.returncode == 0,
+        )
         if result.returncode != 0:
             output = (result.stderr + result.stdout).lower()
             reason = (

@@ -16,8 +16,10 @@ from xferry.config import __version__
 from .i18n import LanguageSelection, Translator, resolve_language
 
 if TYPE_CHECKING:
+    from .application import ManagementApplication
     from .deployment import OperationResult
     from .instances import Instance
+    from .terminal import TerminalUI
 
 _PRIMARY_COMMANDS = (
     "run",
@@ -57,6 +59,7 @@ class ManagementContext:
 
     language: LanguageSelection
     translator: Translator
+    plain: bool = False
 
 
 CommandHandler = Callable[[argparse.Namespace, ManagementContext], int]
@@ -71,11 +74,14 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _strip_global_language(argv: Sequence[str]) -> list[str]:
-    """Remove global language options while preserving the remaining token order."""
+    """Remove global presentation options while preserving remaining token order."""
     remaining: list[str] = []
     index = 0
     while index < len(argv):
         token = argv[index]
+        if token == "--plain":
+            index += 1
+            continue
         if token == "--lang":
             if index + 1 == len(argv):
                 raise ValueError("--lang requires a language value")
@@ -89,6 +95,37 @@ def _strip_global_language(argv: Sequence[str]) -> list[str]:
         remaining.append(token)
         index += 1
     return remaining
+
+
+def _dispatch_arguments(context: ManagementContext, argv: Sequence[str]) -> list[str]:
+    return ["--lang", context.language.code, *(["--plain"] if context.plain else []), *argv]
+
+
+def _terminal(context: ManagementContext, *, disabled: bool = False) -> TerminalUI:
+    from .terminal import get_ui
+
+    return get_ui(context.language.code, plain=context.plain or disabled)
+
+
+def _explicit_options(parser: argparse.ArgumentParser, argv: Sequence[str]) -> frozenset[str]:
+    """Normalize successful argparse abbreviations before deciding which fields to ask."""
+    options = {
+        option: "--" + action.dest.replace("_", "-")
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    selected: set[str] = set()
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        flag = token.split("=", 1)[0]
+        if flag in options:
+            selected.add(options[flag])
+        else:
+            matching = {value for option, value in options.items() if option.startswith(flag)}
+            if len(matching) == 1:
+                selected.update(matching)
+    return frozenset(selected)
 
 
 def _root_help(translator: Translator) -> str:
@@ -253,8 +290,9 @@ def _configure_handler(args: argparse.Namespace, context: ManagementContext) -> 
         Path(args.config),
         args.target,
         context.language.code,
-        dispatch=lambda argv: main(["--lang", context.language.code, *argv]),
+        dispatch=lambda argv: main(_dispatch_arguments(context, argv)),
         instance=getattr(args, "instance_record", None),
+        **({"plain": True} if context.plain else {}),
     )
 
 
@@ -445,14 +483,8 @@ def _render_application_result(
     return result.exit_code
 
 
-def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
-    from .application import default_application
-    from .wizard import confirm, prepare_setup
-
-    interactive = sys.stdin.isatty() and not args.json and not args.dry_run
-    if interactive and not args.instance and not any((args.access, args.domain, args.public_ip)):
-        prepare_setup(args, context.language.code)
-    options = {
+def _setup_options(args: argparse.Namespace) -> dict[str, object]:
+    return {
         "backend": args.backend,
         "instance_id": args.instance,
         "version": None if args.image else (args.to or __version__),
@@ -465,30 +497,132 @@ def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
         "email": args.email,
         "firewall": {"allow": True, "deny": False}.get(args.firewall),
     }
+
+
+def _setup_arguments(args: argparse.Namespace) -> list[str]:
+    """Carry the reviewed wizard answers through sudo without asking them again."""
+    arguments = ["setup"]
+    for name in (
+        "backend",
+        "instance",
+        "access",
+        "files_dir",
+        "domain",
+        "public_ip",
+        "email",
+        "firewall",
+        "output",
+        "to",
+        "image",
+    ):
+        value = getattr(args, name, None)
+        if value is not None:
+            arguments.extend(("--" + name.replace("_", "-"), str(value)))
+    for name in ("dry_run", "json"):
+        if getattr(args, name, False):
+            arguments.append("--" + name.replace("_", "-"))
+    return arguments
+
+
+def _setup_call(
+    app: ManagementApplication, ui: TerminalUI, options: Mapping[str, object], *, dry_run: bool
+) -> OperationResult:
+    if not ui.enhanced:
+        return app.setup(**options, dry_run=dry_run)  # type: ignore[arg-type]
+    with ui.progress() as observer:
+        previous = getattr(app, "progress", None)
+        app.progress = observer
+        try:
+            return app.setup(**options, dry_run=dry_run)  # type: ignore[arg-type]
+        finally:
+            app.progress = previous
+
+
+def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
+    from .application import default_application
+    from .wizard import confirm, prepare_setup, review_setup
+
+    interactive = sys.stdin.isatty() and not args.json and not args.dry_run
+    ui = _terminal(context, disabled=not interactive)
+    if (
+        interactive
+        and not ui.enhanced
+        and not args.instance
+        and not any((args.access, args.domain, args.public_ip))
+    ):
+        if not prepare_setup(
+            args, context.language.code, **({"plain": True} if context.plain else {})
+        ):
+            return 0
     app = default_application()
-    if interactive:
-        preview = app.setup(**options, dry_run=True)
-        if preview.details.get("firewall_consent_required"):
-            supplied_ports = preview.details.get("firewall_ports")
-            ports = supplied_ports if isinstance(supplied_ports, list | tuple) else (80, 443)
-            rules = ", ".join(f"{port}/tcp" for port in ports)
-            description = (
-                f"Разрешить правила UFW: {rules}?"
+    while True:
+        options = _setup_options(args)
+        if interactive:
+            preview = _setup_call(app, ui, options, dry_run=True)
+            if preview.details.get("firewall_consent_required"):
+                supplied_ports = preview.details.get("firewall_ports")
+                ports = supplied_ports if isinstance(supplied_ports, list | tuple) else (80, 443)
+                rules = ", ".join(f"{port}/tcp" for port in ports)
+                description = (
+                    f"Разрешить правила UFW: {rules}?"
+                    if context.language.code == "ru"
+                    else f"Allow UFW rules for {rules}?"
+                )
+                if ui.enhanced:
+                    accepted = ui.confirm(description)
+                else:
+                    accepted = confirm(
+                        context.language.code,
+                        description,
+                        **({"plain": True} if context.plain else {}),
+                    )
+                if not accepted:
+                    return 0
+                args.firewall = "allow"
+                options["firewall"] = True
+                preview = _setup_call(app, ui, options, dry_run=True)
+            if ui.enhanced:
+                decision = review_setup(args, preview, context.language.code)
+                if decision == "edit":
+                    if not prepare_setup(args, context.language.code, edit=True):
+                        return 0
+                    if args.backend == "native" and getattr(os, "geteuid", lambda: -1)() != 0:
+                        return _privileged(_setup_arguments(args), context)
+                    continue
+                if decision != "apply":
+                    return preview.exit_code
+            else:
+                _render_application_result(
+                    preview, json_output=False, language=context.language.code
+                )
+                if preview.exit_code:
+                    return preview.exit_code
+                accepted = (
+                    confirm(context.language.code, plain=True)
+                    if context.plain
+                    else confirm(context.language.code)
+                )
+                if not accepted:
+                    return 0
+        try:
+            result = _setup_call(app, ui, options, dry_run=args.dry_run)
+        except KeyboardInterrupt:
+            if not ui.enhanced:
+                raise
+            ui.message(
+                "Установка прервана. Проверьте состояние: xferry status или xferry doctor."
                 if context.language.code == "ru"
-                else f"Allow UFW rules for {rules}?"
+                else "Setup interrupted. Check the deployment with xferry status or xferry doctor.",
+                kind="warning",
             )
-            if not confirm(context.language.code, description):
-                return 0
-            options["firewall"] = True
-            preview = app.setup(**options, dry_run=True)
-        _render_application_result(preview, json_output=False, language=context.language.code)
-        if preview.exit_code or not confirm(context.language.code):
-            return preview.exit_code
-    return _render_application_result(
-        app.setup(**options, dry_run=args.dry_run),
-        json_output=args.json,
-        language=context.language.code,
-    )
+            return 130
+        if ui.enhanced:
+            from .interactive import render_result
+
+            return render_result(ui, result, files_dir=args.files_dir)
+        return _render_application_result(
+            result, json_output=args.json, language=context.language.code
+        )
 
 
 def _credentials_handler(args: argparse.Namespace, context: ManagementContext) -> int:
@@ -527,7 +661,13 @@ def _persistent_handler(args: argparse.Namespace, context: ManagementContext) ->
             options.update(version=args.to, dry_run=args.dry_run)
         if args.command == "uninstall":
             confirmed = args.yes
-            if args.purge and not confirmed and not args.dry_run and sys.stdin.isatty():
+            if (
+                args.purge
+                and not confirmed
+                and not args.dry_run
+                and not args.json
+                and sys.stdin.isatty()
+            ):
                 from .wizard import confirm
 
                 preview = app.operate(
@@ -538,7 +678,11 @@ def _persistent_handler(args: argparse.Namespace, context: ManagementContext) ->
                 )
                 if preview.exit_code:
                     return preview.exit_code
-                confirmed = confirm(context.language.code, context.translator.get("purge_prompt"))
+                confirmed = confirm(
+                    context.language.code,
+                    context.translator.get("purge_prompt"),
+                    **({"plain": True} if context.plain else {}),
+                )
                 if not confirmed:
                     return 0
             options.update(purge=args.purge, confirmed=confirmed, dry_run=args.dry_run)
@@ -640,25 +784,42 @@ def _privileged(argv: Sequence[str], context: ManagementContext) -> int:
             executable = [str(launcher)]
     proxy_names = (
         "HTTP_PROXY,HTTPS_PROXY,ALL_PROXY,NO_PROXY,http_proxy,https_proxy,"
-        "all_proxy,no_proxy,SSL_CERT_FILE,REQUESTS_CA_BUNDLE"
+        "all_proxy,no_proxy,SSL_CERT_FILE,REQUESTS_CA_BUNDLE,NO_COLOR,TERM"
     )
     command = [str(sudo)]
     if not sys.stdin.isatty():
         command.append("-n")
     command.extend(
-        (f"--preserve-env={proxy_names}", "--", *executable, "--lang", context.language.code, *argv)
+        (f"--preserve-env={proxy_names}", "--", *executable, *_dispatch_arguments(context, argv))
     )
     result = subprocess.run(command, check=False)
     return result.returncode
 
 
-def _select_persistent_instance(selector: str | None, context: ManagementContext) -> Instance:
+def _select_persistent_instance(
+    selector: str | None, context: ManagementContext, *, interactive: bool = True
+) -> Instance:
     from .application import default_application
     from .instances import discover_instances
 
     app = default_application()
     found = discover_instances() if selector is None else ()
-    if len(found) > 1 and sys.stdin.isatty():
+    if len(found) > 1 and sys.stdin.isatty() and interactive:
+        from .terminal import Back, Choice
+
+        ui = _terminal(context)
+        if ui.enhanced:
+            try:
+                selector = ui.select(
+                    "Выберите сервер" if context.language.code == "ru" else "Choose a server",
+                    [
+                        Choice(item.id, f"{item.id} ({item.backend})", str(item.config))
+                        for item in found
+                    ],
+                )
+            except Back as error:
+                raise EOFError from error
+            return app.resolve(selector)
         from .wizard import prompt
 
         print("Выберите сервер:" if context.language.code == "ru" else "Choose a server:")
@@ -687,7 +848,7 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
             )
             return 2
         try:
-            return main(["--lang", context.language.code, argv[0], "--help"])
+            return main(_dispatch_arguments(context, [argv[0], "--help"]))
         except SystemExit as exc:
             return exc.code if isinstance(exc.code, int) else 1
     parser = _command_parser(command, context.translator, show_all_help="--help-all" in argv)
@@ -698,6 +859,9 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
     args.command = command
+    args.explicit_options = _explicit_options(parser, argv)
+    from .terminal import Back
+
     try:
         if command == "status" and not args.instance:
             from .application import default_application
@@ -724,6 +888,16 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
             error = _setup_option_error(args)
             if error:
                 raise ValueError(error)
+            ui = _terminal(context, disabled=args.json or args.dry_run)
+            if ui.enhanced and not args.instance:
+                from .wizard import prepare_setup
+
+                if not prepare_setup(args, context.language.code):
+                    return 0
+                args.wizard_prepared = True
+                error = _setup_option_error(args)
+                if error:
+                    raise ValueError(error)
             args.target = "managed" if args.backend == "native" else "docker"
         elif command in {"config", "credentials"} and args.config:
             args.config = str(Path(args.config).expanduser().absolute())
@@ -746,7 +920,11 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
                 if command == "config" and not args.instance and not discover_instances():
                     args.config, args.target = str(foreground_config()), "portable"
                 else:
-                    instance = _select_persistent_instance(args.instance, context)
+                    instance = _select_persistent_instance(
+                        args.instance,
+                        context,
+                        interactive=not (args.json or getattr(args, "dry_run", False)),
+                    )
                     args.instance_record = instance
                     args.config, args.target = str(instance.config), instance.target
         if command == "config" and not args.config and args.target == "portable":
@@ -764,7 +942,12 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
             and getattr(os, "geteuid", lambda: -1)() != 0
             and not (command == "setup" and getattr(args, "dry_run", False))
         ):
-            return _privileged([command, *argv], context)
+            forwarded = (
+                _setup_arguments(args)
+                if command == "setup" and getattr(args, "wizard_prepared", False)
+                else [command, *argv]
+            )
+            return _privileged(forwarded, context)
         if command == "setup":
             return _setup_handler(args, context)
         if command == "config":
@@ -772,7 +955,7 @@ def _run_management(command: str, argv: Sequence[str], context: ManagementContex
         if command == "credentials":
             return _credentials_handler(args, context)
         return _persistent_handler(args, context)
-    except (EOFError, KeyboardInterrupt):
+    except (Back, EOFError, KeyboardInterrupt):
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         if getattr(args, "json", False):
@@ -833,7 +1016,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"xferry: error: {exc}", file=sys.stderr)
         return 2
 
-    context = ManagementContext(language=language, translator=Translator(language))
+    context = ManagementContext(
+        language=language, translator=Translator(language), plain="--plain" in actual_argv
+    )
     if not remaining:
         if sys.stdin.isatty() and sys.stdout.isatty():
             from .wizard import menu
@@ -841,7 +1026,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 return menu(
                     context.language.code,
-                    lambda argv: main(["--lang", context.language.code, *argv]),
+                    lambda argv: main(_dispatch_arguments(context, argv)),
+                    **({"plain": True} if context.plain else {}),
                 )
             except (OSError, ValueError) as exc:
                 print(f"xferry: error: {exc}", file=sys.stderr)

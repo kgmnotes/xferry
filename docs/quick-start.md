@@ -28,6 +28,25 @@ pipx install xferry
 `xferry` opens the interactive menu. The commands below give the same choices
 explicitly. For contributor source builds, see [Contributing](contributing.md).
 
+### Interactive terminal
+
+In a capable terminal, use the arrow keys to choose an action and Enter to
+continue. Esc goes back without losing previous answers; Ctrl+C exits the
+wizard. Numbered shortcuts select an action; press Enter to open it. Home/End
+and Page Up/Page Down navigate longer lists. In a field, Enter keeps the displayed
+value; typing a new value replaces it. Setup asks for the installation method,
+shared folder and access mode,
+then shows a plan before applying it. Explicit command-line choices are kept.
+
+Installation and configuration show the current operation and elapsed time,
+including the wait for HTTPS readiness. Completed steps remain visible.
+After setup, save the displayed URL, username, password and deployment ID.
+
+Use `xferry --plain` for numbered text menus, or `xferry --plain config` for the
+plain settings wizard. This also disables animation. `NO_COLOR` disables colors
+while keeping keyboard navigation. Unsupported terminals use plain output
+automatically; JSON and redirected output do not contain terminal controls.
+
 ## Run once
 
 ```console
@@ -59,7 +78,7 @@ Use a [supported Linux host](managed-hosts.md) with systemd:
 xferry setup --backend native --files-dir /srv/share
 ```
 
-The CLI requests sudo, asks for access, previews the resources it will create,
+The CLI collects missing choices, requests sudo when needed, previews the resources it will create,
 then installs a verified signed runtime and starts the service. A newly created
 shared folder defaults to `/var/lib/xferry/files`. Existing files keep their
 owner; xferry grants the runtime access using the deployment's recorded policy.
