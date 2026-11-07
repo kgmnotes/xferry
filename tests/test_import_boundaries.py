@@ -18,6 +18,7 @@ import pytest
 from packaging.requirements import Requirement
 from setuptools import find_packages
 
+from tools.check_public_surface import FORBIDDEN_PATH_PREFIXES, is_forbidden_path
 from tools.check_release_preflight import _source_version
 
 try:
@@ -68,6 +69,51 @@ class BuiltArtifacts:
     build_environment: dict[str, str]
 
 
+def _copy_artifact_source(workspace: Path, destination: Path) -> None:
+    """Stage actual source candidates without traversing operator-owned local state.
+
+    This deliberately does not export Git's index: new package inputs and dirty
+    files must reach the real artifact validator, including in Git-free sources.
+    """
+    ignore_generated = shutil.ignore_patterns(
+        ".git",
+        ".benchmarks",
+        ".hypothesis",
+        ".mypy_cache",
+        ".playwright-cli",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "*.py[co]",
+        ".coverage",
+        "coverage.xml",
+        "build",
+        "dist",
+        "site",
+        "output",
+        "uploads",
+        "xferry.egg-info",
+        ".env",
+        ".env.*",
+        "*.key",
+        "*.pem",
+    )
+    ignore_operator_roots = shutil.ignore_patterns(
+        ".worktrees", ".playwright-mcp", ".venv-*", "venv", "notes", "agents_review"
+    )
+
+    def ignored(directory: str, names: list[str]) -> set[str]:
+        relative = Path(directory).relative_to(workspace)
+        excluded = ignore_generated(directory, names)
+        if not relative.parts:
+            excluded.update(ignore_operator_roots(directory, names))
+        excluded.update(name for name in names if is_forbidden_path((relative / name).as_posix()))
+        return excluded
+
+    shutil.copytree(workspace, destination, ignore=ignored)
+
+
 @pytest.fixture(scope="module")
 def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuiltArtifacts:
     """Build one wheel and one sdist through the declared setuptools backend."""
@@ -75,34 +121,7 @@ def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuiltArtifacts:
     source_root = build_root / "source"
     artifact_dir = build_root / "artifacts"
     artifact_dir.mkdir()
-    shutil.copytree(
-        REPO_ROOT,
-        source_root,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".benchmarks",
-            ".hypothesis",
-            ".mypy_cache",
-            ".playwright-cli",
-            ".pytest_cache",
-            ".ruff_cache",
-            ".venv",
-            "__pycache__",
-            "*.py[co]",
-            ".coverage",
-            "coverage.xml",
-            "build",
-            "dist",
-            "site",
-            "output",
-            "uploads",
-            "xferry.egg-info",
-            ".env",
-            ".env.*",
-            "*.key",
-            "*.pem",
-        ),
-    )
+    _copy_artifact_source(REPO_ROOT, source_root)
 
     build_environment = os.environ.copy()
     build_environment.update(
@@ -180,6 +199,86 @@ def _declared_package_data() -> frozenset[str]:
         if any(fnmatchcase(posix_relative, pattern) for pattern in patterns):
             expected.add((PurePosixPath("xferry") / posix_relative).as_posix())
     return frozenset(expected)
+
+
+def test_artifact_staging_does_not_traverse_operator_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long-lived checkout's worktrees and audit archives cannot fill test storage."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text("[project]\nname = 'example'\n")
+    local_roots = {".worktrees", ".playwright-mcp", "notes", "output"}
+    local_roots.update(PurePosixPath(prefix).parts[0] for prefix in FORBIDDEN_PATH_PREFIXES)
+    local_roots.discard("docs")
+    blocked = set()
+    for name in local_roots:
+        directory = workspace / name
+        directory.mkdir()
+        blocked.add(directory)
+        with (directory / "large-archive.bin").open("wb") as archive:
+            archive.truncate(512 * 1024 * 1024)
+    for name in (".env", ".env.local", "auth.key", "certificate.pem"):
+        (workspace / name).write_text("synthetic private content\n")
+    original_scandir = os.scandir
+
+    def bounded_scandir(path):
+        assert Path(path) not in blocked, "artifact staging traversed an operator state directory"
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", bounded_scandir)
+    destination = tmp_path / "source"
+    _copy_artifact_source(workspace, destination)
+
+    assert {path.name for path in destination.iterdir()} == {"pyproject.toml"}
+    assert (destination / "pyproject.toml").read_bytes() == (
+        workspace / "pyproject.toml"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize("has_git_metadata", (False, True))
+def test_artifact_staging_preserves_current_and_new_package_candidates_without_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_git_metadata: bool
+) -> None:
+    """Index exports or package allowlists must not hide working-tree packaging defects."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if has_git_metadata:
+        (workspace / ".git").mkdir()
+        (workspace / ".git/index").write_bytes(b"not a Git index: staging must not read it")
+    inputs = {
+        "xferry/config.py": b'__version__ = "0.5.1.dev123001"\n',
+        "xferry/new_module.py": b"# newly added source candidate\n",
+        "xferry/notes/__init__.py": b"# package path, not root runtime state\n",
+        "xferry/data/static/new.js": b"// newly added package data\n",
+        "xferry_extra/__init__.py": b"# unexpected package candidate\n",
+        "src/__init__.py": b"# unexpected legacy package candidate\n",
+        "tests/server_factory.py": b"# test helper\n",
+        "tools/verify_python_artifacts.py": b"#!/usr/bin/env python3\n",
+        "mkdocs.yml": b"site_name: example\n",
+    }
+    for name, content in inputs.items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    executable = workspace / "tools/verify_python_artifacts.py"
+    executable.chmod(0o755)
+
+    def no_git(*_args, **_kwargs):
+        pytest.fail("artifact source staging must not depend on Git or another subprocess")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    destination = tmp_path / "source"
+    _copy_artifact_source(workspace, destination)
+
+    assert not (destination / ".git").exists()
+    assert {
+        path.relative_to(destination).as_posix(): path.read_bytes()
+        for path in destination.rglob("*")
+        if path.is_file()
+    } == inputs
+    if os.name == "posix":
+        assert (destination / "tools/verify_python_artifacts.py").stat().st_mode & 0o777 == 0o755
 
 
 def test_repository_discovery_has_only_xferry_and_the_pre_1_0_version_authority() -> None:
