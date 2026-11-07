@@ -88,3 +88,87 @@ The existing in-process encrypted resource smoke remains complementary:
 it exercises the server-decrypt path and cannot establish real HTTP/TLS or
 browser resource limits. See [encrypted transfers](encrypted-transfers.md)
 for that test and the distinction between protocol limits and measured sizes.
+
+## Health while the workspace is busy
+
+Measure authenticated `PING` with 0, 1,000 and 10,000 ordinary files, first idle
+and then during a real encrypted upload/download. The separate server profile
+explicitly allows 20,000 files and an 8 GiB quota; the original network workload's
+32-file limit is not reused. All files are synthetic and each case owns a
+bounded subprocess group. TLS validation and Basic Auth are required.
+
+```console
+python tools/health_load_smoke.py --profile quick --output health.json
+python tools/health_load_smoke.py --profile weekly --output health-baseline.json
+python tools/health_load_smoke.py --profile weekly --baseline health-baseline.json --output health.json
+```
+
+Quick uses 20 PING attempts per phase and 16 MiB plus one byte transfers; weekly
+uses 100 attempts and 64 MiB plus one byte transfers. The load repeats complete
+transfers sequentially until sampling finishes and deletes only those synthetic
+files. PING attempts are never retried: status counts, timeouts and transport
+failures remain visible. Successful-ready latency is separate from all-attempt
+latency; 429/503 responses are reported as throttling, not successful readiness.
+A phase with no ready response, malformed health, unexpected status, timeout or
+transport failure fails the measurement. Every transfer must pass SHA-256.
+
+Health receipts have their own schema and cannot be compared with `network.json`.
+The optional baseline must have the same environment, server settings, profile,
+sample count, transfer size and populated-workspace cases. Missing or malformed
+baselines produce `baseline_unavailable`; a p95 increase above 25% is advisory.
+The scheduled workflow records an initial measurement and a repeat on the same
+runner so a comparable current-source baseline exists even when historical
+runner hardware has changed. For a low-memory VPS, use a disk-backed `TMPDIR`
+such as a dedicated private directory under `/var/tmp`, rather than a small tmpfs.
+
+## Browser memory, storage and reload recovery
+
+The original encrypted browser smoke uses a tiny fixture and an in-memory output
+adapter. It remains a functional test and is not a large-file memory benchmark.
+The separate Chromium resource tool uses the real application workflow, Web
+Crypto, IndexedDB nonce journal, Web Locks and OPFS download cache:
+
+```console
+python tools/browser_resource_smoke.py --profile quick --output browser.json
+python tools/browser_resource_smoke.py --profile extended --allow-large --output browser-large.json
+```
+
+Quick checks a 64 MiB round trip and a separate 64 MiB plus one byte recovery
+case. Extended checks 256 MiB plus one byte, 2 GiB, and that recovery case. The
+source fixture, output and hashes are streamed with bounded buffers. Keep at
+least five times the largest file size plus 256 MiB of temporary free storage
+for source, server ciphertext, browser storage and exported output. Browser
+profile storage may use a different filesystem; it needs equivalent headroom.
+
+The file-picker adapter returns a real OPFS writable stream, never an array of
+all chunks. Receipts explicitly record `syntheticPicker: true` and
+`native_picker_verified: false`. Upload recovery pauses after a real chunk
+response, reloads the page and reselects the original file and password. Download
+recovery deliberately interrupts an output write after caching an authenticated
+chunk, reloads, unlocks again and verifies that the cached chunk is not fetched
+again. Recovery cases are excluded from timing comparisons. A completed output
+must have the expected byte count and SHA-256, and its recovery cache must be
+removed.
+
+Linux sampling reports the sum of the Chromium root and descendant process RSS
+separately from server RSS. Shared pages can be counted in multiple processes;
+this is not exclusive physical memory or JS heap. Unsupported process metrics
+are null, never zero. Local browser measurements use secure-context loopback
+HTTP; the separate network harness covers authenticated TLS. A disposable
+external HTTPS target can be selected with `--target-url`; pass credentials only
+through the protected `XFERRY_BROWSER_AUTH_FILE` described in the developer
+guide. The tool creates and removes only its own encrypted file. Remote server
+RSS is unavailable and reported as null.
+
+The receipt separates the local harness's source/version identity from the
+target runtime's `PING` identity captured before and after each case. A changed
+target identity fails the case. Current `PING` exposes its runtime version;
+target source SHA and build ID remain null when the endpoint does not expose
+them. Bind external acceptance to the deployment's separate signed identity and
+`status`/`doctor` evidence rather than substituting the harness's local version.
+
+The automatic browser-resource job runs on the default branch alongside network
+measurements and retains a separate `browser-resource-measurements` artifact.
+Use a real desktop Chrome/Edge session with the native save dialog and at least
+256 MiB plus one byte for manual file-picker acceptance. Do not represent an
+OPFS adapter run as native-picker or Safari/iOS evidence.
