@@ -117,6 +117,8 @@ namespaces = false
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short --strict-markers"
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"
 
 # coverage configuration
 [tool.coverage.run]
