@@ -576,6 +576,7 @@ def _portable_tests(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None
         "tests/__init__.py",
         "tests/conftest.py",
         "tests/server_factory.py",
+        "tests/test_server_live.py",
         "tests/test_cli.py",
         "tests/test_security/__init__.py",
         "tests/test_security/test_crypto.py",
