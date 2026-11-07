@@ -51,7 +51,7 @@ command:
 
 ```bash
 sudo apt update
-sudo apt install pipx
+sudo apt install --no-install-recommends pipx
 pipx ensurepath
 ```
 

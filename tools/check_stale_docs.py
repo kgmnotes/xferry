@@ -436,7 +436,7 @@ SEMANTIC_REQUIREMENTS: tuple[SemanticRequirement, ...] = (
         re.compile(
             r"\A(?=[\s\S]*py -m pip install --user pipx)"
             r"(?![\s\S]*python3 -m pip install --user pipx)"
-            r"(?=[\s\S]*sudo apt install pipx)"
+            r"(?=[\s\S]*sudo apt install --no-install-recommends pipx)"
             r"(?=[\s\S]*brew install pipx)"
             r"(?=[\s\S]*pipx ensurepath)"
             r"(?=[\s\S]*pipx install xferry)"

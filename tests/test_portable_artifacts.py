@@ -167,6 +167,7 @@ def test_portable_test_staging_cannot_copy_the_source_package(
     assert not (test_root / "xferry").exists()
     assert not (test_root / "tools").exists()
     assert (test_root / "tests/server_factory.py").is_file()
+    assert (test_root / "tests/test_server_live.py").is_file()
     assert (test_root / "pyproject.toml").is_file()
     assert len(calls) == 1
     command = calls[0][0][0]

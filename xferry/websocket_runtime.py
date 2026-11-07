@@ -50,18 +50,22 @@ class WebSocketRuntime:
         self._record_timeout = record_timeout
         self._slots = threading.BoundedSemaphore(max_connections)
 
-    def upgrade(self, sock: socket.socket, request: HTTPRequest) -> bool:
+    def upgrade(
+        self, sock: socket.socket, request: HTTPRequest, *, initial_data: bytes = b""
+    ) -> bool:
         """Admit and run a WebSocket session; return false when capacity is full."""
         lease = self.acquire_session()
         if lease is None:
             return False
         try:
-            self.handle_session(sock, request)
+            self.handle_session(sock, request, initial_data=initial_data)
         finally:
             lease.release()
         return True
 
-    def handle_session(self, sock: socket.socket, request: HTTPRequest) -> None:
+    def handle_session(
+        self, sock: socket.socket, request: HTTPRequest, *, initial_data: bytes = b""
+    ) -> None:
         """Perform the handshake and frame loop for one already-admitted socket."""
         ws_key = request.admission_context.websocket_key or ""
         try:
@@ -69,7 +73,7 @@ class WebSocketRuntime:
         except Exception:
             return
 
-        buffer = bytearray()
+        buffer = bytearray(initial_data)
         incomplete_since: float | None = None
         current_timeout: float | None = None
         close_lock = threading.Lock()
@@ -95,31 +99,6 @@ class WebSocketRuntime:
         try:
             set_recv_timeout(self.idle_timeout)
             while self._is_running():
-                try:
-                    chunk = sock.recv(65536)
-                    if not chunk:
-                        break
-                    buffer.extend(chunk)
-                except TimeoutError:
-                    if (
-                        buffer
-                        and incomplete_since is not None
-                        and time.monotonic() - incomplete_since >= self.frame_idle_timeout
-                    ):
-                        logger.warning("WS incomplete frame timed out")
-                        self._metrics.record_websocket_incomplete_frame_timeout()
-                        self._record_timeout("websocket_incomplete_frame")
-                        send_close(1002, "Incomplete frame timeout")
-                        return
-                    if buffer:
-                        continue
-                    try:
-                        self._metrics.record_websocket_idle_ping()
-                        sock.sendall(build_ws_frame(b"", opcode=WS_PING))
-                    except Exception:
-                        break
-                    continue
-
                 while True:
                     try:
                         frame = parse_ws_frame(buffer, require_mask=True)
@@ -161,6 +140,32 @@ class WebSocketRuntime:
                         return
                     if opcode == WS_TEXT:
                         self._handle_message(sock, payload)
+
+                try:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                except TimeoutError:
+                    if (
+                        buffer
+                        and incomplete_since is not None
+                        and time.monotonic() - incomplete_since >= self.frame_idle_timeout
+                    ):
+                        logger.warning("WS incomplete frame timed out")
+                        self._metrics.record_websocket_incomplete_frame_timeout()
+                        self._record_timeout("websocket_incomplete_frame")
+                        send_close(1002, "Incomplete frame timeout")
+                        return
+                    if buffer:
+                        continue
+                    try:
+                        self._metrics.record_websocket_idle_ping()
+                        sock.sendall(build_ws_frame(b"", opcode=WS_PING))
+                    except Exception:
+                        break
+                    continue
+
         except Exception:
             self._metrics.record_websocket_error()
             logger.exception("WS connection failed")

@@ -26,7 +26,7 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert "pipx install xferry" in text
     assert "xferry run --open" in text
     assert "py -m pip install --user pipx" in text
-    assert "sudo apt install pipx" in text
+    assert "sudo apt install --no-install-recommends pipx" in text
     assert "brew install pipx" in text
     assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
@@ -45,7 +45,7 @@ def test_quick_start_guard_accepts_package_manager_bootstrap(tmp_path: Path) -> 
     """Catches the semantic guard requiring a PEP 668-incompatible bootstrap."""
     text = _read(QUICK_START).replace(
         "python3 -m pip install --user pipx",
-        "sudo apt install pipx\nbrew install pipx",
+        "sudo apt install --no-install-recommends pipx\nbrew install pipx",
     )
     (tmp_path / "docs").mkdir()
     (tmp_path / QUICK_START).write_text(text, encoding="utf-8")

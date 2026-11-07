@@ -109,7 +109,9 @@ class RequestPipelineServer(Protocol):
 
     def _is_websocket_origin_allowed(self, request: HTTPRequest) -> bool: ...
 
-    def _upgrade_websocket(self, sock: socket.socket, request: HTTPRequest) -> bool: ...
+    def _upgrade_websocket(
+        self, sock: socket.socket, request: HTTPRequest, *, initial_data: bytes = b""
+    ) -> bool: ...
 
     def _check_payload_size(self, request: HTTPRequest) -> HTTPResponse | None: ...
 
@@ -175,6 +177,7 @@ class RequestPipeline:
         *,
         prepared_request: HTTPRequest | None = None,
         transfer_admitted: bool = False,
+        upgrade_data: bytes = b"",
     ) -> bool:
         """Process one request and return ``True`` when the connection should stay open."""
         start_time = time.monotonic()
@@ -331,6 +334,7 @@ class RequestPipeline:
                     client_socket,
                     build_args,
                     request_id,
+                    initial_data=upgrade_data,
                 )
 
             if not is_encrypted_transfer_route and not self._server._is_browser_mutation_allowed(
@@ -462,6 +466,8 @@ class RequestPipeline:
         client_socket: socket.socket,
         build_args: ResponseBuildArgs,
         request_id: str,
+        *,
+        initial_data: bytes = b"",
     ) -> bool:
         """Validate and dispatch the Secure Notepad WebSocket upgrade path."""
         if not check_websocket_upgrade(request):
@@ -507,7 +513,7 @@ class RequestPipeline:
             )
             return False
 
-        if not self._server._upgrade_websocket(client_socket, request):
+        if not self._server._upgrade_websocket(client_socket, request, initial_data=initial_data):
             response = self._server._build_error_response(
                 503,
                 "WebSocket connection limit reached",

@@ -62,9 +62,9 @@ def test_docker_image_verifier_rejects_nested_internal_layer_path(tmp_path: Path
     image = f"xferry-public-surface-negative:{tmp_path.name}"
     dockerfile = tmp_path / "Dockerfile"
     nested_path = "/usr/local/lib/xferry/.super" + "powers/private.txt"
+    (tmp_path / "payload").write_text("private\n", encoding="utf-8")
     dockerfile.write_text(
-        "FROM busybox:1.36.1\n"
-        f"RUN mkdir -p {nested_path.rsplit('/', 1)[0]} && printf private > {nested_path}\n",
+        f"FROM scratch\nCOPY payload {nested_path}\n",
         encoding="utf-8",
     )
     try:
