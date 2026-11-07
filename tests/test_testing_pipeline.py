@@ -71,6 +71,18 @@ def _repository(path: Path) -> Path:
     return path
 
 
+def _api_fixture(name: str) -> str:
+    """Keep promotion fixtures version-changing after the real project advances."""
+    text, count = re.subn(
+        r'(?m)^  "server": "XFerry/[0-9]+\.[0-9]+\.[0-9]+",$',
+        '  "server": "XFerry/0.5.0",',
+        (ROOT / name).read_text(),
+        count=1,
+    )
+    assert count == 1
+    return text
+
+
 @pytest.fixture
 def identity() -> PreviewIdentity:
     return PreviewIdentity.create("0.5.1", SOURCE, "12345", 2)
@@ -383,6 +395,8 @@ def test_final_rebuild_allows_synchronized_changelog_and_cli_version_metadata(
     changelog.write_bytes((ROOT / "CHANGELOG.md").read_bytes())
     generated_changelog = docs / "changelog.md"
     generated_changelog.write_bytes((ROOT / "docs/changelog.md").read_bytes())
+    for name in ("API.md", "docs/api.md"):
+        (repository / name).write_text(_api_fixture(name))
     preview = _commit(repository)
 
     for name in ("xferry/config.py", "xferry/data/index.html", "README.md"):
@@ -401,8 +415,60 @@ def test_final_rebuild_allows_synchronized_changelog_and_cli_version_metadata(
         )
         .replace("Example: xferry update --to 0.5.0", "Example: xferry update --to 0.5.1")
     )
+    for name in ("API.md", "docs/api.md"):
+        path = repository / name
+        before = path.read_text()
+        after = before.replace('"server": "XFerry/0.5.0"', '"server": "XFerry/0.5.1"', 1)
+        assert after != before
+        path.write_text(after)
     final = _commit(repository)
     promotion.validate_final_diff(repository, preview, final)
+
+
+@pytest.mark.parametrize("name", ("API.md", "docs/api.md"))
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("Health check endpoint.", "Unauthenticated health check endpoint."),
+        ('"health": "ready"', '"health": "unavailable"'),
+        ("PING / HTTP/1.1", "INFO / HTTP/1.1"),
+        (
+            '"supported_methods": ["GET", "HEAD",',
+            '"supported_methods": ["GET", "HEAD", "INJECTED",',
+        ),
+    ],
+)
+def test_final_rebuild_rejects_api_contract_changes_beside_ping_version(
+    tmp_path: Path, name: str, before: str, after: str
+) -> None:
+    repository = _repository(tmp_path / "repo")
+    path = repository / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(_api_fixture(name))
+    preview = _commit(repository)
+    text = path.read_text()
+    assert before in text
+    path.write_text(
+        text.replace('"server": "XFerry/0.5.0"', '"server": "XFerry/0.5.1"').replace(before, after)
+    )
+    final = _commit(repository)
+    with pytest.raises(ValueError, match="changes behavior"):
+        promotion.validate_final_diff(repository, preview, final)
+
+
+@pytest.mark.parametrize("name", ("API.md", "docs/api.md"))
+def test_final_rebuild_rejects_same_server_marker_outside_ping(tmp_path: Path, name: str) -> None:
+    repository = _repository(tmp_path / "repo")
+    path = repository / name
+    path.parent.mkdir(exist_ok=True)
+    text = _api_fixture(name)
+    extra = '\n## Other response\n\n```json\n{\n  "server": "XFerry/0.5.0",\n}\n```\n'
+    path.write_text(text + extra)
+    preview = _commit(repository)
+    path.write_text(text + extra.replace("XFerry/0.5.0", "XFerry/0.5.1"))
+    final = _commit(repository)
+    with pytest.raises(ValueError, match="changes behavior"):
+        promotion.validate_final_diff(repository, preview, final)
 
 
 @pytest.mark.parametrize(
