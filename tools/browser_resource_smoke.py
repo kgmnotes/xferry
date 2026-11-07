@@ -157,6 +157,9 @@ def run_case(
         )
         # Existing pinned CLI supports browser-context downloads; keep the measurement bounded.
         document = json.loads(config.read_text())
+        # An in-memory context has a smaller origin quota and does not measure a
+        # normal disk-backed browser's large-file recovery behavior.
+        document["browser"]["userDataDir"] = str(root / "browser-profile")
         document["browser"]["contextOptions"]["acceptDownloads"] = True
         document["timeouts"] = {"action": 1800000, "navigation": 60000}
         config.write_text(json.dumps(document))
@@ -259,6 +262,7 @@ def run_case(
             server_peak_rss_bytes=server.peak if server else None,
             server_peak_rss_delta_bytes=max(0, server.peak - server.baseline) if server else None,
             external_target=target_url is not None,
+            browser_profile_storage="task-owned-disk-backed",
             timing_eligible=not recovery,
         )
         return result

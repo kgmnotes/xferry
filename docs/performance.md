@@ -150,6 +150,14 @@ again. Recovery cases are excluded from timing comparisons. A completed output
 must have the expected byte count and SHA-256, and its recovery cache must be
 removed.
 
+Each case uses a private disk-backed browser profile in the same temporary
+filesystem as its fixture, rather than an in-memory context with a smaller
+origin quota. The receipt records browser storage quota/usage before and after;
+at least two file sizes plus 64 MiB of origin headroom is required for the
+simultaneous ciphertext cache and plaintext output. The task-owned profile is
+removed after the browser closes. Actual quota exhaustion remains a failed
+measurement, even when the host filesystem has more free space.
+
 Linux sampling reports the sum of the Chromium root and descendant process RSS
 separately from server RSS. Shared pages can be counted in multiple processes;
 this is not exclusive physical memory or JS heap. Unsupported process metrics

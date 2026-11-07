@@ -65,6 +65,17 @@ async (page) => {
             };
         });
     }
+    async function storageEstimate() {
+        return page.evaluate(async () => {
+            const estimate = await navigator.storage.estimate();
+            const quota = Number.isFinite(estimate.quota) ? estimate.quota : null;
+            const usage = Number.isFinite(estimate.usage) ? estimate.usage : null;
+            return {
+                quota_bytes: quota, usage_bytes: usage,
+                remaining_bytes: quota !== null && usage !== null ? quota - usage : null,
+            };
+        });
+    }
     try {
         await page.goto(options.url, {waitUntil: 'domcontentloaded'});
         await ready();
@@ -75,6 +86,10 @@ async (page) => {
             opfs: typeof navigator.storage.getDirectory === 'function',
         }));
         if (!Object.values(capabilities).every(Boolean)) throw new Error('required browser storage APIs unavailable');
+        const storageBefore = await storageEstimate();
+        if (storageBefore.remaining_bytes !== null && storageBefore.remaining_bytes < options.size * 2 + 64 * 1024 * 1024) {
+            throw new Error('insufficient browser storage quota for ciphertext cache and plaintext output');
+        }
         let pauseTask = null;
         if (options.recovery) {
             // Pause after real XHR/fetch response headers; the original nonce journal remains authoritative.
@@ -175,8 +190,10 @@ async (page) => {
         if (JSON.stringify(targetBefore) !== JSON.stringify(targetAfter)) {
             throw new Error('target runtime identity changed during browser measurement');
         }
+        const storageAfter = await storageEstimate();
         return {kind:'browser-resource-case',status:'passed',syntheticPicker:true,transport:options.transport,
             target_identity_before:targetBefore,target_identity_after:targetAfter,
+            browser_storage_before:storageBefore,browser_storage_after:storageAfter,
             capabilities,upload_seconds:uploadSeconds,download_seconds:downloadSeconds,
             elapsed_seconds:(Date.now()-started)/1000,output_bytes:outputSize,requests,
             upload_reload_resume_verified:uploadResumed,download_reload_resume_verified:downloadResumed,
