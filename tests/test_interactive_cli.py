@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -12,8 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from xferry.management import application, cli, instances, terminal, wizard
-from xferry.management.deployment import OperationResult
+from xferry.management.deployment import Credentials, OperationResult
 from xferry.management.i18n import LanguageSelection, Translator
+from xferry.management.progress import ProgressEvent
 
 
 class SetupUI:
@@ -203,6 +205,231 @@ def test_plain_setup_keeps_text_confirmation_on_a_tty(
     assert calls == ([True, True, False] if firewall_consent else [True, False])
     output = capsys.readouterr()
     assert "\x1b" not in output.out + output.err
+
+
+def test_plain_setup_shows_progress_and_instance_commands_for_preview_controller(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    previous = object()
+    app = SimpleNamespace(progress=previous)
+
+    def setup(**options):
+        if options["dry_run"]:
+            return OperationResult(0, "ready")
+        assert callable(app.progress) and app.progress is not previous
+        app.progress(ProgressEvent("download", "running"))
+        app.progress(ProgressEvent("download", "done"))
+        return OperationResult(
+            0,
+            "Server is healthy.",
+            details={"instance_id": "deployment-123"},
+            credentials=Credentials("admin", "synthetic-password", "https://example.test"),
+            url="https://example.test",
+        )
+
+    app.setup = setup
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "argv", ["/operator/bin/xferry-preview"])
+    monkeypatch.setattr(application, "default_application", lambda: app)
+    monkeypatch.setattr("builtins.input", lambda _: "yes")
+
+    assert cli.main(["--plain", "setup", "--access", "public"]) == 0
+    assert app.progress is previous
+    output = capsys.readouterr().out
+    assert "Running: Downloading the runtime or image" in output
+    assert "Done: Downloading the runtime or image" in output
+    assert "Deployment ID: deployment-123" in output
+    assert "xferry-preview status --instance deployment-123" in output
+    assert "xferry-preview config --instance deployment-123" in output
+    assert "xferry-preview doctor --instance deployment-123 --deep" in output
+    assert "Save these credentials" in output
+    assert output.count("synthetic-password") == 1
+    assert "\x1b" not in output
+
+
+def test_privileged_module_setup_followups_use_the_same_controller(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    controller = tmp_path / "preview controller" / "bin" / "python"
+    module = tmp_path / "preview controller" / "lib" / "xferry" / "__main__.py"
+    commands: list[list[str]] = []
+
+    def setup(**options):
+        return OperationResult(0, "ready", details={"instance_id": "deployment-123"})
+
+    monkeypatch.setattr(cli.sys, "argv", ["/operator/bin/xferry-preview"])
+    monkeypatch.setattr(cli.sys, "executable", str(controller))
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(application, "default_application", lambda: SimpleNamespace(setup=setup))
+    monkeypatch.setattr("builtins.input", lambda _: "yes")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path, "is_file", lambda path: path == Path("/usr/bin/sudo") or original_is_file(path)
+    )
+
+    def sudo_reentry(command, **kwargs):
+        commands.append(command)
+        forwarded = command[command.index("--") + 1 :]
+        assert forwarded[:4] == [str(controller), "-I", "-m", "xferry"]
+        with monkeypatch.context() as privileged:
+            privileged.setattr(cli.sys, "argv", [str(module), *forwarded[4:]])
+            return SimpleNamespace(returncode=cli.main(forwarded[4:]))
+
+    monkeypatch.setattr(subprocess, "run", sudo_reentry)
+    context = cli.ManagementContext(
+        LanguageSelection("en", "default"), Translator("en"), plain=True
+    )
+    assert cli._privileged(["setup", "--access", "public"], context) == 0
+    assert len(commands) == 1
+    output = capsys.readouterr().out
+    followups = [shlex.split(line.strip()) for line in output.splitlines() if "--instance" in line]
+    assert len(followups) == 3
+    for command, action in zip(followups, ("status", "config", "doctor"), strict=True):
+        assert command[:7] == [
+            str(controller),
+            "-I",
+            "-m",
+            "xferry",
+            action,
+            "--instance",
+            "deployment-123",
+        ]
+    assert followups[-1][-1] == "--deep"
+
+
+def test_module_setup_followups_are_copyable_in_powershell(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(cli.sys, "argv", ["C:/Preview/xferry/__main__.py"])
+    monkeypatch.setattr(cli.sys, "executable", "C:/Program Files/O'Brien/Preview/python.exe")
+    result = cli._setup_next_actions(
+        OperationResult(0, "ready", details={"instance_id": "deployment-123"})
+    )
+    prefix = "& 'C:/Program Files/O''Brien/Preview/python.exe' -I -m xferry"
+    assert result.next_actions == (
+        f"{prefix} status --instance deployment-123",
+        f"{prefix} config --instance deployment-123",
+        f"{prefix} doctor --instance deployment-123 --deep",
+    )
+
+
+@pytest.mark.parametrize("arguments", (["--json"], ["--dry-run"]))
+def test_setup_output_modes_do_not_install_observer_or_add_followups(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+) -> None:
+    previous = object()
+    app = SimpleNamespace(progress=previous)
+
+    def setup(**options):
+        assert app.progress is previous
+        return OperationResult(0, "validated", details={"instance_id": "deployment-123"})
+
+    app.setup = setup
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(application, "default_application", lambda: app)
+
+    assert cli.main(["--plain", "setup", "--access", "private", *arguments]) == 0
+    output = capsys.readouterr().out
+    assert "Running:" not in output and "Next steps:" not in output and "\x1b" not in output
+    if "--json" in arguments:
+        assert json.loads(output)["details"] == {"instance_id": "deployment-123"}
+
+
+@pytest.mark.parametrize("action", ("save", "password"))
+@pytest.mark.parametrize("interrupt", (False, True))
+def test_plain_configuration_operations_show_progress_and_restore_observer(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    action: str,
+    interrupt: bool,
+) -> None:
+    path = tmp_path / "operator.ini"
+    path.write_text("[server]\nconfig_version = 1\naccess = private\n")
+    previous = object()
+    app = SimpleNamespace(progress=previous)
+
+    def apply():
+        assert callable(app.progress) and app.progress is not previous
+        app.progress(ProgressEvent("restart", "running"))
+        if interrupt:
+            raise KeyboardInterrupt
+        app.progress(ProgressEvent("restart", "done"))
+        return OperationResult(0, "applied")
+
+    def configure(instance, changes, **options):
+        return apply() if options["apply"] else OperationResult(0, "validated")
+
+    app.configure = configure
+    app.credentials = lambda instance: apply()
+    answers = iter(("9" if action == "save" else "8", "yes"))
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(application, "default_application", lambda: app)
+
+    assert wizard.configure(path, "managed", "en", plain=True) == (130 if interrupt else 0)
+    assert app.progress is previous
+    output = capsys.readouterr().out
+    assert "Running: Restarting the server" in output
+    assert ("Failed:" if interrupt else "Done:") + " Restarting the server" in output
+    assert "no changes made" not in output and "\x1b" not in output
+    if interrupt:
+        assert "Check xferry status and xferry doctor" in output
+
+
+@pytest.mark.parametrize("mode", ("human", "json", "dry-run"))
+def test_config_set_progress_is_only_for_interactive_apply(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    previous = object()
+    app = SimpleNamespace(progress=previous)
+
+    def configure(instance, changes, *, apply):
+        assert changes == {"max_size_mb": "128"}
+        assert apply is (mode != "dry-run")
+        if mode == "human":
+            assert callable(app.progress) and app.progress is not previous
+            app.progress(ProgressEvent("apply_config", "running"))
+            app.progress(ProgressEvent("apply_config", "done"))
+        else:
+            assert app.progress is previous
+        return OperationResult(0, "validated")
+
+    app.configure = configure
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(application, "default_application", lambda: app)
+    context = cli.ManagementContext(
+        LanguageSelection("en", "default"), Translator("en"), plain=True
+    )
+    args = SimpleNamespace(
+        action="set",
+        values=["max_size_mb=128"],
+        config=str(tmp_path / "profile.ini"),
+        target="managed",
+        instance_record=None,
+        json=mode == "json",
+        dry_run=mode == "dry-run",
+    )
+
+    assert cli._config_handler(args, context) == 0
+    assert app.progress is previous
+    output = capsys.readouterr().out
+    assert ("Running: Applying configuration changes" in output) is (mode == "human")
+    assert "\x1b" not in output
+    if mode == "json":
+        assert json.loads(output)["exit_code"] == 0
 
 
 def test_abbreviated_explicit_setup_choices_are_not_asked_again(

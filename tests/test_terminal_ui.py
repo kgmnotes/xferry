@@ -338,3 +338,61 @@ def test_plain_progress_does_not_change_redirected_output(capsys):
         observe(ProgressEvent("prepare", "running"))
         observe(ProgressEvent("prepare", "done"))
     assert capsys.readouterr().out == ""
+
+
+def test_plain_progress_reports_nested_stages_and_elapsed_time_without_controls(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("TERM", "dumb")
+    now = [10.0]
+    monkeypatch.setattr(terminal.time, "monotonic", lambda: now[0])
+    with terminal.get_ui(plain=True).progress() as observe:
+        observe(ProgressEvent("apply_config", "running"))
+        observe(ProgressEvent("restart", "running"))
+        now[0] = 12.5
+        observe(ProgressEvent("restart", "done"))
+        observe(ProgressEvent("apply_config", "failed"))
+        observe(ProgressEvent("restart", "running"))
+        now[0] = 13.0
+        observe(ProgressEvent("restart", "done"))
+        observe(ProgressEvent("never-show-this-secret", "running"))
+    rendered = capsys.readouterr().out
+    assert rendered.splitlines() == [
+        "Running: Applying configuration changes",
+        "Running: Restarting the server",
+        "Done: Restarting the server (2.5s)",
+        "Failed: Applying configuration changes (2.5s)",
+        "Running: Restarting the server",
+        "Done: Restarting the server (0.5s)",
+    ]
+    assert "\x1b" not in rendered
+
+
+def test_plain_progress_marks_interrupted_stage_failed(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with pytest.raises(KeyboardInterrupt), terminal.get_ui(plain=True).progress() as observe:
+        observe(ProgressEvent("wait_ready", "running"))
+        raise KeyboardInterrupt
+    rendered = capsys.readouterr().out
+    assert "Running: Waiting for HTTPS and server readiness" in rendered
+    assert "Failed: Waiting for HTTPS and server readiness" in rendered
+    assert "Done:" not in rendered and "\x1b" not in rendered
+
+
+def test_plain_progress_output_failure_does_not_abort_operation(monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    def disconnected(*_args, **_kwargs):
+        raise OSError("terminal disconnected")
+
+    monkeypatch.setattr("builtins.print", disconnected)
+    completed = False
+    with terminal.get_ui(plain=True).progress() as observe:
+        observe(ProgressEvent("prepare", "running"))
+        observe(ProgressEvent("prepare", "done"))
+        completed = True
+    assert completed

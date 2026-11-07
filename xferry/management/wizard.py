@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -350,6 +351,7 @@ def configure(
             "files_dir": str(default_files_dir()),
         }
     last_valid = edit_ini(text, changes)
+    applying = False
     try:
         while True:
             environment = dict(os.environ) if target == "portable" else {}
@@ -457,17 +459,22 @@ def configure(
                     continue
                 if target != "portable":
                     from .application import default_application
-                    from .cli import _render_application_result
+                    from .cli import _application_call, _render_application_result
 
+                    app = default_application()
+                    applying = True
+                    managed_result = _application_call(app, ui, partial(app.credentials, instance))
                     return _render_application_result(
-                        default_application().credentials(instance),
+                        managed_result,
                         json_output=False,
                         language=language,
                     )
                 elif target == "portable":
                     try:
+                        applying = True
                         portable_password_result = reset_portable_password(path, changes=changes)
                     except ValueError as error:
+                        applying = False
                         print(error)
                         continue
                     print(portable_password_result.message)
@@ -494,19 +501,26 @@ def configure(
                     continue
                 if target != "portable":
                     from .application import default_application
-                    from .cli import _render_application_result
+                    from .cli import _application_call, _render_application_result
 
                     app = default_application()
                     preview = app.configure(instance, changes, apply=False, expected_text=text)
                     _render_application_result(preview, json_output=False, language=language)
                     if preview.exit_code or not confirm(language, plain=plain):
                         return preview.exit_code
+                    applying = True
+                    managed_result = _application_call(
+                        app,
+                        ui,
+                        partial(app.configure, instance, changes, apply=True, expected_text=text),
+                    )
                     return _render_application_result(
-                        app.configure(instance, changes, apply=True, expected_text=text),
+                        managed_result,
                         json_output=False,
                         language=language,
                     )
                 try:
+                    applying = True
                     result = change_configuration(
                         path,
                         changes,
@@ -515,13 +529,22 @@ def configure(
                         confirm=lambda diff: confirm(language, diff, plain=plain),
                     )
                 except SettingsError as error:
+                    applying = False
                     print(error)
                     continue
                 print(result.message)
                 return result.exit_code
     except (EOFError, KeyboardInterrupt):
-        print(_text(language, "Cancelled; no changes made.", "Отменено; изменения не сохранены."))
-        return 0
+        print(
+            _text(
+                language,
+                "Operation interrupted. Check xferry status and xferry doctor before continuing.",
+                "Операция прервана. Проверьте xferry status и xferry doctor перед продолжением.",
+            )
+            if applying
+            else _text(language, "Cancelled; no changes made.", "Отменено; изменения не сохранены.")
+        )
+        return 130 if applying else 0
 
 
 def review_setup(

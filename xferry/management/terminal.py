@@ -514,9 +514,55 @@ class TerminalUI:
         self._console.print(Text(_safe(text), style=style))
 
     @contextmanager
+    def _plain_progress(self) -> Iterator[ProgressObserver]:
+        """Print bounded stage transitions without terminal controls or background work."""
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            yield lambda event: None
+            return
+        active: list[tuple[str, float]] = []
+        usable = True
+
+        def observe(event: ProgressEvent) -> None:
+            nonlocal usable
+            if not usable or event.stage not in _STAGE_LABELS:
+                return
+            label = _STAGE_LABELS[event.stage][self.language == "ru"]
+            if event.state == "running":
+                active.append((event.stage, time.monotonic()))
+                line = f"{self._text('Running', 'Выполняется')}: {label}"
+            else:
+                index = next(
+                    (i for i in range(len(active) - 1, -1, -1) if active[i][0] == event.stage),
+                    None,
+                )
+                if index is None:
+                    return
+                _, started = active.pop(index)
+                elapsed = time.monotonic() - started
+                status = (
+                    self._text("Done", "Готово")
+                    if event.state == "done"
+                    else self._text("Failed", "Ошибка")
+                )
+                line = f"{status}: {label} ({elapsed:.1f}s)"
+            try:
+                print(line, flush=True)
+            except Exception:
+                usable = False
+
+        try:
+            yield observe
+        finally:
+            from .progress import ProgressEvent
+
+            for stage, _started in tuple(reversed(active)):
+                observe(ProgressEvent(stage, "failed"))
+
+    @contextmanager
     def progress(self) -> Iterator[ProgressObserver]:
         if not self.enhanced:
-            yield lambda event: None
+            with self._plain_progress() as observer:
+                yield observer
             return
         from rich.live import Live
         from rich.spinner import Spinner

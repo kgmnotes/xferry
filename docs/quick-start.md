@@ -15,7 +15,7 @@ xferry supports Python 3.10–3.14. Install pipx once if needed:
 
 | System | Commands |
 | --- | --- |
-| Debian / Ubuntu | `sudo apt install pipx`, then `pipx ensurepath` |
+| Debian / Ubuntu | `sudo apt install --no-install-recommends pipx`, then `pipx ensurepath` |
 | macOS with Homebrew | `brew install pipx`, then `pipx ensurepath` |
 | Windows PowerShell | `py -m pip install --user pipx`, then `py -m pipx ensurepath` |
 

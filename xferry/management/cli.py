@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -351,8 +352,15 @@ def _config_handler(args: argparse.Namespace, context: ManagementContext) -> int
             if target != "portable":
                 from .application import default_application
 
-                result = default_application().configure(
-                    args.instance_record, changes, apply=not args.dry_run
+                app = default_application()
+
+                def configure() -> OperationResult:
+                    return app.configure(args.instance_record, changes, apply=not args.dry_run)
+
+                result = (
+                    _application_call(app, _terminal(context), configure)
+                    if sys.stdin.isatty() and not args.json and not args.dry_run
+                    else configure()
                 )
                 return _render_application_result(
                     result, json_output=args.json, language=context.language.code
@@ -485,6 +493,14 @@ def _render_application_result(
                             ),
                             file=output,
                         )
+            elif name == "next_actions" and isinstance(value, (tuple, list)):
+                if value:
+                    print("Далее:" if language == "ru" else "Next steps:", file=output)
+                    for action in value:
+                        print(f"  {action}", file=output)
+            elif name == "instance_id" and value is not None:
+                label = "ID установки" if language == "ru" else "Deployment ID"
+                print(f"{label}: {value}", file=output)
             elif value is not None:
                 label = translator.managed_text("check", name)
                 print(f"{label}: {value}", file=output)
@@ -537,18 +553,66 @@ def _setup_arguments(args: argparse.Namespace) -> list[str]:
     return arguments
 
 
-def _setup_call(
-    app: ManagementApplication, ui: TerminalUI, options: Mapping[str, object], *, dry_run: bool
+def _application_call(
+    app: ManagementApplication, ui: TerminalUI, operation: Callable[[], OperationResult]
 ) -> OperationResult:
-    if not ui.enhanced:
-        return app.setup(**options, dry_run=dry_run)  # type: ignore[arg-type]
+    """Attach one presentation observer and restore the caller's observer on every exit."""
     with ui.progress() as observer:
         previous = getattr(app, "progress", None)
         app.progress = observer
         try:
-            return app.setup(**options, dry_run=dry_run)  # type: ignore[arg-type]
+            return operation()
         finally:
             app.progress = previous
+
+
+def _setup_call(
+    app: ManagementApplication,
+    ui: TerminalUI,
+    options: Mapping[str, object],
+    *,
+    dry_run: bool,
+    show_progress: bool = True,
+) -> OperationResult:
+    if not show_progress:
+        return app.setup(**options, dry_run=dry_run)  # type: ignore[arg-type]
+    return _application_call(
+        app,
+        ui,
+        lambda: app.setup(**options, dry_run=dry_run),  # type: ignore[arg-type]
+    )
+
+
+def _setup_next_actions(result: OperationResult) -> OperationResult:
+    """Add copyable operator commands for the controller and installed instance."""
+    identity = result.details.get("instance_id") or (
+        result.state.instance_id if result.state else None
+    )
+    if result.exit_code or not isinstance(identity, str) or not identity:
+        return result
+    launcher = Path(sys.argv[0]).name
+    if launcher not in {"xferry", "xferry.exe", "xferry-preview", "xferry-preview.exe"}:
+        # sudo re-enters pipx/venv controllers with ``python -I -m xferry``.
+        # An unrelated stable console command can coexist with this controller.
+        if sys.platform == "win32":
+            # Windows instructions use PowerShell, whose quoted paths need ``&``.
+            interpreter = sys.executable.replace("'", "''")
+            launcher = f"& '{interpreter}' -I -m xferry"
+        else:
+            launcher = f"{shlex.quote(str(Path(sys.executable).absolute()))} -I -m xferry"
+    selector = shlex.quote(identity)
+    actions = [
+        f"{launcher} status --instance {selector}",
+        f"{launcher} config --instance {selector}",
+        f"{launcher} doctor --instance {selector} --deep",
+    ]
+    return replace(
+        result,
+        details={
+            **result.details,
+            "next_actions": list(dict.fromkeys((*result.next_actions, *actions))),
+        },
+    )
 
 
 def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
@@ -618,9 +682,9 @@ def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
                 if not accepted:
                     return 0
         try:
-            result = _setup_call(app, ui, options, dry_run=args.dry_run)
+            result = _setup_call(app, ui, options, dry_run=args.dry_run, show_progress=interactive)
         except KeyboardInterrupt:
-            if not ui.enhanced:
+            if not interactive:
                 raise
             ui.message(
                 "Установка прервана. Проверьте состояние: xferry status или xferry doctor."
@@ -629,13 +693,22 @@ def _setup_handler(args: argparse.Namespace, context: ManagementContext) -> int:
                 kind="warning",
             )
             return 130
+        if not args.json and not args.dry_run:
+            result = _setup_next_actions(result)
         if ui.enhanced:
             from .interactive import render_result
 
             return render_result(ui, result, files_dir=args.files_dir)
-        return _render_application_result(
+        exit_code = _render_application_result(
             result, json_output=args.json, language=context.language.code
         )
+        if not args.json and not result.exit_code and result.credentials is not None:
+            ui.message(
+                "Сохраните данные входа. Откройте URL для загрузки и скачивания файлов."
+                if context.language.code == "ru"
+                else "Save these credentials. Open the URL to upload and download files."
+            )
+        return exit_code
 
 
 def _credentials_handler(args: argparse.Namespace, context: ManagementContext) -> int:
