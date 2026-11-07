@@ -815,6 +815,7 @@ class XFerryServer(HandlerMixin):
                     tls_lease.release()
 
             requests_on_conn = 0
+            pending_data = b""
 
             while self.running:
                 # For subsequent requests, use keep-alive idle timeout
@@ -843,8 +844,12 @@ class XFerryServer(HandlerMixin):
                 received: RequestReceiveResult | None = None
                 try:
                     received = self._receive_request_result(
-                        client_socket, idle_timeout=idle_timeout, admit_headers=admit_headers
+                        client_socket,
+                        idle_timeout=idle_timeout,
+                        admit_headers=admit_headers,
+                        initial_data=pending_data,
                     )
+                    pending_data = received.remainder
                     if not received.data:
                         if received.rejection_reason == "body_too_large":
                             max_mb = self.max_upload_size // (1024 * 1024)
@@ -866,6 +871,7 @@ class XFerryServer(HandlerMixin):
                         requests_on_conn,
                         prepared_request=prepared_request,
                         transfer_admitted=transfer_lease is not None,
+                        upgrade_data=pending_data,
                     )
                 finally:
                     if received is not None:
@@ -1552,7 +1558,7 @@ class XFerryServer(HandlerMixin):
         client_socket: Any,
         idle_timeout: float | None = None,
     ) -> bytes:
-        """Delegate to :func:`xferry.http.io.receive_request`."""
+        """One-shot bytes adapter; persistent connections retain the result remainder."""
         received = self._receive_request_result(client_socket, idle_timeout=idle_timeout)
         try:
             return received.data
@@ -1564,6 +1570,7 @@ class XFerryServer(HandlerMixin):
         client_socket: Any,
         idle_timeout: float | None = None,
         admit_headers: Any = None,
+        initial_data: bytes = b"",
     ) -> RequestReceiveResult:
         """Receive a request and retain any body-memory reservation."""
         return _receive_request_result_io(
@@ -1578,18 +1585,23 @@ class XFerryServer(HandlerMixin):
             body_memory_budget=self._body_memory_budget,
             body_limit_resolver=(encrypted_request_body_limit if self.encrypted_uploads else None),
             admit_headers=admit_headers,
+            initial_data=initial_data,
         )
 
     def _handle_notepad_ws(
         self,
         sock: Any,
         request: HTTPRequest,
+        *,
+        initial_data: bytes = b"",
     ) -> None:
         """Compatibility delegate to the WebSocket runtime frame loop."""
         self._websocket_runtime.set_handle_message(self._handle_bounded_ws_message)
-        self._websocket_runtime.handle_session(sock, request)
+        self._websocket_runtime.handle_session(sock, request, initial_data=initial_data)
 
-    def _upgrade_websocket(self, sock: Any, request: HTTPRequest) -> bool:
+    def _upgrade_websocket(
+        self, sock: Any, request: HTTPRequest, *, initial_data: bytes = b""
+    ) -> bool:
         """Delegate admission and session cleanup to the WebSocket runtime."""
         self._websocket_runtime.set_handle_message(self._handle_bounded_ws_message)
-        return self._websocket_runtime.upgrade(sock, request)
+        return self._websocket_runtime.upgrade(sock, request, initial_data=initial_data)

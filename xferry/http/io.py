@@ -105,11 +105,12 @@ class BodyMemoryReservation:
 
 @dataclass
 class RequestReceiveResult:
-    """Raw request bytes plus any body-memory reservation held for processing."""
+    """One request, its body reservation, and bounded connection read-ahead."""
 
     data: bytes
     body_reservation: BodyMemoryReservation | None = None
     rejection_reason: ReceiveRejectionReason | None = None
+    remainder: bytes = b""
 
     def release_body_reservation(self) -> None:
         """Release the held body reservation, if any."""
@@ -137,10 +138,20 @@ def _parse_content_length(headers_part: str) -> int | None:
     Detects HTTP smuggling attempts via duplicate differing Content-Length headers.
     """
     values: list[int] = []
+    previous_was_length = False
     for line in headers_part.split("\r\n"):
-        if line.lower().startswith("content-length:"):
+        if previous_was_length and line.startswith((" ", "\t")):
+            return None
+        name, separator, value = line.partition(":")
+        previous_was_length = name.strip().lower() == "content-length"
+        if previous_was_length:
+            if name.lower() != "content-length" or not separator:
+                return None
+            value = value.strip(" \t")
+            if not value or any(character not in "0123456789" for character in value):
+                return None
             try:
-                values.append(int(line.split(":", 1)[1].strip()))
+                values.append(int(value))
             except ValueError:
                 return None
     if not values:
@@ -175,6 +186,8 @@ def receive_request(
     Returns the raw request bytes or an empty ``bytes`` on any framing error
     (timeout, oversized headers/body, conflicting Content-Length). The caller is
     responsible for closing the socket when empty is returned.
+    Persistent connections must use :func:`receive_request_result` and carry
+    its ``remainder`` into the next call; this bytes-only adapter is one-shot.
 
     Args:
         client_socket: Accepted (and optionally TLS-wrapped) client socket.
@@ -216,12 +229,15 @@ def receive_request_result(
     body_memory_budget: BodyMemoryBudget | None = None,
     body_limit_resolver: BodyLimitResolver | None = None,
     admit_headers: Callable[[bytes], bool] | None = None,
+    initial_data: bytes = b"",
 ) -> RequestReceiveResult:
     """Read one complete HTTP request and hold any body-memory reservation.
 
     The reservation is intentionally returned to the caller instead of released
     here because the raw request bytes and parsed ``HTTPRequest.body`` remain
     live until request processing finishes.
+    ``initial_data`` is the previous result's bounded read-ahead. Returned
+    ``remainder`` belongs to the connection, not to this request's body.
     """
     if max_upload_size <= 0:
         raise ValueError("max_upload_size must be greater than 0")
@@ -233,6 +249,8 @@ def receive_request_result(
         raise ValueError("body_timeout must be greater than 0")
     if body_min_rate_bytes_per_second < 0:
         raise ValueError("body_min_rate_bytes_per_second must be at least 0")
+    if len(initial_data) > RECV_CHUNK:
+        raise ValueError("initial_data exceeds the connection read-ahead limit")
 
     chunks: list[bytes] = []
     total_size = 0
@@ -329,7 +347,10 @@ def receive_request_result(
                         break
                     recv_size = min(RECV_CHUNK, max(1, content_length - body_received))
 
-                chunk = client_socket.recv(recv_size)
+                if initial_data:
+                    chunk, initial_data = initial_data, b""
+                else:
+                    chunk = client_socket.recv(recv_size)
                 if not chunk:
                     if headers_received:
                         body_received = total_size - header_end_pos - len(HEADER_TERMINATOR)
@@ -401,12 +422,6 @@ def receive_request_result(
                         if content_length > 0:
                             body_start_time = time.monotonic()
                         body_received = total_size - header_end_pos - len(HEADER_TERMINATOR)
-                        if body_received > effective_body_limit:
-                            logger.warning(
-                                "Request body too large (%d bytes), dropping",
-                                body_received,
-                            )
-                            return reject("body_too_large")
                         if body_received >= content_length:
                             break
                     elif len(data) > max_header_size + len(HEADER_TERMINATOR) - 1:
@@ -417,9 +432,6 @@ def receive_request_result(
                         return reject("header_too_large")
                 else:
                     body_received = total_size - header_end_pos - len(HEADER_TERMINATOR)
-                    if body_received > effective_body_limit:
-                        logger.warning("Request body too large (%d bytes), dropping", body_received)
-                        return reject("body_too_large")
                     if body_received >= content_length:
                         break
 
@@ -446,12 +458,14 @@ def receive_request_result(
                 return reject("body_idle_timeout")
 
         result = b"".join(chunks)
+        remainder = b""
         if headers_received:
             expected_size = header_end_pos + len(HEADER_TERMINATOR) + content_length
+            remainder = result[expected_size:]
             result = result[:expected_size]
         if result:
             logger.debug("Received %d bytes", len(result))
-        return RequestReceiveResult(result, body_reservation=body_reservation)
+        return RequestReceiveResult(result, body_reservation=body_reservation, remainder=remainder)
     except BaseException:
         if body_reservation is not None:
             body_reservation.release()
