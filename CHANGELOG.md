@@ -34,6 +34,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show the correct controller and instance commands after setup, preserve
   module and sudo invocations, and quote PowerShell commands correctly.
 - Use the minimal pipx installation dependencies in the setup documentation.
+- Pin native builds to Python 3.12.16 and bound retries and timeouts for
+  transient downloads.
 
 ## [0.5.0] - 2026-11-03
 
