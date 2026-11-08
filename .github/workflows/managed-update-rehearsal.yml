@@ -377,6 +377,8 @@ jobs:
           fi
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase setup --result "$setup_result" --setup-result "$setup_result"
           sudo install -m 0600 /dev/null /var/lib/xferry/rehearsal-sentinel
           printf 'managed-update-rehearsal:%s:%s\n' "$GITHUB_RUN_ID" '${{ matrix.platform }}' \
@@ -390,6 +392,8 @@ jobs:
           sudo "$MANAGED_XFERRY" doctor --deep --json \
             > "$RUNNER_TEMP/managed-update-evidence/doctor-0.5.0.json"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase doctor --result "$RUNNER_TEMP/managed-update-evidence/doctor-0.5.0.json" \
             --setup-result "$setup_result"
 
@@ -401,6 +405,8 @@ jobs:
             "$MANAGED_XFERRY" update --to "$TARGET_VERSION" --dry-run --json > "$result"
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase dry_run --result "$result" \
             --setup-result "$RUNNER_TEMP/managed-update-evidence/setup.json"
           test "$("$MANAGED_XFERRY" --version)" = "xferry 0.5.0"
@@ -434,6 +440,8 @@ jobs:
           fi
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase update --result "$result" \
             --setup-result "$RUNNER_TEMP/managed-update-evidence/setup.json"
           test "$("$MANAGED_XFERRY" --version)" = "xferry 0.5.1"
@@ -459,6 +467,8 @@ jobs:
           sudo "$MANAGED_XFERRY" rollback --to "$SOURCE_VERSION" --json > "$result"
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase rollback --result "$result" \
             --setup-result "$RUNNER_TEMP/managed-update-evidence/setup.json"
           test "$("$MANAGED_XFERRY" --version)" = "xferry 0.5.0"
@@ -478,6 +488,8 @@ jobs:
           sudo "$MANAGED_XFERRY" uninstall --json > "$result"
           python_bin="$(command -v python)"
           sudo "$python_bin" tools/managed_update_rehearsal.py verify-outcome \
+            --fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \
+            --fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \
             --phase uninstall --result "$result" \
             --setup-result "$RUNNER_TEMP/managed-update-evidence/setup.json"
           sudo test ! -e /opt/xferry

@@ -418,7 +418,45 @@ def verify_health(expected_version: str, evidence: Path) -> None:
     )
 
 
-def verify_outcome(phase: str, result_path: Path, setup_path: Path) -> None:
+def _expected_fixture_artifact(
+    fixtures_root: Path, fixture_evidence: Path, version: str, *, release_metadata: bool
+) -> dict[str, str]:
+    """Bind identity to the prepared fixture inventory, independently of deployment metadata."""
+    from tools import managed_systemd_probe as probe
+
+    document = json.loads(
+        probe._regular_bytes(fixture_evidence, 4 * 1024 * 1024),
+        object_pairs_hook=probe._json_object,
+    )
+    platform = document["platform"]
+    probe._require(platform in SUPPORTED_PLATFORM_IDS, "fixture_layout_invalid")
+    metadata = document["versions"][version]
+    probe._require(metadata["version"] == version, "fixture_layout_invalid")
+    name = release_manifest_asset_name(platform)
+    for asset_name in (name, name + ".sig"):
+        payload = probe._regular_bytes(
+            fixtures_root / "releases" / "download" / f"v{version}" / asset_name, 64 * 1024
+        )
+        expected = metadata["assets"][asset_name]
+        probe._require(
+            len(payload) == expected["size"]
+            and hashlib.sha256(payload).hexdigest() == expected["sha256"],
+            "fixture_layout_invalid",
+        )
+    artifact: dict[str, str] = probe._fixture_identity(
+        fixtures_root, platform, version, release_metadata=True
+    )
+    probe._require(
+        artifact["source_commit"] == metadata["fixture_commit"], "fixture_layout_invalid"
+    )
+    if not release_metadata:
+        artifact = {name: artifact[name] for name in ("version", "sha256")}
+    return artifact
+
+
+def verify_outcome(
+    phase: str, result_path: Path, setup_path: Path, *, fixtures_root: Path, fixture_evidence: Path
+) -> None:
     """Replay the same installed CLI and deployment contracts as the native matrix."""
     from tools import managed_systemd_probe as probe
 
@@ -427,7 +465,14 @@ def verify_outcome(phase: str, result_path: Path, setup_path: Path) -> None:
     identity = probe._setup_outcome(setup, files_dir=Path("/var/lib/xferry/files"))
     probe._operation_outcome(result)
     if phase == "setup":
-        probe._deployment_identity(probe.SYSTEM_PATHS, SOURCE_VERSION, identity)
+        probe._deployment_identity(
+            probe.SYSTEM_PATHS,
+            SOURCE_VERSION,
+            identity,
+            expected_artifact=_expected_fixture_artifact(
+                fixtures_root, fixture_evidence, SOURCE_VERSION, release_metadata=False
+            ),
+        )
     elif phase == "doctor":
         probe._doctor_outcome(result, identity=identity)
     else:
@@ -439,10 +484,14 @@ def verify_outcome(phase: str, result_path: Path, setup_path: Path) -> None:
             target=TARGET_VERSION,
         )
         if phase != "uninstall":
+            version = TARGET_VERSION if phase == "update" else SOURCE_VERSION
             probe._deployment_identity(
                 probe.SYSTEM_PATHS,
-                TARGET_VERSION if phase == "update" else SOURCE_VERSION,
+                version,
                 identity,
+                expected_artifact=_expected_fixture_artifact(
+                    fixtures_root, fixture_evidence, version, release_metadata=phase != "dry_run"
+                ),
             )
 
 
@@ -505,6 +554,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     outcome.add_argument("--result", type=Path, required=True)
     outcome.add_argument("--setup-result", type=Path, required=True)
+    outcome.add_argument("--fixtures-root", type=Path, required=True)
+    outcome.add_argument("--fixture-evidence", type=Path, required=True)
 
     capture = commands.add_parser("capture-state")
     capture.add_argument("--output", type=Path, required=True)
@@ -541,7 +592,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         verify_health(arguments.expected_version, arguments.evidence.resolve())
     elif arguments.command == "verify-outcome":
         verify_outcome(
-            arguments.phase, arguments.result.resolve(), arguments.setup_result.resolve()
+            arguments.phase,
+            arguments.result.resolve(),
+            arguments.setup_result.resolve(),
+            fixtures_root=arguments.fixtures_root.resolve(),
+            fixture_evidence=arguments.fixture_evidence.resolve(),
         )
     elif arguments.command == "capture-state":
         capture_state(arguments.output.resolve())
