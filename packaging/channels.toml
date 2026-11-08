@@ -2,6 +2,6 @@
 target_version = "0.5.2"
 
 [promotion]
-version = "0.5.1.dev42480139788001"
-source_commit = "a7580f33f1b49a7bd13985413e2b76ea617a2507"
-build_id = "42480139788.1"
+version = "0.5.1.dev42492343953001"
+source_commit = "385ae93651b5289e7fd1e922c6618791c4aa462a"
+build_id = "42492343953.1"
