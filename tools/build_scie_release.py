@@ -57,11 +57,17 @@ from xferry.management.versions import (  # noqa: E402
 _TRANSIENT_SCIE_NETWORK_ERROR = re.compile(
     r"^(?:[\w.]+\.)?(?:TimeoutError|ReadTimeout(?:Error)?|ConnectTimeout(?:Error)?|"
     r"ConnectionResetError|ConnectionAbortedError):"
+    r"|^httpx\.HTTPStatusError: Server error '5[0-9]{2} [^'\n]+' for url '[^'\n]+'$"
+    r"|^httpx\.RemoteProtocolError: Server disconnected without sending a response\.$"
     r"|\b(?:urlopen error|read operation|read|connect(?:ion)?)[^\n]{0,80}\b(?:timed out|timeout)\b"
     r"|\bHTTP(?:Error| Error| status(?: code)?|/[0-9.]+)?\s*[: ]\s*5[0-9]{2}\b"
     r"|\b(?:connection reset by peer|temporary failure in name resolution)\b"
     r"|^timed out$",
     re.IGNORECASE,
+)
+_HTTPX_STATUS_INFORMATION = re.compile(
+    r"For more information check: https://developer\.mozilla\.org/en-US/docs/Web/HTTP/Status/"
+    r"[1-5][0-9]{2}"
 )
 
 
@@ -99,7 +105,16 @@ def _run_command(command: Sequence[str], cwd: Path) -> None:
             # PEX prints its terminal error last; an earlier recovered failure is not a reason
             # to retry a later packaging or integrity error.
             diagnostic = (error.stderr or "").strip() or (error.stdout or "").strip()
-            terminal_error = diagnostic.rsplit("\n", 1)[-1]
+            diagnostic_lines = diagnostic.splitlines()
+            # HTTPX appends this neutral footer to its status exception. Inspect only the
+            # immediately preceding exception, never an earlier warning or traceback.
+            if (
+                len(diagnostic_lines) > 1
+                and diagnostic_lines[-2].startswith("httpx.HTTPStatusError:")
+                and _HTTPX_STATUS_INFORMATION.fullmatch(diagnostic_lines[-1])
+            ):
+                diagnostic_lines.pop()
+            terminal_error = diagnostic_lines[-1] if diagnostic_lines else ""
             if (
                 error.returncode < 0
                 or attempt == 3

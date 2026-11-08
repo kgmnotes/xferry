@@ -1233,6 +1233,22 @@ def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(
         "urllib.error.URLError: <urlopen error timed out>",
         "requests.exceptions.ReadTimeout: HTTPSConnectionPool: Read timed out.",
         "ConnectionResetError: [Errno 104] Connection reset by peer",
+        # Exact terminal traceback excerpts from the two native CI failures. The
+        # builder's subsequent CalledProcessError traceback is outside child stderr.
+        pytest.param(
+            "    raise HTTPStatusError(message, request=request, response=self)\n"
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://github.com/a-scie/jump/releases/latest/download/"
+            "scie-jump-gnu-linux-x86_64'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504",
+            id="nested-science-httpx-504-real-trace",
+        ),
+        pytest.param(
+            "    raise mapped_exc(message) from exc\n"
+            "httpx.RemoteProtocolError: Server disconnected without sending a response.",
+            id="nested-science-disconnect-real-trace",
+        ),
     ],
 )
 def test_scie_command_retries_transient_network_error_and_preserves_diagnostics(
@@ -1319,6 +1335,83 @@ def test_scie_command_preserves_last_failure_after_three_attempts(
         ("TimeoutError: timed out\nValueError: unsupported SCIE platform", "", 1),
         ("ERROR: No matching distribution found for TimeoutError", "", 1),
         ("TimeoutError: timed out", "", -15),
+        (
+            "httpx.HTTPStatusError: Client error '403 Forbidden' for url "
+            "'https://github.com/a-scie/jump/releases/latest/download/scie-jump-gnu-linux-x86_64'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403",
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url 'https://example.org'\n",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Client error '404 Not Found' for url "
+            "'https://github.com/a-scie/jump/releases/latest/download/scie-jump-gnu-linux-aarch64'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+            "httpx.RemoteProtocolError: Server disconnected without sending a response.\n",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://example.org'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504\n"
+            "SHA256 checksum mismatch",
+            "",
+            1,
+        ),
+        (
+            "httpx.RemoteProtocolError: Server disconnected without sending a response.\n"
+            "signature verification failed",
+            "",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://example.org'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504\n"
+            "ERROR: No matching distribution found",
+            "",
+            1,
+        ),
+        (
+            "httpx.RemoteProtocolError: illegal request line",
+            "httpx.RemoteProtocolError: Server disconnected without sending a response.\n",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://example.org'\n"
+            "warning: For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504.",
+            "",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://example.org'\n"
+            "For more information check: https://example.org/HTTP/Status/504",
+            "",
+            1,
+        ),
+        (
+            "httpx.RemoteProtocolError: Server disconnected without sending a response.\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504",
+            "",
+            1,
+        ),
+        (
+            "httpx.HTTPStatusError: Server error '504 Gateway Time-out' for url "
+            "'https://example.org'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504",
+            "",
+            1,
+        ),
     ],
 )
 def test_scie_command_does_not_retry_nontransient_or_integrity_failures(
