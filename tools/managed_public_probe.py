@@ -188,6 +188,18 @@ def _inputs(options: PublicProbeOptions) -> dict[str, Any]:
     return cast(dict[str, Any], document)
 
 
+def _artifact_identity(
+    release: dict[str, Any], platform: str, *, release_metadata: bool
+) -> dict[str, str]:
+    """Bind the deployment to the parent's authenticated, read-only public plan."""
+    version = release["version"]
+    record = release["platforms"][platform]["assets"][f"xferry-{version}-{platform}"]
+    artifact = {"version": version, "sha256": record["sha256"]}
+    if release_metadata:
+        artifact.update(channel="stable", source_commit=release["sourceCommit"])
+    return artifact
+
+
 def run_public_probe(
     options: PublicProbeOptions, paths: common.SystemPaths = common.SYSTEM_PATHS
 ) -> dict[str, object]:
@@ -232,7 +244,14 @@ def run_public_probe(
             discard_stderr=True,
         )
         identity = common._setup_outcome(setup, files_dir=paths.data_root / "files")
-        common._deployment_identity(paths, previous, identity)
+        common._deployment_identity(
+            paths,
+            previous,
+            identity,
+            expected_artifact=_artifact_identity(
+                plan["releases"]["previous"], options.platform, release_metadata=False
+            ),
+        )
         common._version(paths, previous)
         common.verify_health(previous, paths)
         descriptor = os.open(
@@ -284,7 +303,16 @@ def run_public_probe(
                 paths=paths,
             )
             if phase != "uninstall":
-                common._deployment_identity(paths, version, identity)
+                common._deployment_identity(
+                    paths,
+                    version,
+                    identity,
+                    expected_artifact=_artifact_identity(
+                        plan["releases"]["target" if phase == "update" else "previous"],
+                        options.platform,
+                        release_metadata=phase != "dry_run",
+                    ),
+                )
             preserved = common._preservation(baseline, paths)
             if phase in {"dry_run", "rollback"}:
                 preserved["unit"] = (

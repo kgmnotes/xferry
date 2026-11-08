@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -112,13 +113,62 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
     monkeypatch.setattr(public, "_cli_contract", lambda *_args: "canonical")
     plan = {
         "previousTag": "v0.5.0",
-        "releases": {"previous": {"version": "0.5.0"}, "target": {"version": "0.6.0"}},
+        "releases": {},
     }
+    payloads = {"0.5.0": b"previous public executable", "0.6.0": b"target public executable"}
+    commits = {"0.5.0": "a" * 40, "0.6.0": "b" * 40}
+    for role, version in (("previous", "0.5.0"), ("target", "0.6.0")):
+        plan["releases"][role] = {
+            "version": version,
+            "sourceCommit": commits[version],
+            "platforms": {
+                options.platform: {
+                    "assets": {
+                        f"xferry-{version}-{options.platform}": {
+                            "size": len(payloads[version]),
+                            "sha256": hashlib.sha256(payloads[version]).hexdigest(),
+                        }
+                    }
+                }
+            },
+        }
     identity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     identities = []
-    monkeypatch.setattr(
-        public.common, "_deployment_identity", lambda p, v, i: identities.append((p, v, i))
-    )
+    validate_identity = public.common._deployment_identity
+
+    def deployment_identity(p, v, i, *, expected_artifact):
+        identities.append((p, v, i, expected_artifact))
+        validate_identity(p, v, i, expected_artifact=expected_artifact)
+
+    monkeypatch.setattr(public.common, "_deployment_identity", deployment_identity)
+
+    def write_identity(version, *, release_metadata):
+        root = paths.release_root / "releases" / version
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "xferry").write_bytes(payloads[version])
+        artifact = {"version": version, "sha256": hashlib.sha256(payloads[version]).hexdigest()}
+        if release_metadata:
+            artifact.update(channel="stable", source_commit=commits[version])
+        paths.profile.write_text(
+            "[server]\nconfig_version = 1\naccess = private\n"
+            f"files_dir = {paths.data_root / 'files'}\n"
+        )
+        paths.manifest.write_text(
+            json.dumps(
+                {
+                    "schema": 2,
+                    "instance_id": identity,
+                    "backend": "native",
+                    "profile": str(paths.profile),
+                    "files_dir": str(paths.data_root / "files"),
+                    "state_dir": str(paths.data_root),
+                    "artifact": artifact,
+                    "ownership": {"resources": [], "accounts": [], "acl": []},
+                    "backend_options": {},
+                }
+            )
+        )
+
     commands: list[tuple[tuple[str, ...], dict[str, Any]]] = []
     health: list[str] = []
     monkeypatch.setattr(public.common, "guard_host", lambda **_kwargs: {"unit": "mock host only"})
@@ -184,6 +234,7 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
         commands.append((tuple(argv), kwargs))
         phase = argv[1]
         if phase == "setup":
+            write_identity("0.5.0", release_metadata=False)
             return operation(
                 {"instance_id": identity, "files_dir": str(paths.data_root / "files")},
                 url="http://127.0.0.1:8080",
@@ -203,6 +254,7 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
             }
             return operation({"checks": checks}, state=state)
         if phase == "uninstall":
+            shutil.rmtree(paths.release_root)
             paths.unit.unlink()
             return operation(
                 {
@@ -227,6 +279,8 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
         }
         if phase == "update":
             dry_run = "--dry-run" in argv
+            if not dry_run:
+                write_identity("0.6.0", release_metadata=True)
             details.update(
                 dry_run=dry_run,
                 code="update_dry_run" if dry_run else "update_complete",
@@ -235,6 +289,8 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
                 active="0.5.0" if dry_run else "0.6.0",
                 rollback="not_needed",
             )
+        else:
+            write_identity("0.5.0", release_metadata=True)
         return operation(details, state=observed())
 
     monkeypatch.setattr(public.common, "_json_command", json_command)
@@ -273,7 +329,25 @@ def test_public_engine_drives_distinct_versions_and_checks_preservation(
             "uninstall",
         ]
         assert health == ["0.5.0", "0.5.0", "0.5.0", "0.6.0", "0.5.0"]
-        assert identities == [(paths, v, identity) for v in ("0.5.0", "0.5.0", "0.6.0", "0.5.0")]
+        assert [item[:3] for item in identities] == [
+            (paths, v, identity) for v in ("0.5.0", "0.5.0", "0.6.0", "0.5.0")
+        ]
+        assert [item[3] for item in identities] == [
+            {"version": "0.5.0", "sha256": hashlib.sha256(payloads["0.5.0"]).hexdigest()},
+            {"version": "0.5.0", "sha256": hashlib.sha256(payloads["0.5.0"]).hexdigest()},
+            {
+                "version": "0.6.0",
+                "sha256": hashlib.sha256(payloads["0.6.0"]).hexdigest(),
+                "channel": "stable",
+                "source_commit": commits["0.6.0"],
+            },
+            {
+                "version": "0.5.0",
+                "sha256": hashlib.sha256(payloads["0.5.0"]).hexdigest(),
+                "channel": "stable",
+                "source_commit": commits["0.5.0"],
+            },
+        ]
         assert (str(controller), "rollback", "--to", "0.5.0", "--instance", identity, "--json") in [
             argv for argv, _ in commands
         ]

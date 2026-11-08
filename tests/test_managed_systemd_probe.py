@@ -20,6 +20,7 @@ import pytest
 from tools import managed_systemd_probe as probe
 
 INSTANCE_ID = "12345678-1234-4567-8901-123456789abc"
+FIXTURE_SOURCE_COMMITS = {"0.5.0": "a" * 40, "0.5.1": "b" * 40}
 
 
 def _observed(*, retained: bool = False, health: str = "not_checked") -> dict[str, Any]:
@@ -57,9 +58,14 @@ def _setup_result(files: Path) -> dict[str, Any]:
     )
 
 
-def _write_manifest(paths: probe.SystemPaths, version: str) -> None:
+def _write_manifest(
+    paths: probe.SystemPaths, version: str, *, release_metadata: bool = False
+) -> None:
     executable = paths.release_root / "releases" / version / "xferry"
     executable.write_bytes(b"mock executable " + version.encode())
+    artifact = {"version": version, "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
+    if release_metadata:
+        artifact.update(channel="stable", source_commit=FIXTURE_SOURCE_COMMITS[version])
     paths.manifest.write_text(
         json.dumps(
             {
@@ -69,10 +75,7 @@ def _write_manifest(paths: probe.SystemPaths, version: str) -> None:
                 "profile": str(paths.profile),
                 "files_dir": str(paths.data_root / "files"),
                 "state_dir": str(paths.data_root),
-                "artifact": {
-                    "version": version,
-                    "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-                },
+                "artifact": artifact,
                 "ownership": {"resources": [], "accounts": [], "acl": []},
                 "backend_options": {},
             }
@@ -110,6 +113,30 @@ def sandbox(
         host_cgroup_namespace="cgroup:[100]",
     )
     options.fixtures_root.mkdir()
+    for version, source_commit in FIXTURE_SOURCE_COMMITS.items():
+        root = options.fixtures_root / "releases" / "download" / f"v{version}"
+        root.mkdir(parents=True)
+        executable = b"mock executable " + version.encode()
+        executable_name = f"xferry-{version}-{options.platform}"
+        digest = hashlib.sha256(executable).hexdigest()
+        (root / f"xferry-release-{options.platform}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "version": version,
+                    "tag": f"v{version}",
+                    "platform": options.platform,
+                    "executable": {
+                        "name": executable_name,
+                        "size": len(executable),
+                        "sha256": digest,
+                    },
+                    "source": {"commit": source_commit, "workflow_run": "123"},
+                    "artifact_digests": {executable_name: digest},
+                    "signing": {"scheme": "ed25519", "key_ids": ["xferry-rehearsal-2026-10"]},
+                }
+            )
+        )
     options.tls_dir.mkdir()
     (options.tls_dir / "server.crt").write_bytes(b"unit certificate fixture")
     (options.tls_dir / "server.key").write_bytes(b"unit TLS fixture, not a production key")
@@ -714,7 +741,7 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
                 raise RuntimeError("Credentials: admin:unit-test-sensitive%value")
             if not dry_run:
                 activate("0.5.1")
-                _write_manifest(paths, version)
+                _write_manifest(paths, version, release_metadata=True)
             details.update(
                 code="update_dry_run" if dry_run else "update_complete",
                 dry_run=dry_run,
@@ -729,7 +756,7 @@ def test_mocked_lifecycle_sequence_and_safe_receipts(
             assert argv[2:] == ("--to", "0.5.0", "--json")
             activate("0.5.0")
             details.update(code="rollback_complete", version="0.5.0")
-            _write_manifest(paths, version)
+            _write_manifest(paths, version, release_metadata=True)
         elif argv[1] == "uninstall":
             assert "environment" not in kwargs
             assert argv[2:] == ("--json",)
@@ -891,7 +918,7 @@ def test_doctor_outcome_rejects_incomplete_unknown_or_failing_checks(mutation):
     "mutation", [None, "schema", "identity", "artifact", "profile", "files", "sha"]
 )
 def test_manifest_contract_binds_identity_profile_and_exact_artifact(sandbox, mutation):
-    _, paths = sandbox
+    options, paths = sandbox
     _create_private_state(paths)
     (paths.release_root / "releases/0.5.0").mkdir(parents=True)
     _write_manifest(paths, "0.5.0")
@@ -909,8 +936,107 @@ def test_manifest_contract_binds_identity_profile_and_exact_artifact(sandbox, mu
     elif mutation == "sha":
         document["artifact"]["sha256"] = "0" * 64
     paths.manifest.write_text(json.dumps(document))
+    expected = probe._fixture_identity(
+        options.fixtures_root, options.platform, "0.5.0", release_metadata=False
+    )
     if mutation:
         with pytest.raises(probe.ProbeFailure, match="release_state_invalid"):
-            probe._deployment_identity(paths, "0.5.0", INSTANCE_ID)
+            probe._deployment_identity(paths, "0.5.0", INSTANCE_ID, expected_artifact=expected)
     else:
-        probe._deployment_identity(paths, "0.5.0", INSTANCE_ID)
+        probe._deployment_identity(paths, "0.5.0", INSTANCE_ID, expected_artifact=expected)
+
+
+@pytest.mark.parametrize("version", ["0.5.0", "0.5.1"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "source",
+        "channel",
+        "build",
+        "null-build",
+        "unknown",
+        "version",
+        "sha",
+        "missing-source",
+        "missing-channel",
+        "legacy-after-release",
+        "self-consistent-executable",
+    ],
+)
+def test_release_identity_is_exactly_bound_to_the_version_fixture(sandbox, version, mutation):
+    options, paths = sandbox
+    _create_private_state(paths)
+    (paths.release_root / "releases" / version).mkdir(parents=True)
+    _write_manifest(paths, version, release_metadata=mutation != "legacy-after-release")
+    document = json.loads(paths.manifest.read_text())
+    artifact = document["artifact"]
+    if mutation == "source":
+        artifact["source_commit"] = "c" * 40
+    elif mutation == "channel":
+        artifact["channel"] = "testing"
+    elif mutation in {"build", "null-build"}:
+        artifact["build_id"] = "123.1" if mutation == "build" else None
+    elif mutation == "unknown":
+        artifact["unexpected"] = "not part of the identity contract"
+    elif mutation == "version":
+        artifact["version"] = "0.4.0"
+    elif mutation == "sha":
+        artifact["sha256"] = "0" * 64
+    elif mutation == "missing-source":
+        del artifact["source_commit"]
+    elif mutation == "missing-channel":
+        del artifact["channel"]
+    elif mutation == "self-consistent-executable":
+        executable = paths.release_root / "releases" / version / "xferry"
+        executable.write_bytes(b"tampered executable with its own matching deployment hash")
+        artifact["sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
+    paths.manifest.write_text(json.dumps(document))
+    expected = probe._fixture_identity(
+        options.fixtures_root, options.platform, version, release_metadata=True
+    )
+    if mutation:
+        with pytest.raises(probe.ProbeFailure, match="release_state_invalid"):
+            probe._deployment_identity(paths, version, INSTANCE_ID, expected_artifact=expected)
+    else:
+        probe._deployment_identity(paths, version, INSTANCE_ID, expected_artifact=expected)
+
+
+def test_setup_identity_does_not_accept_release_metadata_unexpectedly(sandbox):
+    options, paths = sandbox
+    _create_private_state(paths)
+    (paths.release_root / "releases/0.5.0").mkdir(parents=True)
+    _write_manifest(paths, "0.5.0", release_metadata=True)
+    with pytest.raises(probe.ProbeFailure, match="release_state_invalid"):
+        probe._deployment_identity(
+            paths,
+            "0.5.0",
+            INSTANCE_ID,
+            expected_artifact=probe._fixture_identity(
+                options.fixtures_root, options.platform, "0.5.0", release_metadata=False
+            ),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["schema", "version", "tag", "platform", "source", "sha"])
+def test_fixture_identity_rejects_invalid_reference_metadata(sandbox, mutation):
+    options, _ = sandbox
+    path = options.fixtures_root / "releases/download/v0.5.1/xferry-release-linux-x86_64.json"
+    document = json.loads(path.read_text())
+    if mutation == "schema":
+        document["schema_version"] = 3
+    elif mutation == "version":
+        document["version"] = "0.5.0"
+    elif mutation == "tag":
+        document["tag"] = "v0.5.0"
+    elif mutation == "platform":
+        document["platform"] = "linux-aarch64"
+    elif mutation == "source":
+        document["source"]["commit"] = "invalid commit"
+    else:
+        document["executable"]["sha256"] = "invalid digest"
+    path.write_text(json.dumps(document))
+    with pytest.raises(probe.ProbeFailure, match="fixture_layout_invalid"):
+        probe._fixture_identity(
+            options.fixtures_root, options.platform, "0.5.1", release_metadata=True
+        )
