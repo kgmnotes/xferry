@@ -345,8 +345,9 @@ def test_fixture_validation_still_requires_exact_changed_paths(fixtures, monkeyp
         if "--name-only" in argv:
             if mutation == "unexpected-file":
                 return result + b"xferry/cli.py\n"
-            if kwargs["cwd"].name == "0.5.1":
-                return result.replace(b"xferry/config.py\n", b"")
+            # The current package version may match either fixture, making that
+            # fixture's version transform a valid no-op. Remove a real transform.
+            return result.replace(b"xferry/config.py\n", b"")
         return result
 
     monkeypatch.setattr(matrix, "_command", changed_names)
