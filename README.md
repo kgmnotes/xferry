@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml/badge.svg)](https://github.com/kgmnotes/xferry/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10--3.14-blue.svg)](https://www.python.org/)
-![Version](https://img.shields.io/badge/version-0.5.0-orange.svg)
+![Version](https://img.shields.io/badge/version-0.5.1-orange.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 xferry is an HTTP toolkit for testing Secure Web Gateways on systems you are

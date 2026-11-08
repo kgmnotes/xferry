@@ -114,7 +114,7 @@ options:
   --email EMAIL         Optional certificate contact address.
   --firewall {allow,deny}
                         Allow or decline required UFW rules.
-  --to VERSION          Signed release version to install (default: 0.5.0).
+  --to VERSION          Signed release version to install (default: 0.5.1).
   --image REPOSITORY@sha256:DIGEST
                         Use an explicit immutable Docker image instead of a release version.
   --dry-run             Validate and preview changes.
@@ -289,7 +289,7 @@ options:
   --dry-run             Validate and preview changes.
   --json                Print machine-readable results.
 
-Example: xferry update --to 0.5.0
+Example: xferry update --to 0.5.1
 ```
 
 ## `xferry rollback --help`
