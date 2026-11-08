@@ -604,9 +604,99 @@ def _release_outcome(
         )
 
 
-def _deployment_identity(paths: SystemPaths, version: str, identity: str) -> None:
+def _fixture_identity(
+    fixtures_root: Path, platform: str, version: str, *, release_metadata: bool
+) -> dict[str, str]:
+    """Read the host-authenticated, read-only stable fixture, never deployment self-reports."""
+    try:
+        _require(version in {SOURCE_VERSION, TARGET_VERSION}, "fixture_layout_invalid")
+        fixture = json.loads(
+            _regular_bytes(
+                fixtures_root
+                / "releases"
+                / "download"
+                / f"v{version}"
+                / f"xferry-release-{platform}.json",
+                64 * 1024,
+            ),
+            object_pairs_hook=_json_object,
+        )
+        _require(
+            isinstance(fixture, dict)
+            and set(fixture)
+            == {
+                "schema_version",
+                "version",
+                "tag",
+                "platform",
+                "executable",
+                "source",
+                "artifact_digests",
+                "signing",
+            }
+            and type(fixture["schema_version"]) is int
+            and fixture["schema_version"] == 2
+            and fixture["version"] == version
+            and fixture["tag"] == f"v{version}"
+            and fixture["platform"] == platform,
+            "fixture_layout_invalid",
+        )
+        source, executable = fixture["source"], fixture["executable"]
+        _require(
+            isinstance(source, dict)
+            and set(source) == {"commit", "workflow_run"}
+            and isinstance(source["commit"], str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source["commit"]) is not None
+            and isinstance(source["workflow_run"], str)
+            and re.fullmatch(r"[1-9][0-9]*", source["workflow_run"]) is not None
+            and isinstance(executable, dict)
+            and set(executable) == {"name", "size", "sha256"}
+            and executable["name"] == f"xferry-{version}-{platform}"
+            and type(executable["size"]) is int
+            and executable["size"] > 0
+            and isinstance(executable["sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", executable["sha256"]) is not None,
+            "fixture_layout_invalid",
+        )
+        artifact = {"version": version, "sha256": executable["sha256"]}
+        if release_metadata:
+            artifact.update(channel="stable", source_commit=source["commit"])
+        return artifact
+    except ProbeFailure:
+        raise
+    except Exception:
+        raise ProbeFailure("fixture_layout_invalid") from None
+
+
+def _deployment_identity(
+    paths: SystemPaths,
+    version: str,
+    identity: str,
+    *,
+    expected_artifact: Mapping[str, str],
+) -> None:
     """Bind the retained profile to the exact installed artifact, without exporting hashes."""
     try:
+        expected = dict(expected_artifact)
+        _require(
+            set(expected) == {"version", "sha256"}
+            or (
+                set(expected) == {"version", "sha256", "channel", "source_commit"}
+                and expected["channel"] == "stable"
+                and isinstance(expected["source_commit"], str)
+                and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", expected["source_commit"])
+                is not None
+            ),
+            "release_state_invalid",
+        )
+        executable = _regular_bytes(
+            paths.release_root / "releases" / version / "xferry", 256 * 1024 * 1024
+        )
+        _require(
+            expected["version"] == version
+            and hashlib.sha256(executable).hexdigest() == expected["sha256"],
+            "release_state_invalid",
+        )
         manifest = json.loads(
             _regular_bytes(paths.manifest, 1024 * 1024), object_pairs_hook=_json_object
         )
@@ -631,15 +721,7 @@ def _deployment_identity(paths: SystemPaths, version: str, identity: str) -> Non
             and manifest["profile"] == str(paths.profile)
             and manifest["files_dir"] == str(paths.data_root / "files")
             and manifest["state_dir"] == str(paths.data_root)
-            and manifest["artifact"]
-            == {
-                "version": version,
-                "sha256": hashlib.sha256(
-                    _regular_bytes(
-                        paths.release_root / "releases" / version / "xferry", 256 * 1024 * 1024
-                    )
-                ).hexdigest(),
-            },
+            and manifest["artifact"] == expected,
             "release_state_invalid",
         )
         profile = configparser.ConfigParser(interpolation=None)
@@ -812,7 +894,14 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
                 (str(paths.cli), "setup", "--access", "private", "--json"), discard_stderr=True
             )
             identity = _setup_outcome(setup, files_dir=paths.data_root / "files")
-            _deployment_identity(paths, SOURCE_VERSION, identity)
+            _deployment_identity(
+                paths,
+                SOURCE_VERSION,
+                identity,
+                expected_artifact=_fixture_identity(
+                    options.fixtures_root, options.platform, SOURCE_VERSION, release_metadata=False
+                ),
+            )
             _version(paths, SOURCE_VERSION)
             verify_health(SOURCE_VERSION, paths)
             descriptor = os.open(
@@ -866,7 +955,17 @@ def run_probe(options: ProbeOptions, paths: SystemPaths = SYSTEM_PATHS) -> dict[
                     paths=paths,
                 )
                 if phase != "uninstall":
-                    _deployment_identity(paths, version, identity)
+                    _deployment_identity(
+                        paths,
+                        version,
+                        identity,
+                        expected_artifact=_fixture_identity(
+                            options.fixtures_root,
+                            options.platform,
+                            version,
+                            release_metadata=phase != "dry_run",
+                        ),
+                    )
                 preserved = _preservation(baseline, paths)
                 stage["preserved"] = preserved
                 _require(all(preserved.values()), "state_preservation_failed")
