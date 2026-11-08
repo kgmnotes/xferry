@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -53,6 +54,22 @@ from xferry.management.versions import (  # noqa: E402
     is_supported_release_version,
 )
 
+_TRANSIENT_SCIE_NETWORK_ERROR = re.compile(
+    r"^(?:[\w.]+\.)?(?:TimeoutError|ReadTimeout(?:Error)?|ConnectTimeout(?:Error)?|"
+    r"ConnectionResetError|ConnectionAbortedError):"
+    r"|^httpx\.HTTPStatusError: Server error '5[0-9]{2} [^'\n]+' for url '[^'\n]+'$"
+    r"|^httpx\.RemoteProtocolError: Server disconnected without sending a response\.$"
+    r"|\b(?:urlopen error|read operation|read|connect(?:ion)?)[^\n]{0,80}\b(?:timed out|timeout)\b"
+    r"|\bHTTP(?:Error| Error| status(?: code)?|/[0-9.]+)?\s*[: ]\s*5[0-9]{2}\b"
+    r"|\b(?:connection reset by peer|temporary failure in name resolution)\b"
+    r"|^timed out$",
+    re.IGNORECASE,
+)
+_HTTPX_STATUS_INFORMATION = re.compile(
+    r"For more information check: https://developer\.mozilla\.org/en-US/docs/Web/HTTP/Status/"
+    r"[1-5][0-9]{2}"
+)
+
 
 class CommandRunner(Protocol):
     """Run one release-build command from its supplied working directory."""
@@ -72,7 +89,49 @@ class ReleaseBundle:
 
 
 def _run_command(command: Sequence[str], cwd: Path) -> None:
-    subprocess.run(list(command), cwd=cwd, check=True)
+    arguments = list(command)
+    if arguments[:1] != ["pex"] or "--scie" not in arguments:
+        subprocess.run(arguments, cwd=cwd, check=True)
+        return
+
+    for attempt in range(1, 4):
+        try:
+            result = subprocess.run(arguments, cwd=cwd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            if error.stdout:
+                print(error.stdout, end="", file=sys.stdout)
+            if error.stderr:
+                print(error.stderr, end="", file=sys.stderr)
+            # PEX prints its terminal error last; an earlier recovered failure is not a reason
+            # to retry a later packaging or integrity error.
+            diagnostic = (error.stderr or "").strip() or (error.stdout or "").strip()
+            diagnostic_lines = diagnostic.splitlines()
+            # HTTPX appends this neutral footer to its status exception. Inspect only the
+            # immediately preceding exception, never an earlier warning or traceback.
+            if (
+                len(diagnostic_lines) > 1
+                and diagnostic_lines[-2].startswith("httpx.HTTPStatusError:")
+                and _HTTPX_STATUS_INFORMATION.fullmatch(diagnostic_lines[-1])
+            ):
+                diagnostic_lines.pop()
+            terminal_error = diagnostic_lines[-1] if diagnostic_lines else ""
+            if (
+                error.returncode < 0
+                or attempt == 3
+                or not _TRANSIENT_SCIE_NETWORK_ERROR.search(terminal_error)
+            ):
+                raise
+            print(
+                f"SCIE download failed transiently; retrying command ({attempt + 1}/3).",
+                file=sys.stderr,
+            )
+            time.sleep(attempt * 2)
+        else:
+            if result.stdout:
+                print(result.stdout, end="", file=sys.stdout)
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            return
 
 
 def _source_commit(repo_root: Path) -> str:
@@ -255,6 +314,8 @@ def build_release_bundle(
             ],
             repo_root,
         )
+        # Pin both runtime inputs so PBS metadata comes from a dated release instead
+        # of the floating /releases/latest endpoint, with a fixed CPython patch.
         runner(
             [
                 "pex",
@@ -267,8 +328,14 @@ def build_release_bundle(
                 "--scie-only",
                 "--scie-platform",
                 selected_platform,
+                "--scie-pbs-release",
+                "20261026",
+                "--scie-python-version",
+                "3.12.16",
                 "--interpreter-constraint",
                 "CPython>=3.12,<3.13",
+                "--timeout",
+                "120",
                 "-o",
                 str(executable),
             ],
