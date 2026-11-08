@@ -1,7 +1,7 @@
 # Pinned Python toolchain for CI, docs, security jobs, and reproducible local installs.
 # Refresh intentionally in a clean virtualenv after validation on the supported Python matrix.
 
-acme==5.8.0
+acme==5.9.0
 ast-serialize==0.11.2
 babel==2.18.0
 backrefs==6.2
