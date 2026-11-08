@@ -365,11 +365,13 @@ from pathlib import Path
 import acme
 import cryptography
 import josepy
+import prompt_toolkit
+import rich
 from OpenSSL import SSL
 import xferry
 from xferry import XFerryServer
 
-del acme, cryptography, josepy, SSL
+del acme, cryptography, josepy, prompt_toolkit, rich, SSL
 assert importlib.util.find_spec("src") is None
 repo = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
 venv = Path(os.environ["XFERRY_PROBE_VENV"]).resolve()
@@ -574,6 +576,7 @@ def _portable_tests(*, venv_dir: Path, probe_dir: Path, workspace: Path) -> None
         "tests/__init__.py",
         "tests/conftest.py",
         "tests/server_factory.py",
+        "tests/test_server_live.py",
         "tests/test_cli.py",
         "tests/test_security/__init__.py",
         "tests/test_security/test_crypto.py",
@@ -646,6 +649,7 @@ def portable_smoke(
         ),
         cwd=probe_dir,
         env=environment,
+        timeout=600,
     )
     print(f"portable wheel SHA256: {digest}", flush=True)
     _probe_installed_artifact(venv_dir=venv_dir, probe_dir=probe_dir, workspace=workspace)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,22 +34,41 @@ def prompt(label: str, default: str = "") -> str:
     return value or default
 
 
-def confirm(language: str, description: str = "") -> bool:
+def confirm(language: str, description: str = "", *, plain: bool = False) -> bool:
+    from .terminal import Back, get_ui
+
+    ui = get_ui(language, plain=plain)
+    if ui.enhanced:
+        try:
+            return ui.confirm(
+                description or _text(language, "Apply these changes?", "Применить изменения?")
+            )
+        except Back:
+            return False
     if description:
         print(description)
     answer = input(_text(language, "Apply these changes? [y/N] ", "Применить изменения? [y/N] "))
     return answer.strip().casefold() in {"y", "yes", "д", "да"}
 
 
-def prepare_setup(args: argparse.Namespace, language: str) -> bool:
+def prepare_setup(
+    args: argparse.Namespace, language: str, *, plain: bool = False, edit: bool = False
+) -> bool:
     """Ask only essential inputs; validation still belongs to setup planning."""
+    from .terminal import get_ui
+
+    ui = get_ui(language, plain=plain)
+    if ui.enhanced:
+        from .interactive import prepare_setup as enhanced_setup
+
+        return enhanced_setup(args, language, ui=ui, edit=edit)
     print(_text(language, "Set up the server on this host.", "Настройка сервера на этой машине."))
     if not args.files_dir:
         args.files_dir = str(
             Path(
                 prompt(
                     _text(language, "Files folder on this host", "Папка файлов на этой машине"),
-                    str(default_files_dir(managed=True)),
+                    str(default_files_dir(managed=args.backend != "docker")),
                 )
             )
             .expanduser()
@@ -83,8 +103,15 @@ def prepare_setup(args: argparse.Namespace, language: str) -> bool:
     return True
 
 
-def menu(language: str, dispatch: Callable[[list[str]], int]) -> int:
+def menu(language: str, dispatch: Callable[[list[str]], int], *, plain: bool = False) -> int:
     """Offer actions from observed deployment state, never registry presence alone."""
+    from .terminal import get_ui
+
+    ui = get_ui(language, plain=plain)
+    if ui.enhanced:
+        from .interactive import menu as enhanced_menu
+
+        return enhanced_menu(language, dispatch, ui=ui)
     from .application import default_application
     from .instances import discover_instances, foreground_config
 
@@ -304,7 +331,15 @@ def configure(
     *,
     dispatch: Callable[[list[str]], int] | None = None,
     instance: Instance | None = None,
+    plain: bool = False,
 ) -> int:
+    from .terminal import get_ui
+
+    ui = get_ui(language, plain=plain)
+    if ui.enhanced:
+        from .interactive import configure as enhanced_configure
+
+        return enhanced_configure(path, target, language, instance=instance, ui=ui)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     # New foreground profiles explicitly select stable files and private state.
     changes: dict[str, str] = {}
@@ -316,6 +351,7 @@ def configure(
             "files_dir": str(default_files_dir()),
         }
     last_valid = edit_ini(text, changes)
+    applying = False
     try:
         while True:
             environment = dict(os.environ) if target == "portable" else {}
@@ -418,21 +454,27 @@ def configure(
                         "Сгенерировать пароль из 12 символов и сохранить настройки? "
                         "Работающий установленный сервер перезапустится.",
                     ),
+                    plain=plain,
                 ):
                     continue
                 if target != "portable":
                     from .application import default_application
-                    from .cli import _render_application_result
+                    from .cli import _application_call, _render_application_result
 
+                    app = default_application()
+                    applying = True
+                    managed_result = _application_call(app, ui, partial(app.credentials, instance))
                     return _render_application_result(
-                        default_application().credentials(instance),
+                        managed_result,
                         json_output=False,
                         language=language,
                     )
                 elif target == "portable":
                     try:
+                        applying = True
                         portable_password_result = reset_portable_password(path, changes=changes)
                     except ValueError as error:
+                        applying = False
                         print(error)
                         continue
                     print(portable_password_result.message)
@@ -459,31 +501,57 @@ def configure(
                     continue
                 if target != "portable":
                     from .application import default_application
-                    from .cli import _render_application_result
+                    from .cli import _application_call, _render_application_result
 
                     app = default_application()
                     preview = app.configure(instance, changes, apply=False, expected_text=text)
                     _render_application_result(preview, json_output=False, language=language)
-                    if preview.exit_code or not confirm(language):
+                    if preview.exit_code or not confirm(language, plain=plain):
                         return preview.exit_code
+                    applying = True
+                    managed_result = _application_call(
+                        app,
+                        ui,
+                        partial(app.configure, instance, changes, apply=True, expected_text=text),
+                    )
                     return _render_application_result(
-                        app.configure(instance, changes, apply=True, expected_text=text),
+                        managed_result,
                         json_output=False,
                         language=language,
                     )
                 try:
+                    applying = True
                     result = change_configuration(
                         path,
                         changes,
                         target=target,
                         apply=target == "managed",
-                        confirm=lambda diff: confirm(language, diff),
+                        confirm=lambda diff: confirm(language, diff, plain=plain),
                     )
                 except SettingsError as error:
+                    applying = False
                     print(error)
                     continue
                 print(result.message)
                 return result.exit_code
     except (EOFError, KeyboardInterrupt):
-        print(_text(language, "Cancelled; no changes made.", "Отменено; изменения не сохранены."))
-        return 0
+        print(
+            _text(
+                language,
+                "Operation interrupted. Check xferry status and xferry doctor before continuing.",
+                "Операция прервана. Проверьте xferry status и xferry doctor перед продолжением.",
+            )
+            if applying
+            else _text(language, "Cancelled; no changes made.", "Отменено; изменения не сохранены.")
+        )
+        return 130 if applying else 0
+
+
+def review_setup(
+    args: argparse.Namespace, preview: object, language: str, *, plain: bool = False
+) -> str:
+    """Review an enhanced setup plan without changing the installation."""
+    from .interactive import review_setup as enhanced_review
+    from .terminal import get_ui
+
+    return enhanced_review(args, preview, language, ui=get_ui(language, plain=plain))

@@ -19,6 +19,7 @@ from .deployment import Credentials as Credentials
 from .health import HealthEndpoint, HealthResult, authenticated_ping
 from .model import ManagedLayout, SetupMode, SetupPlan, SetupPreflight, SetupProbes
 from .planning import check_setup_preflight, render_managed_config
+from .progress import ProgressObserver, run_stage, with_progress
 from .system import (
     CommandRunner,
     FilesystemTransaction,
@@ -172,7 +173,9 @@ class SetupExecutor:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         transaction_factory: Callable[[], FilesystemTransaction] | None = None,
+        progress: ProgressObserver | None = None,
     ) -> None:
+        self.progress = progress
         self.runner = runner or CommandRunner()
         self.artifact_identity = artifact_identity
         self.preflight_check = preflight_check or self._check_preflight
@@ -191,6 +194,7 @@ class SetupExecutor:
             lambda: FilesystemTransaction(chown=self.chown)
         )
 
+    @with_progress
     def apply(self, plan: SetupPlan) -> SetupResult:
         """Apply ``plan`` or restore every pre-existing managed state."""
         if self.effective_uid() != 0:
@@ -203,7 +207,9 @@ class SetupExecutor:
             return SetupResult(
                 2, "already configured; use xferry config", code="already-configured"
             )
-        initial_preflight = self.preflight_check(plan)
+        initial_preflight = run_stage(
+            "preflight", lambda: self.preflight_check(plan), ok=lambda result: result.ok
+        )
         if not initial_preflight.ok:
             return _preflight_result(initial_preflight)
 
@@ -213,7 +219,9 @@ class SetupExecutor:
                 effective_uid=self.effective_uid,
                 root_uid=self.root_uid,
             ):
-                locked_preflight = self.preflight_check(plan)
+                locked_preflight = run_stage(
+                    "preflight", lambda: self.preflight_check(plan), ok=lambda result: result.ok
+                )
                 if not locked_preflight.ok:
                     return _preflight_result(locked_preflight)
                 if plan.files_dir is not None and plan.layout.config_file.exists():
@@ -230,6 +238,7 @@ class SetupExecutor:
         except OSError:
             return SetupResult(1, "managed mutation lock failed")
 
+    @with_progress
     def resume(self, layout: ManagedLayout, *, require_retained: bool = True) -> SetupResult:
         """Activate a reinstalled signed runtime with its preserved configuration."""
         from xferry.settings import SettingsError, load_settings_file
@@ -283,7 +292,7 @@ class SetupExecutor:
                 reload_attempted = False
                 activation_touched = False
                 try:
-                    self._ensure_identities(layout.runtime_home)
+                    run_stage("prepare", lambda: self._ensure_identities(layout.runtime_home))
                     uid, gid = self.resolve_identity()
                     transaction.ensure_directory(self.unit_path.parent, mode=0o755, uid=0, gid=0)
                     from dataclasses import replace
@@ -327,15 +336,19 @@ class SetupExecutor:
                     endpoint = _endpoint(settings)
                     if endpoint is None:
                         raise _SetupFailure(2, "retained health endpoint could not be determined")
-                    ready = _wait_for_health(
-                        self.health_check,
-                        endpoint,
-                        username,
-                        password,
-                        readiness_timeout=self.readiness_timeout,
-                        timeout=self.health_timeout,
-                        monotonic=self.monotonic,
-                        sleep=self.sleep,
+                    ready = run_stage(
+                        "wait_ready",
+                        lambda: _wait_for_health(
+                            self.health_check,
+                            endpoint,
+                            username,
+                            password,
+                            readiness_timeout=self.readiness_timeout,
+                            timeout=self.health_timeout,
+                            monotonic=self.monotonic,
+                            sleep=self.sleep,
+                        ),
+                        ok=lambda result: result.health.ok,
                     )
                     if not ready.health.ok:
                         raise _SetupFailure(6, "restored service is unhealthy")
@@ -352,6 +365,7 @@ class SetupExecutor:
                         spec,
                         backend_options={**spec.backend_options, "credentials_revealed": True},
                         artifact={
+                            **spec.artifact,
                             "version": executable.parent.name,
                             "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                         },
@@ -377,12 +391,16 @@ class SetupExecutor:
                         detail=endpoint.url,
                     )
                 except (_SetupFailure, OSError, ValueError) as exc:
-                    restored = self._rollback(
-                        transaction,
-                        [],
-                        initial_state=initial,
-                        reload_attempted=reload_attempted,
-                        activation_touched=activation_touched,
+                    restored = run_stage(
+                        "restore",
+                        lambda: self._rollback(
+                            transaction,
+                            [],
+                            initial_state=initial,
+                            reload_attempted=reload_attempted,
+                            activation_touched=activation_touched,
+                        ),
+                        ok=lambda result: result.ok,
                     )
                     if not restored.ok:
                         return SetupResult(
@@ -414,20 +432,25 @@ class SetupExecutor:
         activation_touched = False
 
         try:
-            group_created, user_created = self._ensure_identities(plan.layout.runtime_home)
+            group_created, user_created = run_stage(
+                "prepare", lambda: self._ensure_identities(plan.layout.runtime_home)
+            )
             runtime_uid, runtime_gid = self.resolve_identity()
-            password = self._stage_files(
-                plan,
-                transaction,
-                runtime_uid,
-                runtime_gid,
-                accounts=tuple(
-                    name
-                    for name, created in (
-                        ("user:xferry", user_created),
-                        ("group:xferry", group_created),
-                    )
-                    if created
+            password = run_stage(
+                "prepare",
+                lambda: self._stage_files(
+                    plan,
+                    transaction,
+                    runtime_uid,
+                    runtime_gid,
+                    accounts=tuple(
+                        name
+                        for name, created in (
+                            ("user:xferry", user_created),
+                            ("group:xferry", group_created),
+                        )
+                        if created
+                    ),
                 ),
             )
             self._checked(
@@ -461,15 +484,19 @@ class SetupExecutor:
                 message="installed service failed to start",
             )
             endpoint = _health_endpoint(plan)
-            readiness = _wait_for_health(
-                self.health_check,
-                endpoint,
-                "admin",
-                password,
-                readiness_timeout=self.readiness_timeout,
-                timeout=self.health_timeout,
-                monotonic=self.monotonic,
-                sleep=self.sleep,
+            readiness = run_stage(
+                "wait_ready",
+                lambda: _wait_for_health(
+                    self.health_check,
+                    endpoint,
+                    "admin",
+                    password,
+                    readiness_timeout=self.readiness_timeout,
+                    timeout=self.health_timeout,
+                    monotonic=self.monotonic,
+                    sleep=self.sleep,
+                ),
+                ok=lambda result: result.health.ok,
             )
             if not readiness.health.ok:
                 if plan.mode is not SetupMode.PRIVATE and not readiness.endpoint_observed:
@@ -498,12 +525,16 @@ class SetupExecutor:
                 credentials=Credentials("admin", password, endpoint.url),
             )
         except _SetupFailure as failure:
-            restore = self._rollback(
-                transaction,
-                added_ports,
-                initial_state=initial_state,
-                reload_attempted=reload_attempted,
-                activation_touched=activation_touched,
+            restore = run_stage(
+                "restore",
+                lambda: self._rollback(
+                    transaction,
+                    added_ports,
+                    initial_state=initial_state,
+                    reload_attempted=reload_attempted,
+                    activation_touched=activation_touched,
+                ),
+                ok=lambda result: result.ok,
             )
             self._remove_new_identities(user_created=user_created, group_created=group_created)
             if not restore.ok:
@@ -515,12 +546,16 @@ class SetupExecutor:
             )
             return SetupResult(failure.exit_code, failure.message, detail=retained)
         except (KeyError, OSError, ValueError) as error:
-            restore = self._rollback(
-                transaction,
-                added_ports,
-                initial_state=initial_state,
-                reload_attempted=reload_attempted,
-                activation_touched=activation_touched,
+            restore = run_stage(
+                "restore",
+                lambda: self._rollback(
+                    transaction,
+                    added_ports,
+                    initial_state=initial_state,
+                    reload_attempted=reload_attempted,
+                    activation_touched=activation_touched,
+                ),
+                ok=lambda result: result.ok,
             )
             self._remove_new_identities(user_created=user_created, group_created=group_created)
             if not restore.ok:
@@ -635,6 +670,7 @@ class SetupExecutor:
         artifact = self.artifact_identity(plan.layout) if self.artifact_identity is not None else {}
         if executable is not None:
             artifact = {
+                **artifact,
                 "version": version,
                 "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
             }
@@ -786,7 +822,17 @@ class SetupExecutor:
             self.runner.run(("groupdel", "xferry"))
 
     def _checked(self, argv: tuple[str, ...], *, exit_code: int, message: str) -> None:
-        if self.runner.run(argv).returncode != 0:
+        stage = (
+            "validate_config"
+            if "check" in argv
+            else argv[1]
+            if argv[:1] == ("systemctl",) and argv[1] in {"start", "restart"}
+            else "prepare"
+        )
+        result = run_stage(
+            stage, lambda: self.runner.run(argv), ok=lambda result: result.returncode == 0
+        )
+        if result.returncode != 0:
             raise _SetupFailure(exit_code, message)
 
     def _service_activation_state(self) -> ServiceActivationState | None:
@@ -854,15 +900,19 @@ def reset_credentials(context: CredentialsContext) -> CredentialsResult:
                 )
                 if context.runner.run(("systemctl", "restart", _SERVICE)).returncode != 0:
                     raise _SetupFailure(6, "installed service failed to restart")
-                readiness = _wait_for_health(
-                    context.health_check,
-                    context.endpoint,
-                    "admin",
-                    password,
-                    readiness_timeout=context.readiness_timeout,
-                    timeout=context.health_timeout,
-                    monotonic=context.monotonic,
-                    sleep=context.sleep,
+                readiness = run_stage(
+                    "wait_ready",
+                    lambda: _wait_for_health(
+                        context.health_check,
+                        context.endpoint,
+                        "admin",
+                        password,
+                        readiness_timeout=context.readiness_timeout,
+                        timeout=context.health_timeout,
+                        monotonic=context.monotonic,
+                        sleep=context.sleep,
+                    ),
+                    ok=lambda result: result.health.ok,
                 )
                 if not readiness.health.ok:
                     raise _SetupFailure(6, "installed service is unhealthy")

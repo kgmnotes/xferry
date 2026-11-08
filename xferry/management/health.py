@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from xferry.security.tls import normalize_domain
 
-from .versions import is_canonical_release_version
+from .versions import is_canonical_release_version, is_testing_version
 
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
@@ -152,6 +152,6 @@ def _parse_health_response(response: bytes) -> HealthResult:
         if not isinstance(raw_server, str) or not raw_server.startswith("XFerry/"):
             return HealthResult(ok=False, detail="invalid health response")
         version = raw_server.removeprefix("XFerry/")
-        if not is_canonical_release_version(version):
+        if not (is_canonical_release_version(version) or is_testing_version(version)):
             return HealthResult(ok=False, detail="invalid health response")
     return HealthResult(ok=True, detail="healthy", version=version)

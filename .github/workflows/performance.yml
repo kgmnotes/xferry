@@ -38,6 +38,13 @@ jobs:
         run: |
           python tools/network_transfer_smoke.py --profile weekly --allow-large \
             --output performance-results/network.json
+      - name: Populated-workspace health baseline and repeat
+        run: |
+          python tools/health_load_smoke.py --profile weekly \
+            --output performance-results/health-baseline.json
+          python tools/health_load_smoke.py --profile weekly \
+            --baseline performance-results/health-baseline.json \
+            --output performance-results/health.json
       - name: Existing workspace microbenchmarks
         run: |
           python -m pytest -q tests/benchmarks \
@@ -58,6 +65,41 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:
           name: performance-measurements
+          path: performance-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+  browser-resources:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PIP_CONSTRAINT: ${{ github.workspace }}/constraints/ci.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+      - name: Install measured runtime
+        run: python -m pip install -e .
+      - name: Configure Ubuntu browser dependencies
+        run: sudo python3 tools/configure_ci_browser_apt.py
+      - name: Install pinned Chromium CLI
+        run: npx --yes --package @playwright/cli@0.1.23 playwright-cli install-browser chromium --with-deps
+      - name: Streaming browser transfer and reload recovery
+        run: |
+          python tools/browser_resource_smoke.py --profile extended --allow-large \
+            --output performance-results/browser.json
+      - name: Preserve browser measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: browser-resource-measurements
           path: performance-results/
           retention-days: 30
           if-no-files-found: warn

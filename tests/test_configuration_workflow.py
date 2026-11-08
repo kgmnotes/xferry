@@ -316,6 +316,7 @@ def test_https_wizard_removes_old_file_certificate_options(
     )
     answers = iter([mode, "" if mode == "1" else "files.example.com"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr("xferry.security.tls.resolve_public_ipv4", lambda: "8.8.8.8")
     changes = {}
     _tls_changes(changes, "en", target)
     candidate = edit_ini(source, changes)

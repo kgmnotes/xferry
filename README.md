@@ -20,7 +20,7 @@ Port 80 is also needed later for certificate renewal.
 Install pipx if needed (Ubuntu / Debian):
 
 ```console
-sudo apt install pipx
+sudo apt install --no-install-recommends pipx
 pipx ensurepath
 ```
 

@@ -1,0 +1,66 @@
+name: Testing Acceptance
+run-name: Accept ${{ inputs.version }} (${{ inputs.build_id }}) from ${{ inputs.source_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact preview version successfully tested on your VPS
+        required: true
+        type: string
+      source_commit:
+        description: Exact 40-character source SHA from testing-ready.json
+        required: true
+        type: string
+      build_id:
+        description: Exact run.attempt build ID from testing-ready.json
+        required: true
+        type: string
+      confirm_vps_checks:
+        description: I checked clean VPS installation, upgrade, health, persistence and rollback
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testing-acceptance-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  accept:
+    if: ${{ inputs.confirm_vps_checks && github.repository == 'kgmnotes/xferry' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography==50.0.2
+      - name: Record explicit acceptance of the authenticated preview
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          BUILD_ID: ${{ inputs.build_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_PROTECTED" = true
+          python tools/testing_release.py accept --version "$VERSION" --source-commit "$SOURCE_COMMIT" \
+            --build-id "$BUILD_ID" --actor "$GITHUB_ACTOR" --workflow-run "$GITHUB_RUN_ID" \
+            --output testing-acceptance.json
+          tag="testing-v$VERSION"
+          gh release upload "$tag" testing-acceptance.json --repo kgmnotes/xferry
+          echo "Accepted $VERSION ($BUILD_ID), source $SOURCE_COMMIT. Stable publication remains a separate approved release." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: testing-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: testing-acceptance.json
+          retention-days: 90
+          if-no-files-found: error

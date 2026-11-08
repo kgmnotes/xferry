@@ -342,6 +342,34 @@ class TestStage008CanonicalWebSocketContract:
 
 
 class TestWSClientMasking:
+    def test_buffered_upgrade_frame_is_processed_before_socket_read(self, temp_dir, monkeypatch):
+        server = make_server(root_dir=str(temp_dir), quiet=True)
+        handled_payloads: list[bytes] = []
+        payload = _ws_payload("list", request_id="already-buffered")
+        monkeypatch.setattr(
+            server,
+            "_handle_ws_message",
+            lambda _sock, message: handled_payloads.append(message),
+        )
+        server.running = True
+
+        class BufferedFrameSocket(_WebSocketLoopSocket):
+            def recv(self, size: int) -> bytes:
+                assert handled_payloads == [payload]
+                return super().recv(size)
+
+        sock = BufferedFrameSocket([b""])
+        request = make_request(
+            "GET", "/notes/ws", headers={"Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
+        )
+        assert server._upgrade_websocket(
+            sock, request, initial_data=_make_masked_ws_frame(WS_TEXT, payload)
+        )
+        assert handled_payloads == [payload]
+        assert server.get_metrics()["websocket"]["errors"] == 0
+        assert server.get_metrics()["websocket"]["active"] == 0
+        assert server.get_metrics()["websocket"]["closed"] == 1
+
     def test_binary_frame_closes_unsupported_data_without_dispatch(
         self,
         temp_dir,
@@ -407,10 +435,12 @@ class TestWSClientMasking:
         assert struct.unpack("!H", protocol_close[1][:2])[0] == 1002
         assert protocol_close[1][2:] == b"Protocol error"
 
+    @pytest.mark.parametrize("buffered", [False, True])
     def test_incomplete_frame_idle_timeout_closes_without_dispatch(
         self,
         temp_dir,
         monkeypatch,
+        buffered,
     ):
         (temp_dir / "index.html").write_text("<html>ok</html>")
         server = make_server(
@@ -431,14 +461,16 @@ class TestWSClientMasking:
         partial_frame = (
             b"\x81\xff" + struct.pack("!Q", _MAX_FRAME_SIZE) + b"\x37\x38\x39\x30" + b"partial"
         )
-        sock = _WebSocketLoopSocket([partial_frame, TimeoutError()])
+        sock = _WebSocketLoopSocket(
+            [TimeoutError()] if buffered else [partial_frame, TimeoutError()]
+        )
         request = make_request(
             "GET",
             "/notes/ws",
             headers={"Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="},
         )
 
-        server._handle_notepad_ws(sock, request)
+        server._handle_notepad_ws(sock, request, initial_data=partial_frame if buffered else b"")
 
         assert handled_payloads == []
         assert b"HTTP/1.1 101 Switching Protocols" in sock.sent[0]

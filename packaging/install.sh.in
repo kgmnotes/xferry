@@ -3,6 +3,7 @@ set -eu
 umask 022
 
 version='@VERSION@'
+channel='@CHANNEL@'
 platform_id='@PLATFORM_ID@'
 artifact_name='@EXECUTABLE_NAME@'
 artifact_size='@EXECUTABLE_SIZE@'
@@ -13,7 +14,7 @@ hosted_manifest_name='@HOSTED_MANIFEST_NAME@'
 manifest_signature_name='xferry-release.json.sig'
 supported_release_major='@SUPPORTED_RELEASE_MAJOR@'
 unsupported_managed_state_instructions='@UNSUPPORTED_MANAGED_STATE_INSTRUCTIONS@'
-release_base_url="${XFERRY_RELEASE_BASE_URL:-https://github.com/kgmnotes/xferry/releases/download/v@VERSION@}"
+release_base_url="${XFERRY_RELEASE_BASE_URL:-https://github.com/kgmnotes/xferry/releases/download/@RELEASE_TAG@}"
 destdir="${DESTDIR:-}"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -127,7 +128,7 @@ download_bounded() {
 valid_supported_version() {
   candidate_version="$1"
   printf '%s\n' "$candidate_version" \
-    | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.dev(0|[1-9][0-9]*)|[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
     || return 1
   [ "${candidate_version%%.*}" = "$supported_release_major" ]
 }
@@ -187,14 +188,18 @@ valid_supported_release() {
       END {
         if (lines[1] != "{") invalid()
         if (lines[3] != "  \"version\": \"" expected_version "\",") invalid()
-        if (lines[4] != "  \"tag\": \"v" expected_version "\",") invalid()
+        testing = lines[2] == "  \"schema_version\": 3,"
+        expected_tag = testing ? "testing-v" expected_version : "v" expected_version
+        if (lines[4] != "  \"tag\": \"" expected_tag "\",") invalid()
         if (lines[5] != "  \"platform\": \"" expected_platform "\",") invalid()
         if (lines[6] != "  \"executable\": {") invalid()
         if (lines[7] != "    \"name\": \"" expected_name "\",") invalid()
         size = declared_size(lines[8])
         sha256 = declared_sha256(lines[9])
 
-        if (lines[2] != "  \"schema_version\": 2,") invalid()
+        if (!testing && lines[2] != "  \"schema_version\": 2,") invalid()
+        if (required_schema != "any" && lines[2] != "  \"schema_version\": " required_schema ",") invalid()
+        if (testing && expected_version !~ /^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$/) invalid()
         if (lines[10] != "  }," || lines[11] != "  \"source\": {") invalid()
 
         if (substr(lines[12], length(lines[12]) - 1, 2) != "\",") invalid()
@@ -256,7 +261,18 @@ valid_supported_release() {
         } else {
           invalid()
         }
-        if (lines[signing_end - 1] != "  }" || lines[signing_end] != "}") invalid()
+        if (testing) {
+          if (!signature_required) invalid()
+          if (lines[signing_end - 1] != "  },") invalid()
+          if (lines[signing_end] != "  \"channel\": \"testing\",") invalid()
+          if (substr(lines[signing_end + 1], length(lines[signing_end + 1]) - 1, 2) == "\",") invalid()
+          build_id = source_value(lines[signing_end + 1], "  \"build_id\": \"")
+          if (build_id !~ /^[1-9][0-9]*\.[1-9][0-9]*$/) invalid()
+          split(build_id, build_parts, /[.]/)
+          if (build_parts[1] != workflow_run) invalid()
+          signing_end += 2
+          if (lines[signing_end] != "}") invalid()
+        } else if (lines[signing_end - 1] != "  }" || lines[signing_end] != "}") invalid()
         if (NR != signing_end) invalid()
         print size ":" sha256 ":" signature_required
       }
@@ -498,12 +514,14 @@ mkdir "$candidate_release"
 chmod 0755 "$candidate_release"
 install -m 0755 "$downloaded" "$candidate_release/xferry"
 if [ "$hosted_signature_required" = true ]; then
-  if ! "$candidate_release/xferry" _verify-release-envelope \
+  set -- _verify-release-envelope \
     --manifest "$downloaded_manifest" \
     --signature "$downloaded_signature" \
     --executable "$candidate_release/xferry" \
     --version "$version" \
     --platform "$platform_id"
+  if [ "$channel" = testing ]; then set -- "$@" --channel testing; fi
+  if ! "$candidate_release/xferry" "$@"
   then
     echo 'xferry signed release envelope verification failed' >&2
     exit 1
@@ -519,7 +537,9 @@ chmod 0644 "$candidate_release/xferry-release.json"
     install -m 0644 "$downloaded_signature" "$candidate_release/$manifest_signature_name"
   fi
 fi
-if ! valid_supported_release "$candidate_release" "$version" 2; then
+candidate_schema=2
+if [ "$channel" = testing ]; then candidate_schema=3; fi
+if ! valid_supported_release "$candidate_release" "$version" "$candidate_schema"; then
   echo 'xferry candidate manifest or executable is invalid' >&2
   exit 1
 fi

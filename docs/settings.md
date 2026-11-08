@@ -4,6 +4,14 @@ Run `xferry config` for the wizard. It groups settings by topic and offers searc
 for less common options. Use `--config FILE` to select a particular foreground,
 native or Docker profile.
 
+The interactive editor supports arrow-key navigation, searchable settings and
+path completion. Boolean and fixed-choice settings use selectors; each field
+shows its description, constraints and current value. Esc returns without
+discarding other draft changes. Review the pending changes before saving; no
+settings are written until you confirm. Use `xferry --plain config` for numbered
+text menus. See [Interactive terminal](quick-start.md#interactive-terminal) for
+keyboard controls and terminal compatibility.
+
 ```console
 xferry config show --all
 xferry config explain files_dir

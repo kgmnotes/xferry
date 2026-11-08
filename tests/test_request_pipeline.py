@@ -148,8 +148,11 @@ class _PipelineServerStub:
     def _is_websocket_origin_allowed(self, request: HTTPRequest) -> bool:
         return self.websocket_origin_allowed
 
-    def _upgrade_websocket(self, sock: _SocketStub, request: HTTPRequest) -> bool:
+    def _upgrade_websocket(
+        self, sock: _SocketStub, request: HTTPRequest, *, initial_data: bytes = b""
+    ) -> bool:
         self.websocket_upgrade_calls += 1
+        self.websocket_initial_data = initial_data
         if not self.websocket_slot_available:
             return False
         self.handled_websocket_paths.append(request.path)

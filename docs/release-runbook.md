@@ -1,5 +1,10 @@
 # Production Release Runbook
 
+Preview development and manual VPS acceptance follow the
+[testing channel guide](testing-channel.md). Before a production tag, select the
+accepted preview in `packaging/channels.toml` and pass its acceptance/source-diff
+preflight. Functional changes after that preview require another test cycle.
+
 This runbook prepares a production release. It is not permission to publish.
 Record the owner-selected exact version `vX.Y.Z` and source before creating
 the production tag. The tag starts automatic preparation; the single protected
@@ -48,7 +53,7 @@ All items in this list are blocking. Stop on the first missing item.
 - The version is one exact tag, `vX.Y.Z`, and matches source version,
   changelog entry, package metadata, release manifests, filenames, and release
   notes.
-- The TestPyPI rehearsal mapping uses workflow `testpypi.yml` and GitHub
+- The TestPyPI testing mapping uses workflow `testpypi.yml` and GitHub
   Environment `testpypi`; its passing receipt is staging evidence only.
 - The production PyPI mapping uses workflow `release-production.yml` and GitHub
   Environment `release-production`. Both mappings use repository owner

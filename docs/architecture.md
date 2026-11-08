@@ -16,6 +16,14 @@ entry points and source locations behind the request path below.
 5. The handler uses scoped storage and metrics services.
 6. The pipeline records metrics and writes the response.
 
+HTTP keep-alive processes pipelined requests in order. Each connection retains
+at most one read chunk of bytes beyond the current request, and every following
+request passes its own framing, admission and authentication checks. A successful
+WebSocket upgrade hands those bytes to the frame reader; closing or rejecting
+a connection discards them. Content-Length uses ASCII decimal digits with HTTP
+optional whitespace only; ambiguous field syntax and conflicting lengths are
+rejected before body reservation.
+
 Each admitted connection has one owner thread, bounded by the TCP limit. TLS,
 authentication, short application operations, transfers and WebSocket sessions
 use independent bounded gates. Authentication and route admission precede body

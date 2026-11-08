@@ -26,7 +26,7 @@ def test_quick_start_routes_portable_managed_and_container_users_first() -> None
     assert "pipx install xferry" in text
     assert "xferry run --open" in text
     assert "py -m pip install --user pipx" in text
-    assert "sudo apt install pipx" in text
+    assert "sudo apt install --no-install-recommends pipx" in text
     assert "brew install pipx" in text
     assert "python3 -m pip install --user pipx" not in text
     assert "managed-hosts.md" in text
@@ -45,7 +45,7 @@ def test_quick_start_guard_accepts_package_manager_bootstrap(tmp_path: Path) -> 
     """Catches the semantic guard requiring a PEP 668-incompatible bootstrap."""
     text = _read(QUICK_START).replace(
         "python3 -m pip install --user pipx",
-        "sudo apt install pipx\nbrew install pipx",
+        "sudo apt install --no-install-recommends pipx\nbrew install pipx",
     )
     (tmp_path / "docs").mkdir()
     (tmp_path / QUICK_START).write_text(text, encoding="utf-8")
@@ -95,7 +95,7 @@ def test_privileged_release_downloads_follow_only_https_redirects(path: Path) ->
 def test_release_runbook_separates_staging_and_production_publishers() -> None:
     text = _read(Path("docs/release-runbook.md"))
 
-    assert "TestPyPI rehearsal mapping uses workflow `testpypi.yml`" in text
+    assert "TestPyPI testing mapping uses workflow `testpypi.yml`" in text
     assert "Environment `testpypi`" in text
     assert "production PyPI mapping uses workflow `release-production.yml`" in text
     assert "Environment `release-production`" in text

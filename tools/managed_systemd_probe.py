@@ -509,13 +509,24 @@ def _doctor_outcome(result: Mapping[str, Any], *, identity: str) -> dict[str, bo
     _observed_outcome(result, identity=identity)
     expected = _doctor_statuses()
     details = result["details"]
+    identity_fields = {"channel", "version", "source_commit", "build_id"}
     _require(
-        set(details) == {"checks"}
+        set(details) in ({"checks"}, {"checks"} | identity_fields)
         and isinstance(details["checks"], dict)
         and set(details["checks"]) == set(expected)
         and result["state"]["health"] == "healthy",
         "doctor_outcome_invalid",
     )
+    if identity_fields <= set(details):
+        _require(
+            details["channel"] in {"stable", "testing"}
+            and isinstance(details["version"], str)
+            and all(
+                details[key] is None or isinstance(details[key], str)
+                for key in ("source_commit", "build_id")
+            ),
+            "doctor_outcome_invalid",
+        )
     checks = {
         name: isinstance(details["checks"][name], dict)
         and set(details["checks"][name]) == {"status", "detail"}

@@ -121,7 +121,7 @@ def test_import_probe_rejects_foreign_package_even_outside_checkout(tmp_path: Pa
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
     foreign = tmp_path / "foreign"
     foreign.mkdir()
-    for name in ("acme", "cryptography", "josepy"):
+    for name in ("acme", "cryptography", "josepy", "prompt_toolkit", "rich"):
         (foreign / f"{name}.py").write_text("")
     (foreign / "OpenSSL.py").write_text("SSL = object()\n")
     (foreign / "xferry.py").write_text("class XFerryServer: pass\n")
@@ -167,6 +167,7 @@ def test_portable_test_staging_cannot_copy_the_source_package(
     assert not (test_root / "xferry").exists()
     assert not (test_root / "tools").exists()
     assert (test_root / "tests/server_factory.py").is_file()
+    assert (test_root / "tests/test_server_live.py").is_file()
     assert (test_root / "pyproject.toml").is_file()
     assert len(calls) == 1
     command = calls[0][0][0]

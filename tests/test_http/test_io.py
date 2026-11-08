@@ -21,6 +21,31 @@ from xferry.http.request import HTTPRequest
 
 
 class TestParseContentLength:
+    @pytest.mark.parametrize(
+        "value",
+        ["+5", "-0", "1_0", "", " ", "1, 1", "١", "５", "\u00a01", "1\v", "1\r"],
+    )
+    def test_rejects_non_http_decimal_values(self, value: str) -> None:
+        assert _parse_content_length(f"Content-Length: {value}") is None
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            "Content-Length : 5",
+            "Content-Length\t: 5",
+            " Content-Length: 5",
+            "\tContent-Length: 5",
+            "Content-Length: 5\r\n 0",
+            "Content-Length: 5\r\n\tX-Other: value",
+            "Content-Length",
+        ],
+    )
+    def test_rejects_ambiguous_length_field_syntax(self, headers: str) -> None:
+        assert _parse_content_length(headers) is None
+
+    def test_preserves_http_ows_leading_zeroes_and_numeric_duplicates(self) -> None:
+        assert _parse_content_length("Content-Length:\t005 \t\r\ncontent-length: 5") == 5
+
     def test_returns_zero_when_header_absent(self) -> None:
         assert _parse_content_length("Host: x\r\nConnection: close") == 0
 
@@ -108,6 +133,65 @@ class ScriptedSocket:
 
 
 class TestReceiveRequest:
+    @pytest.mark.parametrize("split", [0, 1, 17, 48, 54, 60, 95])
+    def test_pipeline_preserves_boundaries_and_reserves_only_current_body(self, split: int) -> None:
+        first = b"POST /first HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"
+        second = b"POST /second HTTP/1.1\r\nContent-Length: 3\r\n\r\nbye"
+        third = b"GET /third HTTP/1.1\r\n\r\n"
+        data = first + second + third
+        sock = SizeRespectingSocket(data[split:])
+        budget = BodyMemoryBudget(5)
+        pending = data[:split]
+        admitted: list[bytes] = []
+
+        for expected, body_size in ((first, 5), (second, 3), (third, 0)):
+            result = receive_request_result(
+                sock,
+                max_upload_size=5,
+                initial_data=pending,
+                body_memory_budget=budget,
+                admit_headers=lambda headers: admitted.append(headers) or True,
+            )
+            assert result.data == expected
+            assert budget.snapshot()["current_bytes"] == body_size
+            assert len(result.remainder) <= http_io.RECV_CHUNK
+            pending = result.remainder
+            result.release_body_reservation()
+        assert pending == b""
+        assert budget.snapshot()["current_bytes"] == 0
+        assert admitted == [
+            request.partition(b"\r\n\r\n")[0] + b"\r\n\r\n" for request in (first, second, third)
+        ]
+
+    def test_buffered_complete_request_does_not_wait_for_another_recv(self) -> None:
+        request = b"GET / HTTP/1.1\r\n\r\n"
+        sock = ScriptedSocket([AssertionError("unexpected recv")])
+        result = receive_request_result(sock, max_upload_size=1, initial_data=request)
+        assert result.data == request
+        assert result.remainder == b""
+        assert sock.recv_calls == 0
+
+    def test_initial_read_ahead_is_bounded(self) -> None:
+        with pytest.raises(ValueError, match="read-ahead limit"):
+            receive_request_result(
+                SizeRespectingSocket(b""),
+                max_upload_size=1,
+                initial_data=b"x" * (http_io.RECV_CHUNK + 1),
+            )
+
+    def test_rejected_buffered_headers_do_not_reserve_body_or_return_the_tail(self) -> None:
+        budget = BodyMemoryBudget(5)
+        result = receive_request_result(
+            SizeRespectingSocket(b""),
+            max_upload_size=5,
+            initial_data=b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhelloGET / HTTP/1.1\r\n\r\n",
+            body_memory_budget=budget,
+            admit_headers=lambda _headers: False,
+        )
+        assert result.rejection_reason == "request_admission_rejected"
+        assert result.data == result.remainder == b""
+        assert budget.snapshot()["peak_bytes"] == 0
+
     def test_equal_duplicate_content_lengths_remain_observable_after_receive(self) -> None:
         """The permitted framing case must not collapse duplicate Content-Length headers."""
         request = b"POST /upload HTTP/1.1\r\nContent-Length: 3\r\ncontent-length: 3\r\n\r\nabc"

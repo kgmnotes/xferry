@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
+import stat
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from typing import TypedDict, cast
 
 from xferry.config import __version__
 from xferry.settings import load_settings_text, render_sample_profile
@@ -27,7 +32,7 @@ from .deployment import (
     write_manifest,
 )
 from .docker_deploy import _activate, _atomic_write, _compose, _restore_bundle
-from .execution import ProcessRunner
+from .execution import ProcessRunner, ReadDownloader
 from .instances import (
     Instance,
     dedicated_files_folder,
@@ -36,11 +41,70 @@ from .instances import (
     unregister_instance,
 )
 from .ownership import grant_directory_access, restore_directory_access
+from .progress import ProgressObserver, emit_progress, progress_stage, run_stage, with_progress
+
+
+class _SnapshotFile(TypedDict):
+    content: str
+    sha256: str
+
+
+class _StableSnapshot(TypedDict):
+    schema: int
+    instance_id: str
+    artifact: dict[str, object]
+    files: dict[str, _SnapshotFile]
 
 
 class ComposeBackend:
-    def __init__(self, runner: ProcessRunner) -> None:
+    def __init__(
+        self,
+        runner: ProcessRunner,
+        *,
+        progress: ProgressObserver | None = None,
+        reader: ReadDownloader | None = None,
+    ) -> None:
         self.runner = runner
+        self.progress = progress
+        self.reader = reader
+
+    def _testing_artifact(self, version: str, *, pull: bool = True) -> dict[str, object]:
+        from .artifact_download import HttpsAssetReader
+        from .build_identity import testing_identity, verify_testing_identity
+        from .channels import MAX_TESTING_IMAGES_BYTES, manifest_url, parse_testing_images
+        from .release_contract import LINUX_X86_64, MAX_MANIFEST_BYTES
+        from .release_trust import MAX_SIGNATURE_BYTES, verify_signed_manifest
+
+        testing_identity(version)
+        reader = self.reader or HttpsAssetReader()
+        url = manifest_url(version, LINUX_X86_64, "testing")
+        manifest = verify_signed_manifest(
+            reader.read(url, MAX_MANIFEST_BYTES),
+            reader.read(url + ".sig", MAX_SIGNATURE_BYTES),
+            channel="testing",
+        )
+        identity = verify_testing_identity(manifest, version)
+        image = parse_testing_images(
+            reader.read(url.rsplit("/", 1)[0] + "/testing-images.json", MAX_TESTING_IMAGES_BYTES),
+            manifest,
+        )
+        if pull:
+            image = self.pin_image(image)
+            inspected = self.runner.run(
+                ("docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image)
+            )
+            if inspected.returncode:
+                raise ValueError("could not inspect the testing image identity")
+            labels = json.loads(inspected.stdout)
+            expected = {
+                "org.opencontainers.image.version": version,
+                "org.opencontainers.image.revision": identity["source_commit"],
+                "io.xferry.build-id": identity["build_id"],
+                "io.xferry.channel": "testing",
+            }
+            if not isinstance(labels, dict) or any(labels.get(k) != v for k, v in expected.items()):
+                raise ValueError("testing image and installed CLI do not belong to the same build")
+        return {"image": image, "version": version, **identity}
 
     def _validate(self, instance: Instance) -> DeploymentSpec:
         spec = instance.spec
@@ -60,6 +124,7 @@ class ComposeBackend:
             output / "compose.yaml",
             output / "secrets/xferry_auth",
             output / ".xferry-history.json",
+            output / ".xferry-last-stable.json",
         }
         expected_uid = getattr(os, "geteuid", lambda: output.stat().st_uid)()
         for entry in (output, instance.manifest, *allowed):
@@ -169,13 +234,18 @@ class ComposeBackend:
         except (OSError, ValueError, TypeError, KeyError) as error:
             return ObservedState("broken", instance.id, "docker", detail=str(error))
 
+    @with_progress
     def pin_image(self, image: str) -> str:
         if not (
             re.fullmatch(r"ghcr\.io/kgmnotes/xferry:v[0-9][a-zA-Z0-9.+-]*", image)
             or re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}", image)
         ):
             raise ValueError("an exact XFerry image version or digest is required")
-        result = self.runner.run(("docker", "pull", image))
+        result = run_stage(
+            "download",
+            lambda: self.runner.run(("docker", "pull", image)),
+            ok=lambda result: result.returncode == 0,
+        )
         if result.returncode:
             raise ValueError("could not pull the selected XFerry image")
         result = self.runner.run(
@@ -236,6 +306,7 @@ class ComposeBackend:
             spec, ownership=OwnershipReceipt(tuple(resources.values()), acl or spec.ownership.acl)
         )
 
+    @with_progress
     def setup(
         self,
         output: Path,
@@ -248,8 +319,17 @@ class ComposeBackend:
         email: str | None = None,
         dry_run: bool = False,
         image: str | None = None,
+        channel: str = "stable",
         **_: object,
     ) -> OperationResult:
+        from .channels import image_reference, normalize_channel
+
+        selected_channel = normalize_channel(channel)
+        testing_artifact = (
+            self._testing_artifact(version or __version__, pull=False)
+            if selected_channel == "testing"
+            else None
+        )
         output = output.expanduser().absolute()
         manifest = output / ".xferry-deployment.json"
         if output.is_symlink():
@@ -258,6 +338,10 @@ class ComposeBackend:
             old = load_manifest(manifest)
             if old.backend != "docker":
                 raise ValueError("deployment belongs to another backend")
+            if old.artifact.get("channel", "stable") != selected_channel:
+                raise ValueError(
+                    "Use update with an explicit --channel to switch this installation."
+                )
             item = Instance(old.instance_id, old.backend, old.profile, manifest)
             if dry_run:
                 return OperationResult(
@@ -306,7 +390,10 @@ class ComposeBackend:
             values["domain"] = normalize_domain(domain)
             values["allowed_hosts"] = values["domain"]
         elif not private:
-            address = validate_public_ipv4(public_ip) if public_ip else resolve_public_ipv4()
+            address = run_stage(
+                "preflight",
+                lambda: validate_public_ipv4(public_ip) if public_ip else resolve_public_ipv4(),
+            )
             values["public_ip"] = address
             values["allowed_hosts"] = sslip_domain_for_ip(address)
         else:
@@ -316,8 +403,11 @@ class ComposeBackend:
         text = edit_ini(render_sample_profile("docker"), values)
         text = re.sub(r"(?m)^[ \t]*state_dir[ \t]*=.*(?:\r?\n|$)", "", text)
         # Read-only validation and an explicit no-mutation preview precede pull/mkdir.
-        settings = load_settings_text(
-            text, state_dir=output / "state", config_path=output / "xferry.ini"
+        settings = run_stage(
+            "preflight",
+            lambda: load_settings_text(
+                text, state_dir=output / "state", config_path=output / "xferry.ini"
+            ),
         )
         settings.to_server_config()
         if dry_run:
@@ -328,13 +418,20 @@ class ComposeBackend:
                     "bundle": str(output),
                     "files_dir": str(files),
                     "profile": str(output / "xferry.ini"),
-                    "image": image or f"ghcr.io/kgmnotes/xferry:v{version or __version__}",
+                    "image": (testing_artifact or {}).get("image")
+                    or image
+                    or image_reference(version or __version__, selected_channel),
+                    "channel": selected_channel,
                 },
                 url=public_url(settings),
             )
         artifact_version = version if image is not None else version or __version__
         with dedicated_files_folder(files):
-            image = self.pin_image(image or f"ghcr.io/kgmnotes/xferry:v{version or __version__}")
+            if selected_channel == "testing":
+                testing_artifact = self._testing_artifact(version or __version__)
+                image = str(testing_artifact["image"])
+            else:
+                image = self.pin_image(image or image_reference(version or __version__))
             project = "xferry-" + os.urandom(6).hex()
             state_storage = {
                 "kind": "docker_volume",
@@ -346,7 +443,7 @@ class ComposeBackend:
                 output / "xferry.ini",
                 files,
                 output / "state",
-                {"image": image, "version": artifact_version},
+                testing_artifact or {"image": image, "version": artifact_version},
                 backend_options={
                     "project": project,
                     "state_storage": state_storage,
@@ -365,31 +462,38 @@ class ComposeBackend:
                     )
                 )
                 try:
-                    files.mkdir(parents=True, exist_ok=True, mode=0o750)
-                    acl = grant_directory_access(files, 10001) if sys.platform == "linux" else None
-                    password = generate_password()
-                    _atomic_write(
-                        output / "secrets/xferry_auth", f"admin:{password}\n".encode(), 0o600
-                    )
-                    _atomic_write(spec.profile, text.encode(), 0o600)
-                    _atomic_write(
-                        output / "runtime.ini", compile_profile(text, spec).encode(), 0o644
-                    )
-                    _atomic_write(output / "compose.yaml", self._compose(spec, text), 0o600)
-                    spec = self._receipt(spec, acl=(acl,) if acl else ())
-                    write_manifest(manifest, spec)
-                    register_instance(manifest)
-                    item = Instance(spec.instance_id, "docker", spec.profile, manifest)
+                    with progress_stage("prepare"):
+                        files.mkdir(parents=True, exist_ok=True, mode=0o750)
+                        acl = (
+                            grant_directory_access(files, 10001)
+                            if sys.platform == "linux"
+                            else None
+                        )
+                        password = generate_password()
+                        _atomic_write(
+                            output / "secrets/xferry_auth", f"admin:{password}\n".encode(), 0o600
+                        )
+                        _atomic_write(spec.profile, text.encode(), 0o600)
+                        _atomic_write(
+                            output / "runtime.ini", compile_profile(text, spec).encode(), 0o644
+                        )
+                        _atomic_write(output / "compose.yaml", self._compose(spec, text), 0o600)
+                        spec = self._receipt(spec, acl=(acl,) if acl else ())
+                        write_manifest(manifest, spec)
+                        register_instance(manifest)
+                        item = Instance(spec.instance_id, "docker", spec.profile, manifest)
                     _activate(self.runner, self._prefix(item))
                     spec = replace(
                         spec, backend_options={**spec.backend_options, "credentials_revealed": True}
                     )
                     write_manifest(manifest, spec)
                 except Exception:
+                    emit_progress("restore", "running")
+                    restored = True
                     if acl:
-                        restore_directory_access(acl)
+                        restored = restore_directory_access(acl)
                     if not manifest.exists():
-                        _restore_bundle(snapshots)
+                        restored = _restore_bundle(snapshots) and restored
                     # Keep all generated state/auth for inspection/retry. No active
                     # service survives a failed first setup.
                     prefix = (
@@ -400,7 +504,10 @@ class ComposeBackend:
                         "-f",
                         str(output / "compose.yaml"),
                     )
-                    self.runner.run((*prefix, "down", "--remove-orphans"))
+                    stopped = self.runner.run((*prefix, "down", "--remove-orphans"))
+                    emit_progress(
+                        "restore", "done" if restored and stopped.returncode == 0 else "failed"
+                    )
                     raise
             return OperationResult(
                 0,
@@ -416,6 +523,7 @@ class ComposeBackend:
                 state=self.observe(item),
             )
 
+    @with_progress
     def configure(
         self, instance: Instance, candidate: str, *, expected_text: str, apply: bool = False
     ) -> OperationResult:
@@ -433,7 +541,7 @@ class ComposeBackend:
         )
         if next_spec.files_dir != spec.files_dir:
             raise ValueError("changing persistent storage requires an explicit data migration")
-        runtime = compile_profile(candidate, next_spec)
+        runtime = run_stage("validate_config", lambda: compile_profile(candidate, next_spec))
         if not apply:
             return OperationResult(0, "Configuration is valid; no changes made.", details=changes)
         with _portable_lock(instance.config):
@@ -451,25 +559,28 @@ class ComposeBackend:
             )
             snapshots = {path: path.read_bytes() for path in paths}
             try:
-                _atomic_write(spec.profile, candidate.encode(), 0o600)
-                _atomic_write(output / "runtime.ini", runtime.encode(), 0o644)
-                _atomic_write(output / "compose.yaml", self._compose(spec, candidate), 0o600)
-                write_manifest(
-                    instance.manifest,
-                    self._receipt(
-                        spec,
-                        changed=(spec.profile, output / "runtime.ini", output / "compose.yaml"),
-                    ),
-                )
-                if state.running:
-                    _activate(self.runner, self._prefix(instance))
+                with progress_stage("apply_config"):
+                    _atomic_write(spec.profile, candidate.encode(), 0o600)
+                    _atomic_write(output / "runtime.ini", runtime.encode(), 0o644)
+                    _atomic_write(output / "compose.yaml", self._compose(spec, candidate), 0o600)
+                    write_manifest(
+                        instance.manifest,
+                        self._receipt(
+                            spec,
+                            changed=(spec.profile, output / "runtime.ini", output / "compose.yaml"),
+                        ),
+                    )
+                    if state.running:
+                        _activate(self.runner, self._prefix(instance))
             except Exception as error:
+                emit_progress("restore", "running")
                 restored = _restore_bundle(snapshots)
                 if restored and state.running:
                     try:
                         _activate(self.runner, self._prefix(instance))
                     except (OSError, RuntimeError):
                         restored = False
+                emit_progress("restore", "done" if restored else "failed")
                 return OperationResult(
                     1,
                     f"Configuration failed: {error}. "
@@ -543,6 +654,7 @@ class ComposeBackend:
         lines: int = 100,
         since: str | None = None,
         follow: bool = False,
+        channel: str | None = None,
         **_: object,
     ) -> OperationResult:
         if action == "uninstall" and purge and not dry_run and confirmed is not True:
@@ -560,9 +672,13 @@ class ComposeBackend:
                     "state_storage": self.state_storage(spec),
                     "files_dir": str(spec.files_dir),
                     "profile": str(spec.profile),
+                    "channel": spec.artifact.get("channel", "stable"),
+                    "version": spec.artifact.get("version"),
+                    "source_commit": spec.artifact.get("source_commit"),
+                    "build_id": spec.artifact.get("build_id"),
                 },
             )
-        if dry_run:
+        if dry_run and action not in {"update", "rollback"}:
             return OperationResult(0, f"Docker {action} validated; no changes made.", state=state)
         if action == "logs":
             if not 1 <= lines <= 10000:
@@ -581,7 +697,7 @@ class ComposeBackend:
                 result.returncode, "Docker logs.", details={"logs": result.stdout}
             )
         if action in {"update", "rollback"}:
-            return self._release(action, instance, version)
+            return self._release(action, instance, version, channel=channel, dry_run=dry_run)
         if action not in {"start", "stop", "restart", "uninstall"}:
             raise ValueError("unsupported Docker operation")
         purge_result = None
@@ -708,71 +824,237 @@ class ComposeBackend:
             state=ObservedState("absent", instance.id, "docker"),
         )
 
-    def _release(self, action: str, instance: Instance, version: str | None) -> OperationResult:
+    def _protected_payload(self, spec: DeploymentSpec, path: Path, limit: int) -> bytes:
+        receipt = next((item for item in spec.ownership.resources if item.path == str(path)), None)
+        metadata = path.lstat()
+        expected_uid = getattr(os, "geteuid", lambda: metadata.st_uid)()
+        if (
+            receipt is None
+            or not resource_unchanged(receipt)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != expected_uid
+            or metadata.st_size > limit
+            or (os.name != "nt" and metadata.st_mode & 0o022)
+        ):
+            raise ValueError(f"{path.name} changed independently; retained for review")
+        return path.read_bytes()
+
+    def _stable_snapshot(self, spec: DeploymentSpec) -> _StableSnapshot | None:
+        path = spec.profile.parent / ".xferry-last-stable.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        try:
+            document = json.loads(self._protected_payload(spec, path, 5 * 1024 * 1024))
+            if (
+                not isinstance(document, dict)
+                or set(document) != {"schema", "instance_id", "artifact", "files"}
+                or type(document["schema"]) is not int
+                or document["schema"] != 1
+                or document["instance_id"] != spec.instance_id
+                or not isinstance(document["artifact"], dict)
+                or document["artifact"].get("channel", "stable") != "stable"
+            ):
+                raise ValueError
+            files = document["files"]
+            if not isinstance(files, dict) or set(files) != {
+                "xferry.ini",
+                "runtime.ini",
+                "compose.yaml",
+            }:
+                raise ValueError
+            for entry in files.values():
+                if not isinstance(entry, dict) or set(entry) != {"content", "sha256"}:
+                    raise ValueError
+                payload = base64.b64decode(entry["content"], validate=True)
+                if (
+                    len(payload) > 1024 * 1024
+                    or hashlib.sha256(payload).hexdigest() != entry["sha256"]
+                ):
+                    raise ValueError
+            return cast(_StableSnapshot, document)
+        except (OSError, ValueError, KeyError, TypeError):
+            raise ValueError(
+                "Stable snapshot changed or is invalid; preserved for review"
+            ) from None
+
+    def _save_stable_snapshot(self, spec: DeploymentSpec) -> None:
+        files = {}
+        for name in ("xferry.ini", "runtime.ini", "compose.yaml"):
+            payload = self._protected_payload(spec, spec.profile.parent / name, 1024 * 1024)
+            files[name] = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        document = {
+            "schema": 1,
+            "instance_id": spec.instance_id,
+            "artifact": dict(spec.artifact),
+            "files": files,
+        }
+        _atomic_write(
+            spec.profile.parent / ".xferry-last-stable.json",
+            (json.dumps(document, indent=2) + "\n").encode(),
+            0o600,
+        )
+
+    def _release(
+        self,
+        action: str,
+        instance: Instance,
+        version: str | None,
+        *,
+        channel: str | None = None,
+        dry_run: bool = False,
+    ) -> OperationResult:
+        from .channels import image_reference, normalize_channel, validate_version_for_channel
+        from .versions import MIN_DEPLOYMENT_RELEASE, compare_release_versions
+
         spec = self._validate(instance)
+        selected_channel = normalize_channel(channel or spec.artifact.get("channel", "stable"))
+        if action == "rollback" and selected_channel == "testing" and version is None:
+            from xferry.config import __version__ as controller_version
+
+            version = controller_version
         output = spec.profile.parent
         history_path = output / ".xferry-history.json"
-        with _portable_lock(instance.config):
+        stable_path = output / ".xferry-last-stable.json"
+        with nullcontext() if dry_run else _portable_lock(instance.config):
             if instance.spec != spec:
                 raise ValueError("deployment changed during preparation; retry")
             self._ownership(spec)
             state = self.observe(instance)
-            history = json.loads(history_path.read_text()) if history_path.exists() else []
-            if action == "update":
-                from .versions import (
-                    MIN_DEPLOYMENT_RELEASE,
-                    compare_release_versions,
-                    is_supported_release_version,
+            if state.state in {"broken", "incomplete", "retained"}:
+                raise ValueError(
+                    "deployment needs repair before a release change; run xferry doctor"
                 )
-
-                if (
-                    version is None
-                    or not is_supported_release_version(version)
-                    or compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0
-                ):
+            history = (
+                json.loads(self._protected_payload(spec, history_path, 64 * 1024))
+                if history_path.exists() or history_path.is_symlink()
+                else []
+            )
+            if (
+                not isinstance(history, list)
+                or len(history) > 5
+                or any(not isinstance(item, dict) for item in history)
+            ):
+                raise ValueError("release history is invalid; preserved for review")
+            stable = self._stable_snapshot(spec)
+            restored_files: dict[Path, bytes] = {}
+            history_index = None
+            if action == "update":
+                if version is None:
                     raise ValueError("update requires an exact supported version")
-                image = self.pin_image(f"ghcr.io/kgmnotes/xferry:v{version}")
-                artifact = {"image": image, "version": version}
-            else:
-                if not history:
-                    raise ValueError("no current-format rollback artifact is available")
-                artifact = history[-1]
+                validate_version_for_channel(version, selected_channel)
+                if compare_release_versions(version, MIN_DEPLOYMENT_RELEASE) < 0:
+                    raise ValueError("update requires an exact supported version")
+                if selected_channel == "testing":
+                    artifact = self._testing_artifact(version, pull=not dry_run)
+                else:
+                    reference = image_reference(version)
+                    image = reference if dry_run else self.pin_image(reference)
+                    artifact = {"image": image, "version": version, "channel": "stable"}
+            elif (
+                selected_channel == "stable" and spec.artifact.get("channel", "stable") == "testing"
+            ):
+                if stable is None:
+                    raise ValueError("no compatible stable snapshot is available")
+                artifact = dict(stable["artifact"])
                 if version is not None and artifact.get("version") != version:
-                    raise ValueError("requested rollback version is not the previous artifact")
+                    raise ValueError("requested rollback version differs from the stable snapshot")
+                for name, entry in stable["files"].items():
+                    restored_files[output / name] = base64.b64decode(
+                        entry["content"], validate=True
+                    )
+                history_index = next(
+                    (index for index, item in enumerate(history) if item == artifact), None
+                )
+            else:
+                candidates = [
+                    (index, item)
+                    for index, item in enumerate(history)
+                    if item.get("channel", "stable") == selected_channel
+                    and (version is None or item.get("version") == version)
+                ]
+                if not candidates:
+                    raise ValueError("no current-format rollback artifact is available")
+                history_index, artifact = candidates[-1]
+                artifact = dict(artifact)
+                if selected_channel == "testing":
+                    target_version = artifact.get("version")
+                    if not isinstance(target_version, str):
+                        raise ValueError("testing rollback artifact has no version")
+                    verified = self._testing_artifact(target_version, pull=not dry_run)
+                    if artifact != verified:
+                        raise ValueError(
+                            "testing rollback artifact does not match the signed build"
+                        )
+            artifact_image = artifact.get("image")
+            if (
+                not isinstance(artifact_image, str)
+                or (not dry_run or action == "rollback")
+                and re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}", artifact_image)
+                is None
+            ):
+                raise ValueError("release artifact must pin an immutable image digest")
             candidate = replace(spec, artifact=artifact)
+            profile = restored_files.get(spec.profile, spec.profile.read_bytes()).decode()
+            compile_profile(profile, candidate)
+            compose = self._compose(candidate, profile)
+            if restored_files and restored_files[output / "compose.yaml"] != compose:
+                raise ValueError("stable snapshot does not match this deployment")
+            if dry_run:
+                return OperationResult(
+                    0,
+                    f"Docker {action} validated; no changes made.",
+                    state=state,
+                    details={"dry_run": True, "channel": selected_channel, **artifact},
+                )
             before = {
                 path: path.read_bytes() if path.exists() else None
-                for path in (output / "compose.yaml", instance.manifest, history_path)
+                for path in (
+                    spec.profile,
+                    output / "runtime.ini",
+                    output / "compose.yaml",
+                    instance.manifest,
+                    history_path,
+                    stable_path,
+                )
             }
+            changed = [output / "compose.yaml"]
             try:
-                _atomic_write(
-                    output / "compose.yaml", self._compose(candidate, spec.profile.read_text())
-                )
-                write_manifest(
-                    instance.manifest, self._receipt(candidate, changed=(output / "compose.yaml",))
-                )
+                if (
+                    selected_channel == "testing"
+                    and spec.artifact.get("channel", "stable") == "stable"
+                ):
+                    self._save_stable_snapshot(spec)
+                    changed.append(stable_path)
+                for path, payload in restored_files.items():
+                    _atomic_write(path, payload)
+                    if path not in changed:
+                        changed.append(path)
+                _atomic_write(output / "compose.yaml", compose)
+                candidate = self._receipt(candidate, changed=tuple(changed))
+                write_manifest(instance.manifest, candidate)
                 _activate(self.runner, self._prefix(instance), start=state.running)
                 if action == "update":
                     history.append(dict(spec.artifact))
-                else:
-                    history.pop()
+                elif history_index is not None:
+                    history.pop(history_index)
                 _atomic_write(history_path, (json.dumps(history[-5:], indent=2) + "\n").encode())
-                write_manifest(
-                    instance.manifest,
-                    self._receipt(candidate, changed=(output / "compose.yaml", history_path)),
-                )
+                write_manifest(instance.manifest, self._receipt(candidate, changed=(history_path,)))
             except Exception as error:
                 restored = _restore_bundle(before)
                 try:
                     if restored:
                         _activate(self.runner, self._prefix(instance), start=state.running)
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     restored = False
                 return OperationResult(
                     1,
                     f"Docker {action} failed: {error}; "
                     + (
-                        "previous artifact restored."
+                        "previous artifact and configuration restored."
                         if restored
                         else "restoration incomplete; run xferry doctor."
                     ),

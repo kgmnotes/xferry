@@ -257,11 +257,15 @@ def test_profile_has_host_semantics_and_compiler_has_container_semantics(tmp_pat
     )
     compose = json.loads((tmp_path / "bundle/compose.yaml").read_text())
     assert compose["services"]["xferry"]["ports"] == ["80:8080", "443:8443"]
-    assert any(
-        isinstance(volume, dict) and volume["source"].endswith("runtime.ini")
+    binds = {
+        volume["target"]: volume["source"]
         for volume in compose["services"]["xferry"]["volumes"]
-    )
-    assert not any("/home/" in str(volume) for volume in compose["services"]["xferry"]["volumes"])
+        if isinstance(volume, dict)
+    }
+    assert binds == {
+        "/etc/xferry/xferry.ini": str(tmp_path / "bundle/runtime.ini"),
+        runtime.files_dir: host.files_dir,
+    }
 
 
 @pytest.mark.parametrize(
