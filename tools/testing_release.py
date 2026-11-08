@@ -154,6 +154,19 @@ def _normalize_version_file(name: str, payload: bytes) -> bytes:
         ).encode()
     if name == "README.md":
         return re.sub(r"version-[^-\s/]+-orange\.svg", "version-VERSION-orange.svg", text).encode()
+    if name in {"API.md", "docs/api.md"}:
+        before, heading, section = text.partition("\n## PING\n")
+        if not heading:
+            return payload
+        ping, next_heading, remaining = section.partition("\n## ")
+        version = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        ping = re.sub(
+            r'(?m)^  "server": "XFerry/' + version + r'",$',
+            '  "server": "XFerry/VERSION",',
+            ping,
+            count=1,
+        )
+        return (before + heading + ping + next_heading + remaining).encode()
     if name == "docs/cli-reference.md":
         version = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
         text = re.sub(

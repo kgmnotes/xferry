@@ -291,6 +291,7 @@ def test_progress_restores_cursor_on_keyboard_interrupt(monkeypatch):
     from rich.console import Console
 
     monkeypatch.setattr(terminal, "_interactive_available", lambda: True)
+    monkeypatch.setenv("TERM", "xterm-256color")
     output = io.StringIO()
     ui = TerminalUI()
     ui._console_instance = Console(file=output, width=100, force_terminal=True)
