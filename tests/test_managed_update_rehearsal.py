@@ -364,3 +364,139 @@ def test_repository_guard_includes_managed_update_rehearsal() -> None:
     from tools.check_stale_docs import find_release_policy_issues
 
     assert find_release_policy_issues(REPO_ROOT) == []
+
+
+@pytest.fixture
+def outcome_fixtures(tmp_path: Path):
+    """Host-generated public fixture records; no real network/systemd evidence."""
+    from xferry.management.release_contract import ReleaseManifest
+
+    root = tmp_path / "fixtures"
+    evidence_path = tmp_path / "fixtures.json"
+    document = {"platform": "linux-x86_64", "versions": {}}
+    for version, commit in (("0.5.0", "a" * 40), ("0.5.1", "b" * 40)):
+        folder = root / "releases" / "download" / ("v" + version)
+        folder.mkdir(parents=True)
+        name = "xferry-release-linux-x86_64.json"
+        executable = b"fixture executable " + version.encode()
+        payload = ReleaseManifest.create_v2(
+            version=version,
+            platform="linux-x86_64",
+            executable_size=len(executable),
+            executable_sha256=hashlib.sha256(executable).hexdigest(),
+            source_commit=commit,
+            workflow_run="123",
+            signing_key_ids=["xferry-rehearsal-2026-10"],
+        ).to_bytes()
+        records = {}
+        for asset, body in ((name, payload), (name + ".sig", b"host-generated fixture signature")):
+            (folder / asset).write_bytes(body)
+            records[asset] = {"size": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+        document["versions"][version] = {
+            "version": version,
+            "fixture_commit": commit,
+            "assets": records,
+        }
+    evidence_path.write_text(json.dumps(document))
+    return root, evidence_path
+
+
+@pytest.mark.parametrize(
+    ("phase", "version", "modern"),
+    [
+        ("setup", "0.5.0", False),
+        ("dry_run", "0.5.0", False),
+        ("update", "0.5.1", True),
+        ("rollback", "0.5.0", True),
+    ],
+)
+def test_verify_outcome_binds_each_phase_to_explicit_fixture_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome_fixtures, phase, version, modern
+):
+    from tools import managed_systemd_probe as probe
+    from tools import managed_update_rehearsal as rehearsal
+
+    root, evidence = outcome_fixtures
+    result = tmp_path / "result.json"
+    setup = tmp_path / "setup.json"
+    result.write_text("{}")
+    setup.write_text("{}")
+    calls = []
+    monkeypatch.setattr(probe, "_setup_outcome", lambda *_args, **_kwargs: "unit-instance")
+    monkeypatch.setattr(probe, "_operation_outcome", lambda *_args: None)
+    monkeypatch.setattr(probe, "_release_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        probe, "_deployment_identity", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    rehearsal.verify_outcome(phase, result, setup, fixtures_root=root, fixture_evidence=evidence)
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == (probe.SYSTEM_PATHS, version, "unit-instance")
+    expected = {
+        "version": version,
+        "sha256": hashlib.sha256(b"fixture executable " + version.encode()).hexdigest(),
+    }
+    if modern:
+        expected.update(channel="stable", source_commit=("b" if version == "0.5.1" else "a") * 40)
+    assert kwargs == {"expected_artifact": expected}
+
+
+@pytest.mark.parametrize("mutation", ["source", "manifest", "signature", "version", "digest"])
+def test_verify_outcome_reference_is_bound_to_prepared_fixture_inventory(
+    outcome_fixtures, mutation
+):
+    from tools import managed_systemd_probe as probe
+    from tools import managed_update_rehearsal as rehearsal
+
+    root, evidence = outcome_fixtures
+    document = json.loads(evidence.read_text())
+    metadata = document["versions"]["0.5.1"]
+    if mutation == "source":
+        metadata["fixture_commit"] = "c" * 40
+    elif mutation == "version":
+        metadata["version"] = "0.5.0"
+    elif mutation == "digest":
+        metadata["assets"]["xferry-release-linux-x86_64.json"]["sha256"] = "0" * 64
+    else:
+        name = "xferry-release-linux-x86_64.json" + (".sig" if mutation == "signature" else "")
+        with (root / "releases/download/v0.5.1" / name).open("ab") as stream:
+            stream.write(b"tampered")
+    evidence.write_text(json.dumps(document))
+    with pytest.raises(probe.ProbeFailure, match="fixture_layout_invalid"):
+        rehearsal._expected_fixture_artifact(root, evidence, "0.5.1", release_metadata=True)
+
+
+def test_verify_outcome_requires_explicit_fixture_inputs_in_cli_and_workflow(tmp_path):
+    from tools.managed_update_rehearsal import _parser
+
+    arguments = [
+        "verify-outcome",
+        "--phase",
+        "setup",
+        "--result",
+        str(tmp_path / "result.json"),
+        "--setup-result",
+        str(tmp_path / "setup.json"),
+    ]
+    with pytest.raises(SystemExit):
+        _parser().parse_args(arguments)
+    parsed = _parser().parse_args(
+        arguments
+        + [
+            "--fixtures-root",
+            str(tmp_path / "fixtures"),
+            "--fixture-evidence",
+            str(tmp_path / "fixtures.json"),
+        ]
+    )
+    assert parsed.fixtures_root == tmp_path / "fixtures"
+    assert parsed.fixture_evidence == tmp_path / "fixtures.json"
+    workflow = REHEARSAL_WORKFLOW.read_text()
+    assert workflow.count("tools/managed_update_rehearsal.py verify-outcome \\\n") == 6
+    assert workflow.count('--fixtures-root "$RUNNER_TEMP/managed-update-fixtures" \\\n') == 6
+    assert (
+        workflow.count(
+            '--fixture-evidence "$RUNNER_TEMP/managed-update-evidence/fixtures.json" \\\n'
+        )
+        == 6
+    )
