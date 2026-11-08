@@ -1,2 +1,7 @@
 [testing]
-target_version = "0.5.1"
+target_version = "0.5.2"
+
+[promotion]
+version = "0.5.1.dev42429229210001"
+source_commit = "e015cbeee4d5bf1c3bc151aa494886d220e84c68"
+build_id = "42429229210.1"

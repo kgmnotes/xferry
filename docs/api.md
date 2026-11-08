@@ -541,7 +541,7 @@ PING / HTTP/1.1
 ```json
 {
   "health": "ready",
-  "server": "XFerry/0.5.0",
+  "server": "XFerry/0.5.1",
   "timestamp": "2026-08-14T00:00:00+00:00",
   "supported_methods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "FETCH", "INFO", "PING", "NONE", "NOTE", "SMUGGLE"],
   "method_groups": {
