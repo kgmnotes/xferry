@@ -18,7 +18,12 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tools.build_scie_release import CommandRunner, ReleaseBundle, build_release_bundle
+from tools.build_scie_release import (
+    CommandRunner,
+    ReleaseBundle,
+    _run_command,
+    build_release_bundle,
+)
 from tools.sign_release_metadata import (
     main as sign_release_metadata,
 )
@@ -1211,8 +1216,165 @@ def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(
         scie_command[scie_command.index("--scie-platform") :][:2]
     )
     assert "CPython>=3.12,<3.13" in scie_command
+    assert ("--timeout", "120") == tuple(scie_command[scie_command.index("--timeout") :][:2])
     assert ("-c", "xferry") == tuple(scie_command[scie_command.index("-c") :][:2])
     assert bundle.executable.name == f"xferry-0.1.0-{platform_id}"
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "urllib.error.HTTPError: HTTP Error 504: Gateway Time-out",
+        "HTTP Error 504: Gateway Time-out",
+        "requests.exceptions.HTTPError: 503 Server Error: Service Unavailable",
+        "TimeoutError: The read operation timed out",
+        "The read operation timed out",
+        "timed out",
+        "urllib.error.URLError: <urlopen error timed out>",
+        "requests.exceptions.ReadTimeout: HTTPSConnectionPool: Read timed out.",
+        "ConnectionResetError: [Errno 104] Connection reset by peer",
+    ],
+)
+def test_scie_command_retries_transient_network_error_and_preserves_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    diagnostic: str,
+) -> None:
+    command = ["pex", "--scie", "eager"]
+    calls: list[list[str]] = []
+    delays: list[float] = []
+
+    def run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        assert kwargs == {"cwd": tmp_path, "check": True, "capture_output": True, "text": True}
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(
+                1, arguments, output="first output\n", stderr=diagnostic + "\n"
+            )
+        return subprocess.CompletedProcess(arguments, 0, "completed output\n", "build warning\n")
+
+    monkeypatch.setattr("tools.build_scie_release.subprocess.run", run)
+    monkeypatch.setattr("tools.build_scie_release.time.sleep", delays.append)
+
+    _run_command(command, tmp_path)
+
+    assert calls == [command, command]
+    assert delays == [2]
+    captured = capsys.readouterr()
+    assert captured.out == "first output\ncompleted output\n"
+    assert diagnostic in captured.err
+    assert "retrying command (2/3)" in captured.err
+    assert captured.err.endswith("build warning\n")
+
+
+def test_scie_command_preserves_last_failure_after_three_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    command = ["pex", "--scie", "eager"]
+    failures = [
+        subprocess.CalledProcessError(
+            attempt, command, stderr=f"TimeoutError: read operation timed out, attempt {attempt}\n"
+        )
+        for attempt in range(1, 4)
+    ]
+    calls: list[list[str]] = []
+    delays: list[float] = []
+
+    def run(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        raise failures[len(calls) - 1]
+
+    monkeypatch.setattr("tools.build_scie_release.subprocess.run", run)
+    monkeypatch.setattr("tools.build_scie_release.time.sleep", delays.append)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _run_command(command, tmp_path)
+
+    assert caught.value is failures[-1]
+    assert calls == [command] * 3
+    assert delays == [2, 4]
+    captured = capsys.readouterr()
+    for failure in failures:
+        assert failure.stderr in captured.err
+    assert captured.err.count("retrying command") == 2
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "earlier_output", "returncode"),
+    [
+        (
+            "ERROR: No matching distribution found for missing-package",
+            "HTTP Error 503 during an earlier fetch\n",
+            1,
+        ),
+        ("ValueError: unsupported SCIE platform", "TimeoutError during an earlier fetch\n", 1),
+        ("urllib.error.HTTPError: HTTP Error 404: Not Found", "HTTP Error 503 earlier\n", 1),
+        ("SHA256 checksum mismatch", "ReadTimeoutError during an earlier fetch\n", 1),
+        ("signature verification failed", "HTTP Error 503 during an earlier fetch\n", 1),
+        ("does not match the expected SHA-256 fingerprint", "TimeoutError: timed out\n", 1),
+        ("Expected sha256 hash of EXPECTED but hashed to ACTUAL.", "HTTP Error 503 earlier\n", 1),
+        ("Download of URL had unexpected fingerprint.", "HTTP Error 503 earlier\n", 1),
+        ("HTTP Error 503 earlier\nERROR: No matching distribution found", "", 1),
+        ("TimeoutError: timed out\nValueError: unsupported SCIE platform", "", 1),
+        ("ERROR: No matching distribution found for TimeoutError", "", 1),
+        ("TimeoutError: timed out", "", -15),
+    ],
+)
+def test_scie_command_does_not_retry_nontransient_or_integrity_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    diagnostic: str,
+    earlier_output: str,
+    returncode: int,
+) -> None:
+    command = ["pex", "--scie", "eager"]
+    failure = subprocess.CalledProcessError(
+        returncode, command, output=earlier_output, stderr=diagnostic
+    )
+    calls: list[list[str]] = []
+    delays: list[float] = []
+
+    def run(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        raise failure
+
+    monkeypatch.setattr("tools.build_scie_release.subprocess.run", run)
+    monkeypatch.setattr("tools.build_scie_release.time.sleep", delays.append)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _run_command(command, tmp_path)
+
+    assert caught.value is failure
+    assert calls == [command]
+    assert delays == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [["python", "-m", "build"], ["pex3", "lock", "create"], ["pex", "--help"]],
+)
+def test_non_scie_commands_keep_uncaptured_fail_fast_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    failure = subprocess.CalledProcessError(1, command, stderr="TimeoutError: timed out")
+    calls: list[list[str]] = []
+    delays: list[float] = []
+
+    def run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        assert kwargs == {"cwd": tmp_path, "check": True}
+        raise failure
+
+    monkeypatch.setattr("tools.build_scie_release.subprocess.run", run)
+    monkeypatch.setattr("tools.build_scie_release.time.sleep", delays.append)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _run_command(command, tmp_path)
+
+    assert caught.value is failure
+    assert calls == [command]
+    assert delays == []
 
 
 def test_release_builder_passes_the_wheel_as_a_positional_pex_requirement(tmp_path: Path) -> None:

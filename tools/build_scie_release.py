@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -53,6 +54,16 @@ from xferry.management.versions import (  # noqa: E402
     is_supported_release_version,
 )
 
+_TRANSIENT_SCIE_NETWORK_ERROR = re.compile(
+    r"^(?:[\w.]+\.)?(?:TimeoutError|ReadTimeout(?:Error)?|ConnectTimeout(?:Error)?|"
+    r"ConnectionResetError|ConnectionAbortedError):"
+    r"|\b(?:urlopen error|read operation|read|connect(?:ion)?)[^\n]{0,80}\b(?:timed out|timeout)\b"
+    r"|\bHTTP(?:Error| Error| status(?: code)?|/[0-9.]+)?\s*[: ]\s*5[0-9]{2}\b"
+    r"|\b(?:connection reset by peer|temporary failure in name resolution)\b"
+    r"|^timed out$",
+    re.IGNORECASE,
+)
+
 
 class CommandRunner(Protocol):
     """Run one release-build command from its supplied working directory."""
@@ -72,7 +83,40 @@ class ReleaseBundle:
 
 
 def _run_command(command: Sequence[str], cwd: Path) -> None:
-    subprocess.run(list(command), cwd=cwd, check=True)
+    arguments = list(command)
+    if arguments[:1] != ["pex"] or "--scie" not in arguments:
+        subprocess.run(arguments, cwd=cwd, check=True)
+        return
+
+    for attempt in range(1, 4):
+        try:
+            result = subprocess.run(arguments, cwd=cwd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            if error.stdout:
+                print(error.stdout, end="", file=sys.stdout)
+            if error.stderr:
+                print(error.stderr, end="", file=sys.stderr)
+            # PEX prints its terminal error last; an earlier recovered failure is not a reason
+            # to retry a later packaging or integrity error.
+            diagnostic = (error.stderr or "").strip() or (error.stdout or "").strip()
+            terminal_error = diagnostic.rsplit("\n", 1)[-1]
+            if (
+                error.returncode < 0
+                or attempt == 3
+                or not _TRANSIENT_SCIE_NETWORK_ERROR.search(terminal_error)
+            ):
+                raise
+            print(
+                f"SCIE download failed transiently; retrying command ({attempt + 1}/3).",
+                file=sys.stderr,
+            )
+            time.sleep(attempt * 2)
+        else:
+            if result.stdout:
+                print(result.stdout, end="", file=sys.stdout)
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            return
 
 
 def _source_commit(repo_root: Path) -> str:
@@ -269,6 +313,8 @@ def build_release_bundle(
                 selected_platform,
                 "--interpreter-constraint",
                 "CPython>=3.12,<3.13",
+                "--timeout",
+                "120",
                 "-o",
                 str(executable),
             ],
