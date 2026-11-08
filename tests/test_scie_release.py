@@ -1215,7 +1215,16 @@ def test_release_builder_uses_pinned_pex_lock_and_eager_cpython_scie(
     assert ("--scie-platform", platform_id) == tuple(
         scie_command[scie_command.index("--scie-platform") :][:2]
     )
-    assert "CPython>=3.12,<3.13" in scie_command
+    assert ("--scie-pbs-release", "20261026") == tuple(
+        scie_command[scie_command.index("--scie-pbs-release") :][:2]
+    )
+    assert ("--scie-python-version", "3.12.16") == tuple(
+        scie_command[scie_command.index("--scie-python-version") :][:2]
+    )
+    assert "--scie-pbs-stripped" not in scie_command
+    assert ("--interpreter-constraint", "CPython>=3.12,<3.13") == tuple(
+        scie_command[scie_command.index("--interpreter-constraint") :][:2]
+    )
     assert ("--timeout", "120") == tuple(scie_command[scie_command.index("--timeout") :][:2])
     assert ("-c", "xferry") == tuple(scie_command[scie_command.index("-c") :][:2])
     assert bundle.executable.name == f"xferry-0.1.0-{platform_id}"

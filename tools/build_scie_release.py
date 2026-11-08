@@ -314,6 +314,8 @@ def build_release_bundle(
             ],
             repo_root,
         )
+        # Pin both runtime inputs so PBS metadata comes from a dated release instead
+        # of the floating /releases/latest endpoint, with a fixed CPython patch.
         runner(
             [
                 "pex",
@@ -326,6 +328,10 @@ def build_release_bundle(
                 "--scie-only",
                 "--scie-platform",
                 selected_platform,
+                "--scie-pbs-release",
+                "20261026",
+                "--scie-python-version",
+                "3.12.16",
                 "--interpreter-constraint",
                 "CPython>=3.12,<3.13",
                 "--timeout",
